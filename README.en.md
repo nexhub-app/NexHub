@@ -1,12 +1,40 @@
+<div align="center">
+
+  <img src="assets/icon/icon.png" width="128" alt="NexHub" />
+
+# NexHub
+
+All-in-one media aggregator (Anime / Manga / Novel / Video) — an open-source reading & watching tool based on the "Source-as-Plugin · Co-created Community" model
+
+[![Flutter](https://img.shields.io/badge/Flutter-3.47.0-02569B?logo=flutter&logoColor=white)](https://flutter.dev/)
+[![Dart](https://img.shields.io/badge/Dart-%3E%3D3.4.0%20%3C4.0.0-0175C2?logo=dart&logoColor=white)](https://dart.dev/)
+[![Release](https://img.shields.io/github/v/release/nexhub-app/NexHub?logo=github)](https://github.com/nexhub-app/NexHub/releases)
+[![CI](https://github.com/nexhub-app/NexHub/actions/workflows/build.yml/badge.svg)](https://github.com/nexhub-app/NexHub/actions/workflows/build.yml)
+[![Downloads](https://img.shields.io/github/downloads/nexhub-app/NexHub/total?logo=github)](https://github.com/nexhub-app/NexHub/releases)
+[![Stars](https://img.shields.io/github/stars/nexhub-app/NexHub?style=flat&logo=github)](https://github.com/nexhub-app/NexHub/stargazers)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?logo=apache&logoColor=white)](LICENSE)
+[![QQ Group](https://img.shields.io/badge/QQ%20Group-1132306726-1EBAFC?logo=tencentqq&logoColor=white)](https://qm.qq.com/q/KQ9T6Zh7EG)
+
+<br/>
+
+<img src="https://img.shields.io/badge/Android-3DDC84?logo=android&logoColor=white" alt="Android" />
+<img src="https://img.shields.io/badge/iOS-000000?logo=apple&logoColor=white" alt="iOS" />
+<img src="https://img.shields.io/badge/Windows-0078D4?logo=windows&logoColor=white" alt="Windows" />
+<img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS" />
+<img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black" alt="Linux" />
+<img src="https://img.shields.io/badge/HarmonyOS-0A59F7?logoColor=white" alt="HarmonyOS / OpenHarmony" />
+
+<br/>
+
 **English** | [简体中文](./README.md)
+
+</div>
 
 > Latest release: **v3.3.0 (stable)**. The previous release is **v3.2.0** (stable — official HarmonyOS support, unsigned iOS build and built-in free translation). The project is under continuous development. Contributions and ideas are welcome via Pull Requests / issues. See [RELEASE_NOTES](./RELEASE_NOTES.md) for the full changelog.
 >
 > 📱 **HarmonyOS / OpenHarmony is officially supported**: fully usable on arm64 devices; an unsigned iOS build is also provided. See [Platform Support](#2-platform-support) below.
-
-# NexHub
-
-> **All-in-one media aggregator (Anime / Manga / Novel / Video) — an open-source reading & watching tool based on the "Source-as-Plugin · Co-created Community" model.**
+>
+> 💬 **QQ dev group**: [1132306726](https://qm.qq.com/q/KQ9T6Zh7EG) (tap the number to join).
 
 NexHub is a cross-platform media aggregator built with [Flutter](https://flutter.dev). It unifies four content types — **Anime, Manga, Novel, and Video** — into one app for browsing, searching, reading, and watching.
 

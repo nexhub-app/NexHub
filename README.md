@@ -1,12 +1,40 @@
+<div align="center">
+
+  <img src="assets/icon/icon.png" width="128" alt="NexHub" />
+
+# NexHub
+
+四合一媒体聚合客户端（动漫 / 漫画 / 小说 / 影视）—— 源即插件 · 共创社区模式的开源阅读 / 观看工具
+
+[![Flutter](https://img.shields.io/badge/Flutter-3.47.0-02569B?logo=flutter&logoColor=white)](https://flutter.dev/)
+[![Dart](https://img.shields.io/badge/Dart-%3E%3D3.4.0%20%3C4.0.0-0175C2?logo=dart&logoColor=white)](https://dart.dev/)
+[![Release](https://img.shields.io/github/v/release/nexhub-app/NexHub?logo=github)](https://github.com/nexhub-app/NexHub/releases)
+[![CI](https://github.com/nexhub-app/NexHub/actions/workflows/build.yml/badge.svg)](https://github.com/nexhub-app/NexHub/actions/workflows/build.yml)
+[![Downloads](https://img.shields.io/github/downloads/nexhub-app/NexHub/total?logo=github)](https://github.com/nexhub-app/NexHub/releases)
+[![Stars](https://img.shields.io/github/stars/nexhub-app/NexHub?style=flat&logo=github)](https://github.com/nexhub-app/NexHub/stargazers)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg?logo=apache&logoColor=white)](LICENSE)
+[![QQ 群](https://img.shields.io/badge/QQ%E7%BE%A4-1132306726-1EBAFC?logo=tencentqq&logoColor=white)](https://qm.qq.com/q/KQ9T6Zh7EG)
+
+<br/>
+
+<img src="https://img.shields.io/badge/Android-3DDC84?logo=android&logoColor=white" alt="Android" />
+<img src="https://img.shields.io/badge/iOS-000000?logo=apple&logoColor=white" alt="iOS" />
+<img src="https://img.shields.io/badge/Windows-0078D4?logo=windows&logoColor=white" alt="Windows" />
+<img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS" />
+<img src="https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black" alt="Linux" />
+<img src="https://img.shields.io/badge/HarmonyOS-0A59F7?logoColor=white" alt="HarmonyOS / OpenHarmony" />
+
+<br/>
+
 **[简体中文](./README.md)** | [English](./README.en.md)
+
+</div>
 
 > 当前最新版 **v3.3.0（正式版）**。上一版本为 **v3.2.0**（正式版，鸿蒙正式支持 + iOS 未签名构建 + 内置免费翻译）。项目持续迭代中，欢迎通过 Pull Request / issues 贡献代码和想法。完整更新历史见 [RELEASE_NOTES](./RELEASE_NOTES.md)。
 >
 > 📱 **鸿蒙（HarmonyOS / OpenHarmony）正式支持**：arm64 真机完整可用，另提供 iOS 未签名构建；详情见下方[「平台支持」](#二平台支持)。
-
-# NexHub
-
-> **四合一媒体聚合客户端（动漫 / 漫画 / 小说 / 影视）—— 源即插件 · 共创社区模式的开源阅读 / 观看工具。**
+>
+> 💬 **QQ 开发交流群**：[1132306726](https://qm.qq.com/q/KQ9T6Zh7EG)（点群号即可加群）。
 
 NexHub 是一个基于 [Flutter](https://flutter.dev) 构建的跨平台媒体聚合客户端，把「动漫、漫画、小说、影视」四类内容统一到一个应用里浏览、搜索、阅读与观看。
 
