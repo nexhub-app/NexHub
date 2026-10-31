@@ -69,25 +69,62 @@ jobs:
       - name: Setup flutter-ohos SDK
         shell: bash
         run: |
-          git clone --depth 1 -b 3.47.7-ohos-1.0.0 \
-            https://atomgit.com/oh-flutter/flutter_flutter.git "$HOME/flutter-ohos"
+          for i in 1 2 3; do
+            if git clone --depth 1 -b 3.47.7-ohos-1.0.0 \
+                 https://atomgit.com/oh-flutter/flutter_flutter.git "$HOME/flutter-ohos"; then
+              break
+            fi
+            echo "clone failed (attempt $i/3), retrying..."
+            rm -rf "$HOME/flutter-ohos"
+            sleep $((i*15))
+          done
+          test -x "$HOME/flutter-ohos/bin/flutter"
           ls "$HOME/flutter-ohos/bin" | head -5
           echo "$HOME/flutter-ohos/bin" >> "$GITHUB_PATH"
+
+      - name: 缓存 flutter-ohos SDK 工件目录
+        # engine 工件全部来自华为云 OBS，海外 runner 偶发 DNS 解析失败；
+        # 命中缓存后 precache 只做本地校验，不再依赖每一次都能连上 OBS。
+        uses: actions/cache@v4
+        with:
+          path: ~/flutter-ohos/bin/cache
+          key: flutter-ohos-cache-3.47.7-ohos-1.0.0-${{ runner.os }}-${{ runner.arch }}-v1
 
       - name: 预热 SDK 工件（容忍 OBS 域名 DNS 抖动）
         # flutter-ohos 的 engine 工件托管在华为云 OBS（海外 runner 偶发 DNS 解析失败），
         # 这里先带退避重试把工件拉齐，避免后续 doctor / pub get / 编译被同一次抖动打断。
+        # 连续失败时输出 OBS 连通性诊断，便于区分「DNS 抖动」与「工件缺失（404）」。
         shell: bash
         run: |
-          for i in 1 2 3 4 5; do
-            if flutter precache 2>&1; then
+          set -o pipefail
+          max=8
+          attempt=0
+          while [ "$attempt" -lt "$max" ]; do
+            attempt=$((attempt + 1))
+            echo "::group::flutter precache (attempt $attempt/$max)"
+            if flutter precache 2>&1 | tee precache.log; then
+              echo "::endgroup::"
               echo "::notice::SDK artifacts precached"
               exit 0
             fi
-            echo "precache failed (attempt $i/5), retrying in $((i*10))s..."
-            sleep $((i*10))
+            echo "::endgroup::"
+            echo "--- last 20 lines of this attempt ---"
+            tail -n 20 precache.log || true
+            if [ "$attempt" -lt "$max" ]; then
+              backoff=$((attempt * 20))
+              echo "attempt $attempt failed, retrying in ${backoff}s..."
+              sleep "$backoff"
+            fi
           done
-          echo "::error::flutter-ohos SDK 工件下载连续失败（检查 OBS 域名可达性）"
+          echo "=== OBS 连通性诊断 ==="
+          OBS_HOST=flutter-ohos.obs.cn-south-1.myhuaweicloud.com
+          curl -sS -o /dev/null \
+            -w "http=%{http_code} dns=%{time_namelookup}s connect=%{time_connect}s total=%{time_total}s\n" \
+            --max-time 20 "https://$OBS_HOST/" || true
+          (dscacheutil -q host -a name "$OBS_HOST" || nslookup "$OBS_HOST") 2>&1 | head -20 || true
+          echo "--- 最近一次 precache 输出 ---"
+          tail -n 40 precache.log || true
+          echo "::error::flutter-ohos SDK 工件下载连续失败（诊断见上方 OBS 连通性与 precache 输出）"
           exit 1
 
       - name: Flutter doctor
