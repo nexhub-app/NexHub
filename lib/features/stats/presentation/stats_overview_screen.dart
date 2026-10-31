@@ -15,8 +15,10 @@ library;
 
 import 'package:material_ui/material_ui.dart';
 import 'package:nexhub/generated/app_localizations.dart';
+import 'package:provider/provider.dart';
 
 import '../../../core/widgets/app_alert_dialog.dart';
+import '../../../core/services/source_repository.dart';
 import '../../../core/stats/stats_models.dart';
 import '../../../core/stats/stats_repository.dart';
 import '../../../core/theme/app_tokens.dart';
@@ -55,8 +57,14 @@ class _StatsOverviewScreenState extends State<StatsOverviewScreen> {
   }
 
   /// 当前 Tab 的作品列表（按最后阅读时间倒序）。
-  List<WorkReadingStats> get _list {
-    final all = StatsRepository.instance.statsBy(_type);
+  ///
+  /// 过滤隐藏源与年龄限制拦截源的记录：这些源在书架/搜索/源管理里都不可见，
+  /// 统计页若照常列出，等于把它们的作品名与阅读时长暴露出来。
+  List<WorkReadingStats> _list(SourceRepository sources) {
+    final all = StatsRepository.instance
+        .statsBy(_type)
+        .where((s) => _sourceVisible(sources, s.sourceId))
+        .toList();
     final q = _query.trim().toLowerCase();
     if (q.isEmpty) return all;
     return all
@@ -64,6 +72,17 @@ class _StatsOverviewScreenState extends State<StatsOverviewScreen> {
             (s.title?.toLowerCase().contains(q) ?? false) ||
             s.workId.toLowerCase().contains(q))
         .toList();
+  }
+
+  /// 该作品的来源是否对用户可见。
+  bool _sourceVisible(SourceRepository sources, String? sourceId) {
+    final id = sourceId?.trim() ?? '';
+    if (id.isEmpty) return true;
+    final config = sources.getById(id);
+    // 源已删除/未加载：保留历史统计，避免数据凭空消失。
+    if (config == null) return true;
+    if (config.isHidden) return false;
+    return !sources.isAgeBlocked(config);
   }
 
   void _toggleSearch() {
@@ -223,23 +242,35 @@ class _StatsOverviewScreenState extends State<StatsOverviewScreen> {
   }
 
   /// 活跃段：近 7 天 / 近 30 天 / 活跃天数（当前模块下整个历史）。
-  Widget _buildActivitySection(AppLocalizations l10n) {
+  ///
+  /// 近 7/30 天按传入的可见列表统计，与下方作品列表口径一致；活跃天数来自
+  /// 日聚合（按天存总量、无来源维度），只能按模块整体计算。
+  Widget _buildActivitySection(
+      AppLocalizations l10n, List<WorkReadingStats> list) {
     final scheme = Theme.of(context).colorScheme;
     final repo = StatsRepository.instance;
-    final days7 = repo.recentActiveWorks(_type, const Duration(days: 7));
-    final days30 = repo.recentActiveWorks(_type, const Duration(days: 30));
+    final now = DateTime.now();
+    final cutoff7 =
+        now.subtract(const Duration(days: 7)).millisecondsSinceEpoch;
+    final cutoff30 =
+        now.subtract(const Duration(days: 30)).millisecondsSinceEpoch;
+    var days7 = 0;
+    var days30 = 0;
+    for (final s in list) {
+      if (s.lastReadAtMs >= cutoff30) days30 += 1;
+      if (s.lastReadAtMs >= cutoff7) days7 += 1;
+    }
     // 活跃天数：扫描当前模块下所有有数据的「日」（从首条 lastReadAtMs 到今）。
-    final all = repo.statsBy(_type);
     var activeDays = 0;
-    if (all.isNotEmpty) {
-      var minMs = all.first.lastReadAtMs;
-      for (final s in all) {
-        if (s.lastReadAtMs > 0 && s.lastReadAtMs < minMs)
+    if (list.isNotEmpty) {
+      var minMs = list.first.lastReadAtMs;
+      for (final s in list) {
+        if (s.lastReadAtMs > 0 && s.lastReadAtMs < minMs) {
           minMs = s.lastReadAtMs;
+        }
       }
       if (minMs > 0) {
         final start = DateTime.fromMillisecondsSinceEpoch(minMs);
-        final now = DateTime.now();
         final dailys = repo.dailyForRange(start, now);
         for (final d in dailys) {
           final s = switch (_type) {
@@ -278,10 +309,20 @@ class _StatsOverviewScreenState extends State<StatsOverviewScreen> {
   }
 
   /// 节奏段：平均会话 / 最长单日 / 当前连续。
-  Widget _buildPaceSection(AppLocalizations l10n) {
+  ///
+  /// 平均会话按可见列表的时长÷会话次数计算；最长单日与连续天数来自日聚合，
+  /// 同样只能按模块整体计算。
+  Widget _buildPaceSection(
+      AppLocalizations l10n, List<WorkReadingStats> list) {
     final scheme = Theme.of(context).colorScheme;
     final repo = StatsRepository.instance;
-    final avg = repo.avgSessionDurationSec(_type);
+    var totalSec = 0;
+    var totalSessions = 0;
+    for (final s in list) {
+      totalSec += s.totalDurationSec;
+      totalSessions += s.sessionCount;
+    }
+    final avg = totalSessions == 0 ? 0 : totalSec ~/ totalSessions;
     // 最长单日：扫描当前模块整年每日。
     final now = DateTime.now();
     var maxSec = 0;
@@ -483,7 +524,9 @@ class _StatsOverviewScreenState extends State<StatsOverviewScreen> {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
-    final list = _list;
+    // watch：隐藏源 / 年龄限制开关变化时立即重新过滤列表。
+    final sources = context.watch<SourceRepository>();
+    final list = _list(sources);
     return AppShrinkTitleScaffold(
       title: Text(l10n.statsOverviewTitle),
       actions: <Widget>[
@@ -546,8 +589,8 @@ class _StatsOverviewScreenState extends State<StatsOverviewScreen> {
                 ),
                 children: <Widget>[
                   _buildOverviewSection(l10n, list),
-                  _buildActivitySection(l10n),
-                  _buildPaceSection(l10n),
+                  _buildActivitySection(l10n, list),
+                  _buildPaceSection(l10n, list),
                   _buildTrendSection(l10n),
                   if (list.isEmpty)
                     _EmptyState(l10n: l10n)
