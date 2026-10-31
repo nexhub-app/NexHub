@@ -62,4 +62,31 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('长列表大 index 不再触发 Interval begin<=1.0 断言',
+      (WidgetTester tester) async {
+    // 回归背景：交错偏移量曾直接取 index*0.08，列表第 13 条起 animStart>1.0，
+    // Interval 的 `assert(begin <= 1.0)` 每帧抛出，日志被刷屏。
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: ListView(
+          children: <Widget>[
+            for (var i = 0; i < 40; i++)
+              Entrance(
+                onceKey: 'long_list_$i',
+                index: i,
+                child: const SizedBox(width: 40, height: 40),
+              ),
+          ],
+        ),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    // 重播（走 _ctrl.forward(from: 0)，同样会逐帧求值 Interval）也不应抛。
+    replayEntrances();
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
 }

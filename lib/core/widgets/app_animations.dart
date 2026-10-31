@@ -157,8 +157,12 @@ class _EntranceState extends State<Entrance>
       _play = true;
     }
 
-    // 交错的卡片需要更长总时长：基础时长 + 最后一个卡片的延迟
-    final staggerMs = (widget.index ?? 0) * 80;
+    // 交错序号封顶：长列表（几十上百条）会传来很大的 index，既让总时长线性
+    // 膨胀，也会让 animStart 越过 1.0 —— Interval.transformInternal 里
+    // `assert(begin <= 1.0)` 于是每帧抛异常（Flutter 3.47 起该断言变严格）。
+    // 只前 6 条（起始比例 0~0.4）做交错，其余复用最后一档。
+    final staggerIndex = (widget.index ?? 0).clamp(0, 5);
+    final staggerMs = staggerIndex * 80;
     final baseDuration = widget.duration ?? AppTokens.durSpring;
     _ctrl = AnimationController(
       vsync: this,
@@ -166,10 +170,10 @@ class _EntranceState extends State<Entrance>
     );
 
     // 交错偏移量：当前卡片在整个动画时间轴上的起始位置比例
-    final staggerOffset = (widget.index ?? 0) * 0.08;
+    final staggerOffset = staggerIndex * 0.08;
     // 每个卡片动画占 60% 的总时长，从 staggerOffset 位置开始
-    final animStart = staggerOffset;
-    final animEnd = (staggerOffset + 0.6).clamp(0.0, 1.0);
+    final animStart = staggerOffset.clamp(0.0, 0.4);
+    final animEnd = (animStart + 0.6).clamp(0.0, 1.0);
 
     // 淡入 + 上滑走平滑减速（末段极缓、顺滑）；缩放走弹簧（放大略过冲再回落）。
     _opacity = CurvedAnimation(
