@@ -10,6 +10,20 @@ set(BINARY_NAME "NexHub")
 # versions of CMake.
 cmake_policy(VERSION 3.14...3.25)
 
+# CMake 4 起移除了对 cmake_minimum_required(<3.5) 的兼容：pdfx 在 configure
+# 阶段用 DownloadProject 生成一个辅助工程去下载 pdfium，那个模板仍写
+# `cmake_minimum_required(VERSION 2.8.12)`，于是直接硬报错
+# （"Compatibility with CMake < 3.5 has been removed"）。
+# 这里给本进程与它派生的子 cmake 进程补一个兼容下限，省掉每人手工设环境变量。
+# 变量本体会被 cmake_minimum_required 读取；ENV 版本保证 execute_process
+# 起的子 cmake 也继承到（CMake 4.0+ 两种形式都支持）。
+if(NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM)
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+if(NOT DEFINED ENV{CMAKE_POLICY_VERSION_MINIMUM})
+  set(ENV{CMAKE_POLICY_VERSION_MINIMUM} "3.5")
+endif()
+
 # Define build configuration option.
 get_property(IS_MULTICONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
 if(IS_MULTICONFIG)
