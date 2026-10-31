@@ -2948,6 +2948,20 @@ class AppLocalizationsEn extends AppLocalizations {
   String get projectRepository => 'Project repository';
 
   @override
+  String get aboutContactSection => 'Contact us';
+
+  @override
+  String get aboutGithubDesc => 'Source code and issue tracker';
+
+  @override
+  String get aboutQqGroup => 'QQ group';
+
+  @override
+  String aboutQqGroupDesc(String number) {
+    return 'Dev group: $number';
+  }
+
+  @override
   String get checkUpdate => 'Check for updates';
 
   @override
@@ -7807,6 +7821,13 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get announcementDontShowAgain => 'Don\'t show again';
+
+  @override
+  String get announcementSettingsDesc =>
+      'View past announcements and release notes';
+
+  @override
+  String get announcementsEmpty => 'No announcements yet';
 
   @override
   String get appAnnouncement => 'App announcement';

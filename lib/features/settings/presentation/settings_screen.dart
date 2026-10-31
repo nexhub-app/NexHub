@@ -24,6 +24,7 @@ import './settings_content_screen.dart';
 import './settings_data_screen.dart';
 import './settings_privacy_security_screen.dart';
 import './about_screen.dart';
+import './settings_announcements_screen.dart';
 // 设置搜索注册表所引用的子页 / 汇总页（按用途分组）：
 import './settings_player_screen.dart';
 import './settings_novel_reader_screen.dart';
@@ -2273,7 +2274,31 @@ class SettingsScreen extends StatelessWidget {
       _SettingEntry(
         icon: Icons.code_rounded,
         title: l10n.projectRepository,
-        keywords: const <String>['仓库', '源码', 'github', '项目'],
+        desc: l10n.aboutGithubDesc,
+        keywords: const <String>[
+          '仓库',
+          '源码',
+          'github',
+          '项目',
+          '联系',
+          '反馈',
+          'issue',
+        ],
+        builder: (_) => const AboutScreen(),
+      ),
+      _SettingEntry(
+        icon: Icons.forum_rounded,
+        title: l10n.aboutQqGroup,
+        desc: l10n.aboutQqGroupDesc(kQqGroupNumber),
+        keywords: const <String>[
+          'qq',
+          'qq群',
+          '群',
+          '群号',
+          '交流',
+          '联系',
+          '反馈',
+        ],
         builder: (_) => const AboutScreen(),
       ),
       _SettingEntry(
@@ -2283,6 +2308,20 @@ class SettingsScreen extends StatelessWidget {
         builder: (_) => const AboutScreen(),
       ),
       // 关于页内更细的设置项：
+      _SettingEntry(
+        icon: Icons.campaign_rounded,
+        title: l10n.appAnnouncement,
+        desc: l10n.announcementSettingsDesc,
+        keywords: const <String>[
+          '公告',
+          '更新公告',
+          '通知',
+          'announcement',
+          'release notes',
+          '版本说明',
+        ],
+        builder: (_) => const SettingsAnnouncementsScreen(),
+      ),
       _SettingEntry(
         icon: Icons.info_rounded,
         title: l10n.aboutAppTitle,

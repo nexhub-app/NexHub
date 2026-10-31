@@ -94,8 +94,19 @@ class SoftwareAnnouncementService {
 
   List<SoftwareAnnouncement> _all = const <SoftwareAnnouncement>[];
   Set<String> _seen = const <String>{};
+  bool _loaded = false;
 
   SoftwareAnnouncementService._();
+
+  /// 是否已至少加载过一次（公告页据此决定要不要等网络）。
+  bool get loaded => _loaded;
+
+  /// 全部公告（含已读，保持清单顺序）。
+  List<SoftwareAnnouncement> get all =>
+      List<SoftwareAnnouncement>.unmodifiable(_all);
+
+  /// 指定公告是否已读。
+  bool isSeen(String id) => _seen.contains(id);
 
   /// 优先拉取远程 JSON（多源依次尝试）；全部失败则回退到「上次成功缓存」，
   /// 仍无则回退打包资源。已读过的公告 id 持久化到 shared_preferences。
@@ -125,6 +136,23 @@ class SoftwareAnnouncementService {
 
     final prefs = await SharedPreferences.getInstance();
     _seen = (prefs.getStringList(_seenKey) ?? const <String>[]).toSet();
+    _loaded = true;
+  }
+
+  /// 重新拉取远程公告（公告页下拉刷新 / 手动刷新用）。
+  ///
+  /// 与 [load] 的区别：保留已读状态与现有列表，只在拉取成功时替换内容，
+  /// 失败返回 false（调用方提示，不清空已有公告）。返回是否有新数据。
+  Future<bool> refresh() async {
+    try {
+      final parsed = await _fetchRemote();
+      if (parsed.isEmpty) return false;
+      _all = parsed;
+      await _cacheRemote(parsed);
+      return true;
+    } on Object {
+      return false;
+    }
   }
 
   /// 从远程解析公告清单：依次尝试 jsDelivr → GitHub raw → 国内镜像。

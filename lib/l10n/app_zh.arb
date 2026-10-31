@@ -1523,6 +1523,18 @@
   "acknowledgementsViewProject": "查看项目",
   "acknowledgementsMoreLibs": "其余第三方库见「开源许可」列表。",
   "projectRepository": "项目仓库",
+  "aboutContactSection": "联系我们",
+  "aboutGithubDesc": "代码仓库与问题反馈",
+  "aboutQqGroup": "QQ 群",
+  "aboutQqGroupDesc": "开发交流群：{number}",
+  "@aboutQqGroupDesc": {
+    "description": "关于页 QQ 群入口副标题，占位符为群号",
+    "placeholders": {
+      "number": {
+        "type": "String"
+      }
+    }
+  },
   "checkUpdate": "检查更新",
   "updateChecking": "正在检查更新…",
   "updateLatest": "已是最新版本",
@@ -3953,6 +3965,8 @@
   "mirrorAutoAdded": "已从发布页自动添加 {count} 个镜像",
   "sourceAnnouncementView": "查看详情",
   "announcementDontShowAgain": "以后再不显示",
+  "announcementSettingsDesc": "查看历史公告与版本更新说明",
+  "announcementsEmpty": "暂无公告",
   "appAnnouncement": "软件公告",
   "appAnnouncementGotIt": "知道了",
   "onlineTabWebFavorite": "网络收藏",

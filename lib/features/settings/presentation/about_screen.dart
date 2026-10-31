@@ -12,6 +12,7 @@ import '../../../core/utils/app_haptics.dart';
 import '../../../core/widgets/app_glass_bar.dart';
 
 import './widgets/settings_widgets.dart';
+import './settings_announcements_screen.dart';
 import './settings_update_screen.dart';
 
 /// 致谢条目数据模型（文件作用域）。
@@ -73,6 +74,12 @@ class _AcknowledgementCard extends StatelessWidget {
 /// Project repository URL opened via url_launcher.
 const String _kProjectRepositoryUrl = 'https://github.com/nexhub-app/nexhub';
 
+/// 官方 QQ 开发交流群号（与官网页脚保持一致）。
+const String kQqGroupNumber = '1132306726';
+
+/// QQ 群加群链接（取自官网页脚，点击后拉起 QQ 或浏览器）。
+const String _kQqGroupUrl = 'https://qm.qq.com/q/KQ9T6Zh7EG';
+
 class AboutScreen extends StatefulWidget {
   const AboutScreen({super.key});
 
@@ -124,9 +131,25 @@ class _AboutScreenState extends State<AboutScreen> {
 
   Future<void> _openRepository() async {
     AppHaptics.selectionClick();
-    final Uri url = Uri.parse(_kProjectRepositoryUrl);
-    if (await canLaunchUrl(url)) {
-      await launchUrl(url, mode: LaunchMode.externalApplication);
+    await _openExternal(_kProjectRepositoryUrl);
+  }
+
+  /// 打开官方 QQ 开发交流群（qm.qq.com 加群链接，手机端拉起 QQ，桌面端走浏览器）。
+  Future<void> _openQqGroup() async {
+    AppHaptics.selectionClick();
+    await _openExternal(_kQqGroupUrl);
+  }
+
+  /// 用系统外部应用打开链接；平台不支持（如桌面无 QQ）时静默失败。
+  Future<void> _openExternal(String raw) async {
+    final Uri? url = Uri.tryParse(raw);
+    if (url == null) return;
+    try {
+      if (await canLaunchUrl(url)) {
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      }
+    } on Object {
+      // 外部打开失败不影响页面。
     }
   }
 
@@ -188,6 +211,12 @@ class _AboutScreenState extends State<AboutScreen> {
             header: l10n.aboutAppTitle,
             children: <Widget>[
               SettingsTile(
+                icon: Icons.campaign_rounded,
+                title: l10n.appAnnouncement,
+                subtitle: l10n.announcementSettingsDesc,
+                onTap: () => _openAnnouncements(),
+              ),
+              SettingsTile(
                 icon: Icons.info_rounded,
                 title: l10n.aboutApp,
                 subtitle: l10n.aboutDescription,
@@ -228,11 +257,6 @@ class _AboutScreenState extends State<AboutScreen> {
                 onTap: () => _showAcknowledgements(l10n),
               ),
               SettingsTile(
-                icon: Icons.code_rounded,
-                title: l10n.projectRepository,
-                onTap: _openRepository,
-              ),
-              SettingsTile(
                 icon: Icons.system_update_alt_rounded,
                 title: l10n.updateSettings,
                 subtitle: l10n.updateSettingsDesc,
@@ -240,7 +264,38 @@ class _AboutScreenState extends State<AboutScreen> {
               ),
             ],
           ),
+
+          const SizedBox(height: AppTokens.spaceLg),
+
+          // ── 联系方式：GitHub 仓库 + 官方 QQ 群（链接与官网页脚一致）──
+          SettingsGroup(
+            header: l10n.aboutContactSection,
+            children: <Widget>[
+              SettingsTile(
+                icon: Icons.code_rounded,
+                title: l10n.projectRepository,
+                subtitle: l10n.aboutGithubDesc,
+                onTap: _openRepository,
+              ),
+              SettingsTile(
+                icon: Icons.forum_rounded,
+                title: l10n.aboutQqGroup,
+                subtitle: l10n.aboutQqGroupDesc(kQqGroupNumber),
+                onTap: _openQqGroup,
+              ),
+            ],
+          ),
         ],
+      ),
+    );
+  }
+
+  /// 打开软件公告页（历史公告随时回看）。
+  void _openAnnouncements() {
+    AppHaptics.selectionClick();
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const SettingsAnnouncementsScreen(),
       ),
     );
   }

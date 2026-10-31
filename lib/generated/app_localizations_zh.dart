@@ -2894,6 +2894,20 @@ class AppLocalizationsZh extends AppLocalizations {
   String get projectRepository => '项目仓库';
 
   @override
+  String get aboutContactSection => '联系我们';
+
+  @override
+  String get aboutGithubDesc => '代码仓库与问题反馈';
+
+  @override
+  String get aboutQqGroup => 'QQ 群';
+
+  @override
+  String aboutQqGroupDesc(String number) {
+    return '开发交流群：$number';
+  }
+
+  @override
   String get checkUpdate => '检查更新';
 
   @override
@@ -7628,6 +7642,12 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get announcementDontShowAgain => '以后再不显示';
+
+  @override
+  String get announcementSettingsDesc => '查看历史公告与版本更新说明';
+
+  @override
+  String get announcementsEmpty => '暂无公告';
 
   @override
   String get appAnnouncement => '软件公告';

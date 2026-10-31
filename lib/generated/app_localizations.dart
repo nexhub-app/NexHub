@@ -5678,6 +5678,30 @@ abstract class AppLocalizations {
   /// **'Project repository'**
   String get projectRepository;
 
+  /// No description provided for @aboutContactSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Contact us'**
+  String get aboutContactSection;
+
+  /// No description provided for @aboutGithubDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Source code and issue tracker'**
+  String get aboutGithubDesc;
+
+  /// No description provided for @aboutQqGroup.
+  ///
+  /// In en, this message translates to:
+  /// **'QQ group'**
+  String get aboutQqGroup;
+
+  /// Subtitle of the QQ group entry on the About page; placeholder is the group number
+  ///
+  /// In en, this message translates to:
+  /// **'Dev group: {number}'**
+  String aboutQqGroupDesc(String number);
+
   /// No description provided for @checkUpdate.
   ///
   /// In en, this message translates to:
@@ -14677,6 +14701,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Don\'t show again'**
   String get announcementDontShowAgain;
+
+  /// No description provided for @announcementSettingsDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'View past announcements and release notes'**
+  String get announcementSettingsDesc;
+
+  /// No description provided for @announcementsEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No announcements yet'**
+  String get announcementsEmpty;
 
   /// No description provided for @appAnnouncement.
   ///
