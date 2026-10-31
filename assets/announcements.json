@@ -1,5 +1,16 @@
 [
   {
+    "id": "v3.4.0-announce",
+    "date": "2026-10-31",
+    "title": "NexHub 3.4.0 正式版",
+    "titleEn": "NexHub 3.4.0 (stable release)",
+    "body": "NexHub 3.4.0 正式版来了！本次主角是桌面卡片：Android 小组件与鸿蒙服务卡片上线，共 8 类——继续观看（显示真实话/集进度与封面）、追更、下载、统计、热力图、大数字、分模块、连续打卡；统计类卡片与 App 统计页同色同构，卡片会跟着系统深浅色自动切换，点一下直达详情页或统计页。可在「设置 → 外观与语言 → 桌面卡片」调背景（封面/主题/纯色）、模糊与条数。同时修复：长列表入场动画断言刷屏、中英混排标题漏译、统计页仍计入隐藏源的记录；设置新增「软件公告」与「联系我们」（GitHub / QQ 群）。无破坏性数据变更，可直接覆盖安装。",
+    "bodyEn": "NexHub 3.4.0 (stable) is here! The headline is home-screen widgets: 8 kinds on Android and 10 resizable cards on HarmonyOS — Continue Watching (real episode/chapter progress plus covers), Updates, Downloads, Stats, Heatmap, Big Number, Per-Module and Streak. The stats cards share the app's stats-page look, follow system light/dark automatically, and a tap jumps straight to the detail or stats page. Tune background (cover / theme / solid), blur and item count under Settings → Appearance & Language → Home Widgets. Also fixed: entrance-animation assertion spam on long lists, untranslated mixed Chinese/English titles, and hidden sources still counted in stats; Settings gains Software Announcements and Contact (GitHub / QQ group). No breaking data changes — overwrite-install directly.",
+    "url": "",
+    "urlText": "",
+    "urlTextEn": ""
+  },
+  {
     "id": "v3.3.0-announce",
     "date": "2026-10-25",
     "title": "NexHub 3.3.0 正式版",

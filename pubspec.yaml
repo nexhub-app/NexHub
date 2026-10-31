@@ -1,7 +1,7 @@
 name: nexhub
 description: 四合一媒体聚合客户端（动漫 / 漫画 / 小说 / 影视）—— Material 3 设计系统基础脚手架。
 publish_to: 'none'
-version: 3.3.0+54
+version: 3.4.0+55
 repository: https://github.com/nexhub-app/nexhub
 
 environment:
