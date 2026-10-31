@@ -10,6 +10,7 @@ import 'bing_translation_client.dart';
 import 'endpoint_router.dart';
 import 'text_translation_cache.dart';
 import 'translation_exception.dart';
+import 'translation_faithfulness.dart';
 import 'translation_feature_flags.dart';
 import 'translation_language.dart';
 import 'vision_translation_client.dart';
@@ -139,6 +140,19 @@ class UiTextTranslator {
         for (var i = 0; i < remaining.length; i++) {
           final text = translated[i].trim();
           if (text.isEmpty) continue;
+          // 混杂文本被原样回显（必应判成「已是目标语言」）：不写缓存，
+          // 留给下面的 AI 兜底真正译一次，否则会长期卡在「译不出来」。
+          if (TranslationLanguage.isMixedLanguage(
+                remaining[i].source,
+                target,
+              ) &&
+              TranslationFaithfulness.isSourceEcho(
+                remaining[i].source,
+                text,
+                minLength: 1,
+              )) {
+            continue;
+          }
           results[remaining[i].source] = text;
           await _store(remaining[i], text);
         }

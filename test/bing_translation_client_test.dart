@@ -199,4 +199,45 @@ void main() {
     expect(result.single, long);
     expect((adapter.bodies.single as List).length, 2);
   });
+
+  test('中英混杂原样回显时按外文源重译并折叠重复片段', () async {
+    late _BingAdapter adapter;
+    adapter = _BingAdapter((options) {
+      final texts = (options.data as List).cast<String>();
+      final from = options.queryParameters['from'] as String?;
+      if (from == null) {
+        // 自动检测：被判定为「已是中文」，原样回显。
+        return _json(<Map<String, dynamic>>[
+          for (final t in texts)
+            <String, dynamic>{
+              'detectedLanguage': <String, dynamic>{'language': 'zh-Hans'},
+              'translations': <Map<String, dynamic>>[
+                <String, dynamic>{'text': t, 'to': 'zh-Hans'},
+              ],
+            },
+        ]);
+      }
+      // 显式外文源：正常译出（且端点把中文名再译一遍，产生重复片段）。
+      return _json(<Map<String, dynamic>>[
+        for (final _ in texts)
+          <String, dynamic>{
+            'translations': <Map<String, dynamic>>[
+              <String, dynamic>{'text': '进击的巨人 进击的巨人', 'to': 'zh-Hans'},
+            ],
+          },
+      ]);
+    });
+    final client = BingTranslationClient(
+      dio: Dio()..httpClientAdapter = adapter,
+      delay: (_) async {},
+    );
+    final result = await client.translate(
+      texts: <String>['进击的巨人 Attack on Titan', '纯中文标题'],
+      targetLang: '中文',
+    );
+    expect(result, <String>['进击的巨人', '纯中文标题']);
+    // 一次自动检测 + 一次显式 from=en 重译；纯中文标题不重试。
+    expect(adapter.bodies.length, 2);
+    expect(adapter.bodies.last, <String>['进击的巨人 Attack on Titan']);
+  });
 }

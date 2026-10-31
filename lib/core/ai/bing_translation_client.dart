@@ -131,6 +131,7 @@ class BingTranslationClient {
         result[index] = joined;
       }
     }
+    await _retryMixedEchoes(result, texts, targetLang, target);
     return result;
   }
 
@@ -203,7 +204,7 @@ class BingTranslationClient {
           ),
           data: texts,
         );
-        return _parse(resp.data, texts, target);
+        return _parse(resp.data, texts);
       } on DioException catch (e) {
         if (!_retryable(e) || attempt >= _maxRetries) rethrow;
         await _delay(Duration(milliseconds: attempt == 0 ? 500 : 1500));
@@ -212,7 +213,7 @@ class BingTranslationClient {
     }
   }
 
-  List<String> _parse(dynamic data, List<String> sources, String target) {
+  List<String> _parse(dynamic data, List<String> sources) {
     dynamic decoded = data;
     if (decoded is String) {
       try {
@@ -239,21 +240,79 @@ class BingTranslationClient {
       if (text == null || text.trim().isEmpty) {
         throw const TranslationException('Bing 返回内容为空');
       }
-      final detected = item['detectedLanguage'] is Map
-          ? ((item['detectedLanguage'] as Map)['language'] as String?)
-          : null;
-      out.add(_sameDetected(detected, target) ? sources[i] : text);
+      // 检测语言等于目标语言时不再无条件回填原文：中英混杂文本会被判成
+      // 「已是中文」而原样回显，看起来像「翻不出来」。统一交由
+      // [_retryMixedEchoes] 按混排情况决定是否用外文源重译。
+      out.add(text);
     }
     return out;
   }
 
-  static bool _sameDetected(String? detected, String target) {
-    if (detected == null) return false;
-    final d = detected.toLowerCase();
-    final t = target.toLowerCase();
-    if (d == t) return true;
-    if (t.startsWith('zh') || d.startsWith('zh')) return false;
-    return d.split('-').first == t.split('-').first;
+  /// 混杂文本回显补救：中英 / 中日混排常被判为目标语言而原样返回，
+  /// 这里显式指定外文源语言重译一次，并折叠重复片段。
+  ///
+  /// 只在「结果与原文完全一致」且「文本确实混排」时触发，避免多余请求；
+  /// 重译仍无变化（或失败）时保留原结果，由上层决定是否走 AI 兜底。
+  Future<void> _retryMixedEchoes(
+    List<String> result,
+    List<String> sources,
+    String targetLang,
+    String targetCode,
+  ) async {
+    final byFrom = <String, List<int>>{};
+    for (var i = 0; i < sources.length; i++) {
+      final source = sources[i];
+      if (source.trim().isEmpty) continue;
+      if (result[i].trim().isEmpty) continue;
+      if (!_isEcho(source, result[i])) continue;
+      if (!TranslationLanguage.isMixedLanguage(source, targetLang)) continue;
+      final from = TranslationLanguage.foreignSourceCode(source, targetLang);
+      if (from == null) continue;
+      byFrom.putIfAbsent(from, () => <int>[]).add(i);
+    }
+    for (final entry in byFrom.entries) {
+      try {
+        final translated = await _postBatch(
+          <String>[for (final i in entry.value) sources[i]],
+          targetCode,
+          entry.key,
+        );
+        for (var k = 0; k < entry.value.length; k++) {
+          final index = entry.value[k];
+          final text = _collapseRepeatedParts(translated[k]).trim();
+          if (text.isEmpty) continue;
+          if (_isEcho(sources[index], text)) continue;
+          result[index] = text;
+        }
+      } on Object catch (e) {
+        AppLog.instance.w('[Bing翻译] 混杂文本重译失败: $e');
+      }
+    }
+  }
+
+  static final RegExp _compareNoise =
+      RegExp(r'''[\s\.,!?;:，。！？；：、…—–\-_"'“”‘’()（）\[\]【】《》]+''');
+
+  /// 忽略空白/标点/大小写后是否与原文完全相同（即「原样回显」）。
+  static bool _isEcho(String source, String translation) {
+    final a = source.toLowerCase().replaceAll(_compareNoise, '');
+    if (a.isEmpty) return false;
+    return a == translation.toLowerCase().replaceAll(_compareNoise, '');
+  }
+
+  /// 折叠紧邻重复的片段：「进击的巨人 进击的巨人」→「进击的巨人」。
+  ///
+  /// 显式源语言改译时，端点常把已有中文名再译一遍，产生重复片段。
+  static String _collapseRepeatedParts(String text) {
+    if (text.contains('\n')) return text;
+    final parts = text.split(' ').where((p) => p.isNotEmpty).toList();
+    if (parts.length < 2) return text;
+    final out = <String>[];
+    for (final part in parts) {
+      if (out.isNotEmpty && _isEcho(out.last, part)) continue;
+      out.add(part);
+    }
+    return out.join(' ');
   }
 
   static bool _retryable(DioException e) {

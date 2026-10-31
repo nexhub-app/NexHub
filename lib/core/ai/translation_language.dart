@@ -91,6 +91,9 @@ abstract final class TranslationLanguage {
   static final RegExp _kana = RegExp(r'[\u3040-\u30ff]');
   static final RegExp _hangul = RegExp(r'[\u1100-\u11ff\uac00-\ud7af]');
   static final RegExp _latin = RegExp(r'[A-Za-z]');
+
+  /// 英文单词（≥2 个字母，避免把 "a" / 单个字母算作外文片段）。
+  static final RegExp _latinWord = RegExp(r"[A-Za-z][A-Za-z'’-]+");
   static final RegExp _cyrillic = RegExp(r'[\u0400-\u04ff]');
   static final RegExp _arabic = RegExp(r'[\u0600-\u06ff]');
   static final RegExp _thai = RegExp(r'[\u0e00-\u0e7f]');
@@ -182,6 +185,9 @@ abstract final class TranslationLanguage {
   }
 
   /// 文本是否值得翻译：同语言、纯数字、URL、空串返回 false。
+  ///
+  /// 判定按「主导脚本」而不是「有没有目标语言字符」：中文标题里夹一句英文
+  /// （中英混杂）过去会被当成「已是中文」整体跳过，现在只有真正纯中文才跳过。
   static bool shouldTranslate(String text, String target) {
     final cleaned = text.replaceAll(_urlPattern, '').trim();
     if (cleaned.isEmpty) return false;
@@ -199,13 +205,21 @@ abstract final class TranslationLanguage {
     switch (code) {
       case 'zh-Hans':
       case 'zh-Hant':
-        return !(ratio(han) >= 0.3 && ratio(kana) < 0.05 && ratio(hangul) < 0.05);
+        if (ratio(han) < 0.3) return true;
+        // 中文主导：混排（中英 / 中日 / 中韩）仍需翻译，纯中文才跳过。
+        return isMixedLanguage(text, target);
       case 'ja':
-        return kana == 0;
+        if (kana == 0) return true;
+        return isMixedLanguage(text, target);
       case 'ko':
-        return ratio(hangul) < 0.3;
+        if (ratio(hangul) < 0.3) return true;
+        return isMixedLanguage(text, target);
       case 'en':
-        return !(ratio(latin) >= 0.7 && _englishStopword.hasMatch(cleaned));
+        if (ratio(latin) >= 0.7 && _englishStopword.hasMatch(cleaned)) {
+          // 英文明主导但混入成串中文（中英混杂）时仍需翻译。
+          return isMixedLanguage(text, target);
+        }
+        return true;
       case 'ru':
         return ratio(cyrillic) < 0.5;
       case 'ar':
@@ -214,6 +228,76 @@ abstract final class TranslationLanguage {
         return ratio(thai) < 0.5;
       default:
         return true;
+    }
+  }
+
+  /// 目标语言之外是否夹带「成句的双语片段」。
+  ///
+  /// 只看「有没有外文字符」会误伤（中文标题带一个英文型号名并不需要翻译），
+  /// 因此要求外文构成至少两个单词或两字假名/谚文，且字符占比达到下限。
+  static bool isMixedLanguage(String text, String target) {
+    final cleaned = text.replaceAll(_urlPattern, '').trim();
+    if (cleaned.isEmpty) return false;
+    final code = bingCode(target) ?? target.trim().toLowerCase();
+    final han = _count(cleaned, _han);
+    final kana = _count(cleaned, _kana);
+    final hangul = _count(cleaned, _hangul);
+    final latin = _count(cleaned, _latin);
+    final cyrillic = _count(cleaned, _cyrillic);
+    final arabic = _count(cleaned, _arabic);
+    final thai = _count(cleaned, _thai);
+    final total = han + kana + hangul + latin + cyrillic + arabic + thai;
+    if (total == 0) return false;
+    double share(int n) => n / total;
+    final cjk = han + kana + hangul;
+    final latinWords = _count(cleaned, _latinWord);
+    switch (code) {
+      case 'zh-Hans':
+      case 'zh-Hant':
+        // 没有中文的纯外文不算「混杂」，走 shouldTranslate 的常规占比判定。
+        if (han < 2) return false;
+        if (kana >= 2 || hangul >= 2) return true;
+        return latinWords >= 2 && share(latin) >= 0.25;
+      case 'en':
+        return latinWords >= 1 && cjk >= 2 && share(cjk) >= 0.15;
+      case 'ja':
+        return kana >= 1 && latinWords >= 2 && share(latin) >= 0.25;
+      case 'ko':
+        return hangul >= 2 && latinWords >= 2 && share(latin) >= 0.25;
+      default:
+        return false;
+    }
+  }
+
+  /// 混杂文本里占据主要地位的外文语言码（供翻译端点显式指定源语言用）。
+  ///
+  /// 中英混杂的标题会被翻译端点判为「已是目标语言」而原样回显，显式给出
+  /// `from` 才能让它把外文片段真正译出来。无法判定时返回 null。
+  static String? foreignSourceCode(String text, String target) {
+    final cleaned = text.replaceAll(_urlPattern, '').trim();
+    if (cleaned.isEmpty) return null;
+    final code = bingCode(target) ?? target.trim().toLowerCase();
+    final kana = _count(cleaned, _kana);
+    final hangul = _count(cleaned, _hangul);
+    final han = _count(cleaned, _han);
+    final latinWords = _count(cleaned, _latinWord);
+    switch (code) {
+      case 'zh-Hans':
+      case 'zh-Hant':
+        if (kana >= 2) return 'ja';
+        if (hangul >= 2) return 'ko';
+        if (latinWords >= 2) return 'en';
+        return null;
+      case 'en':
+        if (kana >= 2) return 'ja';
+        if (hangul >= 2) return 'ko';
+        if (han >= 2) return 'zh-Hans';
+        return null;
+      case 'ja':
+      case 'ko':
+        return latinWords >= 2 ? 'en' : null;
+      default:
+        return null;
     }
   }
 

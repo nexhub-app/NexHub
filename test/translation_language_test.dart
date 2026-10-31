@@ -60,4 +60,45 @@ void main() {
     expect(TranslationLanguage.readableName('zh-Hans'), '中文（简体）');
     expect(TranslationLanguage.readableName('en'), '英文');
   });
+
+  test('中英混杂文本仍然翻译', () {
+    expect(
+      TranslationLanguage.shouldTranslate('进击的巨人 Attack on Titan', '中文'),
+      isTrue,
+    );
+    expect(
+      TranslationLanguage.shouldTranslate('名侦探柯南 Detective Conan', '中文'),
+      isTrue,
+    );
+    expect(
+      TranslationLanguage.shouldTranslate('海贼王 The Movie', 'English'),
+      isTrue,
+    );
+    expect(TranslationLanguage.isMixedLanguage('进击的巨人 Attack on Titan', '中文'),
+        isTrue);
+    expect(TranslationLanguage.isMixedLanguage('海贼王 The Movie', 'English'), isTrue);
+  });
+
+  test('混入零散外文不算混杂，避免无谓翻译', () {
+    // 纯中文标题：不带外文、只带型号缩写与数字。
+    expect(TranslationLanguage.shouldTranslate('这是中文标题', '中文'), isFalse);
+    expect(TranslationLanguage.shouldTranslate('第 12 集 全 24 集', '中文'),
+        isFalse);
+    expect(TranslationLanguage.shouldTranslate('由 MAPPA 制作', '中文'), isFalse);
+    expect(TranslationLanguage.isMixedLanguage('这是中文标题', '中文'), isFalse);
+    // 纯外文（无中文）不是「混杂」，走常规占比判定。
+    expect(TranslationLanguage.isMixedLanguage('Hello world', '中文'), isFalse);
+  });
+
+  test('混杂文本可给出外文源语言码', () {
+    expect(
+      TranslationLanguage.foreignSourceCode('进击的巨人 Attack on Titan', '中文'),
+      'en',
+    );
+    expect(
+      TranslationLanguage.foreignSourceCode('海贼王 One Piece', 'English'),
+      'zh-Hans',
+    );
+    expect(TranslationLanguage.foreignSourceCode('这是中文标题', '中文'), isNull);
+  });
 }
