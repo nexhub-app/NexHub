@@ -1,0 +1,16 @@
+{
+  "color": [
+    {
+      "name": "card_bg",
+      "value": "#1E2F3B"
+    },
+    {
+      "name": "card_text_primary",
+      "value": "#E8E8EA"
+    },
+    {
+      "name": "card_text_secondary",
+      "value": "#9E9EA4"
+    }
+  ]
+}

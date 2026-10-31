@@ -3,6 +3,18 @@
     {
       "name": "start_window_background",
       "value": "#FFFFFF"
+    },
+    {
+      "name": "card_bg",
+      "value": "#E6F1FE"
+    },
+    {
+      "name": "card_text_primary",
+      "value": "#1C1B1F"
+    },
+    {
+      "name": "card_text_secondary",
+      "value": "#6B6B70"
     }
   ]
 }

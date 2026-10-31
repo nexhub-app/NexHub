@@ -98,6 +98,92 @@
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
             </intent-filter>
         </service>
+
+        <!-- 桌面小组件：单个 provider，按卡片实际尺寸在小/中/大三套布局间切换。
+             内容由 Flutter 侧算好后写入 SharedPreferences，原生只负责排版；
+             updatePeriodMillis=0 表示不做系统定时刷新（刷新由 App 侧数据变化驱动）。 -->
+        <receiver
+            android:name=".NexHubWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/nexhub_widget_info" />
+        </receiver>
+
+        <!-- 另外三种单一主题卡片：各自独立 provider，添加面板里直接可选。 -->
+        <receiver
+            android:name=".NexHubUpdatesWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/nexhub_widget_updates_info" />
+        </receiver>
+        <receiver
+            android:name=".NexHubDownloadWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/nexhub_widget_downloads_info" />
+        </receiver>
+        <receiver
+            android:name=".NexHubStatsWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/nexhub_widget_stats_info" />
+        </receiver>
+        <receiver
+            android:name=".NexHubHeatmapWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/nexhub_widget_heatmap_info" />
+        </receiver>
+        <receiver
+            android:name=".NexHubBigNumberWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/nexhub_widget_bignumber_info" />
+        </receiver>
+        <receiver
+            android:name=".NexHubModulesWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/nexhub_widget_modules_info" />
+        </receiver>
+        <receiver
+            android:name=".NexHubStreakWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/nexhub_widget_streak_info" />
+        </receiver>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 卡片底板：柔和填充 + 16dp 圆角（= App 内 AppTokens.radiusLg，与统计页卡片一致）。
+     颜色是兜底值；正常运行时底色由 App 预渲染的背景图承载（cardContainer 同源），
+     本 drawable 同时作为 outline 来源，把背景图裁成同样的圆角。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/widget_bg" />
+    <corners android:radius="16dp" />
+</shape>

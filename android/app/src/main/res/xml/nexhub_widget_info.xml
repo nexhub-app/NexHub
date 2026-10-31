@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  桌面卡片声明。
+
+  - minWidth/minHeight 取 2x2 起：用户添加后可按 launcher 网格继续拉大，
+    拉伸到 3 格宽 / 2 格以上高时由 NexHubWidgetProvider 自动切到中大布局；
+  - updatePeriodMillis=0：不做系统级定时刷新（最短也 30 分钟且会唤醒设备），
+    刷新时机由 App 侧数据变化驱动；
+  - targetCellWidth/Height 仅 API 31+ 生效，低版本自动忽略。
+-->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:description="@string/widget_description"
+    android:initialLayout="@layout/widget_small"
+    android:minWidth="110dp"
+    android:minHeight="110dp"
+    android:minResizeWidth="110dp"
+    android:minResizeHeight="110dp"
+    android:resizeMode="horizontal|vertical"
+    android:targetCellWidth="2"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="0"
+    android:widgetCategory="home_screen"
+    tools:targetApi="31" />

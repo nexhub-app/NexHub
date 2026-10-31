@@ -1,0 +1,187 @@
+{
+  "forms": [
+    {
+      "name": "widgetSmall",
+      "displayName": "$string:widget_small_display_name",
+      "description": "$string:widget_small_desc",
+      "src": "./ets/widget/pages/WidgetCardSmall.ets",
+      "uiSyntax": "arkts",
+      "colorMode": "auto",
+      "isDynamic": true,
+      "isDefault": false,
+      "updateEnabled": true,
+      "updateDuration": 1,
+      "defaultDimension": "2*2",
+      "supportDimensions": [
+        "2*2",
+        "2*4"
+      ],
+      "resizable": true,
+      "groupId": "0"
+    },
+    {
+      "name": "widgetMedium",
+      "displayName": "$string:widget_medium_display_name",
+      "description": "$string:widget_medium_desc",
+      "src": "./ets/widget/pages/WidgetCardMedium.ets",
+      "uiSyntax": "arkts",
+      "colorMode": "auto",
+      "isDynamic": true,
+      "isDefault": true,
+      "updateEnabled": true,
+      "updateDuration": 1,
+      "defaultDimension": "2*4",
+      "supportDimensions": [
+        "2*4",
+        "4*4"
+      ],
+      "resizable": true,
+      "groupId": "0"
+    },
+    {
+      "name": "widgetLarge",
+      "displayName": "$string:widget_large_display_name",
+      "description": "$string:widget_large_desc",
+      "src": "./ets/widget/pages/WidgetCardLarge.ets",
+      "uiSyntax": "arkts",
+      "colorMode": "auto",
+      "isDynamic": true,
+      "isDefault": false,
+      "updateEnabled": true,
+      "updateDuration": 1,
+      "defaultDimension": "4*4",
+      "supportDimensions": [
+        "4*4",
+        "2*4"
+      ],
+      "resizable": true,
+      "groupId": "0"
+    },
+    {
+      "name": "widgetUpdates",
+      "displayName": "$string:widget_updates_display_name",
+      "description": "$string:widget_updates_desc",
+      "src": "./ets/widget/pages/WidgetCardUpdates.ets",
+      "uiSyntax": "arkts",
+      "colorMode": "auto",
+      "isDynamic": true,
+      "isDefault": false,
+      "updateEnabled": true,
+      "updateDuration": 1,
+      "defaultDimension": "2*4",
+      "supportDimensions": [
+        "2*4",
+        "4*4"
+      ],
+      "resizable": true
+    },
+    {
+      "name": "widgetDownloads",
+      "displayName": "$string:widget_downloads_display_name",
+      "description": "$string:widget_downloads_desc",
+      "src": "./ets/widget/pages/WidgetCardDownloads.ets",
+      "uiSyntax": "arkts",
+      "colorMode": "auto",
+      "isDynamic": true,
+      "isDefault": false,
+      "updateEnabled": true,
+      "updateDuration": 1,
+      "defaultDimension": "2*4",
+      "supportDimensions": [
+        "2*4",
+        "2*2"
+      ],
+      "resizable": true
+    },
+    {
+      "name": "widgetStats",
+      "displayName": "$string:widget_stats_display_name",
+      "description": "$string:widget_stats_desc",
+      "src": "./ets/widget/pages/WidgetCardStats.ets",
+      "uiSyntax": "arkts",
+      "colorMode": "auto",
+      "isDynamic": true,
+      "isDefault": false,
+      "updateEnabled": true,
+      "updateDuration": 1,
+      "defaultDimension": "2*4",
+      "supportDimensions": [
+        "2*4",
+        "4*4"
+      ],
+      "resizable": true
+    },
+    {
+      "name": "widgetHeatmap",
+      "displayName": "$string:widget_heatmap_display_name",
+      "description": "$string:widget_heatmap_desc",
+      "src": "./ets/widget/pages/WidgetCardHeatmap.ets",
+      "uiSyntax": "arkts",
+      "colorMode": "auto",
+      "isDynamic": true,
+      "isDefault": false,
+      "updateEnabled": true,
+      "updateDuration": 1,
+      "defaultDimension": "2*4",
+      "supportDimensions": [
+        "2*4",
+        "4*4"
+      ],
+      "resizable": true
+    },
+    {
+      "name": "widgetBigNumber",
+      "displayName": "$string:widget_bignumber_display_name",
+      "description": "$string:widget_bignumber_desc",
+      "src": "./ets/widget/pages/WidgetCardBigNumber.ets",
+      "uiSyntax": "arkts",
+      "colorMode": "auto",
+      "isDynamic": true,
+      "isDefault": false,
+      "updateEnabled": true,
+      "updateDuration": 1,
+      "defaultDimension": "2*2",
+      "supportDimensions": [
+        "2*2",
+        "2*4"
+      ],
+      "resizable": true
+    },
+    {
+      "name": "widgetModules",
+      "displayName": "$string:widget_modules_display_name",
+      "description": "$string:widget_modules_desc",
+      "src": "./ets/widget/pages/WidgetCardModules.ets",
+      "uiSyntax": "arkts",
+      "colorMode": "auto",
+      "isDynamic": true,
+      "isDefault": false,
+      "updateEnabled": true,
+      "updateDuration": 1,
+      "defaultDimension": "2*4",
+      "supportDimensions": [
+        "2*4",
+        "2*2"
+      ],
+      "resizable": true
+    },
+    {
+      "name": "widgetStreak",
+      "displayName": "$string:widget_streak_display_name",
+      "description": "$string:widget_streak_desc",
+      "src": "./ets/widget/pages/WidgetCardStreak.ets",
+      "uiSyntax": "arkts",
+      "colorMode": "auto",
+      "isDynamic": true,
+      "isDefault": false,
+      "updateEnabled": true,
+      "updateDuration": 1,
+      "defaultDimension": "2*2",
+      "supportDimensions": [
+        "2*2",
+        "2*4"
+      ],
+      "resizable": true
+    }
+  ]
+}

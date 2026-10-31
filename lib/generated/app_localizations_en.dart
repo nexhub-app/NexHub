@@ -10204,4 +10204,168 @@ class AppLocalizationsEn extends AppLocalizations {
   String ttsCacheCleared(int count) {
     return 'Cleared $count TTS audio clips';
   }
+
+  @override
+  String homeWidgetUpdates(int count) {
+    return 'Updates · $count saved';
+  }
+
+  @override
+  String get homeWidgetUpdatesIdle => 'Updates · nothing saved';
+
+  @override
+  String homeWidgetDownloads(int count, int percent) {
+    return 'Downloads · $count at $percent%';
+  }
+
+  @override
+  String get homeWidgetDownloadsIdle => 'Downloads · idle';
+
+  @override
+  String homeWidgetWeek(int minutes) {
+    return 'This week · $minutes min';
+  }
+
+  @override
+  String get homeWidgetWeekIdle => 'This week · not started';
+
+  @override
+  String get homeWidgetEmptyTitle => 'Nothing watched yet';
+
+  @override
+  String get homeWidgetEmptyHint => 'Open NexHub and pick something';
+
+  @override
+  String get homeWidgetContinueLabel => 'Continue';
+
+  @override
+  String get homeWidgetUpdatesLabel => 'Updates';
+
+  @override
+  String get homeWidgetDownloadsLabel => 'Downloads';
+
+  @override
+  String get homeWidgetStatsLabel => 'Stats';
+
+  @override
+  String homeWidgetChapterProgress(int index, int total) {
+    return 'Ch. $index of $total';
+  }
+
+  @override
+  String homeWidgetChapterProgressOpen(int index) {
+    return 'Ch. $index';
+  }
+
+  @override
+  String homeWidgetEpisodeProgress(int index, int minutes) {
+    return 'Ep. $index · $minutes min watched';
+  }
+
+  @override
+  String homeWidgetEpisodeWatched(int index) {
+    return 'Ep. $index';
+  }
+
+  @override
+  String homeWidgetToday(int minutes) {
+    return 'Today · $minutes min';
+  }
+
+  @override
+  String get homeWidgetTodayIdle => 'Today · not started';
+
+  @override
+  String homeWidgetStreak(int active, int streak) {
+    return '$active days active · $streak streak';
+  }
+
+  @override
+  String get settingsCatWidget => 'Home widgets';
+
+  @override
+  String get settingsCatWidgetDesc => 'Background, blur and record count';
+
+  @override
+  String get widgetBackgroundSection => 'Background';
+
+  @override
+  String get widgetBgCover => 'Cover art';
+
+  @override
+  String get widgetBgCoverDesc => 'Blur the cover of what you last watched';
+
+  @override
+  String get widgetBgTheme => 'Theme color';
+
+  @override
+  String get widgetBgThemeDesc => 'Gradient based on the current theme color';
+
+  @override
+  String get widgetBgNone => 'None';
+
+  @override
+  String get widgetBgNoneDesc => 'Keep only the card base color';
+
+  @override
+  String get widgetTuningSection => 'Appearance';
+
+  @override
+  String get widgetBlurStrength => 'Blur strength';
+
+  @override
+  String get widgetOpacity => 'Opacity';
+
+  @override
+  String get widgetRecordsSection => 'Records';
+
+  @override
+  String get widgetContinueLimit => 'Continue-watching items';
+
+  @override
+  String widgetContinueLimitDesc(int count) {
+    return 'Show $count items';
+  }
+
+  @override
+  String get widgetLimitNote => 'Platform limit';
+
+  @override
+  String get widgetLimitNoteDesc =>
+      'Widgets show 4–5 items depending on platform';
+
+  @override
+  String get widgetHeatmapCaption => 'This month';
+
+  @override
+  String get widgetMinuteUnit => 'min';
+
+  @override
+  String get widgetStreakCaption => 'Streak';
+
+  @override
+  String widgetLifetimeHours(int hours) {
+    return '$hours h total';
+  }
+
+  @override
+  String widgetWeekSessions(int count) {
+    return '$count sessions this week';
+  }
+
+  @override
+  String widgetTrendUp(int percent) {
+    return '+$percent%';
+  }
+
+  @override
+  String widgetTrendDown(int percent) {
+    return '-$percent%';
+  }
+
+  @override
+  String get widgetTrendFlat => 'flat';
+
+  @override
+  String get widgetTrendNew => 'new';
 }

@@ -16,15 +16,20 @@ import DeviceFormPlugin from '../plugins/DeviceFormPlugin';
 import WindowControlPlugin from '../plugins/WindowControlPlugin';
 import HarmonyContinuationPlugin from '../plugins/HarmonyContinuationPlugin';
 import BackgroundTaskPlugin from '../plugins/BackgroundTaskPlugin';
+import HomeWidgetPlugin from '../plugins/HomeWidgetPlugin';
 
 /// 跨设备接续数据在 want.parameters 中的键（与 Dart 侧约定一致）。
 const CONTINUATION_KEY: string = 'nexhub_continuation';
+
+/// 桌面卡片点击时带过来的跳转目标（与 Android 侧同名）。
+const CARD_ROUTE_KEY: string = 'nexhub_card_route';
 
 export default class EntryAbility extends FlutterAbility {
   /// 常驻实例：onContinue / onCreate 可能在 configureFlutterEngine 之前回调，
   /// 未挂载引擎时通道为空，插件内部自行降级返回 null。
   private continuation: HarmonyContinuationPlugin = new HarmonyContinuationPlugin();
   private backgroundTask: BackgroundTaskPlugin = new BackgroundTaskPlugin();
+  private homeWidget: HomeWidgetPlugin = new HomeWidgetPlugin();
 
   configureFlutterEngine(flutterEngine: FlutterEngine) {
     super.configureFlutterEngine(flutterEngine)
@@ -53,10 +58,14 @@ export default class EntryAbility extends FlutterAbility {
     flutterEngine.getPlugins()?.add(this.continuation)
     // 应用级原生通道：后台下载长任务（dataTransfer，见 BackgroundTaskPlugin 注释）。
     flutterEngine.getPlugins()?.add(this.backgroundTask)
+    // 应用级原生通道：桌面卡片快照与点击跳转（见 HomeWidgetPlugin 注释）。
+    flutterEngine.getPlugins()?.add(this.homeWidget)
   }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam) {
     super.onCreate(want, launchParam)
+    // 桌面卡片冷启动：先把目标存下来，Flutter 首帧后经通道取走。
+    this.captureCardRoute(want);
     // 默认不可接续：仅当播放器 / 阅读器挂载后由 Dart 置为 ACTIVE，
     // 避免无内容时对端出现接续入口、点击后提示接续失败。
     this.context
@@ -73,8 +82,21 @@ export default class EntryAbility extends FlutterAbility {
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam) {
     super.onNewWant(want, launchParam)
+    // 桌面卡片热启动：应用已在后台时点卡片走这里。
+    this.captureCardRoute(want);
     // 热启动：窗口与 Flutter 引擎均已就绪，可直接推送通知 Dart 跳转。
     this.handleContinuation(want, launchParam, true);
+  }
+
+  /**
+   * 取出卡片点击带来的跳转目标。与接续不同，它不看 launchReason：
+   * 卡片点击走的是普通 router 拉起，launchReason 为 NORMAL。
+   */
+  private captureCardRoute(want: Want): void {
+    const route: Object | undefined = want.parameters?.[CARD_ROUTE_KEY];
+    if (typeof route === 'string' && (route as string).length > 0) {
+      HomeWidgetPlugin.setPendingRoute(route as string);
+    }
   }
 
   /**

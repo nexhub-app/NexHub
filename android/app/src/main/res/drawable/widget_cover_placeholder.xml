@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 封面占位：无历史记录或封面文件缺失时显示（纯色块 + 圆角）。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/widget_cover_placeholder" />
+    <corners android:radius="8dp" />
+</shape>

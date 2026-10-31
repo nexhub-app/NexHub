@@ -28,6 +28,7 @@ import 'package:nexhub/core/navigation/app_page_route.dart';
 import './widgets/settings_widgets.dart';
 import './widgets/settings_search_target.dart';
 import './settings_hero_screen.dart';
+import './settings_widget_screen.dart';
 import 'package:nexhub/generated/app_localizations.dart';
 
 class SettingsAppearanceScreen extends StatefulWidget {
@@ -547,6 +548,26 @@ class _SettingsAppearanceScreenState extends State<SettingsAppearanceScreen> {
                       selected: controller.paletteStyle,
                       onSelected: controller.setPaletteStyle,
                     ),
+                  ),
+                ],
+              ),
+
+              // ── 桌面卡片 ──
+              SettingsGroup(
+                header: l10n.settingsCatWidget,
+                children: <Widget>[
+                  SettingsTile(
+                    icon: Icons.widgets_rounded,
+                    title: l10n.settingsCatWidget,
+                    subtitle: l10n.settingsCatWidgetDesc,
+                    onTap: () {
+                      AppHaptics.selectionClick();
+                      Navigator.of(context).push(
+                        AppPageRoute<void>(
+                          builder: (_) => const SettingsWidgetScreen(),
+                        ),
+                      );
+                    },
                   ),
                 ],
               ),

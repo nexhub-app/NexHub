@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 桌面卡片选择器里显示的系统文案（用户可见，随系统语言，这里只提供中文值）。 -->
+    <string name="widget_description">继续观看、追更与本周统计</string>
+    <!-- 卡片空状态兜底：安装后从未启动过 App 时快照为空，用它顶上，
+         避免桌面出现一张纯白卡片。有快照时一律用 Dart 传下的本地化文案。 -->
+    <string name="widget_empty_title_default">还没有观看记录</string>
+    <string name="widget_empty_hint_default">打开 NexHub 挑一部开始</string>
+    <string name="widget_updates_desc">追更：收藏总数与最近收藏</string>
+    <string name="widget_downloads_desc">下载：进行中任务与进度</string>
+    <string name="widget_stats_desc">统计：总时长、作品数与会话</string>
+    <string name="widget_heatmap_desc">热力图：近 30 天阅读打卡</string>
+    <string name="widget_bignumber_desc">大数字：本周阅读时长</string>
+    <string name="widget_modules_desc">分模块：小说 / 漫画 / 媒体</string>
+    <string name="widget_streak_desc">连续打卡：连续天数与今日时长</string>
+</resources>

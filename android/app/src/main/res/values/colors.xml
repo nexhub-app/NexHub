@@ -1,4 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#0EA5E9</color>
+
+    <!--
+      桌面卡片（浅色）兜底色：对齐 App 内统计页卡片（AppCard）的观感。
+      正常运行时底色与文字色由 App 下发的快照携带（跟随当前主题），
+      这里的静态值只在 App 从未启动过时兜底，取默认「青春蓝」主题的
+      cardContainer（主色微染）/ onSurface / onSurfaceVariant / primary 近似值。
+    -->
+    <color name="widget_bg">#FFE6F1FE</color>
+    <color name="widget_text_primary">#FF1C1B1F</color>
+    <color name="widget_text_secondary">#FF59636E</color>
+    <color name="widget_accent">#FF00639C</color>
+    <color name="widget_cover_placeholder">#1F0EA5E9</color>
 </resources>

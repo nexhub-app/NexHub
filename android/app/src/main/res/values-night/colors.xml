@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 桌面卡片：深色兜底（跟随系统深色模式）。正常运行时由 App 快照下发。 -->
+<resources>
+    <color name="widget_bg">#FF1E2F3B</color>
+    <color name="widget_text_primary">#FFF5F3F7</color>
+    <color name="widget_text_secondary">#FFB4B0B8</color>
+    <color name="widget_accent">#FF86CFF3</color>
+    <color name="widget_cover_placeholder">#330EA5E9</color>
+</resources>

@@ -53,6 +53,25 @@
         ]
       }
     ],
+    // 桌面卡片（服务卡片）：type=form 的 ExtensionAbility，卡片 UI 是独立的
+    // ArkTS 页面（见 resources/base/profile/form_config.json 与 ets/widget/pages）。
+    // 数据由 Flutter 侧写入 preferences 后经 formProvider 推送，见 HomeWidgetStore。
+    "extensionAbilities": [
+      {
+        "name": "EntryFormAbility",
+        "srcEntry": "./ets/entryformability/EntryFormAbility.ets",
+        "label": "$string:EntryFormAbility_label",
+        "description": "$string:EntryFormAbility_desc",
+        "type": "form",
+        "exported": true,
+        "metadata": [
+          {
+            "name": "ohos.extension.form",
+            "resource": "$profile:form_config"
+          }
+        ]
+      }
+    ],
     "requestPermissions": [
       {"name" :  "ohos.permission.INTERNET"},
       {

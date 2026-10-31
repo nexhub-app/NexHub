@@ -13,6 +13,11 @@ import 'core/theme/app_theme.dart';
 import 'core/theme/system_wallpaper_color.dart';
 import 'core/theme/theme_controller.dart';
 import 'core/download/download_manager.dart';
+import 'core/favorites/favorites_manager.dart';
+import 'core/history/history_manager.dart';
+import 'core/history/media_playback_position_manager.dart';
+import 'core/home_widget/home_widget_launcher.dart';
+import 'core/home_widget/home_widget_service.dart';
 import 'core/settings/general_settings.dart';
 import 'core/services/software_announcement_service.dart';
 import 'core/widgets/software_announcement_dialog.dart';
@@ -136,7 +141,42 @@ class _AppBootstrapState extends State<_AppBootstrap> {
       _maybeShowAnnouncements();
       _maybePromptPublicDownloadDir();
       _consumeContinuation();
+      _initHomeWidget();
     }
+  }
+
+  /// 桌面卡片：启动数据服务 + 处理「点了卡片进来」的跳转。
+  ///
+  /// 两者都放到首帧后：需要 Navigator 与各 Provider 就绪；卡片数据服务还要用
+  /// context 取当前语言文案。
+  void _initHomeWidget() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final HistoryManager history = context.read<HistoryManager>();
+      HomeWidgetService.instance.start(
+        history: history,
+        favorites: context.read<FavoritesManager>(),
+        downloads: context.read<DownloadManager>(),
+        positions: context.read<MediaPlaybackPositionManager>(),
+        localizations: () {
+          try {
+            return AppLocalizations.of(context);
+          } on Object {
+            return null;
+          }
+        },
+        theme: () {
+          final ThemeData t = Theme.of(context);
+          // 整份 ColorScheme 交给卡片：卡片底色要与 AppCard（cardContainer）
+          // 同源，颜色不能只取一个 primary 再自己拍脑袋混。
+          return (
+            isDark: t.brightness == Brightness.dark,
+            scheme: t.colorScheme,
+          );
+        },
+      );
+      unawaited(HomeWidgetLauncher.consumePending(history: history));
+    });
   }
 
   /// 鸿蒙跨设备接续：首帧后取走暂存快照并打开对应页面。
@@ -156,6 +196,7 @@ class _AppBootstrapState extends State<_AppBootstrap> {
     _maybeShowAnnouncements();
     _maybePromptPublicDownloadDir();
     _consumeContinuation();
+    _initHomeWidget();
   }
 
   /// 引导用户选择公开下载目录（仅 Android + 尚未设置过目录时）。

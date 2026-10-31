@@ -5631,5 +5631,267 @@
         "type": "int"
       }
     }
+  },
+  "homeWidgetUpdates": "追更 · 收藏 {count} 部",
+  "@homeWidgetUpdates": {
+    "description": "桌面卡片追更摘要：已收藏的作品数（后续接入真实更新数）",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "homeWidgetUpdatesIdle": "追更 · 暂无收藏",
+  "@homeWidgetUpdatesIdle": {
+    "description": "桌面卡片追更摘要：还没有任何收藏"
+  },
+  "homeWidgetDownloads": "下载 · {count} 个任务 {percent}%",
+  "@homeWidgetDownloads": {
+    "description": "桌面卡片下载摘要：活跃任务数与整体完成百分比",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "percent": {
+        "type": "int"
+      }
+    }
+  },
+  "homeWidgetDownloadsIdle": "下载 · 暂无任务",
+  "@homeWidgetDownloadsIdle": {
+    "description": "桌面卡片下载摘要：没有活跃任务"
+  },
+  "homeWidgetWeek": "本周 · {minutes} 分钟",
+  "@homeWidgetWeek": {
+    "description": "桌面卡片统计摘要：近 7 天阅读观看总分钟数",
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "homeWidgetWeekIdle": "本周 · 还没开始",
+  "@homeWidgetWeekIdle": {
+    "description": "桌面卡片统计摘要：近 7 天没有任何阅读观看记录"
+  },
+  "homeWidgetEmptyTitle": "还没有观看记录",
+  "@homeWidgetEmptyTitle": {
+    "description": "桌面卡片空状态标题"
+  },
+  "homeWidgetEmptyHint": "打开 NexHub 挑一部开始",
+  "@homeWidgetEmptyHint": {
+    "description": "桌面卡片空状态说明"
+  },
+  "homeWidgetContinueLabel": "继续观看",
+  "@homeWidgetContinueLabel": {
+    "description": "桌面卡片小节标题：继续观看"
+  },
+  "homeWidgetUpdatesLabel": "追更",
+  "@homeWidgetUpdatesLabel": {
+    "description": "桌面卡片小节标题：追更"
+  },
+  "homeWidgetDownloadsLabel": "下载",
+  "@homeWidgetDownloadsLabel": {
+    "description": "桌面卡片小节标题：下载"
+  },
+  "homeWidgetStatsLabel": "统计",
+  "@homeWidgetStatsLabel": {
+    "description": "桌面卡片小节标题：统计"
+  },
+  "homeWidgetChapterProgress": "第 {index} 话 · 共 {total} 话",
+  "@homeWidgetChapterProgress": {
+    "description": "桌面卡片：漫画/小说的真实阅读进度",
+    "placeholders": {
+      "index": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "homeWidgetChapterProgressOpen": "第 {index} 话",
+  "@homeWidgetChapterProgressOpen": {
+    "description": "桌面卡片：漫画/小说的阅读进度（总章数未知）",
+    "placeholders": {
+      "index": {
+        "type": "int"
+      }
+    }
+  },
+  "homeWidgetEpisodeProgress": "第 {index} 集 · 已看 {minutes} 分钟",
+  "@homeWidgetEpisodeProgress": {
+    "description": "桌面卡片：影视的真实观看进度",
+    "placeholders": {
+      "index": {
+        "type": "int"
+      },
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "homeWidgetEpisodeWatched": "第 {index} 集",
+  "@homeWidgetEpisodeWatched": {
+    "description": "桌面卡片：影视的观看进度（无播放位置记录）",
+    "placeholders": {
+      "index": {
+        "type": "int"
+      }
+    }
+  },
+  "homeWidgetToday": "今日 · {minutes} 分钟",
+  "@homeWidgetToday": {
+    "description": "桌面卡片：今天的阅读/观看时长",
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "homeWidgetTodayIdle": "今日 · 还没开始",
+  "@homeWidgetTodayIdle": {
+    "description": "桌面卡片：今天还没有任何阅读/观看"
+  },
+  "homeWidgetStreak": "活跃 {active} 天 · 连续 {streak} 天",
+  "@homeWidgetStreak": {
+    "description": "桌面卡片：近 7 天活跃天数与当前连续天数",
+    "placeholders": {
+      "active": {
+        "type": "int"
+      },
+      "streak": {
+        "type": "int"
+      }
+    }
+  },
+  "settingsCatWidget": "桌面卡片",
+  "@settingsCatWidget": {
+    "description": "设置分类：桌面卡片"
+  },
+  "settingsCatWidgetDesc": "背景、模糊与记录条数",
+  "@settingsCatWidgetDesc": {
+    "description": "设置分类说明：桌面卡片"
+  },
+  "widgetBackgroundSection": "背景",
+  "@widgetBackgroundSection": {
+    "description": "桌面卡片设置分组：背景"
+  },
+  "widgetBgCover": "作品封面",
+  "@widgetBgCover": {
+    "description": "卡片背景来源：作品封面"
+  },
+  "widgetBgCoverDesc": "用最近在看的封面，模糊后铺满卡片",
+  "@widgetBgCoverDesc": {
+    "description": "卡片背景来源说明：作品封面"
+  },
+  "widgetBgTheme": "主题色",
+  "@widgetBgTheme": {
+    "description": "卡片背景来源：主题色"
+  },
+  "widgetBgThemeDesc": "跟随当前主题色的渐变",
+  "@widgetBgThemeDesc": {
+    "description": "卡片背景来源说明：主题色"
+  },
+  "widgetBgNone": "无背景",
+  "@widgetBgNone": {
+    "description": "卡片背景来源：无"
+  },
+  "widgetBgNoneDesc": "只保留卡片底色",
+  "@widgetBgNoneDesc": {
+    "description": "卡片背景来源说明：无背景"
+  },
+  "widgetTuningSection": "外观",
+  "@widgetTuningSection": {
+    "description": "桌面卡片设置分组：外观"
+  },
+  "widgetBlurStrength": "模糊强度",
+  "@widgetBlurStrength": {
+    "description": "桌面卡片背景模糊强度"
+  },
+  "widgetOpacity": "不透明度",
+  "@widgetOpacity": {
+    "description": "桌面卡片背景不透明度"
+  },
+  "widgetRecordsSection": "记录",
+  "@widgetRecordsSection": {
+    "description": "桌面卡片设置分组：记录条数"
+  },
+  "widgetContinueLimit": "继续观看条数",
+  "@widgetContinueLimit": {
+    "description": "桌面卡片：继续观看保留条数"
+  },
+  "widgetContinueLimitDesc": "显示 {count} 条",
+  "@widgetContinueLimitDesc": {
+    "description": "桌面卡片：继续观看条数当前值",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "widgetLimitNote": "系统限制",
+  "@widgetLimitNote": {
+    "description": "桌面卡片：平台限制说明标题"
+  },
+  "widgetLimitNoteDesc": "系统卡片最多显示 4~5 条（视平台）",
+  "@widgetLimitNoteDesc": {
+    "description": "桌面卡片：平台限制说明"
+  },
+  "widgetHeatmapCaption": "本月打卡",
+  "@widgetHeatmapCaption": {
+    "description": "热力图卡片：统计范围说明"
+  },
+  "widgetMinuteUnit": "分钟",
+  "@widgetMinuteUnit": {
+    "description": "统计卡片：时长单位"
+  },
+  "widgetStreakCaption": "连续打卡",
+  "@widgetStreakCaption": {
+    "description": "连续打卡卡片：标题"
+  },
+  "widgetLifetimeHours": "累计 {hours} 小时",
+  "@widgetLifetimeHours": {
+    "description": "桌面卡片：统计补充信息",
+    "placeholders": {
+      "hours": {
+        "type": "int"
+      }
+    }
+  },
+  "widgetWeekSessions": "本周 {count} 次",
+  "@widgetWeekSessions": {
+    "description": "桌面卡片：统计补充信息",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "widgetTrendUp": "+{percent}%",
+  "@widgetTrendUp": {
+    "description": "桌面卡片：趋势文案",
+    "placeholders": {
+      "percent": {
+        "type": "int"
+      }
+    }
+  },
+  "widgetTrendDown": "-{percent}%",
+  "@widgetTrendDown": {
+    "description": "桌面卡片：趋势文案",
+    "placeholders": {
+      "percent": {
+        "type": "int"
+      }
+    }
+  },
+  "widgetTrendFlat": "持平",
+  "@widgetTrendFlat": {
+    "description": "桌面卡片：趋势文案"
+  },
+  "widgetTrendNew": "本周新增",
+  "@widgetTrendNew": {
+    "description": "桌面卡片：趋势文案"
   }
 }

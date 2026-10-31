@@ -5675,5 +5675,267 @@
         "type": "int"
       }
     }
+  },
+  "homeWidgetUpdates": "Updates · {count} saved",
+  "@homeWidgetUpdates": {
+    "description": "Home screen widget: number of saved works (real new-chapter count comes later)",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "homeWidgetUpdatesIdle": "Updates · nothing saved",
+  "@homeWidgetUpdatesIdle": {
+    "description": "Home screen widget: no saved works yet"
+  },
+  "homeWidgetDownloads": "Downloads · {count} at {percent}%",
+  "@homeWidgetDownloads": {
+    "description": "Home screen widget: active download tasks and overall percentage",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      },
+      "percent": {
+        "type": "int"
+      }
+    }
+  },
+  "homeWidgetDownloadsIdle": "Downloads · idle",
+  "@homeWidgetDownloadsIdle": {
+    "description": "Home screen widget: no active download tasks"
+  },
+  "homeWidgetWeek": "This week · {minutes} min",
+  "@homeWidgetWeek": {
+    "description": "Home screen widget: total reading/watching minutes in the last 7 days",
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "homeWidgetWeekIdle": "This week · not started",
+  "@homeWidgetWeekIdle": {
+    "description": "Home screen widget: no activity in the last 7 days"
+  },
+  "homeWidgetEmptyTitle": "Nothing watched yet",
+  "@homeWidgetEmptyTitle": {
+    "description": "Home screen widget empty state title"
+  },
+  "homeWidgetEmptyHint": "Open NexHub and pick something",
+  "@homeWidgetEmptyHint": {
+    "description": "Home screen widget empty state hint"
+  },
+  "homeWidgetContinueLabel": "Continue",
+  "@homeWidgetContinueLabel": {
+    "description": "Home screen widget section label: continue watching"
+  },
+  "homeWidgetUpdatesLabel": "Updates",
+  "@homeWidgetUpdatesLabel": {
+    "description": "Home screen widget section label: updates"
+  },
+  "homeWidgetDownloadsLabel": "Downloads",
+  "@homeWidgetDownloadsLabel": {
+    "description": "Home screen widget section label: downloads"
+  },
+  "homeWidgetStatsLabel": "Stats",
+  "@homeWidgetStatsLabel": {
+    "description": "Home screen widget section label: stats"
+  },
+  "homeWidgetChapterProgress": "Ch. {index} of {total}",
+  "@homeWidgetChapterProgress": {
+    "description": "Home screen widget: real reading progress for comics/novels",
+    "placeholders": {
+      "index": {
+        "type": "int"
+      },
+      "total": {
+        "type": "int"
+      }
+    }
+  },
+  "homeWidgetChapterProgressOpen": "Ch. {index}",
+  "@homeWidgetChapterProgressOpen": {
+    "description": "Home screen widget: reading progress when total is unknown",
+    "placeholders": {
+      "index": {
+        "type": "int"
+      }
+    }
+  },
+  "homeWidgetEpisodeProgress": "Ep. {index} · {minutes} min watched",
+  "@homeWidgetEpisodeProgress": {
+    "description": "Home screen widget: real watching progress for video",
+    "placeholders": {
+      "index": {
+        "type": "int"
+      },
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "homeWidgetEpisodeWatched": "Ep. {index}",
+  "@homeWidgetEpisodeWatched": {
+    "description": "Home screen widget: watching progress without position record",
+    "placeholders": {
+      "index": {
+        "type": "int"
+      }
+    }
+  },
+  "homeWidgetToday": "Today · {minutes} min",
+  "@homeWidgetToday": {
+    "description": "Home screen widget: today's reading/watching minutes",
+    "placeholders": {
+      "minutes": {
+        "type": "int"
+      }
+    }
+  },
+  "homeWidgetTodayIdle": "Today · not started",
+  "@homeWidgetTodayIdle": {
+    "description": "Home screen widget: no activity today"
+  },
+  "homeWidgetStreak": "{active} days active · {streak} streak",
+  "@homeWidgetStreak": {
+    "description": "Home screen widget: active days in last 7 days and current streak",
+    "placeholders": {
+      "active": {
+        "type": "int"
+      },
+      "streak": {
+        "type": "int"
+      }
+    }
+  },
+  "settingsCatWidget": "Home widgets",
+  "@settingsCatWidget": {
+    "description": "Settings category: home screen widgets"
+  },
+  "settingsCatWidgetDesc": "Background, blur and record count",
+  "@settingsCatWidgetDesc": {
+    "description": "Settings category description: home screen widgets"
+  },
+  "widgetBackgroundSection": "Background",
+  "@widgetBackgroundSection": {
+    "description": "Widget settings group: background"
+  },
+  "widgetBgCover": "Cover art",
+  "@widgetBgCover": {
+    "description": "Widget background source: cover art"
+  },
+  "widgetBgCoverDesc": "Blur the cover of what you last watched",
+  "@widgetBgCoverDesc": {
+    "description": "Widget background source description: cover art"
+  },
+  "widgetBgTheme": "Theme color",
+  "@widgetBgTheme": {
+    "description": "Widget background source: theme color"
+  },
+  "widgetBgThemeDesc": "Gradient based on the current theme color",
+  "@widgetBgThemeDesc": {
+    "description": "Widget background source description: theme color"
+  },
+  "widgetBgNone": "None",
+  "@widgetBgNone": {
+    "description": "Widget background source: none"
+  },
+  "widgetBgNoneDesc": "Keep only the card base color",
+  "@widgetBgNoneDesc": {
+    "description": "Widget background source description: none"
+  },
+  "widgetTuningSection": "Appearance",
+  "@widgetTuningSection": {
+    "description": "Widget settings group: appearance"
+  },
+  "widgetBlurStrength": "Blur strength",
+  "@widgetBlurStrength": {
+    "description": "Widget background blur strength"
+  },
+  "widgetOpacity": "Opacity",
+  "@widgetOpacity": {
+    "description": "Widget background opacity"
+  },
+  "widgetRecordsSection": "Records",
+  "@widgetRecordsSection": {
+    "description": "Widget settings group: record count"
+  },
+  "widgetContinueLimit": "Continue-watching items",
+  "@widgetContinueLimit": {
+    "description": "Widget: how many continue-watching items to keep"
+  },
+  "widgetContinueLimitDesc": "Show {count} items",
+  "@widgetContinueLimitDesc": {
+    "description": "Widget: current continue-watching item count",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "widgetLimitNote": "Platform limit",
+  "@widgetLimitNote": {
+    "description": "Widget: platform limitation title"
+  },
+  "widgetLimitNoteDesc": "Widgets show 4–5 items depending on platform",
+  "@widgetLimitNoteDesc": {
+    "description": "Widget: platform limitation description"
+  },
+  "widgetHeatmapCaption": "This month",
+  "@widgetHeatmapCaption": {
+    "description": "Heatmap widget: range caption"
+  },
+  "widgetMinuteUnit": "min",
+  "@widgetMinuteUnit": {
+    "description": "Stats widget: duration unit"
+  },
+  "widgetStreakCaption": "Streak",
+  "@widgetStreakCaption": {
+    "description": "Streak widget: title"
+  },
+  "widgetLifetimeHours": "{hours} h total",
+  "@widgetLifetimeHours": {
+    "description": "桌面卡片：统计补充信息",
+    "placeholders": {
+      "hours": {
+        "type": "int"
+      }
+    }
+  },
+  "widgetWeekSessions": "{count} sessions this week",
+  "@widgetWeekSessions": {
+    "description": "桌面卡片：统计补充信息",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "widgetTrendUp": "+{percent}%",
+  "@widgetTrendUp": {
+    "description": "桌面卡片：趋势文案",
+    "placeholders": {
+      "percent": {
+        "type": "int"
+      }
+    }
+  },
+  "widgetTrendDown": "-{percent}%",
+  "@widgetTrendDown": {
+    "description": "桌面卡片：趋势文案",
+    "placeholders": {
+      "percent": {
+        "type": "int"
+      }
+    }
+  },
+  "widgetTrendFlat": "flat",
+  "@widgetTrendFlat": {
+    "description": "桌面卡片：趋势文案"
+  },
+  "widgetTrendNew": "new",
+  "@widgetTrendNew": {
+    "description": "桌面卡片：趋势文案"
   }
 }

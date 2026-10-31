@@ -19022,6 +19022,276 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Cleared {count} TTS audio clips'**
   String ttsCacheCleared(int count);
+
+  /// Home screen widget: number of saved works (real new-chapter count comes later)
+  ///
+  /// In en, this message translates to:
+  /// **'Updates · {count} saved'**
+  String homeWidgetUpdates(int count);
+
+  /// Home screen widget: no saved works yet
+  ///
+  /// In en, this message translates to:
+  /// **'Updates · nothing saved'**
+  String get homeWidgetUpdatesIdle;
+
+  /// Home screen widget: active download tasks and overall percentage
+  ///
+  /// In en, this message translates to:
+  /// **'Downloads · {count} at {percent}%'**
+  String homeWidgetDownloads(int count, int percent);
+
+  /// Home screen widget: no active download tasks
+  ///
+  /// In en, this message translates to:
+  /// **'Downloads · idle'**
+  String get homeWidgetDownloadsIdle;
+
+  /// Home screen widget: total reading/watching minutes in the last 7 days
+  ///
+  /// In en, this message translates to:
+  /// **'This week · {minutes} min'**
+  String homeWidgetWeek(int minutes);
+
+  /// Home screen widget: no activity in the last 7 days
+  ///
+  /// In en, this message translates to:
+  /// **'This week · not started'**
+  String get homeWidgetWeekIdle;
+
+  /// Home screen widget empty state title
+  ///
+  /// In en, this message translates to:
+  /// **'Nothing watched yet'**
+  String get homeWidgetEmptyTitle;
+
+  /// Home screen widget empty state hint
+  ///
+  /// In en, this message translates to:
+  /// **'Open NexHub and pick something'**
+  String get homeWidgetEmptyHint;
+
+  /// Home screen widget section label: continue watching
+  ///
+  /// In en, this message translates to:
+  /// **'Continue'**
+  String get homeWidgetContinueLabel;
+
+  /// Home screen widget section label: updates
+  ///
+  /// In en, this message translates to:
+  /// **'Updates'**
+  String get homeWidgetUpdatesLabel;
+
+  /// Home screen widget section label: downloads
+  ///
+  /// In en, this message translates to:
+  /// **'Downloads'**
+  String get homeWidgetDownloadsLabel;
+
+  /// Home screen widget section label: stats
+  ///
+  /// In en, this message translates to:
+  /// **'Stats'**
+  String get homeWidgetStatsLabel;
+
+  /// Home screen widget: real reading progress for comics/novels
+  ///
+  /// In en, this message translates to:
+  /// **'Ch. {index} of {total}'**
+  String homeWidgetChapterProgress(int index, int total);
+
+  /// Home screen widget: reading progress when total is unknown
+  ///
+  /// In en, this message translates to:
+  /// **'Ch. {index}'**
+  String homeWidgetChapterProgressOpen(int index);
+
+  /// Home screen widget: real watching progress for video
+  ///
+  /// In en, this message translates to:
+  /// **'Ep. {index} · {minutes} min watched'**
+  String homeWidgetEpisodeProgress(int index, int minutes);
+
+  /// Home screen widget: watching progress without position record
+  ///
+  /// In en, this message translates to:
+  /// **'Ep. {index}'**
+  String homeWidgetEpisodeWatched(int index);
+
+  /// Home screen widget: today's reading/watching minutes
+  ///
+  /// In en, this message translates to:
+  /// **'Today · {minutes} min'**
+  String homeWidgetToday(int minutes);
+
+  /// Home screen widget: no activity today
+  ///
+  /// In en, this message translates to:
+  /// **'Today · not started'**
+  String get homeWidgetTodayIdle;
+
+  /// Home screen widget: active days in last 7 days and current streak
+  ///
+  /// In en, this message translates to:
+  /// **'{active} days active · {streak} streak'**
+  String homeWidgetStreak(int active, int streak);
+
+  /// Settings category: home screen widgets
+  ///
+  /// In en, this message translates to:
+  /// **'Home widgets'**
+  String get settingsCatWidget;
+
+  /// Settings category description: home screen widgets
+  ///
+  /// In en, this message translates to:
+  /// **'Background, blur and record count'**
+  String get settingsCatWidgetDesc;
+
+  /// Widget settings group: background
+  ///
+  /// In en, this message translates to:
+  /// **'Background'**
+  String get widgetBackgroundSection;
+
+  /// Widget background source: cover art
+  ///
+  /// In en, this message translates to:
+  /// **'Cover art'**
+  String get widgetBgCover;
+
+  /// Widget background source description: cover art
+  ///
+  /// In en, this message translates to:
+  /// **'Blur the cover of what you last watched'**
+  String get widgetBgCoverDesc;
+
+  /// Widget background source: theme color
+  ///
+  /// In en, this message translates to:
+  /// **'Theme color'**
+  String get widgetBgTheme;
+
+  /// Widget background source description: theme color
+  ///
+  /// In en, this message translates to:
+  /// **'Gradient based on the current theme color'**
+  String get widgetBgThemeDesc;
+
+  /// Widget background source: none
+  ///
+  /// In en, this message translates to:
+  /// **'None'**
+  String get widgetBgNone;
+
+  /// Widget background source description: none
+  ///
+  /// In en, this message translates to:
+  /// **'Keep only the card base color'**
+  String get widgetBgNoneDesc;
+
+  /// Widget settings group: appearance
+  ///
+  /// In en, this message translates to:
+  /// **'Appearance'**
+  String get widgetTuningSection;
+
+  /// Widget background blur strength
+  ///
+  /// In en, this message translates to:
+  /// **'Blur strength'**
+  String get widgetBlurStrength;
+
+  /// Widget background opacity
+  ///
+  /// In en, this message translates to:
+  /// **'Opacity'**
+  String get widgetOpacity;
+
+  /// Widget settings group: record count
+  ///
+  /// In en, this message translates to:
+  /// **'Records'**
+  String get widgetRecordsSection;
+
+  /// Widget: how many continue-watching items to keep
+  ///
+  /// In en, this message translates to:
+  /// **'Continue-watching items'**
+  String get widgetContinueLimit;
+
+  /// Widget: current continue-watching item count
+  ///
+  /// In en, this message translates to:
+  /// **'Show {count} items'**
+  String widgetContinueLimitDesc(int count);
+
+  /// Widget: platform limitation title
+  ///
+  /// In en, this message translates to:
+  /// **'Platform limit'**
+  String get widgetLimitNote;
+
+  /// Widget: platform limitation description
+  ///
+  /// In en, this message translates to:
+  /// **'Widgets show 4–5 items depending on platform'**
+  String get widgetLimitNoteDesc;
+
+  /// Heatmap widget: range caption
+  ///
+  /// In en, this message translates to:
+  /// **'This month'**
+  String get widgetHeatmapCaption;
+
+  /// Stats widget: duration unit
+  ///
+  /// In en, this message translates to:
+  /// **'min'**
+  String get widgetMinuteUnit;
+
+  /// Streak widget: title
+  ///
+  /// In en, this message translates to:
+  /// **'Streak'**
+  String get widgetStreakCaption;
+
+  /// 桌面卡片：统计补充信息
+  ///
+  /// In en, this message translates to:
+  /// **'{hours} h total'**
+  String widgetLifetimeHours(int hours);
+
+  /// 桌面卡片：统计补充信息
+  ///
+  /// In en, this message translates to:
+  /// **'{count} sessions this week'**
+  String widgetWeekSessions(int count);
+
+  /// 桌面卡片：趋势文案
+  ///
+  /// In en, this message translates to:
+  /// **'+{percent}%'**
+  String widgetTrendUp(int percent);
+
+  /// 桌面卡片：趋势文案
+  ///
+  /// In en, this message translates to:
+  /// **'-{percent}%'**
+  String widgetTrendDown(int percent);
+
+  /// 桌面卡片：趋势文案
+  ///
+  /// In en, this message translates to:
+  /// **'flat'**
+  String get widgetTrendFlat;
+
+  /// 桌面卡片：趋势文案
+  ///
+  /// In en, this message translates to:
+  /// **'new'**
+  String get widgetTrendNew;
 }
 
 class _AppLocalizationsDelegate

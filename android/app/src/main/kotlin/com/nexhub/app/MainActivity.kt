@@ -13,6 +13,7 @@ import android.graphics.drawable.Icon
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
@@ -54,6 +55,24 @@ class MainActivity : FlutterFragmentActivity() {
             val id = intent.getStringExtra(EXTRA_ACTION_ID) ?: return
             pipEventSink?.success("action:$id")
         }
+    }
+
+    /**
+     * 桌面卡片点击：冷启动时 Intent 携带跳转目标，先暂存，等 Flutter 首帧后取走。
+     * 普通启动（点图标）没有该 extra，等同于空操作。
+     */
+    override fun onCreate(savedInstanceState: Bundle?) {
+        // 先取目标再走 super：引擎初始化可能在 super 内启动，Dart 侧一就绪
+        // 就会来取，晚一步会取到空值。
+        HomeWidgetBridge.captureIntent(intent)
+        super.onCreate(savedInstanceState)
+    }
+
+    /** 热启动（launchMode=singleTop）：卡片点击走这里，必须重置 Intent 以免复用旧目标。 */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        HomeWidgetBridge.captureIntent(intent)
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -225,6 +244,10 @@ class MainActivity : FlutterFragmentActivity() {
         ).setMethodCallHandler { call, result ->
             EchProxyBridge.handle(applicationContext, call, result)
         }
+
+        // 桌面卡片（系统小组件）：Flutter 写快照 + 取走「点击卡片」的跳转目标。
+        // 卡片渲染与点击 PendingIntent 见 HomeWidgetBridge.kt / NexHubWidgetProvider.kt。
+        HomeWidgetBridge.register(flutterEngine.dartExecutor.binaryMessenger, this)
 
         // Event channel for volume key events
         EventChannel(

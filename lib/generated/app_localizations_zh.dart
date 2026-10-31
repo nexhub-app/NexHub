@@ -9942,4 +9942,167 @@ class AppLocalizationsZh extends AppLocalizations {
   String ttsCacheCleared(int count) {
     return '已清理 $count 条朗读音频';
   }
+
+  @override
+  String homeWidgetUpdates(int count) {
+    return '追更 · 收藏 $count 部';
+  }
+
+  @override
+  String get homeWidgetUpdatesIdle => '追更 · 暂无收藏';
+
+  @override
+  String homeWidgetDownloads(int count, int percent) {
+    return '下载 · $count 个任务 $percent%';
+  }
+
+  @override
+  String get homeWidgetDownloadsIdle => '下载 · 暂无任务';
+
+  @override
+  String homeWidgetWeek(int minutes) {
+    return '本周 · $minutes 分钟';
+  }
+
+  @override
+  String get homeWidgetWeekIdle => '本周 · 还没开始';
+
+  @override
+  String get homeWidgetEmptyTitle => '还没有观看记录';
+
+  @override
+  String get homeWidgetEmptyHint => '打开 NexHub 挑一部开始';
+
+  @override
+  String get homeWidgetContinueLabel => '继续观看';
+
+  @override
+  String get homeWidgetUpdatesLabel => '追更';
+
+  @override
+  String get homeWidgetDownloadsLabel => '下载';
+
+  @override
+  String get homeWidgetStatsLabel => '统计';
+
+  @override
+  String homeWidgetChapterProgress(int index, int total) {
+    return '第 $index 话 · 共 $total 话';
+  }
+
+  @override
+  String homeWidgetChapterProgressOpen(int index) {
+    return '第 $index 话';
+  }
+
+  @override
+  String homeWidgetEpisodeProgress(int index, int minutes) {
+    return '第 $index 集 · 已看 $minutes 分钟';
+  }
+
+  @override
+  String homeWidgetEpisodeWatched(int index) {
+    return '第 $index 集';
+  }
+
+  @override
+  String homeWidgetToday(int minutes) {
+    return '今日 · $minutes 分钟';
+  }
+
+  @override
+  String get homeWidgetTodayIdle => '今日 · 还没开始';
+
+  @override
+  String homeWidgetStreak(int active, int streak) {
+    return '活跃 $active 天 · 连续 $streak 天';
+  }
+
+  @override
+  String get settingsCatWidget => '桌面卡片';
+
+  @override
+  String get settingsCatWidgetDesc => '背景、模糊与记录条数';
+
+  @override
+  String get widgetBackgroundSection => '背景';
+
+  @override
+  String get widgetBgCover => '作品封面';
+
+  @override
+  String get widgetBgCoverDesc => '用最近在看的封面，模糊后铺满卡片';
+
+  @override
+  String get widgetBgTheme => '主题色';
+
+  @override
+  String get widgetBgThemeDesc => '跟随当前主题色的渐变';
+
+  @override
+  String get widgetBgNone => '无背景';
+
+  @override
+  String get widgetBgNoneDesc => '只保留卡片底色';
+
+  @override
+  String get widgetTuningSection => '外观';
+
+  @override
+  String get widgetBlurStrength => '模糊强度';
+
+  @override
+  String get widgetOpacity => '不透明度';
+
+  @override
+  String get widgetRecordsSection => '记录';
+
+  @override
+  String get widgetContinueLimit => '继续观看条数';
+
+  @override
+  String widgetContinueLimitDesc(int count) {
+    return '显示 $count 条';
+  }
+
+  @override
+  String get widgetLimitNote => '系统限制';
+
+  @override
+  String get widgetLimitNoteDesc => '系统卡片最多显示 4~5 条（视平台）';
+
+  @override
+  String get widgetHeatmapCaption => '本月打卡';
+
+  @override
+  String get widgetMinuteUnit => '分钟';
+
+  @override
+  String get widgetStreakCaption => '连续打卡';
+
+  @override
+  String widgetLifetimeHours(int hours) {
+    return '累计 $hours 小时';
+  }
+
+  @override
+  String widgetWeekSessions(int count) {
+    return '本周 $count 次';
+  }
+
+  @override
+  String widgetTrendUp(int percent) {
+    return '+$percent%';
+  }
+
+  @override
+  String widgetTrendDown(int percent) {
+    return '-$percent%';
+  }
+
+  @override
+  String get widgetTrendFlat => '持平';
+
+  @override
+  String get widgetTrendNew => '本周新增';
 }
