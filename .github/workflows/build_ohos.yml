@@ -105,6 +105,16 @@ jobs:
           fi
           echo "::notice::git 依赖地址已指向 oh-flutter/fluttertpc_dart_native"
 
+          # 定制 Dart SDK（225MB）来自国内 CDN，海外 runner 偶尔中途被 reset
+          # （curl 35）；脚本原有的 --retry 3 不覆盖该类错误，这里换成可续传的
+          # 强重试参数（--continue-at - 保留，断点接着下）。
+          UDS="$HOME/flutter-ohos/bin/internal/update_dart_sdk.sh"
+          sed -i '' \
+            's/--retry 3/--retry 20 --retry-all-errors --retry-delay 5 --speed-limit 1024 --speed-time 60/g' \
+            "$UDS"
+          grep -c "retry-all-errors" "$UDS"
+          echo "::notice::Dart SDK 下载已启用断点续传强重试"
+
       - name: 缓存 flutter-ohos SDK 工件目录
         # engine 工件全部来自华为云 OBS，海外 runner 偶发 DNS 解析失败；
         # 命中缓存后 precache 只做本地校验，不再依赖每一次都能连上 OBS。
