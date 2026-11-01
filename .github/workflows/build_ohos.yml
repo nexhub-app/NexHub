@@ -82,13 +82,36 @@ jobs:
           ls "$HOME/flutter-ohos/bin" | head -5
           echo "$HOME/flutter-ohos/bin" >> "$GITHUB_PATH"
 
+      - name: 修正 SDK 内失效的 git 依赖地址（上游仓库迁移）
+        # flutter_tools 的 dependency_overrides 指向 atomgit 上的一个 git 仓库，
+        # 该仓库已迁到 oh-flutter 组织，旧路径返回 403「project could not be
+        # found」，导致 flutter bootstrap 的 pub upgrade 必然失败（81~91s 后放弃）。
+        # 新仓库同名分支的 commit 与锁文件里的 resolved-ref 完全一致（31910fe1），
+        # 因此只换 URL、保留 pin 即可。
+        shell: bash
+        run: |
+          FT="$HOME/flutter-ohos/packages/flutter_tools"
+          OLD=atomgit.com/hxa-flutter/fluttertpc_dart_native
+          NEW=atomgit.com/oh-flutter/fluttertpc_dart_native
+          for f in "$FT/pubspec.yaml" "$FT/pubspec.lock"; do
+            if [ -f "$f" ]; then
+              sed -i '' "s#$OLD#$NEW#g" "$f"
+              printf '%s -> %s hits: %s\n' "$f" "$(basename "$f")" "$(grep -c "$NEW" "$f" || true)"
+            fi
+          done
+          if grep -rq "$OLD" "$FT" 2>/dev/null; then
+            echo "::error::仍存在失效的旧依赖地址"
+            exit 1
+          fi
+          echo "::notice::git 依赖地址已指向 oh-flutter/fluttertpc_dart_native"
+
       - name: 缓存 flutter-ohos SDK 工件目录
         # engine 工件全部来自华为云 OBS，海外 runner 偶发 DNS 解析失败；
         # 命中缓存后 precache 只做本地校验，不再依赖每一次都能连上 OBS。
         uses: actions/cache@v4
         with:
           path: ~/flutter-ohos/bin/cache
-          key: flutter-ohos-cache-3.47.7-ohos-1.0.0-${{ runner.os }}-${{ runner.arch }}-v1
+          key: flutter-ohos-cache-3.47.7-ohos-1.0.0-${{ runner.os }}-${{ runner.arch }}-v2
 
       - name: 检查 OBS 域名解析（系统 DNS 坏了才用 DoH 兜底钉 IP）
         # 只在系统 DNS 解析不出记录时才写 /etc/hosts：正常时保留系统轮询，
