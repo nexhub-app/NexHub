@@ -28,7 +28,13 @@ class TranslationFeatureFlags extends ChangeNotifier {
 
   Future<void> ensureLoaded() {
     if (_loaded) return Future<void>.value();
-    return _loading ??= _load();
+    final loading = _loading ??= _load();
+    // 平台通道 / 存储偶发不可用时不能让失败 future 常驻：否则后续
+    // ensureLoaded 永远拿到同一个 error，详情页标题、标签、简介的自动翻译
+    // 会一直「哑火」且没有任何日志。
+    return loading.catchError((Object _) {
+      _loading = null;
+    });
   }
 
   Future<void> _load() async {

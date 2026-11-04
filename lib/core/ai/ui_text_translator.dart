@@ -42,14 +42,24 @@ class UiTextTranslator {
   ///
   /// 自动模式失败返回 null（调用方保留原文）；手动模式失败抛
   /// [TranslationException]（调用方弹 SnackBar）。
+  ///
+  /// [label] 为真表示这是标签类短文本：混排判定按标签放宽，让「中文 +
+  /// 单个英文词」的标签也能触发显式源语言重译（详见
+  /// [TranslationLanguage.shouldTranslate]）。
   Future<String?> translate(
     String text, {
     required String targetLang,
     bool manual = false,
+    bool label = false,
   }) {
     final source = text.trim();
     if (source.isEmpty) return Future<String?>.value();
-    if (!manual && !TranslationLanguage.shouldTranslate(source, targetLang)) {
+    if (!manual &&
+        !TranslationLanguage.shouldTranslate(
+          source,
+          targetLang,
+          label: label,
+        )) {
       return Future<String?>.value();
     }
     final target = TranslationLanguage.bingCode(targetLang) ?? targetLang.trim();
@@ -69,6 +79,7 @@ class UiTextTranslator {
     _pending[key] = _PendingText(
       source: source,
       target: target,
+      label: label,
       manual: manual,
       completer: completer,
     );
@@ -85,7 +96,9 @@ class UiTextTranslator {
     _pending.clear();
     final groups = <String, List<_PendingText>>{};
     for (final entry in entries) {
-      groups.putIfAbsent(entry.target, () => <_PendingText>[]).add(entry);
+      // 标签与正文的混排判定不同，必须分批：同一批只能共用一套判定规则。
+      final groupKey = '${entry.target}|${entry.label ? 'label' : 'text'}';
+      groups.putIfAbsent(groupKey, () => <_PendingText>[]).add(entry);
     }
     for (final group in groups.values) {
       try {
@@ -111,12 +124,15 @@ class UiTextTranslator {
   Future<void> _translateGroup(List<_PendingText> group) async {
     await _flags.ensureLoaded();
     final target = group.first.target;
+    final label = group.first.label;
     final results = <String, String>{};
 
     for (final entry in group) {
       try {
         final cached = await _cache.get(entry.target, entry.source);
-        if (cached != null) {
+        // 旧版本把「原样回显」也写进了缓存，命中后会一直表现为「翻不出来」：
+        // 这类条目按未命中处理，交给下面的链路重新译一次。
+        if (cached != null && !_isEchoNeedingRetry(entry, cached)) {
           _memory[TextTranslationCache.keyFor(entry.target, entry.source)] =
               cached;
           results[entry.source] = cached;
@@ -136,23 +152,14 @@ class UiTextTranslator {
         final translated = await _bing.translate(
           texts: <String>[for (final e in remaining) e.source],
           targetLang: target,
+          label: label,
         );
         for (var i = 0; i < remaining.length; i++) {
           final text = translated[i].trim();
           if (text.isEmpty) continue;
           // 混杂文本被原样回显（必应判成「已是目标语言」）：不写缓存，
           // 留给下面的 AI 兜底真正译一次，否则会长期卡在「译不出来」。
-          if (TranslationLanguage.isMixedLanguage(
-                remaining[i].source,
-                target,
-              ) &&
-              TranslationFaithfulness.isSourceEcho(
-                remaining[i].source,
-                text,
-                minLength: 1,
-              )) {
-            continue;
-          }
+          if (_isEchoNeedingRetry(remaining[i], text)) continue;
           results[remaining[i].source] = text;
           await _store(remaining[i], text);
         }
@@ -213,11 +220,30 @@ class UiTextTranslator {
   Future<void> _store(_PendingText entry, String translation) async {
     _memory[TextTranslationCache.keyFor(entry.target, entry.source)] =
         translation;
+    // 原样回显不落持久缓存：否则下次启动仍命中原样回显，标签永远「翻不出来」。
+    if (_isEchoNeedingRetry(entry, translation)) return;
     try {
       await _cache.put(entry.target, entry.source, translation);
     } on Object {
       // 持久化失败不影响本次展示。
     }
+  }
+
+  /// 译文是否是「需要重译的原样回显」：混排文本被翻译端点判成目标语言，
+  /// 把原文原封不动吐回来。这类结果既不能展示成译文，也不能写进缓存。
+  bool _isEchoNeedingRetry(_PendingText entry, String translation) {
+    if (!TranslationFaithfulness.isSourceEcho(
+      entry.source,
+      translation,
+      minLength: 1,
+    )) {
+      return false;
+    }
+    return TranslationLanguage.isMixedLanguage(
+      entry.source,
+      entry.target,
+      label: entry.label,
+    );
   }
 
   Future<List<AiEndpointConfig>> _resolveEndpoints() async {
@@ -248,12 +274,16 @@ class _PendingText {
   _PendingText({
     required this.source,
     required this.target,
+    required this.label,
     required this.manual,
     required this.completer,
   });
 
   final String source;
   final String target;
+
+  /// 是否为标签类短文本（混排判定按标签放宽）。
+  final bool label;
   final bool manual;
   final Completer<String?> completer;
 }

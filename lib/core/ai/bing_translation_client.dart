@@ -59,10 +59,14 @@ class BingTranslationClient {
   }
 
   /// 翻译文本列表；返回与输入等长（空串原样返回）。
+  ///
+  /// [label] 为真时按「标签」判定混排（见
+  /// [TranslationLanguage.shouldTranslate]），用于标签类短文本的回显补救。
   Future<List<String>> translate({
     required List<String> texts,
     required String targetLang,
     String? fromLang,
+    bool label = false,
   }) async {
     if (texts.isEmpty) return const <String>[];
     final target = TranslationLanguage.bingCode(targetLang);
@@ -131,7 +135,7 @@ class BingTranslationClient {
         result[index] = joined;
       }
     }
-    await _retryMixedEchoes(result, texts, targetLang, target);
+    await _retryMixedEchoes(result, texts, targetLang, target, label: label);
     return result;
   }
 
@@ -253,20 +257,28 @@ class BingTranslationClient {
   ///
   /// 只在「结果与原文完全一致」且「文本确实混排」时触发，避免多余请求；
   /// 重译仍无变化（或失败）时保留原结果，由上层决定是否走 AI 兜底。
+  /// [label] 透传给混排判定，让「中文 + 单个英文词」的标签也能被补救。
   Future<void> _retryMixedEchoes(
     List<String> result,
     List<String> sources,
     String targetLang,
-    String targetCode,
-  ) async {
+    String targetCode, {
+    bool label = false,
+  }) async {
     final byFrom = <String, List<int>>{};
     for (var i = 0; i < sources.length; i++) {
       final source = sources[i];
       if (source.trim().isEmpty) continue;
       if (result[i].trim().isEmpty) continue;
       if (!_isEcho(source, result[i])) continue;
-      if (!TranslationLanguage.isMixedLanguage(source, targetLang)) continue;
-      final from = TranslationLanguage.foreignSourceCode(source, targetLang);
+      if (!TranslationLanguage.isMixedLanguage(source, targetLang, label: label)) {
+        continue;
+      }
+      final from = TranslationLanguage.foreignSourceCode(
+        source,
+        targetLang,
+        label: label,
+      );
       if (from == null) continue;
       byFrom.putIfAbsent(from, () => <int>[]).add(i);
     }

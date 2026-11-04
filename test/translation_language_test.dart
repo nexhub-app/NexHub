@@ -101,4 +101,44 @@ void main() {
     );
     expect(TranslationLanguage.foreignSourceCode('这是中文标题', '中文'), isNull);
   });
+
+  test('标签里单个英文词也判为混排', () {
+    // 标签是短语：一个成词英文就够，不必等两个英文单词。
+    expect(
+      TranslationLanguage.shouldTranslate('奇幻 Fantasy', '中文', label: true),
+      isTrue,
+    );
+    expect(
+      TranslationLanguage.shouldTranslate('校园生活 School', '中文', label: true),
+      isTrue,
+    );
+    expect(
+      TranslationLanguage.isMixedLanguage('奇幻 Fantasy', '中文', label: true),
+      isTrue,
+    );
+    expect(
+      TranslationLanguage.foreignSourceCode('奇幻 Fantasy', '中文', label: true),
+      'en',
+    );
+    // 正文（非标签）保持严格阈值，避免中文标题被无谓翻译。
+    expect(TranslationLanguage.isMixedLanguage('奇幻 Fantasy', '中文'), isFalse);
+    expect(
+      TranslationLanguage.shouldTranslate('校园生活 School', '中文'),
+      isFalse,
+    );
+    expect(TranslationLanguage.foreignSourceCode('奇幻 Fantasy', '中文'), isNull);
+  });
+
+  test('纯大写短缩写的标签不触发翻译', () {
+    for (final tag in <String>['画师CG', 'TV番剧', 'AI解码', 'TL 百合', 'JM 主站']) {
+      expect(
+        TranslationLanguage.shouldTranslate(tag, '中文', label: true),
+        isFalse,
+        reason: tag,
+      );
+    }
+    expect(TranslationLanguage.hasTranslatableLatinWord('画师CG'), isFalse);
+    expect(TranslationLanguage.hasTranslatableLatinWord('奇幻 Fantasy'), isTrue);
+    expect(TranslationLanguage.hasTranslatableLatinWord('非H'), isFalse);
+  });
 }

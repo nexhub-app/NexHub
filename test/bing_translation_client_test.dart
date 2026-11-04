@@ -240,4 +240,57 @@ void main() {
     expect(adapter.bodies.length, 2);
     expect(adapter.bodies.last, <String>['进击的巨人 Attack on Titan']);
   });
+
+  test('标签回显补救：中文加单个英文词按英文源重译', () async {
+    late _BingAdapter adapter;
+    adapter = _BingAdapter((options) {
+      final texts = (options.data as List).cast<String>();
+      final from = options.queryParameters['from'] as String?;
+      if (from == null) {
+        // 自动检测把混排标签判成「已是中文」，原样吐回。
+        return _json(<Map<String, dynamic>>[
+          for (final t in texts)
+            <String, dynamic>{
+              'detectedLanguage': <String, dynamic>{'language': 'zh-Hans'},
+              'translations': <Map<String, dynamic>>[
+                <String, dynamic>{'text': t, 'to': 'zh-Hans'},
+              ],
+            },
+        ]);
+      }
+      return _json(<Map<String, dynamic>>[
+        for (final _ in texts)
+          <String, dynamic>{
+            'translations': <Map<String, dynamic>>[
+              <String, dynamic>{'text': '奇幻', 'to': 'zh-Hans'},
+            ],
+          },
+      ]);
+    });
+    final client = BingTranslationClient(
+      dio: Dio()..httpClientAdapter = adapter,
+      delay: (_) async {},
+    );
+
+    // 不带 label：单个英文词不算混排，原样回显即终点。
+    final plain = await client.translate(
+      texts: <String>['奇幻 Fantasy'],
+      targetLang: '中文',
+    );
+    expect(plain, <String>['奇幻 Fantasy']);
+    expect(adapter.bodies.length, 1);
+
+    // 带 label：触发显式 from=en 重译。
+    final labeled = await client.translate(
+      texts: <String>['奇幻 Fantasy'],
+      targetLang: '中文',
+      label: true,
+    );
+    expect(labeled, <String>['奇幻']);
+    expect(adapter.bodies.length, 3);
+    expect(
+      (adapter.bodies.last as List).cast<String>(),
+      <String>['奇幻 Fantasy'],
+    );
+  });
 }

@@ -188,7 +188,15 @@ abstract final class TranslationLanguage {
   ///
   /// 判定按「主导脚本」而不是「有没有目标语言字符」：中文标题里夹一句英文
   /// （中英混杂）过去会被当成「已是中文」整体跳过，现在只有真正纯中文才跳过。
-  static bool shouldTranslate(String text, String target) {
+  ///
+  /// [label] 为真时按「标签」放宽混排阈值：标签本身就是短语，一个成词的外文
+  /// 片段（`奇幻 Fantasy`、`校园生活 School`）就足以需要翻译，不能要求两个
+  /// 英文单词；纯大写的短缩写（`CG` / `TV` / `AI` / `JM`）仍视为无需翻译。
+  static bool shouldTranslate(
+    String text,
+    String target, {
+    bool label = false,
+  }) {
     final cleaned = text.replaceAll(_urlPattern, '').trim();
     if (cleaned.isEmpty) return false;
     final code = bingCode(target) ?? target.trim().toLowerCase();
@@ -207,17 +215,17 @@ abstract final class TranslationLanguage {
       case 'zh-Hant':
         if (ratio(han) < 0.3) return true;
         // 中文主导：混排（中英 / 中日 / 中韩）仍需翻译，纯中文才跳过。
-        return isMixedLanguage(text, target);
+        return isMixedLanguage(text, target, label: label);
       case 'ja':
         if (kana == 0) return true;
-        return isMixedLanguage(text, target);
+        return isMixedLanguage(text, target, label: label);
       case 'ko':
         if (ratio(hangul) < 0.3) return true;
-        return isMixedLanguage(text, target);
+        return isMixedLanguage(text, target, label: label);
       case 'en':
         if (ratio(latin) >= 0.7 && _englishStopword.hasMatch(cleaned)) {
           // 英文明主导但混入成串中文（中英混杂）时仍需翻译。
-          return isMixedLanguage(text, target);
+          return isMixedLanguage(text, target, label: label);
         }
         return true;
       case 'ru':
@@ -235,7 +243,14 @@ abstract final class TranslationLanguage {
   ///
   /// 只看「有没有外文字符」会误伤（中文标题带一个英文型号名并不需要翻译），
   /// 因此要求外文构成至少两个单词或两字假名/谚文，且字符占比达到下限。
-  static bool isMixedLanguage(String text, String target) {
+  ///
+  /// [label] 为真时按标签放宽：单个成词英文（[hasTranslatableLatinWord]）即可，
+  /// 因为标签的英文片段往往就是独立的一个词（`奇幻 Fantasy`）。
+  static bool isMixedLanguage(
+    String text,
+    String target, {
+    bool label = false,
+  }) {
     final cleaned = text.replaceAll(_urlPattern, '').trim();
     if (cleaned.isEmpty) return false;
     final code = bingCode(target) ?? target.trim().toLowerCase();
@@ -255,6 +270,14 @@ abstract final class TranslationLanguage {
       case 'zh-Hans':
       case 'zh-Hant':
         // 没有中文的纯外文不算「混杂」，走 shouldTranslate 的常规占比判定。
+        if (label) {
+          if (han < 1) return false;
+          if (kana >= 2 || hangul >= 2) return true;
+          if (share(latin) >= 0.15 && hasTranslatableLatinWord(cleaned)) {
+            return true;
+          }
+          return latinWords >= 2 && share(latin) >= 0.25;
+        }
         if (han < 2) return false;
         if (kana >= 2 || hangul >= 2) return true;
         return latinWords >= 2 && share(latin) >= 0.25;
@@ -273,7 +296,11 @@ abstract final class TranslationLanguage {
   ///
   /// 中英混杂的标题会被翻译端点判为「已是目标语言」而原样回显，显式给出
   /// `from` 才能让它把外文片段真正译出来。无法判定时返回 null。
-  static String? foreignSourceCode(String text, String target) {
+  static String? foreignSourceCode(
+    String text,
+    String target, {
+    bool label = false,
+  }) {
     final cleaned = text.replaceAll(_urlPattern, '').trim();
     if (cleaned.isEmpty) return null;
     final code = bingCode(target) ?? target.trim().toLowerCase();
@@ -286,7 +313,9 @@ abstract final class TranslationLanguage {
       case 'zh-Hant':
         if (kana >= 2) return 'ja';
         if (hangul >= 2) return 'ko';
-        if (latinWords >= 2) return 'en';
+        if (latinWords >= 2 || (label && hasTranslatableLatinWord(cleaned))) {
+          return 'en';
+        }
         return null;
       case 'en':
         if (kana >= 2) return 'ja';
@@ -303,4 +332,19 @@ abstract final class TranslationLanguage {
 
   static int _count(String text, RegExp pattern) =>
       pattern.allMatches(text).length;
+
+  /// 是否含「值得翻译」的英文单词（标签场景专用）。
+  ///
+  /// 排除 1–2 字母与三位以内的纯大写缩写：`CG` / `TV` / `AI` / `JM` 这类
+  /// 占位缩写对机器翻译几乎只会原样回显，发请求没有收益；`Fantasy` /
+  /// `SCHOOL` / `School` 才算成词，值得显式指定英文源重译一次。
+  static bool hasTranslatableLatinWord(String text) {
+    for (final match in _latinWord.allMatches(text)) {
+      final word = match.group(0) ?? '';
+      if (word.length < 3) continue;
+      if (word == word.toUpperCase() && word.length < 4) continue;
+      return true;
+    }
+    return false;
+  }
 }

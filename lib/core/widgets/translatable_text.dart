@@ -96,6 +96,9 @@ class _AutoTranslatedTextState extends State<AutoTranslatedText> {
         TranslatableTextKind.comment => _flags.autoComments,
       };
 
+  /// 标签类短文本：混排判定按标签放宽（中文 + 单个英文词也要译）。
+  bool get _isLabel => widget.kind == TranslatableTextKind.tag;
+
   void _maybeAuto() {
     unawaited(_maybeAutoAsync());
   }
@@ -107,7 +110,13 @@ class _AutoTranslatedTextState extends State<AutoTranslatedText> {
     if (!_flags.bingEnabled || !_autoEnabled) return;
     final target = _targetLang;
     if (target == null) return;
-    if (!TranslationLanguage.shouldTranslate(widget.text, target)) return;
+    if (!TranslationLanguage.shouldTranslate(
+      widget.text,
+      target,
+      label: _isLabel,
+    )) {
+      return;
+    }
     _requested = true;
     await _request(manual: false);
   }
@@ -120,6 +129,7 @@ class _AutoTranslatedTextState extends State<AutoTranslatedText> {
         widget.text,
         targetLang: target,
         manual: manual,
+        label: _isLabel,
       );
       if (!mounted || translated == null) return;
       setState(() {
@@ -144,7 +154,11 @@ class _AutoTranslatedTextState extends State<AutoTranslatedText> {
     }
     final target = _targetLang;
     if (target == null) return;
-    if (!TranslationLanguage.shouldTranslate(widget.text, target)) {
+    if (!TranslationLanguage.shouldTranslate(
+      widget.text,
+      target,
+      label: _isLabel,
+    )) {
       ScaffoldMessenger.maybeOf(context)?.showSnackBar(
         SnackBar(
             content: Text(AppLocalizations.of(context).translationNotNeeded)),
@@ -256,6 +270,9 @@ class _BilingualTranslatedTextState extends State<BilingualTranslatedText> {
         TranslatableTextKind.comment => _flags.autoComments,
       };
 
+  /// 标签类短文本：混排判定按标签放宽（中文 + 单个英文词也要译）。
+  bool get _isLabel => widget.kind == TranslatableTextKind.tag;
+
   void _maybeAuto() {
     unawaited(_maybeAutoAsync());
   }
@@ -267,7 +284,13 @@ class _BilingualTranslatedTextState extends State<BilingualTranslatedText> {
     if (!_flags.bingEnabled || !_autoEnabled) return;
     final target = _targetLang;
     if (target == null) return;
-    if (!TranslationLanguage.shouldTranslate(widget.text, target)) return;
+    if (!TranslationLanguage.shouldTranslate(
+      widget.text,
+      target,
+      label: _isLabel,
+    )) {
+      return;
+    }
     _requested = true;
     await _request(manual: false);
   }
@@ -280,6 +303,7 @@ class _BilingualTranslatedTextState extends State<BilingualTranslatedText> {
         widget.text,
         targetLang: target,
         manual: manual,
+        label: _isLabel,
       );
       if (!mounted || translated == null) return;
       setState(() {
@@ -301,7 +325,11 @@ class _BilingualTranslatedTextState extends State<BilingualTranslatedText> {
     }
     final target = _targetLang;
     if (target == null) return;
-    if (!TranslationLanguage.shouldTranslate(widget.text, target)) {
+    if (!TranslationLanguage.shouldTranslate(
+      widget.text,
+      target,
+      label: _isLabel,
+    )) {
       ScaffoldMessenger.maybeOf(context)?.showSnackBar(
         SnackBar(
             content: Text(AppLocalizations.of(context).translationNotNeeded)),
