@@ -21,26 +21,31 @@ class AppCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ColorScheme scheme = Theme.of(context).colorScheme;
-    // 背景色由 Material 直接承载：ListTile 等墨水组件嵌在卡内时，
-    // 最近 Material 祖先须先于带背景的容器出现（3.44 debug 断言），墨水落点才正确。
+    // 背景色由 Material 直接承载：ListTile / InkWell 等墨水组件必须嵌在
+    // Material **里面**（墨迹才会落在卡面并被圆角裁切）。把 InkWell 包在
+    // Material 外层会触发 "No Material widget found" 断言——列表项被
+    // LookupBoundary 包裹时尤其明显（如 ReorderableListView 内部）。
     // 柔和填充卡（Legado MD3 观感）：elevation 0，靠色阶与圆角划界，不靠线框。
-    final Widget content = Material(
+    final Widget body = Padding(
+      padding: padding ?? const EdgeInsets.all(AppTokens.spaceMd),
+      child: child,
+    );
+    return Material(
       color: color ?? AppTheme.cardContainer(scheme),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppTokens.radiusLg),
       ),
       clipBehavior: Clip.antiAlias,
-      child: Padding(
-        padding: padding ?? const EdgeInsets.all(AppTokens.spaceMd),
-        child: child,
-      ),
+      child: onTap == null
+          ? body
+          : InkWell(
+              onTap: onTap,
+              // 墨迹与圆角一致；Material 已裁切，这里只负责墨水形状。
+              customBorder: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(AppTokens.radiusLg),
+              ),
+              child: body,
+            ),
     );
-    return onTap != null
-        ? InkWell(
-            onTap: onTap,
-            borderRadius: BorderRadius.circular(AppTokens.radiusLg),
-            child: content,
-          )
-        : content;
   }
 }
