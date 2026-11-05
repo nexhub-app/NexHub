@@ -138,6 +138,7 @@ docs/*
 !docs/features.en.md
 !docs/user-guide.md
 !docs/user-guide.en.md
+!docs/OHOS_INSTALL_GUIDE.md
 !docs/developer-guide.md
 !docs/developer-guide.en.md
 !docs/GITHUB_ISSUE_TEMPLATE.md
