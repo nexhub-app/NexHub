@@ -40,9 +40,9 @@ class _SettingsAnnouncementsScreenState
 
   Future<void> _load() async {
     final service = SoftwareAnnouncementService.instance;
-    if (!service.loaded) {
-      await service.load();
-    }
+    // 先渲染本地已有内容（内存 / 上次成功缓存 / 打包资源），页面秒开；
+    // 远程网络请求放到后台，不再阻塞首屏。
+    await service.loadLocal();
     if (!mounted) return;
     setState(() {
       _items = _sorted(service.all);
@@ -50,6 +50,7 @@ class _SettingsAnnouncementsScreenState
     });
     // 打开即视为已读：避免下次启动重复弹出同一批公告。
     unawaited(service.markSeen(<String>[for (final a in _items) a.id]));
+    // 后台静默拉取最新公告，成功才替换列表；失败不打扰用户。
     unawaited(_refresh(silent: true));
   }
 

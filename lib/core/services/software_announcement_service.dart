@@ -5,6 +5,7 @@
 /// 持久化到 `shared_preferences`，下次启动不再弹窗——只有新增/未读的公告才会弹出。
 library;
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
@@ -89,6 +90,23 @@ class SoftwareAnnouncementService {
   /// 最后一次成功拉取的远程公告缓存键（远程全失败时回退，避免退回打包旧文件）。
   static const String _remoteCacheKey = 'software_announcement_remote_cache_v1';
 
+  /// 共享的 HTTP 客户端：复用连接池，避免每次请求都新建 Dio（含新建
+  /// HttpClient / DNS / TLS 握手，弱网下首包明显更慢）。
+  ///
+  /// 超时刻意收紧——公告属于「有则更好」的内容，宁可回退本地缓存，也不让
+  /// 界面卡在网络上：4s 建连足以覆盖直连 jsDelivr / raw 被阻断时的等待。
+  static final Dio _dio = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: 4),
+      sendTimeout: const Duration(seconds: 4),
+      receiveTimeout: const Duration(seconds: 6),
+      responseType: ResponseType.plain,
+      headers: const <String, Object>{
+        'Accept': 'application/json, text/plain, */*',
+      },
+    ),
+  );
+
   static final SoftwareAnnouncementService instance =
       SoftwareAnnouncementService._();
 
@@ -96,9 +114,14 @@ class SoftwareAnnouncementService {
   Set<String> _seen = const <String>{};
   bool _loaded = false;
 
+  /// 正在进行的远程拉取（单飞：并发调用复用同一请求，避免重复下载）。
+  Future<bool>? _inflight;
+
   SoftwareAnnouncementService._();
 
-  /// 是否已至少加载过一次（公告页据此决定要不要等网络）。
+  /// 本地数据（内存 / 上次成功缓存 / 打包资源）是否已就绪。
+  ///
+  /// 注意：为 true 不代表已联网刷新过，只表示「有内容可渲染」。
   bool get loaded => _loaded;
 
   /// 全部公告（含已读，保持清单顺序）。
@@ -108,22 +131,14 @@ class SoftwareAnnouncementService {
   /// 指定公告是否已读。
   bool isSeen(String id) => _seen.contains(id);
 
-  /// 优先拉取远程 JSON（多源依次尝试）；全部失败则回退到「上次成功缓存」，
-  /// 仍无则回退打包资源。已读过的公告 id 持久化到 shared_preferences。
-  Future<void> load() async {
-    List<SoftwareAnnouncement>? parsed;
-    try {
-      parsed = await _fetchRemote();
-    } on Object {
-      // 远程全失败：尝试回退。
-      parsed = null;
-    }
-    if (parsed != null) {
-      _all = parsed;
-      await _cacheRemote(parsed);
-    } else {
+  /// 只读本地数据，不发起任何网络请求。
+  ///
+  /// 取值顺序：内存 → 上次成功拉取的缓存 → 打包资源。公告页先用它渲染首屏
+  /// 做到「秒开」，再后台静默刷新；启动弹窗则用 [load] 等一次远程结果。
+  Future<void> loadLocal() async {
+    if (_all.isEmpty) {
       final cached = await _loadRemoteCache();
-      if (cached != null) {
+      if (cached != null && cached.isNotEmpty) {
         _all = cached;
       } else {
         try {
@@ -133,30 +148,60 @@ class SoftwareAnnouncementService {
         }
       }
     }
-
-    final prefs = await SharedPreferences.getInstance();
-    _seen = (prefs.getStringList(_seenKey) ?? const <String>[]).toSet();
+    if (!_loaded) {
+      final prefs = await SharedPreferences.getInstance();
+      _seen = (prefs.getStringList(_seenKey) ?? const <String>[]).toSet();
+    }
     _loaded = true;
+  }
+
+  /// 本地优先 + 远程刷新（启动弹窗用：需要最新公告才能判断「未读」）。
+  ///
+  /// 远程全失败时静默保留 [loadLocal] 取到的内容，不会清空。
+  Future<void> load() async {
+    await loadLocal();
+    await _pullRemote();
   }
 
   /// 重新拉取远程公告（公告页下拉刷新 / 手动刷新用）。
   ///
-  /// 与 [load] 的区别：保留已读状态与现有列表，只在拉取成功时替换内容，
-  /// 失败返回 false（调用方提示，不清空已有公告）。返回是否有新数据。
-  Future<bool> refresh() async {
+  /// 与 [load] 的区别：保留已读状态，只在拉取成功时替换内容，失败返回 false
+  /// （调用方提示，不清空已有公告）。返回是否拿到了新数据。
+  Future<bool> refresh() => _pullRemote();
+
+  /// 远程拉取的单飞入口：同一时刻只允许一个请求在跑，重复调用复用同一结果。
+  Future<bool> _pullRemote() {
+    final inflight = _inflight;
+    if (inflight != null) return inflight;
+    final future = _pullRemoteOnce();
+    _inflight = future;
+    future.whenComplete(() {
+      if (identical(_inflight, future)) _inflight = null;
+    });
+    return future;
+  }
+
+  Future<bool> _pullRemoteOnce() async {
     try {
       final parsed = await _fetchRemote();
       if (parsed.isEmpty) return false;
+      // 先让内存生效，再落盘缓存（缓存失败也不影响本次展示）。
       _all = parsed;
       await _cacheRemote(parsed);
       return true;
     } on Object {
+      // 远程全失败：保留现有内容（缓存 / 打包资源）。
       return false;
     }
   }
 
-  /// 从远程解析公告清单：依次尝试 jsDelivr → GitHub raw → 国内镜像。
-  /// 每个 URL 追加时间戳查询破除 CDN/代理缓存，确保拿到最新文件。
+  /// 从远程解析公告清单：jsDelivr / GitHub raw / 国内镜像按**阶梯并发**竞速，
+  /// 谁先返回有效清单就用谁。
+  ///
+  /// 之前是串行依次尝试，单个源超时叠加，最坏要等十几秒到几十秒才回退，公告页
+  /// 因此长时间转圈。现在第一个源先发，若 [Duration] 内没结果再放出下一个：
+  /// 网络正常时只发一个请求（不浪费三份流量），被墙时仍能快速兜底，
+  /// 总耗时约等于「最先能用的那个源」的响应时间。
   Future<List<SoftwareAnnouncement>> _fetchRemote() async {
     final ts = DateTime.now().millisecondsSinceEpoch;
     final urls = <String>[
@@ -164,37 +209,67 @@ class SoftwareAnnouncementService {
       '$_rawFallbackUrl?t=$ts',
       '$_mirrorFallbackUrl?t=$ts',
     ];
-    for (final url in urls) {
-      try {
-        final result = await _fetchFromUrl(url);
-        if (result.isNotEmpty) return result;
-      } on Object {
-        // 该源失败：尝试下一个。
+
+    final completer = Completer<List<SoftwareAnnouncement>>();
+    var pending = urls.length;
+
+    void settle() {
+      pending--;
+      if (pending == 0 && !completer.isCompleted) {
+        completer.completeError(
+          StateError('all announcement sources failed'),
+        );
       }
     }
-    throw Exception('all announcement sources failed');
+
+    for (var i = 0; i < urls.length; i++) {
+      final url = urls[i];
+      final staggerMs = 600 * i;
+      unawaited(() async {
+        if (staggerMs > 0) {
+          await Future<void>.delayed(Duration(milliseconds: staggerMs));
+          // 前序源已成功：后面的源不再发起，省流量也省时间。
+          if (completer.isCompleted) {
+            settle();
+            return;
+          }
+        }
+        try {
+          final result = await _fetchFromUrl(url);
+          if (!completer.isCompleted) completer.complete(result);
+        } on Object {
+          // 单源失败：等其余源或由 settle 决定整体失败。
+        } finally {
+          settle();
+        }
+      }());
+    }
+    // 硬上限兜底：任一源卡在 DNS / 慢链路也不让整体拖过 8s（否则启动弹窗
+    // 迟迟不出现）。到点后按失败处理，调用方保留本地内容。
+    Timer(const Duration(seconds: 8), () {
+      if (!completer.isCompleted) {
+        completer.completeError(StateError('announcement fetch timed out'));
+      }
+    });
+    return completer.future;
   }
 
   Future<List<SoftwareAnnouncement>> _fetchFromUrl(String url) async {
-    final resp = await Dio().get<String>(
-      url,
-      options: Options(
-        receiveTimeout: const Duration(seconds: 8),
-        sendTimeout: const Duration(seconds: 8),
-      ),
-    );
+    final resp = await _dio.get<String>(url);
     final data = resp.data;
     if (data == null || data.trim().isEmpty) {
-      throw Exception('empty remote announcement');
+      throw StateError('empty remote announcement');
     }
     final decoded = jsonDecode(data);
     if (decoded is! List<dynamic>) {
-      throw Exception('remote announcement is not a list');
+      throw StateError('remote announcement is not a list');
     }
-    return decoded
+    final list = decoded
         .map((e) => SoftwareAnnouncement.fromJson(e as Map<String, dynamic>))
         .where((a) => a.id.isNotEmpty)
         .toList();
+    if (list.isEmpty) throw StateError('remote announcement is empty');
+    return list;
   }
 
   /// 从打包资源解析公告清单（回退用）。
