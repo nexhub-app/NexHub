@@ -304,10 +304,13 @@ class _BangumiSyncDialogState extends State<_BangumiSyncDialog> {
             content: Text(AppLocalizations.of(context).bangumiSyncSaved)));
         Navigator.of(context).pop();
       }
-    } on BangumiApiException {
+    } on BangumiApiException catch (e) {
+      // 鉴权失败（令牌被拒 / 续期失效）：直接提示重新登录，别混在「同步失败」里。
       if (mounted) {
+        final l10n = AppLocalizations.of(context);
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text(AppLocalizations.of(context).bangumiSyncFailed)));
+            content:
+                Text(e.isUnauthorized ? l10n.loginExpired : l10n.bangumiSyncFailed)));
       }
     } catch (_) {
       if (mounted) {

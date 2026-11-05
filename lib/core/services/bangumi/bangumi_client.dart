@@ -7,6 +7,8 @@
 /// - 统一错误封装 [BangumiApiException]。
 library;
 
+import 'dart:convert';
+
 import 'package:dio/dio.dart';
 
 import 'bangumi_models.dart';
@@ -17,7 +19,29 @@ class BangumiApiException implements Exception {
   final int? statusCode;
   final String message;
 
-  const BangumiApiException(this.statusCode, this.message);
+  /// 本次请求命中的主机（诊断用：区分官方域名与被反代 / 镜像改写后的域名）。
+  ///
+  /// 401 的报文由 Bangumi 原样返回时，host 能立刻分辨「令牌真被拒」与
+  /// 「镜像没转发 Authorization 头」——后者只在镜像域名上复现。
+  final String? host;
+
+  /// 是否来自令牌端点（`/oauth/access_token`）的鉴权拒绝。
+  ///
+  /// 该端点的 400/401 表示 client 凭据或 refresh_token 本身失效，重试无用。
+  final bool tokenEndpoint;
+
+  /// 令牌端点返回的机器可读错误码（`invalid_grant` / `invalid_client` 等）。
+  ///
+  /// 与 [message] 分开保存：文案可能被本地化或改写，判定分支只认码。
+  final String? oauthErrorCode;
+
+  const BangumiApiException(
+    this.statusCode,
+    this.message, {
+    this.host,
+    this.tokenEndpoint = false,
+    this.oauthErrorCode,
+  });
 
   /// 是否为鉴权失败（token 无效 / 过期）。
   bool get isUnauthorized => statusCode == 401;
@@ -54,9 +78,15 @@ class BangumiClient {
 
   /// 带 token 的请求收到 401 时的续期回调。
   ///
-  /// 返回 true 表示 token 已更新，[_request] 会用新 token 立即重试一次；
-  /// 返回 false 表示无法续期，保留原始 401。由 [BangumiAuth] 注入。
-  Future<bool> Function()? onUnauthorized;
+  /// 参数是本次失败请求命中的 host。返回 true 表示 token 已更新，[_request]
+  /// 会用新 token 立即重试一次；返回 false 表示无法续期，保留原始 401。
+  /// 由 [BangumiAuth] 注入。
+  Future<bool> Function(String host)? onUnauthorized;
+
+  /// 每次请求发出前的钩子（[BangumiAuth] 用它做「临近过期主动续期」）。
+  ///
+  /// 抛错被忽略——请求本身照常发出，真失败时仍由 401 分支兜底。
+  Future<void> Function()? onBeforeRequest;
 
   /// 上一次请求完成时间（节流用）。
   DateTime _lastRequestAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -88,11 +118,26 @@ class BangumiClient {
     Set<int> allowedStatus = const <int>{},
   }) {
     final completer = _pending.then((_) async {
+      // 主动续期：access_token 临近 / 已过期时先换新，避免每次过期都要
+      // 先吃一个必然失败的 401（个人 token 无 refresh_token 时该钩子空转）。
+      final before = onBeforeRequest;
+      if (before != null) {
+        try {
+          await before();
+        } catch (_) {
+          /* 续期失败不阻断请求：401 分支会再判定一次 */
+        }
+      }
       // 节流：距上次请求不足最小间隔时等待。
       final wait = _minInterval - DateTime.now().difference(_lastRequestAt);
       if (wait > Duration.zero) {
         await Future<void>.delayed(wait);
       }
+      // 相对路径（/v0/...）按代理配置拼接 API 基址；绝对 URL（吐槽 p1）
+      // 原样使用，由调用方自行套用代理配置。
+      final target =
+          path.startsWith('http') ? path : '${BangumiProxyConfig.instance.apiBaseUrl}$path';
+      final host = Uri.tryParse(target)?.host ?? '';
       Response<dynamic>? response;
       Object? lastError;
       int attempt = 0;
@@ -102,12 +147,10 @@ class BangumiClient {
           // 指数退避：1s → 2s。
           await Future<void>.delayed(Duration(seconds: 1 << (attempt - 1)));
         }
+        // 每轮先清空，避免上一轮已被判失败（5xx / 网络错误）的响应残留下来
+        // 被当成最终结果返回。
+        response = null;
         try {
-          // 相对路径（/v0/...）按代理配置拼接 API 基址；绝对 URL（吐槽 p1）
-          // 原样使用，由调用方自行套用代理配置。
-          final target = path.startsWith('http')
-              ? path
-              : '${BangumiProxyConfig.instance.apiBaseUrl}$path';
           response = await _dio.request<dynamic>(
             target,
             queryParameters: query,
@@ -131,7 +174,7 @@ class BangumiClient {
               token!.isNotEmpty &&
               onUnauthorized != null) {
             refreshed = true;
-            if (await onUnauthorized!()) continue;
+            if (await onUnauthorized!(host)) continue;
           }
           // 429/5xx 可重试，其余直接返回。
           if (code != 429 && code < 500) break;
@@ -143,7 +186,11 @@ class BangumiClient {
       }
       _lastRequestAt = DateTime.now();
       if (response == null) {
-        throw BangumiApiException(null, lastError?.toString() ?? 'network error');
+        throw BangumiApiException(
+          null,
+          lastError?.toString() ?? 'network error',
+          host: host,
+        );
       }
       final code = response.statusCode ?? 0;
       final ok = (code >= 200 && code < 300) || allowedStatus.contains(code);
@@ -154,7 +201,7 @@ class BangumiClient {
           final desc = data['description'] ?? data['title'];
           if (desc is String && desc.isNotEmpty) message = desc;
         }
-        throw BangumiApiException(code, message);
+        throw BangumiApiException(code, message, host: host);
       }
       return response;
     });
@@ -173,49 +220,133 @@ class BangumiClient {
     return BangumiMe.fromJson(data);
   }
 
-  /// OAuth 端点基址（与 API 基址 [baseUrl] 不同），镜像模式下走配置的主站域名
-  /// （见 [BangumiProxyConfig.oauthBaseUrl]）。
+  /// 官方 OAuth 端点基址（令牌端点兜底用，见 [_postTokenEndpoint]）。
+  static const String _officialOauthBase = 'https://bgm.tv';
+
+  /// 令牌端点（`/oauth/access_token`）统一入口：按「配置基址 → 官方基址」依次尝试。
   ///
-  /// 该端点走 [BangumiProxyConfig.oauthBaseUrl]，与 API 端点隔离，不携带 Bearer，使用表单编码。
-  /// 成功返回 [BangumiToken]；响应缺少 `access_token` 时按授权失败抛
-  /// [BangumiApiException]（附 `error_description`）。
-  Future<BangumiToken> exchangeCodeForToken({
-    required String clientId,
-    required String clientSecret,
-    required String code,
-    required String redirectUri,
+  /// 镜像模式下 [BangumiProxyConfig.oauthBaseUrl] 指向镜像主站，而部分反代并不
+  /// 转发 `/oauth/access_token`（或返回 HTML / 404 / 5xx）。此时续期永远失败，
+  /// 表现为「access_token 过期后只能重新授权」——正是 401 反复出现的主因之一。
+  /// 故任一基址成功即返回；仅当镜像侧明确拒绝（400/401/403，凭据或
+  /// refresh_token 真失效）才直接上抛，不再换基址。
+  Future<BangumiToken> _postTokenEndpoint(
+    Map<String, String> form, {
+    String? fallbackRefreshToken,
   }) async {
-    final res = await _dio.post<Map<String, dynamic>>(
-      '${BangumiProxyConfig.instance.oauthBaseUrl}/oauth/access_token',
-      data: <String, String>{
-        'grant_type': 'authorization_code',
-        'client_id': clientId,
-        'client_secret': clientSecret,
-        'code': code,
-        'redirect_uri': redirectUri,
-      },
-      options: Options(
-        headers: <String, dynamic>{'User-Agent': userAgent},
-        contentType: Headers.formUrlEncodedContentType,
-      ),
-    );
-    final data = res.data;
-    if (data is! Map<String, dynamic>) {
-      throw const BangumiApiException(null, 'unexpected token response');
+    final bases = <String>[];
+    for (final base in <String>[
+      BangumiProxyConfig.instance.oauthBaseUrl,
+      _officialOauthBase,
+    ]) {
+      final normalized = base.trim().replaceAll(RegExp(r'/+$'), '');
+      if (normalized.isNotEmpty && !bases.contains(normalized)) {
+        bases.add(normalized);
+      }
+    }
+    BangumiApiException? lastError;
+    for (final base in bases) {
+      try {
+        return await _postTokenOnce(
+          base,
+          form,
+          fallbackRefreshToken: fallbackRefreshToken,
+        );
+      } on BangumiApiException catch (e) {
+        lastError = e;
+        // 只有「OAuth 服务明确回了错误码」才说明该基址真的处理了请求，
+        // 重试无意义；反代侧 404/5xx/HTML/401 登录页一律换下一个基址。
+        if (e.oauthErrorCode != null) rethrow;
+      }
+    }
+    throw lastError ??
+        const BangumiApiException(null, 'token endpoint unreachable');
+  }
+
+  /// 向单个基址换取 token（表单编码 + UA，不带 Bearer）。
+  Future<BangumiToken> _postTokenOnce(
+    String base,
+    Map<String, String> form, {
+    String? fallbackRefreshToken,
+  }) async {
+    Response<dynamic> res;
+    try {
+      res = await _dio.post<dynamic>(
+        '$base/oauth/access_token',
+        data: form,
+        options: Options(
+          headers: <String, dynamic>{'User-Agent': userAgent},
+          contentType: Headers.formUrlEncodedContentType,
+        ),
+      );
+    } on DioException catch (e) {
+      throw BangumiApiException(
+        e.response?.statusCode,
+        e.message ?? e.type.name,
+        host: Uri.tryParse(base)?.host,
+        tokenEndpoint: true,
+      );
+    }
+    // 响应体不一定是 JSON（镜像返回 HTML 登录页 / 纯文本错误页），
+    // 按 dynamic 解析再判定，避免类型转换异常掩盖真实原因。
+    final raw = res.data;
+    Map<dynamic, dynamic>? data;
+    if (raw is Map) {
+      data = raw;
+    } else if (raw is String && raw.trim().startsWith('{')) {
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) data = decoded;
+      } catch (_) {
+        /* 落到下面的「非 JSON 响应」分支 */
+      }
+    }
+    if (data == null) {
+      throw BangumiApiException(
+        res.statusCode,
+        'unexpected token response',
+        host: Uri.tryParse(base)?.host,
+        tokenEndpoint: true,
+      );
     }
     final accessToken = data['access_token'] as String?;
     if (accessToken == null || accessToken.isEmpty) {
       throw BangumiApiException(
         res.statusCode,
-        (data['error_description'] as String?) ?? 'missing access_token',
+        (data['error_description'] as String?) ??
+            (data['error'] as String?) ??
+            'missing access_token',
+        host: Uri.tryParse(base)?.host,
+        tokenEndpoint: true,
+        oauthErrorCode: data['error'] as String?,
       );
     }
     return BangumiToken(
       accessToken: accessToken,
-      refreshToken: data['refresh_token'] as String?,
+      refreshToken: (data['refresh_token'] as String?) ?? fallbackRefreshToken,
       expiresIn: (data['expires_in'] as num?)?.toInt(),
       scope: data['scope'] as String?,
     );
+  }
+
+  /// 用授权码换 token（`grant_type=authorization_code`）。
+  ///
+  /// 端点基址见 [_postTokenEndpoint]（镜像失败时回退官方）；成功返回
+  /// [BangumiToken]，缺少 `access_token` 时按授权失败抛 [BangumiApiException]
+  /// （附 `error_description`）。
+  Future<BangumiToken> exchangeCodeForToken({
+    required String clientId,
+    required String clientSecret,
+    required String code,
+    required String redirectUri,
+  }) {
+    return _postTokenEndpoint(<String, String>{
+      'grant_type': 'authorization_code',
+      'client_id': clientId,
+      'client_secret': clientSecret,
+      'code': code,
+      'redirect_uri': redirectUri,
+    });
   }
 
   /// 用 refresh_token 续期（POST /oauth/access_token，grant_type=refresh_token）。
@@ -223,43 +354,22 @@ class BangumiClient {
   /// 直连 [_dio]、不进 [_request] 的串行队列——401 续期回调在队列内执行，
   /// 走队列会自锁。
   ///
-  /// 返回的 refresh_token 会与请求值不同（Bangumi 轮换），方法已回退到原值。
+  /// 返回的 refresh_token 会与请求值不同（Bangumi 轮换），缺省时回退到原值。
   Future<BangumiToken> refreshToken({
     required String clientId,
     required String clientSecret,
     required String refreshToken,
     required String redirectUri,
-  }) async {
-    final res = await _dio.post<Map<String, dynamic>>(
-      '${BangumiProxyConfig.instance.oauthBaseUrl}/oauth/access_token',
-      data: <String, String>{
+  }) {
+    return _postTokenEndpoint(
+      <String, String>{
         'grant_type': 'refresh_token',
         'client_id': clientId,
         'client_secret': clientSecret,
         'refresh_token': refreshToken,
         'redirect_uri': redirectUri,
       },
-      options: Options(
-        headers: <String, dynamic>{'User-Agent': userAgent},
-        contentType: Headers.formUrlEncodedContentType,
-      ),
-    );
-    final data = res.data;
-    if (data is! Map<String, dynamic>) {
-      throw const BangumiApiException(null, 'unexpected token response');
-    }
-    final accessToken = data['access_token'] as String?;
-    if (accessToken == null || accessToken.isEmpty) {
-      throw BangumiApiException(
-        res.statusCode,
-        (data['error_description'] as String?) ?? 'missing access_token',
-      );
-    }
-    return BangumiToken(
-      accessToken: accessToken,
-      refreshToken: (data['refresh_token'] as String?) ?? refreshToken,
-      expiresIn: (data['expires_in'] as num?)?.toInt(),
-      scope: data['scope'] as String?,
+      fallbackRefreshToken: refreshToken,
     );
   }
 

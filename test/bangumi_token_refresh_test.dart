@@ -105,6 +105,43 @@ class _MemoryStorage extends FlutterSecureStorage {
 }
 
 void main() {
+  group('令牌净化与迁移', () {
+    test('去掉换行 / 零宽字符 / 引号 / 重复 Bearer 前缀', () {
+      expect(BangumiAuth.sanitizeToken('  abc123  '), 'abc123');
+      expect(BangumiAuth.sanitizeToken('abc\n123'), 'abc123');
+      expect(BangumiAuth.sanitizeToken('abc\u200B123'), 'abc123');
+      expect(BangumiAuth.sanitizeToken('\uFEFFabc123'), 'abc123');
+      expect(BangumiAuth.sanitizeToken('"abc123"'), 'abc123');
+      expect(BangumiAuth.sanitizeToken('Bearer abc123'), 'abc123');
+      expect(BangumiAuth.sanitizeToken('bearer abc123'), 'abc123');
+      expect(BangumiAuth.sanitizeToken('token=abc123'), 'abc123');
+      // 中文输入法的全角字母数字。
+      expect(BangumiAuth.sanitizeToken('ａｂｃ１２３'), 'abc123');
+      // 以 bearer 开头但不是请求头的令牌本体不应被砍。
+      expect(BangumiAuth.sanitizeToken('bearerabc123'), 'bearerabc123');
+      expect(BangumiAuth.sanitizeToken('  '), '');
+    });
+
+    test('冷启动读取时净化历史脏令牌并写回', () async {
+      final adapter = _RouteAdapter((_) => _json(200, <String, dynamic>{
+            'id': 1,
+            'username': 'tester',
+            'nickname': 'Tester',
+          }));
+      final storage = _MemoryStorage()
+        // 旧版本直接存粘贴原文：带首尾空格 + 零宽字符 + 换行。
+        ..data['bangumi_access_token'] = ' stale-token\u200B\n'
+        ..data['bangumi_username'] = 'tester';
+      final client = BangumiClient(dio: _dioWith(adapter));
+      final auth = BangumiAuth(client: client, storage: storage);
+      await auth.init();
+
+      expect(auth.isLoggedIn, isTrue);
+      expect(client.token, 'stale-token');
+      expect(storage.data['bangumi_access_token'], 'stale-token');
+    });
+  });
+
   group('BangumiClient 401 续期重试', () {
     test('续期成功后用新 token 立即重试一次', () async {
       var calls = 0;
@@ -124,8 +161,10 @@ void main() {
       final client = BangumiClient(dio: _dioWith(adapter))
         ..token = 'stale-token';
       var refreshCalls = 0;
-      client.onUnauthorized = () async {
+      String? reportedHost;
+      client.onUnauthorized = (host) async {
         refreshCalls++;
+        reportedHost = host;
         client.token = 'fresh-token';
         return true;
       };
@@ -134,6 +173,7 @@ void main() {
 
       expect(me.username, 'tester');
       expect(refreshCalls, 1);
+      expect(reportedHost, 'api.bgm.tv');
       expect(adapter.requests, hasLength(2));
       expect(
         adapter.requests.first.headers['Authorization'],
@@ -154,7 +194,7 @@ void main() {
       final client = BangumiClient(dio: _dioWith(adapter))
         ..token = 'stale-token';
       var refreshCalls = 0;
-      client.onUnauthorized = () async {
+      client.onUnauthorized = (_) async {
         refreshCalls++;
         return false;
       };
@@ -163,7 +203,8 @@ void main() {
         client.fetchMe(),
         throwsA(
           isA<BangumiApiException>()
-              .having((e) => e.statusCode, 'statusCode', 401),
+              .having((e) => e.statusCode, 'statusCode', 401)
+              .having((e) => e.host, 'host', 'api.bgm.tv'),
         ),
       );
       expect(refreshCalls, 1);
@@ -176,7 +217,7 @@ void main() {
       );
       final client = BangumiClient(dio: _dioWith(adapter));
       var refreshCalls = 0;
-      client.onUnauthorized = () async {
+      client.onUnauthorized = (_) async {
         refreshCalls++;
         return true;
       };
@@ -226,11 +267,14 @@ void main() {
         ..data['bangumi_access_token'] = 'stale-token'
         ..data['bangumi_username'] = 'tester'
         ..data['bangumi_refresh_token'] = 'refresh-old'
-        ..data['bangumi_expires_at'] = '1';
+        // 过期时间在远方：走「收到 401 再续期」，而非提前续期。
+        ..data['bangumi_expires_at'] =
+            '${DateTime.now().add(const Duration(days: 5)).millisecondsSinceEpoch}';
       final client = BangumiClient(dio: _dioWith(adapter));
       final auth = BangumiAuth(client: client, storage: storage);
       await auth.init();
       expect(auth.isLoggedIn, isTrue);
+      expect(auth.sessionExpired, isFalse);
 
       await auth.refreshProfile();
 
@@ -245,6 +289,89 @@ void main() {
       final form = tokenRequest!.data as Map<String, String>;
       expect(form['grant_type'], 'refresh_token');
       expect(form['refresh_token'], 'refresh-old');
+    });
+
+    test('临近过期先主动续期，首个请求不再吃 401', () async {
+      var meCalls = 0;
+      final adapter = _RouteAdapter((options) {
+        final path = _pathOf(options);
+        if (path == '/oauth/access_token') {
+          return _json(200, <String, dynamic>{
+            'access_token': 'fresh-token',
+            'refresh_token': 'refresh-new',
+            'expires_in': 604800,
+          });
+        }
+        if (path == '/v0/me') {
+          meCalls++;
+          return _json(200, <String, dynamic>{
+            'id': 1,
+            'username': 'tester',
+            'nickname': 'Tester',
+          });
+        }
+        return _json(404, <String, dynamic>{});
+      });
+      final storage = _MemoryStorage()
+        ..data['bangumi_access_token'] = 'stale-token'
+        ..data['bangumi_username'] = 'tester'
+        ..data['bangumi_refresh_token'] = 'refresh-old'
+        ..data['bangumi_expires_at'] = '1'; // 已过期
+      final client = BangumiClient(dio: _dioWith(adapter));
+      final auth = BangumiAuth(client: client, storage: storage);
+      await auth.init();
+
+      await auth.refreshProfile();
+
+      expect(meCalls, 1);
+      expect(
+        adapter.requests.map(_pathOf),
+        <String>['/oauth/access_token', '/v0/me'],
+      );
+      expect(
+        adapter.requests
+            .firstWhere((r) => _pathOf(r) == '/v0/me')
+            .headers['Authorization'],
+        'Bearer fresh-token',
+      );
+    });
+
+    test('refresh_token 被服务端拒绝时清空会话并标记过期', () async {
+      final adapter = _RouteAdapter((options) {
+        final path = _pathOf(options);
+        if (path == '/oauth/access_token') {
+          return _json(400, <String, dynamic>{
+            'error': 'invalid_grant',
+            'error_description': 'Refresh token has been expired',
+          });
+        }
+        return _json(401, <String, dynamic>{
+          'description': "access token has been expired or doesn't exist",
+        });
+      });
+      final storage = _MemoryStorage()
+        ..data['bangumi_access_token'] = 'stale-token'
+        ..data['bangumi_username'] = 'tester'
+        ..data['bangumi_refresh_token'] = 'refresh-dead'
+        ..data['bangumi_expires_at'] =
+            '${DateTime.now().add(const Duration(days: 5)).millisecondsSinceEpoch}';
+      final client = BangumiClient(dio: _dioWith(adapter));
+      final auth = BangumiAuth(client: client, storage: storage);
+      await auth.init();
+
+      await expectLater(
+        auth.refreshProfile(),
+        throwsA(isA<BangumiApiException>()
+            .having((e) => e.statusCode, 'statusCode', 401)),
+      );
+
+      // 会话已清空：UI 会切回登录态并提示重新授权，不再停在必然 401 的死角。
+      expect(auth.isLoggedIn, isFalse);
+      expect(auth.sessionExpired, isTrue);
+      expect(auth.lastAuthError, contains('Refresh token'));
+      expect(storage.data['bangumi_access_token'], isNull);
+      expect(storage.data['bangumi_refresh_token'], isNull);
+      expect(client.token, isNull);
     });
 
     test('无 refresh_token 时不访问 token 端点，401 原样抛出', () async {
@@ -268,6 +395,9 @@ void main() {
         ),
       );
       expect(adapter.requests.map(_pathOf), <String>['/v0/me']);
+      // 个人 token 被官方 API 明确拒绝 → 同样清空会话（避免假装在线）。
+      expect(auth.isLoggedIn, isFalse);
+      expect(auth.sessionExpired, isTrue);
     });
   });
 }

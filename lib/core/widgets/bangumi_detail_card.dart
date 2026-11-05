@@ -622,8 +622,11 @@ class _BangumiSyncPanelState extends State<_BangumiSyncPanel> {
         });
         _showSnack(l10n.bangumiPullDone);
       }
-    } on BangumiApiException {
-      if (mounted) _showSnack(l10n.bangumiSyncFailed);
+    } on BangumiApiException catch (e) {
+      // 鉴权失败单列提示（令牌被拒 / 会话已失效），其余仍按同步失败处理。
+      if (mounted) {
+        _showSnack(e.isUnauthorized ? l10n.loginExpired : l10n.bangumiSyncFailed);
+      }
     } catch (_) {
       if (mounted) _showSnack(l10n.bangumiSyncFailed);
     } finally {
@@ -651,8 +654,10 @@ class _BangumiSyncPanelState extends State<_BangumiSyncPanel> {
       } else {
         if (mounted) _showSnack(l10n.bangumiSavedLocal);
       }
-    } on BangumiApiException {
-      if (mounted) _showSnack(l10n.bangumiSyncFailed);
+    } on BangumiApiException catch (e) {
+      if (mounted) {
+        _showSnack(e.isUnauthorized ? l10n.loginExpired : l10n.bangumiSyncFailed);
+      }
     } catch (_) {
       if (mounted) _showSnack(l10n.bangumiSyncFailed);
     } finally {

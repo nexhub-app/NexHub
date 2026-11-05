@@ -202,6 +202,41 @@ class _SettingsBangumiScreenState extends State<SettingsBangumiScreen> {
               ),
             ),
           ] else ...<Widget>[
+            // 会话因鉴权失败被清空（refresh_token 失效 / 个人 token 被拒）时
+            // 明确提示重新授权，避免用户以为是网络问题反复重试。
+            if (auth.sessionExpired) ...<Widget>[
+              Row(
+                children: <Widget>[
+                  Icon(
+                    Icons.error_outline_rounded,
+                    size: 18,
+                    color: theme.colorScheme.error,
+                  ),
+                  const SizedBox(width: AppTokens.spaceXs),
+                  Expanded(
+                    child: Text(
+                      l10n.loginExpired,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.error,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: AppTokens.spaceSm),
+            ],
+            // 诊断明细（令牌指纹 / 命中域名）：与官网令牌管理页对照用，
+            // 属技术信息，保留原文不翻译。
+            if (auth.lastAuthError != null && auth.lastAuthError!.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: AppTokens.spaceSm),
+                child: Text(
+                  auth.lastAuthError!,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
             // ── OAuth 2.0 授权登录（推荐）──
             FilledButton.icon(
               onPressed: _oauthing ? null : () => _loginWithOAuth(l10n),

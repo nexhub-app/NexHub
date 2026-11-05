@@ -85,11 +85,23 @@ class _BangumiCollectionBrowserState extends State<BangumiCollectionBrowser> {
     } on BangumiApiException catch (e) {
       // 鉴权失败 / 用户不存在 / 参数错误：展示状态码与描述供诊断。
       if (mounted) {
+        final l10n = AppLocalizations.of(context);
+        final expired = service.auth.sessionExpired;
         setState(() {
           _failed = true;
-          _errorDetail = e.statusCode != null
-              ? 'HTTP ${e.statusCode}: ${e.message}'
-              : e.message;
+          if (e.isUnauthorized && expired) {
+            // 续期已被服务端拒绝、本地凭证已清空 → 引导重新授权，
+            // 而不是把「access token has been expired」原文甩给用户。
+            _errorDetail = l10n.loginExpired;
+          } else if (e.isUnauthorized) {
+            // 仍持令牌却被拒：带上命中主机，便于区分「令牌真失效」与
+            // 「镜像反代没转发 Authorization 头」。
+            _errorDetail = 'HTTP ${e.statusCode}: ${e.message}'
+                '${e.host == null || e.host!.isEmpty ? '' : ' @${e.host}'}';
+          } else {
+            _errorDetail =
+                e.statusCode != null ? 'HTTP ${e.statusCode}: ${e.message}' : e.message;
+          }
         });
       }
     } catch (e) {
