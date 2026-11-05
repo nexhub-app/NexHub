@@ -1,21 +1,58 @@
-/// 替换规则管理页面（美化版）：列表 + 编辑 + 书籍级开关。
+/// 正文净化（替换规则）管理页面。
+///
+/// 规则全局一套，随包内置一批默认规则；
+/// 从阅读器进入时额外提供「本书净化」总开关，并可把新规则限定为仅本书/仅本源。
 library;
 
 import 'package:material_ui/material_ui.dart';
-import '../../core/novel/novel_replace_rule.dart';
-import '../../core/novel/novel_rule_cache.dart';
-import '../utils/app_haptics.dart';
-import '../../core/theme/app_tokens.dart';
+import 'package:nexhub/generated/app_localizations.dart';
 
-/// 替换规则管理页面入口：从阅读器设置进入。
+import '../../core/novel/novel_replace_rule.dart';
+import '../../core/novel/novel_replace_rule_store.dart';
+import '../../core/theme/app_tokens.dart';
+import '../../core/widgets/app_alert_dialog.dart';
+import '../../core/widgets/app_card.dart';
+import '../../core/widgets/app_empty_state.dart';
+import '../../features/settings/presentation/widgets/settings_widgets.dart';
+import '../utils/app_haptics.dart';
+
+/// 开关行：与 [SettingsGroup] 的行内边距对齐（[SettingsSwitchTile] 自带零内边距，
+/// 只适合放进已有内边距的 SettingsCard）。
+Widget _switchRow({
+  required IconData icon,
+  required String title,
+  String? subtitle,
+  required bool value,
+  required ValueChanged<bool> onChanged,
+}) {
+  void toggle(bool next) {
+    next ? AppHaptics.toggleOn() : AppHaptics.toggleOff();
+    onChanged(next);
+  }
+
+  return SettingsTile(
+    icon: icon,
+    title: title,
+    subtitle: subtitle,
+    trailing: Switch(value: value, onChanged: toggle),
+    onTap: () => toggle(!value),
+  );
+}
+
+/// 替换规则管理页面入口：设置 → 小说阅读器 → 正文净化；
+/// 阅读器内打开时带上书名/源，可配置「仅本书 / 仅本源」规则。
 class NovelReplaceRuleScreen extends StatefulWidget {
   final String bookId;
   final String bookName;
+  final String sourceId;
+  final String sourceName;
 
   const NovelReplaceRuleScreen({
     super.key,
-    required this.bookId,
-    required this.bookName,
+    this.bookId = '',
+    this.bookName = '',
+    this.sourceId = '',
+    this.sourceName = '',
   });
 
   @override
@@ -24,7 +61,10 @@ class NovelReplaceRuleScreen extends StatefulWidget {
 
 class _NovelReplaceRuleScreenState extends State<NovelReplaceRuleScreen> {
   NovelReplaceRuleSet? _ruleSet;
+  bool _bookEnabled = true;
   bool _loading = true;
+
+  bool get _hasBook => widget.bookId.isNotEmpty;
 
   @override
   void initState() {
@@ -33,289 +73,485 @@ class _NovelReplaceRuleScreenState extends State<NovelReplaceRuleScreen> {
   }
 
   Future<void> _load() async {
-    final rules = await NovelRuleCache().getReplaceRules(widget.bookId);
+    final store = NovelReplaceRuleStore();
+    final rules = await store.load(refresh: true);
+    final bookEnabled =
+        _hasBook ? await store.isBookEnabled(widget.bookId) : true;
     if (!mounted) return;
     setState(() {
       _ruleSet = rules;
+      _bookEnabled = bookEnabled;
       _loading = false;
     });
   }
 
   Future<void> _save() async {
     if (_ruleSet == null) return;
-    await NovelRuleCache().saveReplaceRules(_ruleSet!);
-    NovelRuleCache().invalidateReplaceRules(widget.bookId);
+    await NovelReplaceRuleStore().save(_ruleSet!);
   }
 
-  Future<void> _toggleEnabled() async {
+  Future<void> _toggleMaster(bool value) async {
     if (_ruleSet == null) return;
-    setState(() => _ruleSet!.enabled = !_ruleSet!.enabled);
+    setState(() => _ruleSet!.enabled = value);
+    await _save();
+  }
+
+  Future<void> _toggleBook(bool value) async {
+    setState(() => _bookEnabled = value);
+    await NovelReplaceRuleStore().setBookEnabled(widget.bookId, value);
+  }
+
+  Future<void> _toggleRule(int index, bool value) async {
+    setState(() => _ruleSet!.rules[index].isEnabled = value);
     await _save();
   }
 
   Future<void> _addRule() async {
-    final rule = await Navigator.push<NovelReplaceRule>(
+    final l10n = AppLocalizations.of(context);
+    final result = await Navigator.push<_RuleEditResult>(
       context,
       MaterialPageRoute(
-        builder: (_) => _ReplaceRuleEditScreen(rule: null),
+        builder: (_) => _ReplaceRuleEditScreen(
+          rule: null,
+          bookId: widget.bookId,
+          bookName: widget.bookName,
+          sourceId: widget.sourceId,
+          sourceName: widget.sourceName,
+          nextOrder: _nextOrder(),
+        ),
       ),
     );
-    if (rule != null) {
-      setState(() => _ruleSet!.rules.add(rule));
-      await _save();
+    final rule = result?.rule;
+    if (rule == null) return;
+    setState(() => _ruleSet!.rules.add(rule));
+    await _save();
+    if (!mounted) return;
+    if (!_ruleSet!.enabled) {
+      // 添加了规则但总开关是关的：提示一下，避免以为没生效。
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.novelPurgeMasterOff)),
+      );
     }
   }
 
   Future<void> _editRule(int index) async {
-    final rule = await Navigator.push<NovelReplaceRule>(
+    final l10n = AppLocalizations.of(context);
+    final shown = _ruleSet!.rules[index];
+    final result = await Navigator.push<_RuleEditResult>(
       context,
       MaterialPageRoute(
-        builder: (_) => _ReplaceRuleEditScreen(rule: _ruleSet!.rules[index]),
+        builder: (_) => _ReplaceRuleEditScreen(
+          rule: shown,
+          displayName: _ruleTitle(l10n, shown),
+          bookId: widget.bookId,
+          bookName: widget.bookName,
+          sourceId: widget.sourceId,
+          sourceName: widget.sourceName,
+          nextOrder: shown.order,
+        ),
       ),
     );
-    if (rule != null) {
-      setState(() => _ruleSet!.rules[index] = rule);
-      await _save();
+    if (result == null) return;
+    if (result.deleted) {
+      setState(() => _ruleSet!.rules.removeWhere((r) => r.id == shown.id));
+    } else if (result.rule != null) {
+      setState(() => _ruleSet!.rules[index] = result.rule!);
     }
+    await _save();
   }
 
-  Future<void> _deleteRule(int index) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('确认删除'),
-        content: Text('删除「${_ruleSet!.rules[index].name.isNotEmpty ? _ruleSet!.rules[index].name : _ruleSet!.rules[index].pattern}」？'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('删除')),
-        ],
+  Future<void> _restoreBuiltIns() async {
+    final l10n = AppLocalizations.of(context);
+    final added = await NovelReplaceRuleStore().restoreBuiltIns();
+    final rules = await NovelReplaceRuleStore().load(refresh: true);
+    if (!mounted) return;
+    setState(() => _ruleSet = rules);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(added > 0
+            ? l10n.novelPurgeRestoreAdded(added)
+            : l10n.novelPurgeRestoreNone),
       ),
     );
-    if (confirm == true) {
-      setState(() => _ruleSet!.rules.removeAt(index));
-      await _save();
+  }
+
+  int _nextOrder() {
+    var max = 0;
+    for (final rule in _ruleSet!.rules) {
+      if (rule.order > max) max = rule.order;
+    }
+    return max + 10;
+  }
+
+  /// 规则标题：内置规则按 nameKey 走本地化，用户规则用自定义名称，
+  /// 都没有时退回匹配内容。
+  String _ruleTitle(AppLocalizations l10n, NovelReplaceRule rule) {
+    if (rule.name.isNotEmpty) return rule.name;
+    switch (rule.nameKey) {
+      case 'urlOnly':
+        return l10n.novelPurgeRuleUrlOnly;
+      case 'sitePromo':
+        return l10n.novelPurgeRuleSitePromo;
+      case 'mobilePromo':
+        return l10n.novelPurgeRuleMobilePromo;
+      case 'nextPage':
+        return l10n.novelPurgeRuleNextPage;
+      case 'speed':
+        return l10n.novelPurgeRuleSpeed;
+      case 'social':
+        return l10n.novelPurgeRuleSocial;
+      case 'search':
+        return l10n.novelPurgeRuleSearch;
+      case 'adTag':
+        return l10n.novelPurgeRuleAdTag;
+      case 'invisible':
+        return l10n.novelPurgeRuleInvisible;
+      case 'trailingSpace':
+        return l10n.novelPurgeRuleTrailingSpace;
+      case 'authorPlea':
+        return l10n.novelPurgeRuleAuthorPlea;
+      case 'chapterEnd':
+        return l10n.novelPurgeRuleChapterEnd;
+      default:
+        return rule.pattern;
     }
   }
 
-  Color _scopeColor(String scope) {
+  String _positionLabel(AppLocalizations l10n, String scope) {
     switch (scope) {
-      case 'content': return Colors.blue;
-      case 'title': return Colors.orange;
-      case 'all': return Colors.purple;
-      default: return Colors.grey;
+      case 'title':
+        return l10n.novelPurgePositionTitle;
+      case 'all':
+        return l10n.novelPurgePositionBoth;
+      default:
+        return l10n.novelPurgePositionContent;
     }
   }
 
-  String _scopeLabel(String scope) {
-    switch (scope) {
-      case 'content': return '正文';
-      case 'title': return '标题';
-      case 'all': return '全部';
-      default: return scope;
+  String _applyToLabel(AppLocalizations l10n, NovelReplaceRule rule) {
+    switch (rule.applyTo) {
+      case 'book':
+        final name =
+            rule.applyToLabel.isNotEmpty ? rule.applyToLabel : widget.bookName;
+        return name.isEmpty
+            ? l10n.novelPurgeApplyToBook
+            : '${l10n.novelPurgeApplyToBook} · $name';
+      case 'source':
+        final name = rule.applyToLabel.isNotEmpty
+            ? rule.applyToLabel
+            : widget.sourceName;
+        return name.isEmpty
+            ? l10n.novelPurgeApplyToSource
+            : '${l10n.novelPurgeApplyToSource} · $name';
+      default:
+        return l10n.novelPurgeApplyToAll;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: Text('替换规则 · ${widget.bookName}'),
-        actions: [
-          if (_ruleSet != null)
-            IconButton(
-              icon: Icon(
-                _ruleSet!.enabled ? Icons.toggle_on_rounded : Icons.toggle_off_rounded,
-                color: _ruleSet!.enabled ? theme.colorScheme.primary : theme.colorScheme.onSurfaceVariant,
-              ),
-              tooltip: _ruleSet!.enabled ? '已启用' : '已禁用',
-              onPressed: _toggleEnabled,
-            ),
+        title: Text(l10n.novelPurgeTitle),
+        actions: <Widget>[
+          IconButton(
+            icon: const Icon(Icons.restore_rounded),
+            tooltip: l10n.novelPurgeRestoreBuiltin,
+            onPressed: _loading ? null : _restoreBuiltIns,
+          ),
         ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : _buildList(theme),
+          : _buildBody(l10n),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _addRule,
+        onPressed: _loading ? null : _addRule,
         icon: const Icon(Icons.add_rounded),
-        label: const Text('添加规则'),
+        label: Text(l10n.novelPurgeAddRule),
       ),
     );
   }
 
-  Widget _buildList(ThemeData theme) {
+  Widget _buildBody(AppLocalizations l10n) {
     final rules = _ruleSet!.rules;
-    if (rules.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              _ruleSet!.enabled ? Icons.cleaning_services_rounded : Icons.toggle_off_rounded,
-              size: 64,
-              color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.4),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              _ruleSet!.enabled ? '暂无替换规则' : '替换规则已禁用',
-              style: theme.textTheme.titleMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              _ruleSet!.enabled ? '点击右下角 + 添加规则' : '点击右上角开关启用',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
+    final scheme = Theme.of(context).colorScheme;
     return ReorderableListView.builder(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 80),
+      padding: const EdgeInsets.fromLTRB(
+        AppTokens.spaceLg,
+        AppTokens.spaceSm,
+        AppTokens.spaceLg,
+        // 悬浮按钮高度 + 呼吸位，避免最后一条规则被遮住。
+        AppTokens.space3xl * 2,
+      ),
+      // 列表项会被 LookupBoundary 包裹，页面头部自己兜一层透明 Material，
+      // 保证空态里的按钮 / 开关仍能找到墨水祖先。
+      header: Material(
+        type: MaterialType.transparency,
+        child: _buildHeader(l10n, rules.length),
+      ),
+      buildDefaultDragHandles: false,
+      // 拖起时的浮卡：只加一层随拖动渐入的投影，卡片自身样式不变。
+      proxyDecorator: (Widget child, int index, Animation<double> animation) {
+        return AnimatedBuilder(
+          animation: animation,
+          builder: (context, _) {
+            final double t = Curves.easeOut.transform(animation.value);
+            return DecoratedBox(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(AppTokens.radiusLg),
+                boxShadow: <BoxShadow>[
+                  BoxShadow(
+                    color: scheme.shadow.withValues(alpha: 0.22 * t),
+                    blurRadius: AppTokens.spaceLg * t + AppTokens.spaceXs,
+                    offset: Offset(0, AppTokens.spaceSm * t),
+                  ),
+                ],
+              ),
+              child: child,
+            );
+          },
+        );
+      },
       itemCount: rules.length,
       onReorderItem: (oldIndex, newIndex) {
         setState(() {
           final item = rules.removeAt(oldIndex);
           rules.insert(newIndex, item);
           for (int i = 0; i < rules.length; i++) {
-            rules[i].order = i;
+            rules[i].order = (i + 1) * 10;
           }
         });
         _save();
       },
-      itemBuilder: (context, index) {
-        final rule = rules[index];
-        final scopeColor = _scopeColor(rule.scope);
-        return Card(
-          key: ValueKey(rule.id),
-          margin: const EdgeInsets.symmetric(vertical: 4),
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-            side: BorderSide(
-              color: theme.dividerColor.withValues(alpha: 0.3),
+      itemBuilder: (context, index) => _buildRuleItem(l10n, index),
+    );
+  }
+
+  Widget _buildHeader(AppLocalizations l10n, int total) {
+    final rules = _ruleSet!.rules;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        // 开关组：卡内发丝分隔线由 SettingsGroup 统一渲染。
+        SettingsGroup(
+          children: <Widget>[
+            _switchRow(
+              icon: Icons.cleaning_services_rounded,
+              title: l10n.novelPurgeMasterSwitch,
+              subtitle: l10n.novelPurgeDesc,
+              value: _ruleSet!.enabled,
+              onChanged: _toggleMaster,
             ),
-          ),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(12),
-            onTap: () => _editRule(index),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(4, 8, 8, 8),
-              child: Row(
-                children: [
-                  // 拖拽手柄
-                  ReorderableDragStartListener(
-                    index: index,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      child: Icon(
-                        Icons.drag_handle_rounded,
-                        color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                        size: 24,
-                      ),
-                    ),
-                  ),
-                  // 启用指示
-                  Icon(
-                    rule.isEnabled ? Icons.check_circle_rounded : Icons.cancel_rounded,
-                    color: rule.isEnabled ? Colors.green : Colors.grey,
-                    size: 20,
-                  ),
-                  const SizedBox(width: 8),
-                  // 内容
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          rule.name.isNotEmpty ? rule.name : rule.pattern,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: scopeColor.withValues(alpha: 0.12),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(
-                                _scopeLabel(rule.scope),
-                                style: theme.textTheme.labelSmall?.copyWith(color: scopeColor),
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: rule.isRegex
-                                    ? Colors.amber.withValues(alpha: 0.15)
-                                    : Colors.teal.withValues(alpha: 0.12),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(
-                                rule.isRegex ? '正则' : '纯文本',
-                                style: theme.textTheme.labelSmall?.copyWith(
-                                  color: rule.isRegex ? Colors.amber.shade800 : Colors.teal.shade700,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                  // 替换摘要
-                  if (rule.replacement.isNotEmpty)
-                    Flexible(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          '→ ${rule.replacement}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant,
-                          ),
-                        ),
-                      ),
-                    ),
-                  const SizedBox(width: 4),
-                  // 删除
-                  IconButton(
-                    icon: const Icon(Icons.delete_rounded, size: 20),
-                    color: theme.colorScheme.error,
-                    onPressed: () => _deleteRule(index),
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ],
+            if (_hasBook)
+              _switchRow(
+                icon: Icons.menu_book_rounded,
+                title: l10n.novelPurgeBookSwitch,
+                subtitle: l10n.novelPurgeBookSwitchDesc,
+                value: _bookEnabled,
+                onChanged: _toggleBook,
+              ),
+          ],
+        ),
+        const SizedBox(height: AppTokens.spaceLg),
+        SettingsSection(
+          title: l10n.novelPurgeRulesSection,
+          description: l10n.novelPurgeRuleCount(_ruleSet!.enabledCount, total),
+        ),
+        if (total > 1)
+          Padding(
+            padding: const EdgeInsets.only(
+              left: AppTokens.spaceXs,
+              bottom: AppTokens.spaceXs,
+            ),
+            child: Text(
+              l10n.novelPurgeReorderHint,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant.withValues(alpha: 0.7),
               ),
             ),
           ),
-        );
-      },
+        if (rules.isEmpty) _buildEmpty(l10n),
+      ],
+    );
+  }
+
+  Widget _buildEmpty(AppLocalizations l10n) => Padding(
+        padding: const EdgeInsets.only(top: AppTokens.spaceSm),
+        child: AppEmptyState(
+          icon: Icons.cleaning_services_rounded,
+          message: l10n.novelPurgeEmptyHint,
+          actionLabel: l10n.novelPurgeRestoreBuiltin,
+          onAction: _restoreBuiltIns,
+        ),
+      );
+
+  Widget _buildRuleItem(AppLocalizations l10n, int index) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final rule = _ruleSet!.rules[index];
+    final enabled = rule.isEnabled;
+    final subtitle = rule.replacement.isEmpty
+        ? rule.pattern
+        : '${rule.pattern} → ${rule.replacement}';
+
+    return Padding(
+      key: ValueKey<String>(rule.id),
+      padding: const EdgeInsets.only(top: AppTokens.spaceSm),
+      // 长按整行即可拖动排序（与书源管理页一致），行首不再保留拖拽把手。
+      child: ReorderableDelayedDragStartListener(
+        index: index,
+        child: AppCard(
+          padding: EdgeInsets.zero,
+          onTap: () {
+            AppHaptics.selectionClick();
+            _editRule(index);
+          },
+          child: Row(
+            children: <Widget>[
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppTokens.spaceLg,
+                    AppTokens.spaceMd,
+                    AppTokens.spaceSm,
+                    AppTokens.spaceMd,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        _ruleTitle(l10n, rule),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          color: enabled ? scheme.onSurface : scheme.outline,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: AppTokens.spaceXxs),
+                      Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontFamily: 'monospace',
+                          color: scheme.onSurfaceVariant
+                              .withValues(alpha: enabled ? 0.9 : 0.55),
+                        ),
+                      ),
+                      const SizedBox(height: AppTokens.spaceSm),
+                      Wrap(
+                        spacing: AppTokens.spaceXs,
+                        runSpacing: AppTokens.spaceXs,
+                        children: <Widget>[
+                          if (rule.isBuiltIn)
+                            _badge(
+                              l10n.novelPurgeBuiltin,
+                              scheme.primaryContainer,
+                              scheme.onPrimaryContainer,
+                            ),
+                          _badge(
+                            _positionLabel(l10n, rule.scope),
+                            scheme.surfaceContainerHighest,
+                            scheme.onSurfaceVariant,
+                          ),
+                          if (rule.applyTo != 'all')
+                            _badge(
+                              _applyToLabel(l10n, rule),
+                              scheme.secondaryContainer,
+                              scheme.onSecondaryContainer,
+                            ),
+                          _badge(
+                            rule.isRegex
+                                ? l10n.novelPurgeRegex
+                                : l10n.novelPurgePlainText,
+                            scheme.surfaceContainerHighest,
+                            scheme.onSurfaceVariant,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(
+                  left: AppTokens.spaceXs,
+                  right: AppTokens.spaceSm,
+                ),
+                child: Switch(
+                  value: enabled,
+                  onChanged: (v) {
+                    v ? AppHaptics.toggleOn() : AppHaptics.toggleOff();
+                    _toggleRule(index, v);
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _badge(String text, Color background, Color foreground) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppTokens.spaceSm,
+        vertical: AppTokens.spaceXxs,
+      ),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(AppTokens.radiusXs),
+      ),
+      child: Text(
+        text,
+        style: theme.textTheme.labelSmall?.copyWith(
+          fontWeight: FontWeight.w600,
+          color: foreground,
+        ),
+      ),
     );
   }
 }
 
-/// 替换规则编辑页面（美化版）。
+/// 编辑页回传结果：保存的规则，或「已删除」。
+class _RuleEditResult {
+  final NovelReplaceRule? rule;
+  final bool deleted;
+
+  const _RuleEditResult.saved(NovelReplaceRule this.rule) : deleted = false;
+
+  const _RuleEditResult.deleted()
+      : rule = null,
+        deleted = true;
+}
+
+/// 替换规则编辑页面。
 class _ReplaceRuleEditScreen extends StatefulWidget {
   final NovelReplaceRule? rule;
 
-  const _ReplaceRuleEditScreen({super.key, this.rule});
+  /// 列表里展示的标题（内置规则已本地化），用于删除确认文案。
+  final String displayName;
+  final String bookId;
+  final String bookName;
+  final String sourceId;
+  final String sourceName;
+  final int nextOrder;
+
+  const _ReplaceRuleEditScreen({
+    this.rule,
+    this.displayName = '',
+    this.bookId = '',
+    this.bookName = '',
+    this.sourceId = '',
+    this.sourceName = '',
+    this.nextOrder = 0,
+  });
 
   @override
   State<_ReplaceRuleEditScreen> createState() => _ReplaceRuleEditScreenState();
@@ -327,6 +563,7 @@ class _ReplaceRuleEditScreenState extends State<_ReplaceRuleEditScreen> {
   late final TextEditingController _replacementCtrl;
   late bool _isRegex;
   late String _scope;
+  late String _applyTo;
   late bool _isEnabled;
 
   bool get _isNew => widget.rule == null;
@@ -340,6 +577,7 @@ class _ReplaceRuleEditScreenState extends State<_ReplaceRuleEditScreen> {
     _replacementCtrl = TextEditingController(text: r?.replacement ?? '');
     _isRegex = r?.isRegex ?? true;
     _scope = r?.scope ?? 'content';
+    _applyTo = r?.applyTo ?? 'all';
     _isEnabled = r?.isEnabled ?? true;
   }
 
@@ -352,184 +590,273 @@ class _ReplaceRuleEditScreenState extends State<_ReplaceRuleEditScreen> {
   }
 
   void _save() {
+    final l10n = AppLocalizations.of(context);
     final pattern = _patternCtrl.text.trim();
     if (pattern.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('替换模式不能为空'),
-          behavior: SnackBarBehavior.floating,
-        ),
+        SnackBar(content: Text(l10n.novelPurgePatternRequired)),
       );
       return;
     }
+    if (_isRegex) {
+      try {
+        RegExp(pattern);
+      } on FormatException {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l10n.novelPurgePatternInvalid)),
+        );
+        return;
+      }
+    }
+    final keepExistingScope =
+        widget.rule != null && widget.rule!.applyTo == _applyTo;
     final rule = NovelReplaceRule(
       id: widget.rule?.id,
       name: _nameCtrl.text.trim(),
+      nameKey: widget.rule?.nameKey ?? '',
+      group: widget.rule?.group ?? '',
       pattern: pattern,
       replacement: _replacementCtrl.text,
       isRegex: _isRegex,
       scope: _scope,
+      applyTo: _applyTo,
+      // 从设置页编辑「仅本书 / 仅本源」规则时没有书籍上下文，
+      // 沿用原来的目标，避免把范围悄悄改废。
+      applyToValue: keepExistingScope
+          ? widget.rule!.applyToValue
+          : switch (_applyTo) {
+              'book' => widget.bookId,
+              'source' => widget.sourceId,
+              _ => '',
+            },
+      applyToLabel: keepExistingScope
+          ? widget.rule!.applyToLabel
+          : switch (_applyTo) {
+              'book' => widget.bookName,
+              'source' => widget.sourceName,
+              _ => '',
+            },
+      isBuiltIn: widget.rule?.isBuiltIn ?? false,
       isEnabled: _isEnabled,
-      order: widget.rule?.order ?? 0,
+      order: widget.nextOrder,
     );
-    Navigator.pop(context, rule);
+    Navigator.pop(context, _RuleEditResult.saved(rule));
+  }
+
+  Future<void> _confirmDelete() async {
+    final l10n = AppLocalizations.of(context);
+    final rule = widget.rule;
+    if (rule == null) return;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AppAlertDialog(
+        title: Text(l10n.delete),
+        content: Text(l10n.novelPurgeDeleteMsg(
+          widget.displayName.isNotEmpty
+              ? widget.displayName
+              : (rule.name.isNotEmpty ? rule.name : rule.pattern),
+        )),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(l10n.cancel),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(l10n.delete),
+          ),
+        ],
+      ),
+    );
+    if (confirm == true && mounted) {
+      Navigator.pop(context, const _RuleEditResult.deleted());
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final l10n = AppLocalizations.of(context);
+    final canScopeBook = widget.bookId.isNotEmpty;
+    final canScopeSource = widget.sourceId.isNotEmpty;
+    final scopedName = widget.rule?.applyToLabel ?? '';
+
     return Scaffold(
       appBar: AppBar(
-        title: Text(_isNew ? '添加替换规则' : '编辑替换规则'),
-        actions: [
+        title: Text(_isNew ? l10n.novelPurgeNewTitle : l10n.novelPurgeEditTitle),
+        actions: <Widget>[
+          if (!_isNew)
+            IconButton(
+              icon: const Icon(Icons.delete_outline_rounded),
+              color: scheme.error,
+              tooltip: l10n.delete,
+              onPressed: _confirmDelete,
+            ),
           TextButton.icon(
             onPressed: _save,
             icon: const Icon(Icons.check_rounded, size: 18),
-            label: const Text('保存'),
+            label: Text(l10n.save),
           ),
+          const SizedBox(width: AppTokens.spaceXs),
         ],
       ),
       body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          // ── 基本设置 ──
-          Card(
-            elevation: 0,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.3)),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('基本设置', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: _nameCtrl,
-                    decoration: const InputDecoration(
-                      labelText: '规则名称',
-                      hintText: '可选，便于识别',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: _patternCtrl,
-                    decoration: InputDecoration(
-                      labelText: '匹配模式',
-                      hintText: _isRegex ? r'正则表达式（如 ^广告.*$）' : '要替换的文本',
-                      border: const OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    maxLines: 3,
-                    minLines: 2,
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: _replacementCtrl,
-                    decoration: const InputDecoration(
-                      labelText: '替换为',
-                      hintText: '留空则移除匹配文本',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    maxLines: 2,
-                    minLines: 1,
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          // ── 选项 ──
-          Card(
-            elevation: 0,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.3)),
-            ),
+        padding: const EdgeInsets.fromLTRB(
+          AppTokens.spaceLg,
+          AppTokens.spaceSm,
+          AppTokens.spaceLg,
+          AppTokens.space2xl,
+        ),
+        children: <Widget>[
+          SettingsSection(title: l10n.novelPurgeContentSection),
+          AppCard(
+            padding: const EdgeInsets.all(AppTokens.spaceLg),
             child: Column(
-              children: [
-                SwitchListTile(
-                  title: const Text('使用正则表达式'),
-                  subtitle: Text(_isRegex ? '按正则模式匹配替换' : '按纯文本精确匹配'),
-                  value: _isRegex,
-                  onChanged: (v) {
-                    v == true ? AppHaptics.toggleOn() : AppHaptics.toggleOff();
-                    setState(() => _isRegex = v);
-                  },
-                ),
-                const Divider(height: 1, indent: 16, endIndent: 16),
-                ListTile(
-                  title: const Text('作用范围'),
-                  trailing: DropdownButton<String>(
-                    elevation: 0,
-                    borderRadius: BorderRadius.circular(AppTokens.radiusMd),
-                    value: _scope,
-                    underline: const SizedBox(),
-                    items: const [
-                      DropdownMenuItem(value: 'content', child: Text('正文')),
-                      DropdownMenuItem(value: 'title', child: Text('标题')),
-                      DropdownMenuItem(value: 'all', child: Text('全部')),
-                    ],
-                    onChanged: (v) {
-                      if (v != null) setState(() => _scope = v);
-                    },
+              children: <Widget>[
+                TextField(
+                  controller: _nameCtrl,
+                  textInputAction: TextInputAction.next,
+                  decoration: InputDecoration(
+                    labelText: l10n.novelPurgeRuleName,
+                    hintText: l10n.novelPurgeRuleNameHint,
+                    border: const OutlineInputBorder(),
+                    isDense: true,
                   ),
                 ),
-                const Divider(height: 1, indent: 16, endIndent: 16),
-                SwitchListTile(
-                  title: const Text('启用'),
-                  value: _isEnabled,
-                  onChanged: (v) {
-                    v == true ? AppHaptics.toggleOn() : AppHaptics.toggleOff();
-                    setState(() => _isEnabled = v);
-                  },
+                const SizedBox(height: AppTokens.spaceMd),
+                TextField(
+                  controller: _patternCtrl,
+                  minLines: 2,
+                  maxLines: 4,
+                  style: const TextStyle(fontFamily: 'monospace'),
+                  decoration: InputDecoration(
+                    labelText: l10n.novelPurgePattern,
+                    hintText: _isRegex
+                        ? l10n.novelPurgePatternHintRegex
+                        : l10n.novelPurgePatternHintPlain,
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: AppTokens.spaceMd),
+                TextField(
+                  controller: _replacementCtrl,
+                  minLines: 1,
+                  maxLines: 3,
+                  style: const TextStyle(fontFamily: 'monospace'),
+                  decoration: InputDecoration(
+                    labelText: l10n.novelPurgeReplacement,
+                    hintText: l10n.novelPurgeReplacementHint,
+                    border: const OutlineInputBorder(),
+                    isDense: true,
+                  ),
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 24),
-          // ── 预览 ──
-          if (_patternCtrl.text.isNotEmpty)
-            Card(
-              elevation: 0,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-                side: BorderSide(color: theme.dividerColor.withValues(alpha: 0.3)),
+          const SizedBox(height: AppTokens.spaceLg),
+          SettingsGroup(
+            header: l10n.novelPurgeOptions,
+            children: <Widget>[
+              _switchRow(
+                icon: Icons.code_rounded,
+                title: l10n.novelPurgeUseRegex,
+                subtitle: _isRegex
+                    ? l10n.novelPurgeUseRegexDescOn
+                    : l10n.novelPurgeUseRegexDescOff,
+                value: _isRegex,
+                onChanged: (v) => setState(() => _isRegex = v),
               ),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('预览', style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 8),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        _isRegex
-                            ? '示例：将匹配「${_patternCtrl.text}」${_replacementCtrl.text.isNotEmpty ? '替换为「${_replacementCtrl.text}」' : '移除'}'
-                            : '将精确匹配「${_patternCtrl.text}」${_replacementCtrl.text.isNotEmpty ? '替换为「${_replacementCtrl.text}」' : '移除'}',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
+              SettingsTile(
+                icon: Icons.text_fields_rounded,
+                title: l10n.novelPurgePosition,
+                trailing: _dropdown<String>(
+                  value: _scope,
+                  items: <DropdownMenuItem<String>>[
+                    DropdownMenuItem<String>(
+                      value: 'content',
+                      child: Text(l10n.novelPurgePositionContent),
+                    ),
+                    DropdownMenuItem<String>(
+                      value: 'title',
+                      child: Text(l10n.novelPurgePositionTitle),
+                    ),
+                    DropdownMenuItem<String>(
+                      value: 'all',
+                      child: Text(l10n.novelPurgePositionBoth),
                     ),
                   ],
+                  onChanged: (v) => setState(() => _scope = v),
                 ),
               ),
-            ),
+              if (canScopeBook || canScopeSource)
+                SettingsTile(
+                  icon: Icons.filter_alt_outlined,
+                  title: l10n.novelPurgeApplyTo,
+                  trailing: _dropdown<String>(
+                    value: _applyTo,
+                    items: <DropdownMenuItem<String>>[
+                      DropdownMenuItem<String>(
+                        value: 'all',
+                        child: Text(l10n.novelPurgeApplyToAll),
+                      ),
+                      if (canScopeBook)
+                        DropdownMenuItem<String>(
+                          value: 'book',
+                          child: Text(l10n.novelPurgeApplyToBook),
+                        ),
+                      if (canScopeSource)
+                        DropdownMenuItem<String>(
+                          value: 'source',
+                          child: Text(l10n.novelPurgeApplyToSource),
+                        ),
+                    ],
+                    onChanged: (v) => setState(() => _applyTo = v),
+                  ),
+                )
+              else if (_applyTo != 'all')
+                // 设置页没有书籍上下文：保留原范围，只展示不可改。
+                SettingsTile(
+                  icon: Icons.lock_outline_rounded,
+                  title: l10n.novelPurgeApplyTo,
+                  subtitle: [
+                    _applyTo == 'book'
+                        ? l10n.novelPurgeApplyToBook
+                        : l10n.novelPurgeApplyToSource,
+                    if (scopedName.isNotEmpty) scopedName,
+                  ].join(' · '),
+                ),
+              _switchRow(
+                icon: Icons.power_settings_new_rounded,
+                title: l10n.novelPurgeRuleEnabled,
+                value: _isEnabled,
+                onChanged: (v) => setState(() => _isEnabled = v),
+              ),
+            ],
+          ),
         ],
       ),
+    );
+  }
+
+  Widget _dropdown<T>({
+    required T value,
+    required List<DropdownMenuItem<T>> items,
+    required ValueChanged<T> onChanged,
+  }) {
+    return DropdownButton<T>(
+      value: value,
+      items: items,
+      underline: const SizedBox.shrink(),
+      borderRadius: BorderRadius.circular(AppTokens.radiusMd),
+      style: Theme.of(context).textTheme.bodyMedium,
+      onChanged: (v) {
+        if (v != null) {
+          AppHaptics.selectionClick();
+          onChanged(v);
+        }
+      },
     );
   }
 }

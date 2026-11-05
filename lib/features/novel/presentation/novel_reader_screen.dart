@@ -26,6 +26,8 @@ import '../../../core/comic/models/reader_preferences.dart'
     show ReaderTapZoneLayout, TapZoneInvert;
 import '../../../core/comic/image_favorite_manager.dart';
 import '../../../core/novel/novel_replace_rule.dart' show NovelReplaceRuleSet;
+import '../../../core/novel/novel_replace_rule_store.dart'
+    show NovelReplaceRuleStore;
 import '../../../core/novel/novel_highlight_rule.dart'
     show NovelHighlightRuleSet;
 import '../../../core/novel/novel_rule_cache.dart' show NovelRuleCache;
@@ -422,8 +424,11 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   /// 实际渲染的图文块（应用繁简转换 + 替换规则后）。
   List<NovelBlock> _paragraphs = const <NovelBlock>[];
 
-  /// 当前书籍的替换规则（惰性加载，在 [_loadChapter] 中填充）。
+  /// 当前书籍的净化规则（全局一套，惰性加载，在 [_loadChapter] 中填充）。
   NovelReplaceRuleSet? _replaceRuleSet;
+
+  /// 本书是否启用净化（阅读器内可单独关闭，默认开启）。
+  bool _replaceBookEnabled = true;
 
   /// 当前书籍的高亮规则（惰性加载，在 [_loadChapter] 中填充）。
   NovelHighlightRuleSet? _highlightRuleSet;
@@ -1106,6 +1111,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
             for (final p in ch.content)
               if (p.trim().isNotEmpty) NovelTextBlock(p),
           ];
+          await _ensurePurgeRules();
           if (!_loadSession.isValid(token)) return;
           setState(() {
             _rawParagraphs = epubBlocks;
@@ -1170,6 +1176,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
                       : NovelTextBlock(p),
             ];
           }
+          await _ensurePurgeRules();
           if (!_loadSession.isValid(token)) return;
           setState(() {
             _rawParagraphs = txtBlocks;
@@ -1406,6 +1413,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
           ],
         ];
       }
+      await _ensurePurgeRules();
       if (!_loadSession.isValid(token)) return;
       setState(() {
         _rawParagraphs = blocks;
@@ -2920,8 +2928,8 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       // （替换规则 / 繁简转换仍在其后照常应用）。
       final List<NovelBlock> effective =
           await _applyContentEditOverride(chapter.id, paragraphs);
-      // 加载替换/高亮规则（排版期编译缓存，规则变更不重拉全书）。
-      _replaceRuleSet = await NovelRuleCache().getReplaceRules(widget.novelId);
+      // 加载净化规则（全局一套；首次打开时把旧版书籍级规则迁移过来）+ 本书开关。
+      await _ensurePurgeRules(refresh: true);
       _highlightRuleSet =
           await NovelRuleCache().getHighlightRules(widget.novelId);
       setState(() {
@@ -3079,14 +3087,26 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     final replaceRules = _replaceRuleSet;
     if (replaceRules != null &&
         replaceRules.enabled &&
+        _replaceBookEnabled &&
         replaceRules.rules.isNotEmpty) {
-      replaced = [
-        for (final b in input)
-          if (b is NovelTextBlock)
-            NovelTextBlock(replaceRules.apply(b.text, scopeFilter: 'content'))
-          else
-            b,
-      ];
+      final purged = <NovelBlock>[];
+      for (final b in input) {
+        if (b is NovelTextBlock) {
+          final text = replaceRules.apply(
+            b.text,
+            // 章节标题块走「标题」范围，正文块走「正文」范围。
+            scopeFilter: b.isHeading ? 'title' : 'content',
+            bookId: widget.novelId,
+            sourceId: widget.sourceId,
+          );
+          // 整段被规则清空（广告行）→ 直接丢掉，避免正文里留下空行。
+          if (text.trim().isEmpty && b.text.trim().isNotEmpty) continue;
+          purged.add(NovelTextBlock(text, isHeading: b.isHeading));
+        } else {
+          purged.add(b);
+        }
+      }
+      replaced = purged;
     }
     // 2. 应用繁简转换。
     final mode = ChineseConvertMode.fromString(_prefs.chineseConvert);
@@ -3098,6 +3118,27 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
         else
           b,
     ];
+  }
+
+  /// 加载全局净化规则（含旧版书籍级规则迁移）。
+  /// [refresh] 为 true 时从存档重新取一次（规则可能在设置页被改过）。
+  Future<void> _ensurePurgeRules({bool refresh = false}) async {
+    if (_replaceRuleSet != null && !refresh) return;
+    final store = NovelReplaceRuleStore();
+    await store.migrateLegacy(widget.novelId, widget.title);
+    _replaceRuleSet = await store.load();
+    _replaceBookEnabled = await store.isBookEnabled(widget.novelId);
+  }
+
+  /// 净化规则变更后重新加载并重排当前章（保持阅读位置）。
+  Future<void> _reloadPurgeRules() async {
+    final store = NovelReplaceRuleStore();
+    final rules = await store.load(refresh: true);
+    final bookEnabled = await store.isBookEnabled(widget.novelId);
+    if (!mounted) return;
+    _replaceRuleSet = rules;
+    _replaceBookEnabled = bookEnabled;
+    _refreshConvert();
   }
 
   /// 重新应用繁简转换（在 [NovelReaderPreferences.chineseConvert] 变更后调用）。
@@ -7143,6 +7184,9 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
         onShowTapZonePreview: () => _showTapZonePreview(l10n),
         novelId: widget.novelId,
         novelName: widget.title,
+        sourceId: widget.sourceId,
+        sourceName: _source?.name ?? '',
+        onPurgeChanged: _reloadPurgeRules,
         // 预下载配置保存后刷新阅读器内的快照，触发判定即时生效。
         onPreDownloadChanged: () async {
           _preDownloadPrefs = await NovelPreDownloadPreferences.load();
@@ -8745,6 +8789,11 @@ class _NovelInlineSettings extends StatelessWidget {
   final VoidCallback? onShowTapZonePreview;
   final String novelId;
   final String novelName;
+  /// 当前源 id / 名称：用于配置「仅本源」净化规则。
+  final String sourceId;
+  final String sourceName;
+  /// 净化规则变更后的回调（重新应用规则并保持阅读位置）。
+  final VoidCallback? onPurgeChanged;
 
   /// 预下载配置保存后的回调（阅读器刷新快照，触发判定即时效）。
   final VoidCallback? onPreDownloadChanged;
@@ -8772,6 +8821,9 @@ class _NovelInlineSettings extends StatelessWidget {
     this.onShowTapZonePreview,
     required this.novelId,
     required this.novelName,
+    this.sourceId = '',
+    this.sourceName = '',
+    this.onPurgeChanged,
     this.onPreDownloadChanged,
     this.onOpenSummary,
     this.onTranslate,
@@ -10177,23 +10229,26 @@ class _NovelInlineSettings extends StatelessWidget {
                       const SizedBox(height: AppTokens.spaceMd),
                       const Divider(height: 1),
                       const SizedBox(height: AppTokens.spaceMd),
-                      // 替换规则（书籍级正文净化）
+                      // 正文净化（全局替换规则，本书可单独开关）
                       ListTile(
                         contentPadding: EdgeInsets.zero,
                         leading: const Icon(Icons.cleaning_services_rounded),
-                        title: const Text('替换规则'),
-                        subtitle: const Text('正文净化，正则/纯文本替换'),
+                        title: Text(l10n.novelPurgeTitle),
+                        subtitle: Text(l10n.novelPurgeDesc),
                         trailing: const Icon(Icons.chevron_right_rounded),
-                        onTap: () {
-                          Navigator.push(
+                        onTap: () async {
+                          await Navigator.push(
                             context,
                             MaterialPageRoute(
                               builder: (_) => NovelReplaceRuleScreen(
                                 bookId: novelId,
                                 bookName: novelName,
+                                sourceId: sourceId,
+                                sourceName: sourceName,
                               ),
                             ),
                           );
+                          onPurgeChanged?.call();
                         },
                       ),
                       const SizedBox(height: AppTokens.spaceSm),

@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "builtin.url_only_line",
+      "nameKey": "urlOnly",
+      "pattern": "^[ \\t]*(?:https?://|www\\.)[^\\s]+[ \\t]*$",
+      "replacement": "",
+      "scope": "content",
+      "isRegex": true,
+      "isEnabled": true,
+      "order": 10
+    },
+    {
+      "id": "builtin.site_promo",
+      "nameKey": "sitePromo",
+      "pattern": "^.*(?:请记住本站|记住本站|收藏本站|本站域名|本站地址|最新网址|永久网址|备用网址|一秒记住本站|天才一秒记住).*$",
+      "replacement": "",
+      "scope": "content",
+      "isRegex": true,
+      "isEnabled": true,
+      "order": 20
+    },
+    {
+      "id": "builtin.mobile_promo",
+      "nameKey": "mobilePromo",
+      "pattern": "^.*(?:手机用户请|手机版阅读|手机阅读网址|请使用手机|手机浏览器访问|手机站).*$",
+      "replacement": "",
+      "scope": "content",
+      "isRegex": true,
+      "isEnabled": true,
+      "order": 30
+    },
+    {
+      "id": "builtin.next_page_promo",
+      "nameKey": "nextPage",
+      "pattern": "^.*(?:本章未完|点击下一页|下一页继续|翻页继续|请点击下一章|继续阅读请).*$",
+      "replacement": "",
+      "scope": "content",
+      "isRegex": true,
+      "isEnabled": true,
+      "order": 40
+    },
+    {
+      "id": "builtin.speed_promo",
+      "nameKey": "speed",
+      "pattern": "^.*(?:最快更新|更新最快|无弹窗|免费无弹窗|全文免费阅读).*$",
+      "replacement": "",
+      "scope": "content",
+      "isRegex": true,
+      "isEnabled": true,
+      "order": 50
+    },
+    {
+      "id": "builtin.social_promo",
+      "nameKey": "social",
+      "pattern": "^.*(?:微信公众号|公众号搜索|书友群|交流群|QQ群|qq群|请加群|加Q群|加入书友|进群|入群).*$",
+      "replacement": "",
+      "scope": "content",
+      "isRegex": true,
+      "isEnabled": true,
+      "order": 60
+    },
+    {
+      "id": "builtin.search_promo",
+      "nameKey": "search",
+      "pattern": "^.*(?:百度搜索|谷歌搜索|搜狗搜索|必应搜索).*$",
+      "replacement": "",
+      "scope": "content",
+      "isRegex": true,
+      "isEnabled": true,
+      "order": 65
+    },
+    {
+      "id": "builtin.ad_tag",
+      "nameKey": "adTag",
+      "pattern": "[【\\[（(]\\s*(?:广告|推广|AD)\\s*[】\\]）)]",
+      "replacement": "",
+      "scope": "content",
+      "isRegex": true,
+      "isEnabled": true,
+      "order": 70
+    },
+    {
+      "id": "builtin.invisible_chars",
+      "nameKey": "invisible",
+      "pattern": "[\\u200B-\\u200F\\u202A-\\u202E\\u2060\\uFEFF]",
+      "replacement": "",
+      "scope": "all",
+      "isRegex": true,
+      "isEnabled": true,
+      "order": 80
+    },
+    {
+      "id": "builtin.trailing_space",
+      "nameKey": "trailingSpace",
+      "pattern": "[ \\t]+$",
+      "replacement": "",
+      "scope": "content",
+      "isRegex": true,
+      "isEnabled": true,
+      "order": 90
+    },
+    {
+      "id": "builtin.author_plea",
+      "nameKey": "authorPlea",
+      "pattern": "^.*(?:求收藏|求推荐票|求月票|求订阅|打赏作者).*$",
+      "replacement": "",
+      "scope": "content",
+      "isRegex": true,
+      "isEnabled": false,
+      "order": 100
+    },
+    {
+      "id": "builtin.chapter_end",
+      "nameKey": "chapterEnd",
+      "pattern": "^[ \\t]*[（(]?\\s*本章完\\s*[）)]?[ \\t]*$",
+      "replacement": "",
+      "scope": "content",
+      "isRegex": true,
+      "isEnabled": false,
+      "order": 110
+    }
+  ]
+}

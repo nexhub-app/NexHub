@@ -10389,4 +10389,179 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get widgetTrendNew => 'new';
+
+  @override
+  String get novelPurgeTitle => 'Content cleanup';
+
+  @override
+  String get novelPurgeDesc =>
+      'Ships with common rules that strip ads, site watermarks and page-turn promos';
+
+  @override
+  String get novelPurgeMasterOff => 'Cleanup is off';
+
+  @override
+  String get novelPurgeMasterSwitch => 'Enable cleanup';
+
+  @override
+  String get novelPurgeRulesSection => 'Rules';
+
+  @override
+  String get novelPurgeOptions => 'Options';
+
+  @override
+  String get novelPurgeContentSection => 'Match & replace';
+
+  @override
+  String get novelPurgeReorderHint => 'Press and hold a rule to reorder';
+
+  @override
+  String get novelPurgeBookSwitch => 'Cleanup for this book';
+
+  @override
+  String get novelPurgeBookSwitchDesc =>
+      'When off, this book\'s text is left untouched';
+
+  @override
+  String novelPurgeRuleCount(Object enabled, Object total) {
+    return '$total rules, $enabled enabled';
+  }
+
+  @override
+  String get novelPurgeEmptyHint =>
+      'Load the built-in rules below, or add your own from the button';
+
+  @override
+  String get novelPurgeAddRule => 'Add rule';
+
+  @override
+  String get novelPurgeNewTitle => 'Add replacement rule';
+
+  @override
+  String get novelPurgeEditTitle => 'Edit replacement rule';
+
+  @override
+  String get novelPurgeRuleName => 'Rule name';
+
+  @override
+  String get novelPurgeRuleNameHint => 'Optional, for easier recognition';
+
+  @override
+  String get novelPurgePattern => 'Match';
+
+  @override
+  String get novelPurgePatternHintRegex =>
+      'Regular expression, e.g. ^Chapter unfinished.*\$';
+
+  @override
+  String get novelPurgePatternHintPlain => 'Text to replace';
+
+  @override
+  String get novelPurgeReplacement => 'Replace with';
+
+  @override
+  String get novelPurgeReplacementHint => 'Leave empty to remove the match';
+
+  @override
+  String get novelPurgeUseRegex => 'Use regular expression';
+
+  @override
+  String get novelPurgeUseRegexDescOn => 'Match with a regex pattern';
+
+  @override
+  String get novelPurgeUseRegexDescOff => 'Match exact plain text';
+
+  @override
+  String get novelPurgePosition => 'Applies to';
+
+  @override
+  String get novelPurgePositionContent => 'Content';
+
+  @override
+  String get novelPurgePositionTitle => 'Title';
+
+  @override
+  String get novelPurgePositionBoth => 'Both';
+
+  @override
+  String get novelPurgeApplyTo => 'Scope';
+
+  @override
+  String get novelPurgeApplyToAll => 'All books';
+
+  @override
+  String get novelPurgeApplyToBook => 'This book';
+
+  @override
+  String get novelPurgeApplyToSource => 'This source';
+
+  @override
+  String get novelPurgeBuiltin => 'Built-in';
+
+  @override
+  String get novelPurgeRegex => 'Regex';
+
+  @override
+  String get novelPurgePlainText => 'Plain';
+
+  @override
+  String get novelPurgeRuleEnabled => 'Enabled';
+
+  @override
+  String get novelPurgeRestoreBuiltin => 'Restore built-in rules';
+
+  @override
+  String novelPurgeRestoreAdded(Object count) {
+    return 'Added $count built-in rules';
+  }
+
+  @override
+  String get novelPurgeRestoreNone => 'All built-in rules are already present';
+
+  @override
+  String novelPurgeDeleteMsg(Object name) {
+    return 'Delete rule \"$name\"?';
+  }
+
+  @override
+  String get novelPurgePatternRequired => 'Match content cannot be empty';
+
+  @override
+  String get novelPurgePatternInvalid => 'Invalid regular expression';
+
+  @override
+  String get novelPurgeRuleUrlOnly => 'Line is a URL';
+
+  @override
+  String get novelPurgeRuleSitePromo => 'Site / domain promo';
+
+  @override
+  String get novelPurgeRuleMobilePromo => 'Mobile reading hint';
+
+  @override
+  String get novelPurgeRuleNextPage => 'Page-turn promo';
+
+  @override
+  String get novelPurgeRuleSpeed => 'Update-speed / no-popup promo';
+
+  @override
+  String get novelPurgeRuleSocial => 'Chat group / official account promo';
+
+  @override
+  String get novelPurgeRuleSearch => 'Search engine referral';
+
+  @override
+  String get novelPurgeRuleAdTag => 'Ad marker';
+
+  @override
+  String get novelPurgeRuleInvisible => 'Zero-width control chars';
+
+  @override
+  String get novelPurgeRuleTrailingSpace => 'Trailing spaces';
+
+  @override
+  String get novelPurgeRuleAuthorPlea => 'Vote / tip begging';
+
+  @override
+  String get novelPurgeRuleChapterEnd => 'Chapter-end marker';
 }

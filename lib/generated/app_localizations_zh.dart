@@ -10125,4 +10125,175 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get widgetTrendNew => '本周新增';
+
+  @override
+  String get novelPurgeTitle => '正文净化';
+
+  @override
+  String get novelPurgeDesc => '内置常用规则，自动清理广告、站点水印与翻页推广';
+
+  @override
+  String get novelPurgeMasterOff => '净化已关闭';
+
+  @override
+  String get novelPurgeMasterSwitch => '启用净化';
+
+  @override
+  String get novelPurgeRulesSection => '规则';
+
+  @override
+  String get novelPurgeOptions => '选项';
+
+  @override
+  String get novelPurgeContentSection => '匹配与替换';
+
+  @override
+  String get novelPurgeReorderHint => '长按规则可拖动排序';
+
+  @override
+  String get novelPurgeBookSwitch => '本书净化';
+
+  @override
+  String get novelPurgeBookSwitchDesc => '关闭后本书正文不做任何替换';
+
+  @override
+  String novelPurgeRuleCount(Object enabled, Object total) {
+    return '共 $total 条规则，已启用 $enabled 条';
+  }
+
+  @override
+  String get novelPurgeEmptyHint => '点下方按钮载入内置规则，或右下角添加自定义规则';
+
+  @override
+  String get novelPurgeAddRule => '添加规则';
+
+  @override
+  String get novelPurgeNewTitle => '添加替换规则';
+
+  @override
+  String get novelPurgeEditTitle => '编辑替换规则';
+
+  @override
+  String get novelPurgeRuleName => '规则名称';
+
+  @override
+  String get novelPurgeRuleNameHint => '可选，便于识别';
+
+  @override
+  String get novelPurgePattern => '匹配内容';
+
+  @override
+  String get novelPurgePatternHintRegex => '正则表达式，如 ^本章未完.*\$';
+
+  @override
+  String get novelPurgePatternHintPlain => '要替换的文本';
+
+  @override
+  String get novelPurgeReplacement => '替换为';
+
+  @override
+  String get novelPurgeReplacementHint => '留空表示直接删除匹配内容';
+
+  @override
+  String get novelPurgeUseRegex => '使用正则表达式';
+
+  @override
+  String get novelPurgeUseRegexDescOn => '按正则模式匹配替换';
+
+  @override
+  String get novelPurgeUseRegexDescOff => '按纯文本精确匹配';
+
+  @override
+  String get novelPurgePosition => '作用位置';
+
+  @override
+  String get novelPurgePositionContent => '正文';
+
+  @override
+  String get novelPurgePositionTitle => '标题';
+
+  @override
+  String get novelPurgePositionBoth => '全部';
+
+  @override
+  String get novelPurgeApplyTo => '生效范围';
+
+  @override
+  String get novelPurgeApplyToAll => '全部书籍';
+
+  @override
+  String get novelPurgeApplyToBook => '仅本书';
+
+  @override
+  String get novelPurgeApplyToSource => '仅本源';
+
+  @override
+  String get novelPurgeBuiltin => '内置';
+
+  @override
+  String get novelPurgeRegex => '正则';
+
+  @override
+  String get novelPurgePlainText => '纯文本';
+
+  @override
+  String get novelPurgeRuleEnabled => '启用';
+
+  @override
+  String get novelPurgeRestoreBuiltin => '恢复内置规则';
+
+  @override
+  String novelPurgeRestoreAdded(Object count) {
+    return '已补充 $count 条内置规则';
+  }
+
+  @override
+  String get novelPurgeRestoreNone => '内置规则已全部存在';
+
+  @override
+  String novelPurgeDeleteMsg(Object name) {
+    return '删除规则「$name」？';
+  }
+
+  @override
+  String get novelPurgePatternRequired => '匹配内容不能为空';
+
+  @override
+  String get novelPurgePatternInvalid => '正则表达式无效';
+
+  @override
+  String get novelPurgeRuleUrlOnly => '整行为网址';
+
+  @override
+  String get novelPurgeRuleSitePromo => '站点与域名推广';
+
+  @override
+  String get novelPurgeRuleMobilePromo => '手机端阅读提示';
+
+  @override
+  String get novelPurgeRuleNextPage => '翻页与续读推广';
+
+  @override
+  String get novelPurgeRuleSpeed => '更新速度与无弹窗文案';
+
+  @override
+  String get novelPurgeRuleSocial => '加群与公众号推广';
+
+  @override
+  String get novelPurgeRuleSearch => '搜索引擎引流';
+
+  @override
+  String get novelPurgeRuleAdTag => '广告标记';
+
+  @override
+  String get novelPurgeRuleInvisible => '零宽与方向控制字符';
+
+  @override
+  String get novelPurgeRuleTrailingSpace => '行尾多余空格';
+
+  @override
+  String get novelPurgeRuleAuthorPlea => '求票与打赏';
+
+  @override
+  String get novelPurgeRuleChapterEnd => '本章完标记';
 }

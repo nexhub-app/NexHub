@@ -19328,6 +19328,336 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'new'**
   String get widgetTrendNew;
+
+  /// No description provided for @novelPurgeTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Content cleanup'**
+  String get novelPurgeTitle;
+
+  /// No description provided for @novelPurgeDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Ships with common rules that strip ads, site watermarks and page-turn promos'**
+  String get novelPurgeDesc;
+
+  /// No description provided for @novelPurgeMasterOff.
+  ///
+  /// In en, this message translates to:
+  /// **'Cleanup is off'**
+  String get novelPurgeMasterOff;
+
+  /// No description provided for @novelPurgeMasterSwitch.
+  ///
+  /// In en, this message translates to:
+  /// **'Enable cleanup'**
+  String get novelPurgeMasterSwitch;
+
+  /// No description provided for @novelPurgeRulesSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Rules'**
+  String get novelPurgeRulesSection;
+
+  /// No description provided for @novelPurgeOptions.
+  ///
+  /// In en, this message translates to:
+  /// **'Options'**
+  String get novelPurgeOptions;
+
+  /// No description provided for @novelPurgeContentSection.
+  ///
+  /// In en, this message translates to:
+  /// **'Match & replace'**
+  String get novelPurgeContentSection;
+
+  /// No description provided for @novelPurgeReorderHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Press and hold a rule to reorder'**
+  String get novelPurgeReorderHint;
+
+  /// No description provided for @novelPurgeBookSwitch.
+  ///
+  /// In en, this message translates to:
+  /// **'Cleanup for this book'**
+  String get novelPurgeBookSwitch;
+
+  /// No description provided for @novelPurgeBookSwitchDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'When off, this book\'s text is left untouched'**
+  String get novelPurgeBookSwitchDesc;
+
+  /// No description provided for @novelPurgeRuleCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{total} rules, {enabled} enabled'**
+  String novelPurgeRuleCount(Object enabled, Object total);
+
+  /// No description provided for @novelPurgeEmptyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Load the built-in rules below, or add your own from the button'**
+  String get novelPurgeEmptyHint;
+
+  /// No description provided for @novelPurgeAddRule.
+  ///
+  /// In en, this message translates to:
+  /// **'Add rule'**
+  String get novelPurgeAddRule;
+
+  /// No description provided for @novelPurgeNewTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Add replacement rule'**
+  String get novelPurgeNewTitle;
+
+  /// No description provided for @novelPurgeEditTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit replacement rule'**
+  String get novelPurgeEditTitle;
+
+  /// No description provided for @novelPurgeRuleName.
+  ///
+  /// In en, this message translates to:
+  /// **'Rule name'**
+  String get novelPurgeRuleName;
+
+  /// No description provided for @novelPurgeRuleNameHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Optional, for easier recognition'**
+  String get novelPurgeRuleNameHint;
+
+  /// No description provided for @novelPurgePattern.
+  ///
+  /// In en, this message translates to:
+  /// **'Match'**
+  String get novelPurgePattern;
+
+  /// No description provided for @novelPurgePatternHintRegex.
+  ///
+  /// In en, this message translates to:
+  /// **'Regular expression, e.g. ^Chapter unfinished.*\$'**
+  String get novelPurgePatternHintRegex;
+
+  /// No description provided for @novelPurgePatternHintPlain.
+  ///
+  /// In en, this message translates to:
+  /// **'Text to replace'**
+  String get novelPurgePatternHintPlain;
+
+  /// No description provided for @novelPurgeReplacement.
+  ///
+  /// In en, this message translates to:
+  /// **'Replace with'**
+  String get novelPurgeReplacement;
+
+  /// No description provided for @novelPurgeReplacementHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Leave empty to remove the match'**
+  String get novelPurgeReplacementHint;
+
+  /// No description provided for @novelPurgeUseRegex.
+  ///
+  /// In en, this message translates to:
+  /// **'Use regular expression'**
+  String get novelPurgeUseRegex;
+
+  /// No description provided for @novelPurgeUseRegexDescOn.
+  ///
+  /// In en, this message translates to:
+  /// **'Match with a regex pattern'**
+  String get novelPurgeUseRegexDescOn;
+
+  /// No description provided for @novelPurgeUseRegexDescOff.
+  ///
+  /// In en, this message translates to:
+  /// **'Match exact plain text'**
+  String get novelPurgeUseRegexDescOff;
+
+  /// No description provided for @novelPurgePosition.
+  ///
+  /// In en, this message translates to:
+  /// **'Applies to'**
+  String get novelPurgePosition;
+
+  /// No description provided for @novelPurgePositionContent.
+  ///
+  /// In en, this message translates to:
+  /// **'Content'**
+  String get novelPurgePositionContent;
+
+  /// No description provided for @novelPurgePositionTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Title'**
+  String get novelPurgePositionTitle;
+
+  /// No description provided for @novelPurgePositionBoth.
+  ///
+  /// In en, this message translates to:
+  /// **'Both'**
+  String get novelPurgePositionBoth;
+
+  /// No description provided for @novelPurgeApplyTo.
+  ///
+  /// In en, this message translates to:
+  /// **'Scope'**
+  String get novelPurgeApplyTo;
+
+  /// No description provided for @novelPurgeApplyToAll.
+  ///
+  /// In en, this message translates to:
+  /// **'All books'**
+  String get novelPurgeApplyToAll;
+
+  /// No description provided for @novelPurgeApplyToBook.
+  ///
+  /// In en, this message translates to:
+  /// **'This book'**
+  String get novelPurgeApplyToBook;
+
+  /// No description provided for @novelPurgeApplyToSource.
+  ///
+  /// In en, this message translates to:
+  /// **'This source'**
+  String get novelPurgeApplyToSource;
+
+  /// No description provided for @novelPurgeBuiltin.
+  ///
+  /// In en, this message translates to:
+  /// **'Built-in'**
+  String get novelPurgeBuiltin;
+
+  /// No description provided for @novelPurgeRegex.
+  ///
+  /// In en, this message translates to:
+  /// **'Regex'**
+  String get novelPurgeRegex;
+
+  /// No description provided for @novelPurgePlainText.
+  ///
+  /// In en, this message translates to:
+  /// **'Plain'**
+  String get novelPurgePlainText;
+
+  /// No description provided for @novelPurgeRuleEnabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Enabled'**
+  String get novelPurgeRuleEnabled;
+
+  /// No description provided for @novelPurgeRestoreBuiltin.
+  ///
+  /// In en, this message translates to:
+  /// **'Restore built-in rules'**
+  String get novelPurgeRestoreBuiltin;
+
+  /// No description provided for @novelPurgeRestoreAdded.
+  ///
+  /// In en, this message translates to:
+  /// **'Added {count} built-in rules'**
+  String novelPurgeRestoreAdded(Object count);
+
+  /// No description provided for @novelPurgeRestoreNone.
+  ///
+  /// In en, this message translates to:
+  /// **'All built-in rules are already present'**
+  String get novelPurgeRestoreNone;
+
+  /// No description provided for @novelPurgeDeleteMsg.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete rule \"{name}\"?'**
+  String novelPurgeDeleteMsg(Object name);
+
+  /// No description provided for @novelPurgePatternRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Match content cannot be empty'**
+  String get novelPurgePatternRequired;
+
+  /// No description provided for @novelPurgePatternInvalid.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid regular expression'**
+  String get novelPurgePatternInvalid;
+
+  /// No description provided for @novelPurgeRuleUrlOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'Line is a URL'**
+  String get novelPurgeRuleUrlOnly;
+
+  /// No description provided for @novelPurgeRuleSitePromo.
+  ///
+  /// In en, this message translates to:
+  /// **'Site / domain promo'**
+  String get novelPurgeRuleSitePromo;
+
+  /// No description provided for @novelPurgeRuleMobilePromo.
+  ///
+  /// In en, this message translates to:
+  /// **'Mobile reading hint'**
+  String get novelPurgeRuleMobilePromo;
+
+  /// No description provided for @novelPurgeRuleNextPage.
+  ///
+  /// In en, this message translates to:
+  /// **'Page-turn promo'**
+  String get novelPurgeRuleNextPage;
+
+  /// No description provided for @novelPurgeRuleSpeed.
+  ///
+  /// In en, this message translates to:
+  /// **'Update-speed / no-popup promo'**
+  String get novelPurgeRuleSpeed;
+
+  /// No description provided for @novelPurgeRuleSocial.
+  ///
+  /// In en, this message translates to:
+  /// **'Chat group / official account promo'**
+  String get novelPurgeRuleSocial;
+
+  /// No description provided for @novelPurgeRuleSearch.
+  ///
+  /// In en, this message translates to:
+  /// **'Search engine referral'**
+  String get novelPurgeRuleSearch;
+
+  /// No description provided for @novelPurgeRuleAdTag.
+  ///
+  /// In en, this message translates to:
+  /// **'Ad marker'**
+  String get novelPurgeRuleAdTag;
+
+  /// No description provided for @novelPurgeRuleInvisible.
+  ///
+  /// In en, this message translates to:
+  /// **'Zero-width control chars'**
+  String get novelPurgeRuleInvisible;
+
+  /// No description provided for @novelPurgeRuleTrailingSpace.
+  ///
+  /// In en, this message translates to:
+  /// **'Trailing spaces'**
+  String get novelPurgeRuleTrailingSpace;
+
+  /// No description provided for @novelPurgeRuleAuthorPlea.
+  ///
+  /// In en, this message translates to:
+  /// **'Vote / tip begging'**
+  String get novelPurgeRuleAuthorPlea;
+
+  /// No description provided for @novelPurgeRuleChapterEnd.
+  ///
+  /// In en, this message translates to:
+  /// **'Chapter-end marker'**
+  String get novelPurgeRuleChapterEnd;
 }
 
 class _AppLocalizationsDelegate

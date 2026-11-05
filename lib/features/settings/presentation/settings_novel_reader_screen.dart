@@ -19,6 +19,7 @@ import '../../../core/novel/novel_tts_audio_cache.dart';
 import '../../../core/novel/novel_page_animation.dart';
 import '../../../core/novel/novel_pre_download_preferences.dart';
 import '../../../core/novel/novel_reader_preferences.dart';
+import '../../../core/novel/novel_replace_rule_screen.dart';
 import '../../../core/platform/platform_service.dart';
 import '../../../core/settings/reader_default_settings.dart';
 import '../../../core/novel/novel_export_template.dart';
@@ -2321,11 +2322,37 @@ class _SettingsNovelReaderScreenState extends State<SettingsNovelReaderScreen> {
                     ],
                   ),
 
-                  // ── 10c. 导出模板（EPUB 自定义样式/封面/简介）──
+                  // ── 10c. 正文净化（全局替换规则，内置常用规则）──
+                  SettingsCard(
+                    key: const ValueKey<String>('novel.purge'),
+                    initiallyExpanded: false,
+                    index: 11,
+                    title: l10n.novelPurgeTitle,
+                    children: <Widget>[
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: Icon(
+                          Icons.cleaning_services_rounded,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                        title: Text(l10n.novelPurgeTitle),
+                        subtitle: Text(l10n.novelPurgeDesc),
+                        trailing: const Icon(Icons.chevron_right_rounded),
+                        onTap: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const NovelReplaceRuleScreen(),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  // ── 10d. 导出模板（EPUB 自定义样式/封面/简介）──
                   SettingsCard(
                     key: const ValueKey<String>('novel.exportTemplate'),
                     initiallyExpanded: false,
-                    index: 11,
+                    index: 12,
                     title: l10n.novelExportTemplate,
                     children: <Widget>[
                       Text(l10n.novelExportTemplateDesc,

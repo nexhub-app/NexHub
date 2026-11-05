@@ -183,6 +183,7 @@ flutter:
     - assets/builtin/
     - plugins/builtin/
     - assets/sniffer/
+    - assets/novel/
     - assets/announcements.json
     - assets/shaders/anime4k/
     # 内置开源字体的许可全文（SIL OFL 1.1 要求随字体分发），main.dart 注册
