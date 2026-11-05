@@ -17,49 +17,83 @@ void main() {
 
   final PlatformService ps = PlatformService.instance;
 
+  /// 断言某个路径形态**只**被 [only] 平台接受，其余平台一律拒绝。
+  void expectOnly(String path, AppPlatform only) {
+    for (final AppPlatform p in AppPlatform.values) {
+      expect(
+        isPathSupportedOnPlatform(path, p),
+        p == only,
+        reason: '$path 在 $p 平台判定错误',
+      );
+    }
+  }
+
+  /// 断言所有平台都接受（形态与平台无关）。
+  void expectAll(String path) {
+    for (final AppPlatform p in AppPlatform.values) {
+      expect(
+        isPathSupportedOnPlatform(path, p),
+        isTrue,
+        reason: '$path 在 $p 平台被误判为外来',
+      );
+    }
+  }
+
   /// 当前测试宿主「一定不认」的路径（用来构造外来平台值）。
   String foreignPath() => ps.isAndroid
       ? 'ohosdoc:///data/storage/el2/base/haps/entry/files/Download'
       : 'content://com.android.externalstorage.documents/tree/primary%3ADownload';
 
-  test('空路径与相对路径不判为外来', () {
-    expect(isPathSupportedOnThisPlatform(''), isTrue);
-    expect(isPathSupportedOnThisPlatform('   '), isTrue);
-    expect(isPathSupportedOnThisPlatform('Download/novel'), isTrue);
+  test('空路径与无关形态全平台可用', () {
+    expectAll('');
+    expectAll('   ');
+    expectAll('Download/novel');
+    expectAll('file:///tmp/x');
+    expectAll('/tmp/nexhub');
   });
 
-  test('带 scheme 的路径按归属平台判定', () {
-    expect(
-      isPathSupportedOnThisPlatform('content://tree/primary'),
-      ps.isAndroid,
+  test('scheme 型路径只被归属平台接受', () {
+    expectOnly(
+      'content://com.android.externalstorage.documents/tree/primary%3ADownload',
+      AppPlatform.android,
     );
-    expect(
-      isPathSupportedOnThisPlatform('ohosdoc:///data/storage/el2/base'),
-      ps.isOHOS,
+    expectOnly(
+      'ohosdoc:///storage/Users/currentUser/Download/com.nexhub.nexhub',
+      AppPlatform.ohos,
     );
   });
 
-  test('盘符与已知沙箱前缀按归属平台判定', () {
-    expect(
-      isPathSupportedOnThisPlatform(r'C:\Users\me\Downloads'),
-      ps.isWindows,
+  test('盘符 / UNC 只被 Windows 接受', () {
+    expectOnly(r'C:\Users\me\Downloads', AppPlatform.windows);
+    expectOnly('D:/Downloads', AppPlatform.windows);
+    expectOnly(r'\\NAS\share\Downloads', AppPlatform.windows);
+  });
+
+  test('移动端沙箱前缀只被归属平台接受', () {
+    expectOnly('/storage/emulated/0/Download', AppPlatform.android);
+    expectOnly('/sdcard/NexHub', AppPlatform.android);
+    expectOnly('/data/user/0/com.nexhub.app/files', AppPlatform.android);
+    expectOnly(
+      '/data/storage/el2/base/haps/entry/files/Download',
+      AppPlatform.ohos,
     );
-    expect(
-      isPathSupportedOnThisPlatform('D:/Downloads'),
-      ps.isWindows,
+    expectOnly(
+      '/var/mobile/Containers/Data/Application/ABC/Documents',
+      AppPlatform.ios,
     );
-    expect(
-      isPathSupportedOnThisPlatform('/storage/emulated/0/Download'),
-      ps.isAndroid,
-    );
-    expect(
-      isPathSupportedOnThisPlatform('/data/storage/el2/base/files'),
-      ps.isOHOS,
-    );
-    expect(
-      isPathSupportedOnThisPlatform('/var/mobile/Containers/Data/Application'),
-      ps.isIOS,
-    );
+  });
+
+  test('本机判定与平台矩阵一致', () {
+    expect(isPathSupportedOnThisPlatform('content://tree/primary'),
+        ps.isAndroid);
+    expect(isPathSupportedOnThisPlatform('ohosdoc:///data/storage/el2/base'),
+        ps.isOHOS);
+    expect(isPathSupportedOnThisPlatform(r'C:\Users\me\Downloads'),
+        ps.isWindows);
+    expect(isPathSupportedOnThisPlatform('/storage/emulated/0/Download'),
+        ps.isAndroid);
+    expect(isPathSupportedOnThisPlatform('/var/mobile/Containers'),
+        ps.isIOS);
   });
 
   test('导入时跳过外来平台的下载目录设置', () {
