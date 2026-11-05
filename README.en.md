@@ -97,7 +97,7 @@ The HarmonyOS (HarmonyOS / OpenHarmony, arm64 device) build is officially suppor
 - Bangumi login & sync (authorization completed in an in-app WebView);
 - In-app updates (opens the browser on the Releases page for the new HAP).
 
-**Installation (sideload)**: download `NexHub-ohos-arm64-unsigned.hap` from the Releases page → sign it yourself with an on-device signing tool and install (or install via DevEco Studio / hdc). Release artifacts are consistently unsigned; signing is left to the user.
+**Installation**: sideloading on HarmonyOS requires signing on the device itself. Two paths: (1) install the QSStore installer app, then install and update NexHub from within it (recommended — the computer is only needed once, to sign the installer); (2) download `NexHub-ohos-arm64-unsigned.hap` from the Releases page and sign it with a desktop tool (Auto-Installer / HoKit) or DevEco Studio before installing. Release artifacts are consistently unsigned; signing is left to the user. Full steps, update notes and troubleshooting: [HarmonyOS install & update guide](./docs/OHOS_INSTALL_GUIDE.md).
 
 ### HarmonyOS: remaining platform differences
 

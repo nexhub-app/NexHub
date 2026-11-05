@@ -97,7 +97,7 @@ NexHub 鸿蒙版（HarmonyOS / OpenHarmony，arm64 真机）已正式支持。�
 - Bangumi 账号登录与同步（应用内 WebView 完成授权）；
 - 应用内更新（跳转浏览器发布页下载新版 HAP）。
 
-**安装方式（侧载）**：从 Release 页下载 `NexHub-ohos-arm64-unsigned.hap` → 使用端侧签名工具对安装包自行签名后安装（或通过 DevEco Studio / hdc 安装）。发布物统一不带签名，签名环节交由使用者完成。
+**安装方式**：鸿蒙侧载需在本机完成签名，两条路径任选——① 安装「轻启·安装器」后在其内安装与更新 NexHub（推荐，只需首次用电脑签装安装器，之后无需电脑）；② 从 Release 页下载 `NexHub-ohos-arm64-unsigned.hap`，用桌面签名工具（小白调试助手 / HoKit）或 DevEco Studio 签名后安装。发布物统一不带签名，签名环节交由使用者完成。完整步骤、更新说明与常见问题见 [鸿蒙安装与更新指南](./docs/OHOS_INSTALL_GUIDE.md)。
 
 ### 鸿蒙版平台差异（未完成项）
 
