@@ -24,6 +24,7 @@ import 'dart:convert';
 import 'package:hive/hive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../storage/platform_path_compat.dart';
 import '../storage/storage_boxes.dart';
 
 /// 备份内容分类（用户可见粒度）。
@@ -180,8 +181,11 @@ dynamic _decodeHiveValue(dynamic v) {
 
 /// 把任意 SharedPreferences 值打包/恢复。`List<dynamic>` 全部以 StringList 处理
 /// （与本地历史实现一致：未来如需支持更多类型只需在此扩展）。
-Future<void> _setSharedPrefValue(SharedPreferences prefs, String key, dynamic v) async {
+Future<void> _setSharedPrefValue(SharedPreferences prefs, String key, dynamic raw) async {
   try {
+    // 跨平台备份：外来平台的路径型偏好（content:// / ohosdoc:// / 盘符 …）
+    // 写进本机就会在下次启动按错平台初始化（详见 platform_path_compat）。
+    final dynamic v = normalizeImportedPrefValue(key, raw);
     if (v == null) return;
     if (v is String) {
       await prefs.setString(key, v);
@@ -343,7 +347,8 @@ Future<void> applyBackupBundle(
     }
     final prefs = await SharedPreferences.getInstance();
     for (final entry in prefsRaw.entries) {
-      final v = entry.value;
+      final dynamic v = normalizeImportedPrefValue(entry.key, entry.value);
+      if (v == null) continue;
       try {
         if (v is String) {
           await prefs.setString(entry.key, v);

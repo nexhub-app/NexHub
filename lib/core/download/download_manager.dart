@@ -391,8 +391,16 @@ class DownloadManager extends ChangeNotifier {
     _tasks.clear();
     _tasks.addAll(await storage.loadAll());
     _migrateLegacyCancelledToArchived();
-    await recoverOrphanedDownloads();
-    await _recoverLegacyOrphanedFolders();
+    // 孤立记录恢复是「尽力而为」：下载目录可能压根访问不到（外来平台路径 /
+    // 原生通道缺失 / 授权被收回）。异常若冒到 splash 初始化，整个应用就只剩
+    // 「加载失败」页——导入其他平台备份后的典型表现。这里吞掉并记录日志，
+    // 目录恢复可用后下次启动会再扫一遍。
+    try {
+      await recoverOrphanedDownloads();
+      await _recoverLegacyOrphanedFolders();
+    } on Object catch (e) {
+      AppLog.instance.w('[下载] 启动恢复下载记录失败（已跳过）: $e');
+    }
     await _loadSettings();
     _registerConnectivityListener();
     notifyListeners();

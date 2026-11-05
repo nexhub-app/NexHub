@@ -17,6 +17,8 @@ import 'package:nexhub/core/local/local_novel_parser.dart';
 import 'package:nexhub/core/local/pdf_util.dart';
 import 'package:nexhub/core/platform/ohos_public_storage.dart'
     show isOhosDocPath;
+import 'package:nexhub/core/storage/platform_path_compat.dart'
+    show isPathSupportedOnThisPlatform;
 import 'package:nexhub/core/utils/app_log.dart';
 import 'package:flutter/foundation.dart' show ChangeNotifier;
 import 'package:path/path.dart' as p;
@@ -620,6 +622,9 @@ class LocalContentManager extends ChangeNotifier {
     for (var i = 0; i < _items.length; i++) {
       final e = _items[i];
       if (e.coverUrl != null) continue;
+      // 外来平台路径（导入其他平台备份带进来的）在本机根本不存在：逐个尝试只
+      // 会拖慢启动（视频还要建 Player 截帧），直接跳过、保留占位图。
+      if (!isPathSupportedOnThisPlatform(e.path)) continue;
       // 仅补图片、视频、PDF、EPUB（text+.epub）；其余类型无封面。
       final bool isEpub = e.kind == LocalMediaKind.text &&
           e.path.toLowerCase().endsWith('.epub');

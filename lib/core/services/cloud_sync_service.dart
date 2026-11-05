@@ -32,6 +32,7 @@ import 'package:hive/hive.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xml/xml.dart';
 
+import '../storage/platform_path_compat.dart';
 import '../storage/storage_boxes.dart';
 import 'backup_archive.dart';
 
@@ -959,7 +960,10 @@ class CloudSyncService extends ChangeNotifier {
       final raw = jsonDecode(utf8.decode(content)) as Map<String, dynamic>;
       final prefs = await SharedPreferences.getInstance();
       for (final entry in raw.entries) {
-        final v = entry.value;
+        // 跨平台恢复：外来平台的路径型偏好不写入本机（详见
+        // storage/platform_path_compat.dart 的「导入其他平台备份打不开」说明）。
+        final dynamic v = normalizeImportedPrefValue(entry.key, entry.value);
+        if (v == null) continue;
         try {
           if (v is String) {
             await prefs.setString(entry.key, v);

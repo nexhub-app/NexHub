@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io' show Directory;
+import 'dart:io' show Directory, File;
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart' show SystemUiOverlayStyle;
@@ -49,6 +49,7 @@ import '../../core/services/source_library_bookmarks.dart';
 import '../../core/services/source_library_subscription.dart';
 import '../../core/settings/general_settings.dart';
 import '../../core/storage/cache_auto_clean.dart';
+import '../../core/storage/platform_path_compat.dart';
 import '../../core/storage/storage_boxes.dart';
 import '../../core/widgets/app_loading_indicator.dart';
 import '../../core/services/source_repository.dart';
@@ -182,9 +183,14 @@ class _SplashScreenState extends State<SplashScreen> {
       _adaptersRegistered = true;
     }
 
-    await Future.wait(<Future<dynamic>>[
-      for (final name in kStorageBoxNames) Hive.openBox(name),
+    await Future.wait(<Future<void>>[
+      for (final name in kStorageBoxNames) _openBoxResilient(name),
     ]);
+
+    // 跨平台备份自修复：外来平台写进来的路径型配置（下载 / 导出 / 截图目录）
+    // 在本机没有对应实现，必须在挑选文件系统后端之前拉回默认值，否则会按错
+    // 平台构造后端并打断启动（详见 storage/platform_path_compat.dart）。
+    await repairImportedPlatformPathsOnStartup();
 
     // 加载内置源（资源包）+ 用户导入源。
     final sourceRepo = SourceRepository();
@@ -211,6 +217,16 @@ class _SplashScreenState extends State<SplashScreen> {
     // `content://` 树 URI（Android SAF 用户目录）走 SafFileSystem。
     final downloadSettings = await DownloadSettingsStore().load();
     String configured = downloadSettings.downloadPath;
+    // 外来平台路径兜底（repairImportedPlatformPathsOnStartup 已清过一轮，
+    // 这里再守一道）：本机没有对应文件系统后端的路径一律回落平台默认目录。
+    // 典型：鸿蒙读到 Android 备份里的 content:// → SAF 原生通道不存在 →
+    // MissingPluginException 直接打断启动，用户表现为「导入备份后打不开」。
+    if (!isPathSupportedOnThisPlatform(configured)) {
+      AppLog.instance.w('[下载路径自修复] "$configured" 不属于本平台，重置为默认目录');
+      configured = await defaultDownloadPath();
+      await DownloadSettingsStore()
+          .save(downloadSettings.copyWith(downloadPath: configured));
+    }
     // 启动自修复：历史版本曾把 tree id 的 `%3A` 错误解码成 `:` 并持久化
     // （写盘用未编码 root，读取纠正为已编码 → 定位不一致 → 下载后打不开）。
     // 检测到 content:// 路径被污染则立即写回规范化值，一次性永久修复。
@@ -257,7 +273,24 @@ class _SplashScreenState extends State<SplashScreen> {
       service: mediaService,
       sourceRepo: sourceRepo,
     );
-    await downloadManager.init();
+    try {
+      await downloadManager.init();
+    } on Object catch (e) {
+      // 最后一道防线：下载后端（目录后端 / 原生通道）异常也不该让应用打不开。
+      // 换平台默认目录重建，仍失败则带着已加载的任务列表继续（下载暂不可用，
+      // 但设置页可达，用户能自修复或恢复备份）。
+      AppLog.instance.w('[下载] 初始化失败，改用默认目录重建: $e');
+      try {
+        final String fallback = await defaultDownloadPath();
+        // 先落盘再重建：init 内部会重读设置，顺序反了会读到旧的外来路径。
+        await DownloadSettingsStore()
+            .save(downloadSettings.copyWith(downloadPath: fallback));
+        downloadManager.fs = PathProviderFileSystem(fallback);
+        await downloadManager.init();
+      } on Object catch (e2) {
+        AppLog.instance.w('[下载] 默认目录初始化仍失败（降级继续启动）: $e2');
+      }
+    }
 
     // 应用内更新管理器初始化（加载镜像/自动检查设置）。
     await UpdateManager.instance.init();
@@ -351,6 +384,40 @@ class _SplashScreenState extends State<SplashScreen> {
       mediaServerAuth: mediaServerAuth,
       networkConfigService: NetworkConfigService.instance,
     );
+  }
+
+  /// 打开单个 Hive box；单个 box 损坏不应让整个应用停在「加载失败」页。
+  ///
+  /// 导入备份 / 大批量写盘途中进程被杀、磁盘写满，都可能留下校验失败的 box
+  /// 文件，[Hive.openBox] 会抛 [HiveError]。此时把疑似损坏的文件改名留档
+  /// （不直接删，便于事后排查），再重建一个空 box；非 Hive 自身错误（例如
+  /// 权限）只跳过、绝不碰文件。
+  Future<void> _openBoxResilient(String name) async {
+    try {
+      await Hive.openBox(name);
+      return;
+    } on HiveError catch (e) {
+      AppLog.instance.w('[存储] 打开 box "$name" 失败（疑似文件损坏）: $e');
+    } on Object catch (e) {
+      // 非 Hive 自身错误（权限 / 路径不可用等）：不碰磁盘文件，跳过该 box。
+      AppLog.instance.w('[存储] 打开 box "$name" 失败（已跳过）: $e');
+      return;
+    }
+    try {
+      final Directory dir = await getApplicationDocumentsDirectory();
+      final File file = File('${dir.path}/$name.hive');
+      if (await file.exists()) {
+        final String archived =
+            '${file.path}.corrupt-${DateTime.now().millisecondsSinceEpoch}';
+        await file.rename(archived);
+        AppLog.instance.w('[存储] 疑似损坏的 box 文件已留档: $archived');
+      }
+      await Hive.deleteBoxFromDisk(name);
+      await Hive.openBox(name);
+      AppLog.instance.i('[存储] box "$name" 已重建（原文件不可读，已留档）');
+    } on Object catch (e) {
+      AppLog.instance.w('[存储] 重建 box "$name" 失败（跳过该 box）: $e');
+    }
   }
 
   void _retry() {
