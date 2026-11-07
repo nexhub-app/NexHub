@@ -86,7 +86,19 @@ class ContentDetailScreen extends StatefulWidget {
   final MediaItem item;
   final String? heroTag;
 
-  const ContentDetailScreen({super.key, required this.item, this.heroTag});
+  /// 双栏详情栏内嵌模式（平板 / 桌面宽窗口）：true 时不作为整页路由存在——
+  /// 返回钮与自身 pop 改为回调 [onClose]（宿主收起右栏），系统返回由宿主
+  /// 的 PopScope 先行拦截。默认 false 保持整页路由行为。
+  final bool embedded;
+  final VoidCallback? onClose;
+
+  const ContentDetailScreen({
+    super.key,
+    required this.item,
+    this.heroTag,
+    this.embedded = false,
+    this.onClose,
+  });
 
   @override
   State<ContentDetailScreen> createState() => _ContentDetailScreenState();
@@ -94,6 +106,16 @@ class ContentDetailScreen extends StatefulWidget {
 
 class _ContentDetailScreenState extends State<ContentDetailScreen> {
   // ───────────────────────── 数据状态 ─────────────────────────
+
+  /// 关闭详情页：整页路由时 pop（原行为）；双栏内嵌时回调宿主收起右栏。
+  void _closeSelf() {
+    if (widget.onClose != null) {
+      widget.onClose!();
+      return;
+    }
+    Navigator.of(context).maybePop();
+  }
+
 
   late Future<List<Episode>> _episodesFuture;
 
@@ -649,7 +671,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(l10n.removeFromFavorites)),
     );
-    Navigator.of(context).pop();
+    _closeSelf();
   }
 
   Future<void> _startDownload() async {
@@ -1112,7 +1134,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
         appBar: AppBar(title: Text(item.title)),
         body: AppErrorState(
           message: l10n.contentExpired,
-          onRetry: () => Navigator.of(context).pop(),
+          onRetry: _closeSelf,
           retryLabel: l10n.back,
         ),
       );
@@ -1292,6 +1314,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
       coverUrl: item.coverUrl,
       source: source,
       heroTag: widget.heroTag,
+      onBack: widget.embedded ? _closeSelf : null,
       title: item.title,
       description: item.description ?? l10n.noDescription,
       updatedAt: item.updatedAt ?? latestEpisodeUpdatedAt(episodes),

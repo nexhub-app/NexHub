@@ -112,6 +112,10 @@ class ContentDetailTabbedShell extends StatefulWidget {
   /// AppBar 右侧操作按钮（收藏 / 下载 / 分享 / 刷新 / 删除等）。
   final List<Widget>? appBarActions;
 
+  /// 返回钮回调（非 null 时 SliverAppBar 用它替代默认路由返回）。
+  /// 双栏详情栏内嵌模式经此把「返回」转为「收起详情栏」。
+  final VoidCallback? onBack;
+
   /// 下拉刷新回调。
   final Future<void> Function()? onRefresh;
 
@@ -150,6 +154,7 @@ class ContentDetailTabbedShell extends StatefulWidget {
     this.bangumiContentId,
     this.bangumiSourceType,
     this.appBarActions,
+    this.onBack,
     this.onRefresh,
     this.fallbackIcon = Icons.movie_rounded,
     this.banner,
@@ -852,6 +857,9 @@ class _ContentDetailTabbedShellState extends State<ContentDetailTabbedShell>
               // 标题完全由 FlexibleSpaceBar background 接管：
               // 展开态 → 自定义 Positioned 标题（Hero 内下部）
               // 收起态 → 自定义 Positioned 标题（toolbar 内居中）
+              leading: widget.onBack != null
+                  ? BackButton(onPressed: widget.onBack)
+                  : null,
               actions: widget.appBarActions,
               // 模糊背景开启时，顶栏 / 标签栏改为半透明纱面——收起后与整页
               // 模糊背景衔接（隐约透出背景图），不再是白色实心条；展开态

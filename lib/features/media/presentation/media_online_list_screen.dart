@@ -9,7 +9,7 @@ import '../../../core/services/source_repository.dart';
 import '../../../core/widgets/module_source_search_screen.dart';
 import '../../../core/widgets/online_content_list_screen.dart';
 import '../../verification/presentation/verification_handler.dart';
-import 'content_detail_screen.dart';
+import '../../../core/navigation/app_navigator.dart';
 import 'package:nexhub/core/navigation/app_page_route.dart';
 
 /// 媒体在线浏览页（Phase 2）。
@@ -59,10 +59,10 @@ class MediaOnlineListScreen extends StatelessWidget {
       fetchCategories: service.fetchCategories,
       resolveHomeSections: service.resolveHomeSections,
       resolveFilters: service.resolveFilterGroups,
-      onItemTap: (item, heroTag) => Navigator.of(context).push(
-        AppPageRoute<void>(
-          builder: (_) => ContentDetailScreen(item: item, heroTag: heroTag),
-        ),
+      onItemTap: (item, heroTag) => AppNavigator.openContentDetail(
+        context,
+        item: item,
+        heroTag: heroTag,
       ),
       onSearch: () => Navigator.of(context).push(
         AppPageRoute<void>(
@@ -74,10 +74,10 @@ class MediaOnlineListScreen extends StatelessWidget {
               context,
               item: item,
               heroTag: heroTag,
-              onOnline: (it, tag) => Navigator.of(context).push(
-                AppPageRoute<void>(
-                  builder: (_) => ContentDetailScreen(item: it, heroTag: tag),
-                ),
+              onOnline: (it, tag) => AppNavigator.openContentDetail(
+                context,
+                item: it,
+                heroTag: tag,
               ),
             ),
           ),

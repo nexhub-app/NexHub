@@ -13,7 +13,6 @@ library;
 import 'package:material_ui/material_ui.dart';
 
 import '../../features/downloads/presentation/download_list_screen.dart';
-import '../../features/media/presentation/content_detail_screen.dart';
 import '../../features/stats/presentation/stats_overview_screen.dart';
 import '../history/history_manager.dart';
 import '../models/plugin_config.dart';
@@ -51,7 +50,11 @@ class HomeWidgetLauncher {
   ) async {
     final HistoryEntry? entry = _latestEntry(history);
     if (entry == null) return;
-    await _push(navigator, ContentDetailScreen(item: entry.toMediaItem()));
+    // 统一详情入口：窄窗口整页路由；宽屏（平板横屏 / 宽窗口）在右侧详情栏打开。
+    AppNavigator.openContentDetailViaNavigator(
+      navigator,
+      item: entry.toMediaItem(),
+    );
   }
 
   /// 回首页：卡片是从桌面点进来的，栈底就是 HomeScreen，弹回即可。

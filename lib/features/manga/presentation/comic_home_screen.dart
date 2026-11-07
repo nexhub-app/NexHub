@@ -7,13 +7,13 @@ import '../../../core/local/local_content_actions.dart';
 import '../../../core/models/bookshelf_filter.dart';
 import '../../../core/models/media_item.dart';
 import '../../../core/models/plugin_config.dart';
+import '../../../core/navigation/app_navigator.dart';
 import '../../../core/services/source_repository.dart';
 import '../../../core/widgets/bookshelf_content.dart';
 import '../../../core/widgets/library_shell.dart';
 import '../../../core/widgets/module_source_search_screen.dart';
 import '../../../core/widgets/online_source_browser_screen.dart';
 import '../../home/presentation/import_comic_screen.dart';
-import '../../media/presentation/content_detail_screen.dart';
 import '../../rss/presentation/rss_feed_list_screen.dart';
 import '../../sources/presentation/collect_api_import_screen.dart';
 import '../../sources/presentation/source_manager_screen.dart';
@@ -59,11 +59,10 @@ class ComicHomeScreen extends StatelessWidget {
               context,
               item: item,
               heroTag: heroTag,
-              onOnline: (it, tag) => Navigator.of(context).push(
-                AppPageRoute<void>(
-                  builder: (_) =>
-                      ContentDetailScreen(item: it, heroTag: tag),
-                ),
+              onOnline: (it, tag) => AppNavigator.openContentDetail(
+                context,
+                item: it,
+                heroTag: tag,
               ),
             ),
           ),
@@ -120,11 +119,7 @@ class ComicHomeScreen extends StatelessWidget {
               return;
             }
           }
-          Navigator.of(context).push(
-            AppPageRoute<void>(
-              builder: (_) => ContentDetailScreen(item: item),
-            ),
-          );
+          AppNavigator.openContentDetail(context, item: item);
         },
       ),
       onlineBody: OnlineSourceBrowserScreen(

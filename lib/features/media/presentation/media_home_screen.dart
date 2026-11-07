@@ -22,7 +22,7 @@ import '../../media_server/media_server_widgets.dart';
 import '../../rss/presentation/rss_feed_list_screen.dart';
 import '../../sources/presentation/collect_api_import_screen.dart';
 import '../../sources/presentation/source_manager_screen.dart';
-import 'content_detail_screen.dart';
+import '../../../core/navigation/app_navigator.dart';
 import 'media_online_list_screen.dart';
 import 'package:nexhub/core/navigation/app_page_route.dart';
 
@@ -66,11 +66,10 @@ class MediaHomeScreen extends StatelessWidget {
               context,
               item: item,
               heroTag: heroTag,
-              onOnline: (it, tag) => Navigator.of(context).push(
-                AppPageRoute<void>(
-                  builder: (_) =>
-                      ContentDetailScreen(item: it, heroTag: tag),
-                ),
+              onOnline: (it, tag) => AppNavigator.openContentDetail(
+                context,
+                item: it,
+                heroTag: tag,
               ),
             ),
           ),
@@ -141,11 +140,7 @@ class MediaHomeScreen extends StatelessWidget {
             );
             return;
           }
-          Navigator.of(context).push(
-            AppPageRoute<void>(
-              builder: (_) => ContentDetailScreen(item: item),
-            ),
-          );
+          AppNavigator.openContentDetail(context, item: item);
         },
       ),
       onlineBody: Consumer<MediaServerAuth>(
