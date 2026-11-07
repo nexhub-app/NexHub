@@ -69,56 +69,31 @@ class _HomeScreenState extends State<HomeScreen> {
           icon: const Icon(Icons.settings_rounded), label: l10n.navSettings),
     ];
 
-    // 双栏详情宿主上报（全局单份控制器，无通知副作用）：宽屏分支在场与否
-    // 及窗口宽度，决定各详情入口「开右栏 or 整页路由」。窄屏分支同样上报
-    // 宽度并把宿主置为不在场。
-    final TwoPaneDetailController paneController =
-        TwoPaneDetailController.instance;
-    final bool twoPaneHost = width >= AppTokens.twoPaneBreakpoint;
-    paneController.updateHost(active: twoPaneHost, windowWidth: width);
-    // 窗口缩到阈值以下：帧后收起详情栏（build 期间不能 notifyListeners）。
-    if (!twoPaneHost && paneController.isOpen) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        paneController.close();
-      });
-    }
-
     // 桌面端：侧栏为毛玻璃质感——模糊栏后的氛围底色（不穿透内容），
     // 布局保持原版并排（不再叠加分隔线，玻璃栏边缘即分界）。
-    // 平板横屏 / 宽窗口（≥ twoPaneBreakpoint）：详情入口改为在右侧详情栏
-    // 打开（列表 | 详情 同屏），列表区随栏打开自动收窄；系统返回先关栏。
+    // 宽屏（≥ twoPaneBreakpoint）：详情入口改为在右侧详情栏打开
+    // （列表 | 详情 同屏），列表区随栏打开自动收窄；系统返回先关栏。
+    // 承载逻辑集中在 [TwoPaneDetailHost]（作用域 + 收窄 + 返回关栏）。
     if (width >= AppTokens.desktopBreakpoint) {
       return _AmbientSurface(
-        child: PopScope(
-          canPop: !paneController.isOpen,
-          onPopInvokedWithResult: (bool didPop, Object? result) {
-            if (!didPop && paneController.isOpen) paneController.close();
-          },
-          child: Scaffold(
-            backgroundColor: Colors.transparent,
-            body: ListenableBuilder(
-              listenable: paneController,
-              builder: (BuildContext context, _) => Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: <Widget>[
-                  AppNavBar(
-                    selectedIndex: _index,
-                    onDestinationSelected: (int i) {
-                      replayEntrances();
-                      setState(() => _index = i);
-                    },
-                    destinations: destinations,
-                  ),
-                  Expanded(
-                    child: _AnimatedTabView(index: _index, children: _pages),
-                  ),
-                  if (paneController.isOpen)
-                    TwoPaneDetailPane(
-                      controller: paneController,
-                      windowWidth: width,
-                    ),
-                ],
-              ),
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          body: TwoPaneDetailHost(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                AppNavBar(
+                  selectedIndex: _index,
+                  onDestinationSelected: (int i) {
+                    replayEntrances();
+                    setState(() => _index = i);
+                  },
+                  destinations: destinations,
+                ),
+                Expanded(
+                  child: _AnimatedTabView(index: _index, children: _pages),
+                ),
+              ],
             ),
           ),
         ),
