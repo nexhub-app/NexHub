@@ -593,50 +593,61 @@ class ScriptResolver implements SourceResolver {
               final fetchResponseType =
                   (meta['__fetchResponseType'] as String? ?? 'json').toLowerCase();
               final bool batch = fetchUrls.isNotEmpty;
-              final apiJson = batch
-                  ? await _fetchMany(
-                      urls: fetchUrls,
-                      method: fetchMethod,
-                      body: fetchBody,
-                      headers: fetchHeaders,
-                      referer: referer,
-                      net: net,
-                      responseType: fetchResponseType,
-                      limit: fetchConcurrency,
-                    )
-                  : fetchMethod == 'post'
-                      ? (fetchResponseType == 'text'
-                          ? await HttpFetcher.instance.post(
-                              fetchUrl,
-                              data: fetchBody,
-                              headers:
-                                  fetchHeaders.isNotEmpty ? fetchHeaders : null,
-                              referer: referer,
-                              net: net,
-                            )
-                          : await HttpFetcher.instance.postJson(
-                              fetchUrl,
-                              data: fetchBody,
-                              headers:
-                                  fetchHeaders.isNotEmpty ? fetchHeaders : null,
-                              referer: referer,
-                              net: net,
-                            ))
-                      : (fetchResponseType == 'text'
-                          ? await HttpFetcher.instance.getHtml(
-                              fetchUrl,
-                              headers:
-                                  fetchHeaders.isNotEmpty ? fetchHeaders : null,
-                              referer: referer,
-                              net: net,
-                            )
-                          : await HttpFetcher.instance.getJson(
-                              fetchUrl,
-                              referer: referer,
-                              headers:
-                                  fetchHeaders.isNotEmpty ? fetchHeaders : null,
-                              net: net,
-                            ));
+              // 单条预取的 JSON 分支改用带头变体：部分站点把播放凭证放在
+              // 响应头（如 Set-Cookie 的 CloudFront 签名三件套），仅回 body
+              // 会让源侧脚本永远拿不到 → 播放 403。响应头作为处理器第二
+              // 参数交回（现有单参处理器零影响；批量路径保持原语义）。
+              dynamic apiJson;
+              Map<String, String> respHeaders = const <String, String>{};
+              if (batch) {
+                apiJson = await _fetchMany(
+                  urls: fetchUrls,
+                  method: fetchMethod,
+                  body: fetchBody,
+                  headers: fetchHeaders,
+                  referer: referer,
+                  net: net,
+                  responseType: fetchResponseType,
+                  limit: fetchConcurrency,
+                );
+              } else if (fetchMethod == 'post') {
+                if (fetchResponseType == 'text') {
+                  // text 带头变体：meta 预取的 POST 文本响应同样需要响应头
+                  // （3xx 的 Location、播放凭证等），与 JSON 带头变体同语义。
+                  (apiJson, respHeaders) =
+                      await HttpFetcher.instance.postTextWithHeaders(
+                    fetchUrl,
+                    data: fetchBody,
+                    headers: fetchHeaders.isNotEmpty ? fetchHeaders : null,
+                    referer: referer,
+                    net: net,
+                  );
+                } else {
+                  (apiJson, respHeaders) =
+                      await HttpFetcher.instance.postJsonWithHeaders(
+                    fetchUrl,
+                    data: fetchBody,
+                    headers: fetchHeaders.isNotEmpty ? fetchHeaders : null,
+                    referer: referer,
+                    net: net,
+                  );
+                }
+              } else if (fetchResponseType == 'text') {
+                apiJson = await HttpFetcher.instance.getHtml(
+                  fetchUrl,
+                  headers: fetchHeaders.isNotEmpty ? fetchHeaders : null,
+                  referer: referer,
+                  net: net,
+                );
+              } else {
+                (apiJson, respHeaders) =
+                    await HttpFetcher.instance.getJsonWithHeaders(
+                  fetchUrl,
+                  headers: fetchHeaders.isNotEmpty ? fetchHeaders : null,
+                  referer: referer,
+                  net: net,
+                );
+              }
               final payloadInfo = apiJson is Map
                   ? 'keys=${(apiJson as Map).keys}'
                   : (apiJson is String
@@ -647,9 +658,11 @@ class ScriptResolver implements SourceResolver {
               debugPrint('[ScriptResolver] 预取成功: $fetchLabel, $payloadInfo');
               ParseDiagnostics.log(source.id, '✅ 预取成功: $fetchLabel');
 
-              // Step 3: 调用 JS 处理函数（纯同步，传入预取数据）
+              // Step 3: 调用 JS 处理函数（纯同步，传入预取数据；
+              // 单条路径附响应头作第二参数，供源提取播放凭证）。
               final processResult = await engine
-                  .run(script, processor, <dynamic>[apiJson])
+                  .run(script, processor,
+                      batch ? <dynamic>[apiJson] : <dynamic>[apiJson, respHeaders])
                   .timeout(const Duration(seconds: 10));
               result = _decodeEngineResult(processResult);
               debugPrint(
@@ -981,9 +994,14 @@ class ScriptResolver implements SourceResolver {
       // 源可返回多条线路（key 为 `urls` 或 `lines`，元素可为字符串或
       // {url,name,headers} 对象）；非空时播放器「线路」面板即可切换。
       final lines = _toVideoLines(result['urls'] ?? result['lines']);
+      // 顶层 `headers`：源返回的播放凭证头（Cookie / Referer / UA 等）。
+      // VideoResult 模型本就支持（fromJson 同样在解析），播放器打开媒体时
+      // 会随 mpv 请求携带；此前漏透传导致动态 Cookie 类源播放 403。
+      final headers = _strMapFrom(result['headers']);
       return VideoResult(
         url: url,
         type: _strOrNull(result['type']),
+        headers: headers,
         lines: lines,
       );
     }
@@ -1006,11 +1024,25 @@ class ScriptResolver implements SourceResolver {
           final name = _str(e['name']).isNotEmpty
               ? _str(e['name'])
               : '线路 ${out.length + 1}';
-          out.add(VideoLine(name: name, url: u));
+          // 行级 `headers`：单线路地址需要独立凭证时由源提供（通用能力）。
+          out.add(VideoLine(name: name, url: u, headers: _strMapFrom(e['headers'])));
         }
       }
     }
     return out;
+  }
+
+  /// 把脚本返回的 `headers`（Map 或 JSON 字符串）归一为 Map<String, String>。
+  Map<String, String>? _strMapFrom(dynamic v) {
+    if (v is Map) {
+      final out = <String, String>{
+        for (final e in v.entries)
+          if (e.value != null && e.value.toString().isNotEmpty)
+            e.key.toString(): e.value.toString(),
+      };
+      return out.isEmpty ? null : out;
+    }
+    return null;
   }
 
   /// 漫画图片列表（脚本可返回 `['url', ...]` 或 `[{ url }, ...]`）。

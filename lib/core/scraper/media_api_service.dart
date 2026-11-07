@@ -162,6 +162,32 @@ class MediaApiService {
       }
     }
 
+    // 0.5 动态分类路由（通用通道）：源声明 `categories` 路由（script / jsonpath
+    // 均可，解析器自行取数，含鉴权两跳等任意流程），返回 [{id,title}] 列表。
+    // 分类集合来自站点接口（源头动态下发），静态 categoryEntries 作为失败兜底。
+    // 完全由源声明驱动，不含任何站点逻辑。
+    if (source.routes.containsKey('categories')) {
+      try {
+        final r =
+            await registry.find(source, 'categories').resolve(source, 'categories');
+        final entries = <CategoryEntry>[];
+        if (r is List) {
+          for (final e in r) {
+            // ScriptResolver 的 default 转换把脚本返回的 [{id,title}] 强转成
+            // MediaItem（仅 id/title 有意义）；builtin 路径同样落此结构。
+            if (e is! MediaItem) continue;
+            final id = e.id.trim();
+            final title = e.title.trim();
+            if (id.isEmpty || title.isEmpty) continue;
+            entries.add(CategoryEntry(id: id, title: title));
+          }
+        }
+        if (entries.isNotEmpty) return entries;
+      } on Object {
+        // 动态分类失败 → 落到下方静态声明，分类 Tab 不整体失效。
+      }
+    }
+
     // 1. 声明式静态分类：selectors.category.categories（如某漫画源）。
     final selCat = source.selectors?['category'];
     if (selCat is Map<String, dynamic>) {
