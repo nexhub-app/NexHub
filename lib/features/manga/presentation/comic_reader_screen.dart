@@ -5274,10 +5274,19 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
   /// 双页并排是否生效：仅横排单页模式（LTR/RTL）支持。
   /// 竖排 / 长条模式下「双页拆分」开关会被自动关闭（见设置面板 _buildReadingMode /
   /// _buildSplitDoublePage 的联动），以保证开关始终「有作用」。
-  bool get _isDoublePage =>
-      _prefs.splitDoublePage &&
-      (_prefs.readingMode == ReadingMode.singleLTR ||
-          _prefs.readingMode == ReadingMode.singleRTL);
+  /// 「宽屏自动双页」在横屏且宽度达桌面断点（平板横屏 / 桌面宽窗口）时
+  /// 自动启用跨页；竖排 / 长条模式不参与。
+  bool get _isDoublePage {
+    if (_prefs.readingMode != ReadingMode.singleLTR &&
+        _prefs.readingMode != ReadingMode.singleRTL) {
+      return false;
+    }
+    if (_prefs.splitDoublePage) return true;
+    if (!_prefs.autoDoublePageOnWide) return false;
+    final Size size = MediaQuery.sizeOf(context);
+    return size.width > size.height &&
+        size.width >= AppTokens.desktopBreakpoint;
+  }
 
   /// 首屏单图：双页模式【第一章】首页单独显示，其后恢复双页。
   /// 仅首章生效：进度条 / 跨页映射（[_doublePageSpreadFor] / [_doublePageLeftPageFor]）

@@ -2667,6 +2667,7 @@
   "readerShowPageNumber": "显示页码",
   "readerSplitDoublePage": "双页拆分",
   "readerSplitDoublePageHint": "已开启双页拆分，已切换到横排单页模式",
+  "readerAutoDoublePageOnWide": "宽屏自动双页",
   "readerInitialZoom": "初始缩放",
   "readerZoomFitWidth": "适配宽度",
   "readerZoomFitHeight": "适配高度",

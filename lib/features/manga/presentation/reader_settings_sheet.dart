@@ -1240,6 +1240,7 @@ class _FlatSettingsSheetState extends State<_FlatSettingsSheet> {
                       '旋转页面',
                       '跨章无缝续读',
                       '双页拆分',
+                      '宽屏自动双页',
                       '条漫解码限幅',
                     ],
                     children: <Widget>[
@@ -1282,6 +1283,12 @@ class _FlatSettingsSheetState extends State<_FlatSettingsSheet> {
                         }
                         _update(next);
                       }),
+                      // 宽屏自动双页：平板横屏 / 桌面宽窗口自动启用跨页（默认关）。
+                      _switchTile(
+                          l10n.readerAutoDoublePageOnWide,
+                          _draft.autoDoublePageOnWide,
+                          (v) =>
+                              _update(_draft.copyWith(autoDoublePageOnWide: v))),
                       // 首屏单图：双页模式第一章首页单独显示，其后恢复双页。
                       _switchTile(
                           l10n.readerShowSingleImageOnFirstPage,

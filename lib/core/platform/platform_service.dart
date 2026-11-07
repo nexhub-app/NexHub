@@ -41,9 +41,9 @@ class PlatformService {
 
   static const MethodChannel _channel = MethodChannel('nexhub/device_form');
 
-  /// 鸿蒙设备形态（`deviceInfo.deviceType`）：`phone` / `2in1` / ...
+  /// 鸿蒙设备形态（`deviceInfo.deviceType`）：`phone` / `tablet` / `2in1` / ...
   ///
-  /// null = 未初始化或获取失败，此时 [isOHOSPC] 为 false、按手机形态回退。
+  /// null = 未初始化或获取失败，此时 [isOHOSPC]/[isOHOSTablet] 为 false、按手机形态回退。
   String? _ohosDeviceType;
 
   /// 启动期读取鸿蒙设备形态；非鸿蒙立即返回。
@@ -93,6 +93,12 @@ class PlatformService {
   ///
   /// 只有启动期成功读到 `deviceType == '2in1'` 才为 true；未知一律按手机回退。
   bool get isOHOSPC => isOHOS && _ohosDeviceType == '2in1';
+
+  /// 是否为鸿蒙平板（MatePad 等原生平板设备）。
+  ///
+  /// 只有启动期成功读到 `deviceType == 'tablet'` 才为 true；未知一律按手机回退。
+  /// 平板仍属移动能力轴（触屏 / SystemChrome），宽屏布局由响应式断点负责。
+  bool get isOHOSTablet => isOHOS && _ohosDeviceType == 'tablet';
 
   /// 是否为鸿蒙手机 / 平板。
   bool get isOHOSPhone => isOHOS && !isOHOSPC;

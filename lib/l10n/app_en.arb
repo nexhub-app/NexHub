@@ -2689,6 +2689,7 @@
   "readerShowPageNumber": "Show page number",
   "readerSplitDoublePage": "Split double page",
   "readerSplitDoublePageHint": "Double-page split enabled; switched to horizontal single-page mode",
+  "readerAutoDoublePageOnWide": "Auto double-page on wide screens",
   "readerInitialZoom": "Initial zoom",
   "readerZoomFitWidth": "Fit width",
   "readerZoomFitHeight": "Fit height",

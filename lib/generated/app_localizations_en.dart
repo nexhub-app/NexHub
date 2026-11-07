@@ -4845,6 +4845,9 @@ class AppLocalizationsEn extends AppLocalizations {
       'Double-page split enabled; switched to horizontal single-page mode';
 
   @override
+  String get readerAutoDoublePageOnWide => 'Auto double-page on wide screens';
+
+  @override
   String get readerInitialZoom => 'Initial zoom';
 
   @override

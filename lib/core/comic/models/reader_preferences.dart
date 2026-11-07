@@ -461,6 +461,10 @@ class ReaderPreferences {
   /// 双页拆分（占位字段，精细拼页逻辑属）。
   final bool splitDoublePage;
 
+  /// 宽屏自动双页：横屏且宽度达桌面断点（平板横屏 / 桌面宽窗口）时自动
+  /// 启用跨页，与 [splitDoublePage] 任一满足即生效；竖排 / 长条模式不参与。
+  final bool autoDoublePageOnWide;
+
   /// 左右留白（页面左右内边距），取值范围 0.0~0.5，表示占屏幕宽度的比例。
   /// 0 = 无边距；渲染时在图片左右各加 sideMargin * 屏宽 的留白。
   final double sideMargin;
@@ -656,6 +660,7 @@ class ReaderPreferences {
     this.keepScreenOn = false,
     this.rotateLandscape = false,
     this.splitDoublePage = false,
+    this.autoDoublePageOnWide = false,
     this.sideMargin = 0.0,
     this.flashEnabled = false,
     this.flashTime = 120,
@@ -773,6 +778,7 @@ class ReaderPreferences {
       keepScreenOn: json['keepScreenOn'] as bool? ?? false,
       rotateLandscape: json['rotateLandscape'] as bool? ?? false,
       splitDoublePage: json['splitDoublePage'] as bool? ?? false,
+      autoDoublePageOnWide: json['autoDoublePageOnWide'] as bool? ?? false,
       sideMargin: (json['sideMargin'] as num?)?.toDouble() ?? 0.0,
       flashEnabled: json['flashEnabled'] as bool? ?? false,
       flashTime: (json['flashTime'] as num?)?.toInt() ?? 120,
@@ -888,6 +894,7 @@ class ReaderPreferences {
         'keepScreenOn': keepScreenOn,
         'rotateLandscape': rotateLandscape,
         'splitDoublePage': splitDoublePage,
+        'autoDoublePageOnWide': autoDoublePageOnWide,
         'sideMargin': sideMargin,
         'flashEnabled': flashEnabled,
         'flashTime': flashTime,
@@ -967,6 +974,7 @@ class ReaderPreferences {
     bool? keepScreenOn,
     bool? rotateLandscape,
     bool? splitDoublePage,
+    bool? autoDoublePageOnWide,
     double? sideMargin,
     bool? flashEnabled,
     int? flashTime,
@@ -1045,6 +1053,7 @@ class ReaderPreferences {
         keepScreenOn: keepScreenOn ?? this.keepScreenOn,
         rotateLandscape: rotateLandscape ?? this.rotateLandscape,
         splitDoublePage: splitDoublePage ?? this.splitDoublePage,
+        autoDoublePageOnWide: autoDoublePageOnWide ?? this.autoDoublePageOnWide,
         sideMargin: sideMargin ?? this.sideMargin,
         flashEnabled: flashEnabled ?? this.flashEnabled,
         flashTime: flashTime ?? this.flashTime,

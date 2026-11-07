@@ -9194,6 +9194,12 @@ abstract class AppLocalizations {
   /// **'Double-page split enabled; switched to horizontal single-page mode'**
   String get readerSplitDoublePageHint;
 
+  /// No description provided for @readerAutoDoublePageOnWide.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto double-page on wide screens'**
+  String get readerAutoDoublePageOnWide;
+
   /// No description provided for @readerInitialZoom.
   ///
   /// In en, this message translates to:

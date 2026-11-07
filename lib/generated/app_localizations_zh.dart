@@ -4755,6 +4755,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get readerSplitDoublePageHint => '已开启双页拆分，已切换到横排单页模式';
 
   @override
+  String get readerAutoDoublePageOnWide => '宽屏自动双页';
+
+  @override
   String get readerInitialZoom => '初始缩放';
 
   @override

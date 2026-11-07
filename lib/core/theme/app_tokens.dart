@@ -117,6 +117,10 @@ class AppTokens {
   /// 紧凑布局断点（Material 3 compact/medium 分界）。
   /// 宽度 < 此值时详情页头部改用「chips / 按钮下移全宽」的窄屏布局。
   static const double compactBreakpoint = 600;
+
+  /// 双栏详情断点（≥ 此宽度详情在右侧栏打开而非整页路由）。
+  /// 1120 = 侧栏 80 + 列表可用 640 + 详情栏最窄 400。
+  static const double twoPaneBreakpoint = 1120;
 }
 
 /// 阴影 Token（随 ColorScheme 自适应，禁止写死颜色）。
