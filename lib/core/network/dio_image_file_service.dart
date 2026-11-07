@@ -24,28 +24,53 @@ import 'dart:typed_data';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:http/http.dart' as http;
 
+import '../models/plugin_config.dart';
 import '../scraper/http_fetcher.dart';
 import '../utils/app_log.dart';
 import '../utils/image_decrypt_registry.dart';
+import 'model/effective_network_profile.dart';
 import 'network_config_service.dart';
 
 /// 全应用统一图片缓存管理器（SourceImage 专用入口）。
 class NexImageCacheManager extends CacheManager {
   static const String key = 'nexCachedImageData';
 
-  static final NexImageCacheManager instance = NexImageCacheManager._();
+  static final NexImageCacheManager instance = NexImageCacheManager._(key, null);
 
-  NexImageCacheManager._()
+  /// 按源取管理器：源非 null 时其图片请求走该源的有效网络档案
+  /// （ECH/mitm/代理与页面同路）。缓存目录按源隔离（源图片本就源专属）。
+  static final Map<String, NexImageCacheManager> _byKey = <String, NexImageCacheManager>{};
+
+  static NexImageCacheManager forSource(PluginConfig? source) {
+    if (source == null) return instance;
+    final k = '${key}_${source.id}';
+    return _byKey.putIfAbsent(k, () {
+      return NexImageCacheManager._(k, () {
+        try {
+          return NetworkConfigService.instance.effectiveFor(source);
+        } on Object {
+          return NetworkConfigService.instance.globalProfile;
+        }
+      });
+    });
+  }
+
+  NexImageCacheManager._(String cacheKey, EffectiveNetworkProfile? Function()? netProvider)
       : super(Config(
-          key,
+          cacheKey,
           stalePeriod: const Duration(days: 30),
           maxNrOfCacheObjects: 5000,
-          fileService: DioImageFileService(),
+          fileService: DioImageFileService(netProvider: netProvider),
         ));
 }
 
 /// 基于 HttpFetcher（Dio）的图片文件服务：每次请求都按**当前**全局网络档案
 /// 取连接，不存在「早期创建、终身僵化」的 HttpClient。
+///
+/// 源级网络档案（netProvider）：SourceImage 按源传入提供者后，封面请求走该源的
+/// 有效档案（ECH/mitm/代理/DNS 与页面请求同路）。此前固定用全局档案——源级
+/// 开启 ECH 的源会出现「页面 200、封面 403」的割裂（CDN 按 TLS 通道指纹拒绝
+/// Dart 直连）。
 class DioImageFileService extends FileService {
   /// 失败日志上限：图片列表一屏几十张，网络断开时逐张记录会刷爆运行日志；
   /// 数十条足以定位「哪批 URL / 什么错误」。
@@ -56,6 +81,12 @@ class DioImageFileService extends FileService {
   static const Duration _headerTimeout = Duration(seconds: 30);
 
   static int _loggedFailures = 0;
+
+  /// 源级网络档案提供者（每次请求动态取，档案变更即时生效）。
+  final EffectiveNetworkProfile? Function()? netProvider;
+
+  DioImageFileService({EffectiveNetworkProfile? Function()? netProvider})
+      : netProvider = netProvider;
 
   /// 聚合完整字节流（仅解密分支使用：AES-CBC 需要 IV + 完整密文体）。
   static Future<Uint8List> _collect(Stream<List<int>> stream) async {
@@ -87,7 +118,8 @@ class DioImageFileService extends FileService {
       final Stream<Uint8List> raw = HttpFetcher.instance.getBytesStream(
         url,
         headers: headers,
-        net: NetworkConfigService.instance.globalProfile,
+        net: netProvider?.call() ??
+            NetworkConfigService.instance.globalProfile,
         fetchDest: 'image',
         onHeaders: (Map<String, List<String>> h) {
           h.forEach((String k, List<String> v) {

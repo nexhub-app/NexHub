@@ -9,6 +9,7 @@ import 'package:nexhub/generated/app_localizations.dart';
 
 import '../models/plugin_config.dart';
 import '../network/dio_image_file_service.dart';
+import '../network/network_config_service.dart';
 import '../theme/app_tokens.dart';
 import '../scraper/http_fetcher.dart';
 import '../local/local_content_manager.dart' show isDocUri;
@@ -147,36 +148,14 @@ class SourceImage extends StatelessWidget {
     // API），漏到图片请求会让部分 CDN 按「伪装的图片请求」拒绝；改为图片专用
     // Accept。注意不声明 image/avif：Flutter 内置解码器不支持 AVIF，协商型
     // CDN 会按 Accept 返回 AVIF → 解码失败（与下载器/HttpFetcher 图片头对齐）。
-    if (m['Accept']?.contains('application/json') ?? false) {
-      m['Accept'] = 'image/webp,image/apng,image/jpeg,image/png,image/*,*/*;q=0.8';
-    }
-    // 默认补同源 Referer：优先源站 origin（部分防盗链 CDN 只认源站同源，
-    // 用图片 CDN 的独立域名会被直接断连接 → 图片全空），取不到再回退
-    // 图片 URL 自身 origin。
-    if (!m.containsKey('Referer')) {
-      final String? origin = _fallbackRefererOrigin(url, source);
-      if (origin != null) m['Referer'] = origin;
-    }
+    // 图片请求的 Accept 一律为图片形态：site.headers 若带页面级 Accept
+    // （text/html 等）会构成「页面头 + 图片 URL」组合，部分 CDN 的 WAF 按
+    // 该指纹判盗链/机器人直接 403（签名图片 CDN 实测）。
+    m['Accept'] = 'image/webp,image/apng,image/jpeg,image/png,image/*,*/*;q=0.8';
+    // 不做 Referer 兜底注入：签名 CDN（secure= 参数）按「无 Referer」设计，
+    // 带 Referer 反而 403（签名图片 CDN 实测：无 Referer 200 / 带 Referer 403）。
+    // 防盗链 Referer 由 antiHotlinking.referer / refererOverride 显式声明。
     return m;
-  }
-
-  /// 图片兜底 Referer 的 origin：优先源站 [SiteConfig.baseUrl] 的 origin
-  /// （大部分防盗链 CDN 只认源站同源），取不到再回退图片 URL 自身 origin。
-  static String? _fallbackRefererOrigin(String url, PluginConfig? source) {
-    final String? siteBase = source?.site.baseUrl;
-    if (siteBase != null && siteBase.isNotEmpty) {
-      try {
-        final o = Uri.tryParse(siteBase)?.origin;
-        if (o != null && o.isNotEmpty) return o;
-      } catch (_) {
-        // 忽略，回退到图片 URL。
-      }
-    }
-    try {
-      return Uri.parse(url).origin;
-    } catch (_) {
-      return null;
-    }
   }
 
   Map<String, String>? _buildHeaders() => buildHeaders(
@@ -219,6 +198,7 @@ class SourceImage extends StatelessWidget {
           core = _RetryableNetworkImage(
             url: u,
             headers: _buildHeaders(),
+            source: source,
             cookieVersion: version,
             width: width,
             height: height,
@@ -257,6 +237,7 @@ class SourceImage extends StatelessWidget {
 class _RetryableNetworkImage extends StatefulWidget {
   final String url;
   final Map<String, String>? headers;
+  final PluginConfig? source;
   final double? width;
   final double? height;
   final BoxFit fit;
@@ -272,6 +253,7 @@ class _RetryableNetworkImage extends StatefulWidget {
   const _RetryableNetworkImage({
     required this.url,
     this.headers,
+    this.source,
     this.width,
     this.height,
     this.fit = BoxFit.cover,
@@ -401,7 +383,7 @@ class _RetryableNetworkImageState extends State<_RetryableNetworkImage> {
       // 统一走 Dio 网络层下载（NexImageCacheManager）：默认 HttpFileService 的
       // HttpClient 在启动早期创建后终身僵化（代理/DNS 档案加载前直连），代理
       // 环境下「文字正常、图片全挂」即源于此。
-      cacheManager: NexImageCacheManager.instance,
+      cacheManager: NexImageCacheManager.forSource(widget.source),
       // 仅失败过的图把版本并入缓存键：版本自增 → 新缓存键 → 重取
       // （验证回灌 Cookie 自动刷新失败封面）。成功过的图缓存键恒定，
       // 任何 Cookie 轮换都不再触发已加载图片重下。
@@ -705,13 +687,52 @@ Future<Uint8List?> resolveSourceImageBytes({
     final bool isHttp =
         url.startsWith('http://') || url.startsWith('https://');
     if (isHttp) {
-      final file = await NexImageCacheManager.instance.getSingleFile(
+      final headers = SourceImage.buildHeaders(
+        url: url,
+        source: source,
+        refererOverride: refererOverride,
+      );
+      // 1) 磁盘缓存命中即用（不触网）
+      try {
+        final cached =
+            await NexImageCacheManager.forSource(source).getFileFromCache(url);
+        final cachedFile = cached?.file;
+        if (cachedFile != null) return await cachedFile.readAsBytes();
+      } catch (_) {}
+      // 2) 源级网络档案拉字节：与页面请求同路（ECH/mitm/代理/DNS 与源声明一致）。
+      //    封面此前走全局档案直连，源级 ECH/代理源会出现「页面 200、封面 403」
+      //    的割裂（CDN 按 TLS 指纹/通道拒直连）。
+      final net = source != null
+          ? NetworkConfigService.instance.effectiveFor(source)
+          : NetworkConfigService.instance.globalProfile;
+      try {
+        final bytes = await HttpFetcher.instance.getBytes(
+          url,
+          headers: headers,
+          net: net,
+        );
+        if (bytes.isNotEmpty) {
+          // 3) 回填磁盘缓存（下轮 getFileFromCache / getSingleFile 命中）
+          final lower = url.toLowerCase();
+          final ext = lower.contains('.png')
+              ? 'png'
+              : lower.contains('.webp')
+                  ? 'webp'
+                  : lower.contains('.gif')
+                      ? 'gif'
+                      : 'jpg';
+          unawaited(NexImageCacheManager.forSource(source).putFile(
+            url,
+            Uint8List.fromList(bytes),
+            fileExtension: ext,
+          ));
+          return Uint8List.fromList(bytes);
+        }
+      } catch (_) {}
+      // 4) 兜底：缓存管理器原路径（其 FileService 按全局档案发请求）
+      final file = await NexImageCacheManager.forSource(source).getSingleFile(
         url,
-        headers: SourceImage.buildHeaders(
-          url: url,
-          source: source,
-          refererOverride: refererOverride,
-        ),
+        headers: headers,
       );
       return await file.readAsBytes();
     }

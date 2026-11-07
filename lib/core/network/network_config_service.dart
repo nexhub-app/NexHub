@@ -22,6 +22,7 @@ import 'model/source_network_config.dart';
 import 'runtime/dns_resolver.dart';
 import 'runtime/network_client_builder.dart';
 import 'runtime/sni_policy.dart';
+import 'runtime/system_proxy_resolver.dart';
 import 'source_network_override_store.dart';
 
 /// 网络配置服务（ChangeNotifier 单例 + Provider）。
@@ -68,6 +69,9 @@ class NetworkConfigService extends ChangeNotifier {
     }
     _loaded = true;
     _globalProfileCache = null;
+    // 桌面「跟随系统代理」：异步探测一次（Windows 注册表），缓存后供
+    // findProxy 同步回调使用；失败保持 DIRECT，不阻断启动。
+    unawaited(SystemProxyResolver.refresh());
     notifyListeners();
   }
 

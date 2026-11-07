@@ -1066,6 +1066,127 @@ class HttpFetcher {
     return _decodeJson(text);
   }
 
+  /// GET 并返回解析后的 JSON + 响应头（meta 协议带头变体）。
+  ///
+  /// 部分站点把播放凭证放在 `Set-Cookie`（如 CloudFront 签名 Cookie），
+  /// 仅回 body 的 [getJson] 让脚本永远拿不到 → 播放 403。此变体把响应头
+  /// 一并交回（多值头用 `, ` 连接，与 [_responseHeaders] 一致），供解析器
+  /// 提取凭证注入播放请求头。站点逻辑仍在源侧，不写死任何站点。
+  Future<(dynamic, Map<String, String>)> getJsonWithHeaders(
+    String url, {
+    Map<String, String>? headers,
+    String? referer,
+    bool stealth = true,
+    EffectiveNetworkProfile? net,
+  }) {
+    return _jsonWithHeaders(
+      url,
+      method: 'GET',
+      headers: <String, String>{
+        'Accept': 'application/json, text/plain, */*',
+        ...?headers,
+      },
+      referer: referer,
+      stealth: stealth,
+      net: net,
+    );
+  }
+
+  /// POST 并返回解析后的 JSON + 响应头（[postJson] 的带头变体，用途同上）。
+  Future<(dynamic, Map<String, String>)> postJsonWithHeaders(
+    String url, {
+    Map<String, String>? headers,
+    Object? data,
+    String? referer,
+    bool stealth = true,
+    EffectiveNetworkProfile? net,
+  }) {
+    return _jsonWithHeaders(
+      url,
+      method: 'POST',
+      headers: <String, String>{
+        'Accept': 'application/json, text/plain, */*',
+        ...?headers,
+      },
+      data: data,
+      referer: referer,
+      stealth: stealth,
+      net: net,
+    );
+  }
+
+  /// POST 并返回原始文本 + 响应头（[post] 的带头变体）。用途与带头 JSON 变体
+  /// 相同——meta 预取需要响应头（如 3xx 的 Location、播放凭证 Cookie）但响应
+  /// 并非 JSON（加密信封文本 / 错误页）时的通道。非 2xx 时与 [post] 同语义
+  /// （≥400 抛 HttpStatusException，3xx 不抛——重定向被设计关闭，由源侧
+  /// 经响应头自行处理）。
+  Future<(String, Map<String, String>)> postTextWithHeaders(
+    String url, {
+    Map<String, String>? headers,
+    Object? data,
+    String? referer,
+    bool stealth = true,
+    EffectiveNetworkProfile? net,
+  }) async {
+    final (body, respHeaders) = await _jsonWithHeaders(
+      url,
+      method: 'POST',
+      headers: <String, String>{
+        'Accept': 'application/json, text/plain, */*',
+        ...?headers,
+      },
+      data: data,
+      referer: referer,
+      stealth: stealth,
+      net: net,
+      text: true,
+    );
+    return (body as String, respHeaders);
+  }
+
+  /// [_jsonWithHeaders] 的公共实现：与 [_getHtmlOnce] 同语义的请求路径
+  /// （验证检测 / Cookie 存储 / 状态码检查），额外把响应头随 body 交回。
+  /// [text] 为 true 时返回原始文本（不 JSON 解析）。
+  Future<(dynamic, Map<String, String>)> _jsonWithHeaders(
+    String url, {
+    required String method,
+    Map<String, String>? headers,
+    Object? data,
+    String? referer,
+    bool stealth = true,
+    EffectiveNetworkProfile? net,
+    bool text = false,
+  }) async {
+    await _gateRequest(url, stealth);
+    try {
+      final merged = _mergeHeaders(referer, headers, url);
+      final resp = await _dioFor(net).request<List<int>>(
+        url,
+        data: data,
+        options: Options(
+          method: method,
+          headers: merged,
+          responseType: ResponseType.bytes,
+          validateStatus: (_) => true,
+        ),
+      );
+      final bytes = resp.data ?? const <int>[];
+      final body = _decodeBody(bytes, resp.headers.value('content-type'));
+      if (VerificationDetector.isVerificationRequired(
+        statusCode: resp.statusCode,
+        body: body,
+        headers: _responseHeaders(resp),
+      )) {
+        _recordAndThrowVerify(url, merged, body, resp.statusCode);
+      }
+      _checkNonVerificationError(url, resp.statusCode, body);
+      _storeCookies(url, resp);
+      return (text ? body : _decodeJson(body), _responseHeaders(resp));
+    } finally {
+      _requestSemaphore.release();
+    }
+  }
+
   /// POST 表单/JSON，返回 HTML 文本。
   Future<String> post(
     String url, {
@@ -1394,11 +1515,14 @@ class HttpFetcher {
       ...?headers,
       if (fetchDest != null) 'Sec-Fetch-Dest': fetchDest,
       if (fetchDest != null) 'Sec-Fetch-Mode': 'no-cors',
+      // 浏览器加载跨域图片/视频时三个 Sec-Fetch-* 一定齐全；只发 Dest+Mode
+      // 而删掉 Site 会构成浏览器永远不会发送的残缺组合，部分 CDN 的 WAF 按
+      // 该指纹直接 403（比不带这些头更容易被拒）。
+      if (fetchDest != null) 'Sec-Fetch-Site': 'cross-site',
     }, url);
     // 资产请求移除「导航专用头」：浏览器加载图片/视频时不发送这些，留着会被
     // WAF 判定为伪装的图片请求 → 统一返回占位图（某源 5.8KB 拦截图）。
     merged.remove('Sec-Fetch-User');
-    merged.remove('Sec-Fetch-Site');
     merged.remove('Upgrade-Insecure-Requests');
     // 图片请求 Accept 不声明 image/avif：Flutter 内置解码器不支持 AVIF（仅
     // Android 12+ 走系统解码器），协商型 CDN 会按 Accept 返回 AVIF → 在线
@@ -1462,10 +1586,13 @@ class HttpFetcher {
       ...?headers,
       if (fetchDest != null) 'Sec-Fetch-Dest': fetchDest,
       if (fetchDest != null) 'Sec-Fetch-Mode': 'no-cors',
+      // 浏览器加载跨域图片/视频时三个 Sec-Fetch-* 一定齐全；只发 Dest+Mode
+      // 而删掉 Site 会构成浏览器永远不会发送的残缺组合，部分 CDN 的 WAF 按
+      // 该指纹直接 403（比不带这些头更容易被拒）。
+      if (fetchDest != null) 'Sec-Fetch-Site': 'cross-site',
     }, url);
     // 资产请求移除「导航专用头」（同 [getBytes]）。
     merged.remove('Sec-Fetch-User');
-    merged.remove('Sec-Fetch-Site');
     merged.remove('Upgrade-Insecure-Requests');
     // 图片请求 Accept 不声明 image/avif（同 [getBytes]）：协商型 CDN 会按
     // Accept 返回 AVIF → Flutter 解码失败。调用方显式给了 Accept 时尊重调用方。

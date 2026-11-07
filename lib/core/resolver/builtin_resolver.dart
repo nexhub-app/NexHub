@@ -663,7 +663,7 @@ class BuiltinResolver implements SourceResolver {
     final base = MediaItem(
       id: pick('id'),
       title: pick('title'),
-      coverUrl: _absoluteCoverUrl(pick('cover'), baseUrl),
+      coverUrl: _absoluteCoverUrl(pick('cover'), baseUrl, source),
       detailUrl: pick('detailUrl').isNotEmpty ? pick('detailUrl') : pick('detail'),
       sourceId: source.id,
       sourceType: source.type,
@@ -1054,7 +1054,7 @@ class BuiltinResolver implements SourceResolver {
     final base = MediaItem(
       id: id,
       title: pick('title'),
-      coverUrl: _absoluteCoverUrl(pick('cover', attr: true), baseUrl),
+      coverUrl: _absoluteCoverUrl(pick('cover', attr: true), baseUrl, source),
       detailUrl: detailUrl.isNotEmpty ? detailUrl : null,
       sourceId: source.id,
       sourceType: source.type,
@@ -1309,16 +1309,35 @@ class BuiltinResolver implements SourceResolver {
   /// 网络图与本地文件图），相对路径被当作本地文件渲染，封面永远空白。
   /// 以本次请求实际使用的 baseUrl（活动镜像）为基准补全；已是绝对地址、
   /// 非 http(s) 特殊 scheme（data: 等）或取不到基准时原样返回。
-  String? _absoluteCoverUrl(String? raw, String? baseUrl) {
-    final s = raw?.trim() ?? '';
+  /// 补全后按源声明的 [PluginConfig.mediaHostRewrite] 改写媒体域名（签名 CDN
+  /// 禁 Referer / 主 CDN 拒直连等场景的备用域切换，映射表由源 JSON 声明）。
+  String? _absoluteCoverUrl(String? raw, String? baseUrl, [PluginConfig? source]) {
+    var s = raw?.trim() ?? '';
     if (s.isEmpty) return null;
-    if (s.startsWith('http://') || s.startsWith('https://')) return s;
+    if (s.startsWith('http://') || s.startsWith('https://')) {
+      return _rewriteMediaHost(s, source);
+    }
     if (!s.startsWith('/') && !s.startsWith('//')) return s;
     if (baseUrl == null || baseUrl.isEmpty) return s;
     try {
-      return _toAbsolute(s, baseUrl);
+      return _rewriteMediaHost(_toAbsolute(s, baseUrl), source);
     } on Object {
       return s;
+    }
+  }
+
+  /// 按源声明的 mediaHostRewrite 映射改写 URL 的 host（精确匹配，大小写不敏感）。
+  String? _rewriteMediaHost(String? url, PluginConfig? source) {
+    final rewrite = source?.mediaHostRewrite;
+    if (rewrite == null || rewrite.isEmpty || url == null || url.isEmpty) return url;
+    final uri = Uri.tryParse(url);
+    if (uri == null || uri.host.isEmpty) return url;
+    final target = rewrite[uri.host.toLowerCase()];
+    if (target == null || target.isEmpty) return url;
+    try {
+      return uri.replace(host: target).toString();
+    } on Object {
+      return url;
     }
   }
 

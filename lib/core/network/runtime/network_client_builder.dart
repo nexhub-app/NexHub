@@ -12,6 +12,7 @@ import '../model/network_config.dart';
 import 'dns_resolver.dart';
 import 'host_order_relay.dart';
 import 'sni_policy.dart';
+import 'system_proxy_resolver.dart';
 
 /// 代理覆盖策略：返回非 null 时接管该 [Uri] 的代理决策，返回 null 则回落到
 /// 档案自身的代理配置。见 [NetworkClientBuilder.proxyOverrideResolver]。
@@ -66,8 +67,14 @@ class NetworkClientBuilder {
       case ProxyMode.direct:
         return (_) => 'DIRECT';
       case ProxyMode.system:
-        // 桌面基于环境变量（尽力而为），非读取 OS GUI 代理。
-        return (uri) => HttpClient.findProxyFromEnvironment(uri);
+        // 桌面基于环境变量（尽力而为），并叠加 Windows 系统代理（注册表
+        // ProxyEnable/ProxyServer，多数代理软件只写注册表不设环境变量）。
+        return (uri) {
+          final env = HttpClient.findProxyFromEnvironment(uri);
+          if (env != 'DIRECT' && env.isNotEmpty) return env;
+          final sys = SystemProxyResolver.rule;
+          return sys.isEmpty ? 'DIRECT' : sys;
+        };
       case ProxyMode.manual:
         if (proxy.host.isNotEmpty && proxy.port > 0) {
           final scheme =

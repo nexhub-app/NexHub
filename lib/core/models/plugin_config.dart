@@ -1078,6 +1078,10 @@ class PluginConfig {
   final SourceFilterConfig? filters;
   final bool stealthMode;
   final AntiHotlinkingConfig antiHotlinking;
+  /// 源级媒体域名改写（可选 `mediaHostRewrite` 段）：`{"原host": "目标host"}`。
+  /// 适用于「签名 CDN 禁 Referer / 主 CDN 对直连拒绝」的场景——封面等媒体 URL
+  /// 的 host 按映射改写后再加载（对齐参考实现的备用 CDN 做法，纯数据声明）。
+  final Map<String, String>? mediaHostRewrite;
   final WebviewConfig webviewConfig;
   /// 评论配置（可选）。为 null → 详情页不渲染任何评论 UI。
   final CommentsConfig? comments;
@@ -1120,6 +1124,7 @@ class PluginConfig {
     this.filters,
     this.stealthMode = false,
     this.antiHotlinking = const AntiHotlinkingConfig(),
+    this.mediaHostRewrite,
     this.webviewConfig = const WebviewConfig(),
     this.comments,
     this.deprecated = false,
@@ -1225,6 +1230,8 @@ class PluginConfig {
       stealthMode: json['stealthMode'] as bool? ?? false,
       antiHotlinking:
           AntiHotlinkingConfig.fromJson(json['antiHotlinking'] as Map<String, dynamic>?),
+      mediaHostRewrite: (json['mediaHostRewrite'] as Map?)
+          ?.map((k, v) => MapEntry(k.toString(), v.toString())),
       webviewConfig: WebviewConfig.fromJson(json['webviewConfig'] as Map<String, dynamic>?),
       comments: json['comments'] is Map
           ? CommentsConfig.fromJson(
@@ -1296,6 +1303,7 @@ class PluginConfig {
           if (antiHotlinking.userAgent != null)
             'userAgent': antiHotlinking.userAgent,
         },
+        if (mediaHostRewrite != null) 'mediaHostRewrite': mediaHostRewrite,
         'webviewConfig': {
           'adblock': webviewConfig.adblock,
           'timeoutSeconds': webviewConfig.timeoutSeconds,

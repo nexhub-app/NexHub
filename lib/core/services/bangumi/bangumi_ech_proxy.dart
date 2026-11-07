@@ -427,6 +427,14 @@ class BangumiEchProxy {
       if (h.isEmpty) continue;
       if (specific.enabled) {
         targets.add(h);
+        // 源声明的媒体域名改写目标（mediaHostRewrite 的「目标 host」，如签名
+        // CDN 的备用域）一并接管：封面等媒体 URL 会被改写到这些域，必须走
+        // 同一条 ECH 代理通道，否则回落 Dart 直连会被 CDN 按 TLS 指纹拒绝。
+        // 非 Cloudflare 的目标域由引擎自行回退直连（rust 侧按 IP 段判定）。
+        for (final target in src.mediaHostRewrite?.values ?? const <String>[]) {
+          final th = target.trim().toLowerCase();
+          if (th.isNotEmpty) targets.add(th);
+        }
         if (ecl.isEmpty) ecl = specific.echConfigList.trim();
       } else {
         excluded.add(h);
