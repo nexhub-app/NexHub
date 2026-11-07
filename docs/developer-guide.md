@@ -1112,6 +1112,7 @@ function __processVideo(json, context){ return json.url; }
 | `filters` | 可选。动态筛选：groups（筛选组）、byCategory（按分类覆盖）、defaults（分类默认参数）。 |
 | `stealthMode` | 可选布尔。开启更激进的反检测请求策略。 |
 | `antiHotlinking.referer / headers / userAgent` | 可选。反盗链：补 Referer / 头 / 特定 UA。 |
+| `mediaHostRewrite` | 可选。媒体域名改写映射 `{"原host": "目标host"}`（精确匹配，大小写不敏感）。封面等媒体 URL 的 host 按映射改写后再加载，适用于「签名 CDN 禁 Referer」「主 CDN 拒直连」等需要切换备用 CDN 的场景。 |
 | `webviewConfig.adblock / timeoutSeconds` | 可选。WebView 广告拦截开关与超时（默认 true / 20s）。 |
 | `comments` | 可选。评论配置：provider(source/bangumi)、routes(list 必需，replies/post/reply/like/report 可选)、selectors、login(url=WebView 登录页 + checkCookie=Cookie 键名 + checkUrl/loggedInSelector=登录态探测)。 |
 | `network` | 可选。源级网络覆盖：proxy / dns / hosts / sni / ech；缺省继承全局，非法值只告警不阻断启用。（sni 与 ech 均对直连 HTTPS 真实生效） |

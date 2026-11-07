@@ -1095,6 +1095,7 @@ The authoritative constraints live in lib/core/models/plugin_config.dart; this t
 | `filters` | Optional. Dynamic filters: groups, byCategory (per-category override), defaults (category default params). |
 | `stealthMode` | Optional bool. More aggressive anti-detection request strategy. |
 | `antiHotlinking.referer / headers / userAgent` | Optional. Anti-hotlink: add Referer / headers / specific UA. |
+| `mediaHostRewrite` | Optional. Media host rewrite map `{"from-host": "to-host"}` (exact match, case-insensitive). Cover and other media URLs get their host rewritten before loading — for scenarios like signed CDNs that reject Referer or primary CDNs refusing direct connections, where a fallback CDN is needed. |
 | `webviewConfig.adblock / timeoutSeconds` | Optional. WebView adblock toggle and timeout (default true / 20s). |
 | `comments` | Optional. Comments config: provider(source/bangumi), routes(list required; replies/post/reply/like/report optional), selectors, login(url=WebView login page + checkCookie=cookie key + checkUrl/loggedInSelector=session probe). |
 | `network` | Optional. Source-level network override: proxy / dns / hosts / sni / ech; inherits global by default, invalid values only warn. (sni and ech are both runtime-effective for direct HTTPS) |
