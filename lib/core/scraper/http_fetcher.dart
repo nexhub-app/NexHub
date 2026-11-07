@@ -620,7 +620,16 @@ class HttpFetcher {
     // 回带 Cookie（对齐旧版可解析版本）：站点下发的会话 Cookie 需在后续请求带回，
     // 否则部分 MacCMS/源会拒绝（400）或要求验证。匹配父域/子域。
     final cookie = _cookieHeaderFor(url);
-    if (cookie != null) merged['Cookie'] = cookie;
+    if (cookie != null) {
+      // 调用方显式声明的 Cookie（路由 headers / __fetchHeaders / 脚本请求头）
+      // 不能被 jar 静默顶掉——「挑战页内联 JS 写 cookie 后重试」类站点，
+      // 该 cookie 只存在于显式头里（服务端从不经 Set-Cookie 下发）。
+      // 按 cookie 名合并：jar 在前、显式在后，同名以显式值为准。
+      final explicit = merged['Cookie'];
+      merged['Cookie'] = (explicit == null || explicit.isEmpty)
+          ? cookie
+          : _mergeCookieHeader(cookie, explicit);
+    }
     return merged;
   }
 
