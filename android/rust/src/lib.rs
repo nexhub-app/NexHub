@@ -104,16 +104,29 @@ unsafe extern "C" {
 
 #[cfg(has_ech)]
 mod ffi {
-    use std::os::raw::{c_char, c_int};
+    use std::os::raw::{c_char, c_int, c_void};
     unsafe extern "C" {
         pub fn SSL_set1_ech_config_list(s: *mut openssl_sys::SSL, ecl: *const u8, len: usize) -> c_int;
         pub fn SSL_ech_set1_server_names(s: *mut openssl_sys::SSL, inner: *const c_char, outer: *const c_char, no_outer: c_int) -> c_int;
         pub fn SSL_ech_get1_status(s: *mut openssl_sys::SSL, inner: *mut *mut c_char, outer: *mut *mut c_char) -> c_int;
+        pub fn SSL_ech_get1_retry_config(s: *mut openssl_sys::SSL, ec: *mut *mut u8, eclen: *mut usize) -> c_int;
+        pub fn SSL_set_fd(s: *mut openssl_sys::SSL, fd: c_int) -> c_int;
+        pub fn SSL_connect(s: *mut openssl_sys::SSL) -> c_int;
+        pub fn SSL_read(s: *mut openssl_sys::SSL, buf: *mut c_void, num: c_int) -> c_int;
+        pub fn SSL_write(s: *mut openssl_sys::SSL, buf: *const c_void, num: c_int) -> c_int;
+        pub fn SSL_get_error(s: *mut openssl_sys::SSL, ret_code: c_int) -> c_int;
+        pub fn ech_free(p: *mut c_void);
     }
 }
 
 #[cfg(has_ech)]
 const OUTER_SNI: &str = "cloudflare-ech.com";
+
+/// 最近一次「该 host 握手被拒后服务器下发的 retry config」——实测可用的当前
+/// 有效 config，优先于直供/缓存的过期值。按 host 隔离（不同边缘/服务的 config
+/// 可能不同，跨域混用会引入新失败面）。
+#[cfg(has_ech)]
+static LAST_RETRY: std::sync::Mutex<Option<(String, Vec<u8>)>> = std::sync::Mutex::new(None);
 /// Target domains for ECH proxy.
 ///
 /// 必须与 Dart 侧 `lib/core/services/bangumi/bangumi_ech_proxy.dart` 的
@@ -137,6 +150,18 @@ const CF_DOH_IPS: &[Ipv4Addr] = &[
     Ipv4Addr::new(1, 0, 0, 1),
 ];
 const CF_DOH_HOST: &str = "cloudflare-dns.com";
+
+/// 国内公共 DoH 引导端点：(IP, TLS/SNI 与 Host 头所用域名)。
+/// ECH DoH（对 `cloudflare-dns.com` 的 ECH 握手）在部分网络下会被服务端拒绝
+/// （`ech required` retry / 证书链校验失败），导致目标域解析不出、整条 ECH 链路
+/// 瘫痪。国内加密 DNS 直连稳定，仅用于「解析目标域 A 记录」这一步；拿到 IP 后
+/// 仍按原流程对目标域做 ECH 连接（config 来自直供或 GREASE），不改变作用域语义。
+const PURE_DOH_ENDPOINTS: &[(Ipv4Addr, &str)] = &[
+    (Ipv4Addr::new(223, 5, 5, 5), "dns.alidns.com"),
+    (Ipv4Addr::new(223, 6, 6, 6), "dns.alidns.com"),
+    (Ipv4Addr::new(120, 53, 53, 53), "doh.pub"),
+    (Ipv4Addr::new(1, 12, 12, 12), "doh.pub"),
+];
 
 /// Cloudflare IPv4 CIDR ranges: (network_u32, prefix_len)
 const CLOUDFLARE_CIDRS: &[(u32, u8)] = &[
@@ -421,6 +446,10 @@ struct EchCache {
     /// 「ECH-DoH 解析 → 发现没有 CF 前置 IP」才知道该走直连, 单次代价是秒级,
     /// 对非 ECH 站点是不可接受的退化。
     direct_until: Mutex<std::collections::HashMap<String, Instant>>,
+    /// 「直连目标 IP」：非 Cloudflare 前置的域（签名图片 CDN 等）经 pure DoH
+    /// 解析出的 A 记录。直连时按列表逐个带超时尝试——系统 DNS 单 IP + 无超时
+    /// 在 IP 不可达时会卡满 OS 的 SYN 超时（~21s），把并发池拖死。
+    direct_ips: Mutex<std::collections::HashMap<String, Vec<Ipv4Addr>>>,
     dns_servers: Vec<String>,
     cache_dir: PathBuf,
 }
@@ -444,6 +473,7 @@ impl EchCache {
             refreshing: Mutex::new(std::collections::HashSet::new()),
             ech_fail_at: Mutex::new(None),
             direct_until: Mutex::new(std::collections::HashMap::new()),
+            direct_ips: Mutex::new(std::collections::HashMap::new()),
             dns_servers,
             cache_dir: cache_path,
         };
@@ -545,7 +575,15 @@ impl EchCache {
     }
 
     /// Get ECH config, trying all CF DoH IPs
-    fn get_ech(&self) -> io::Result<Vec<u8>> {
+    fn get_ech(&self, host: &str) -> io::Result<Vec<u8>> {
+        // 上次该 host 握手被拒后服务器下发的 retry config: 实测可用, 优先于直供
+        if let Ok(guard) = LAST_RETRY.lock() {
+            if let Some((h, rc)) = guard.as_ref() {
+                if h == host {
+                    return Ok(rc.clone());
+                }
+            }
+        }
         // 「直供」优先: 上层显式下发了 ECHConfigList 就直接用, 不碰 GREASE 探测,
         // 也不受下面 config 缓存/退避窗口影响 —— 直供是用户意图, 必须即时生效。
         if let Some(ecl) = scope().lock().ecl.clone() {
@@ -626,12 +664,24 @@ impl EchCache {
 
     /// 同步解析并写入缓存
     fn refresh_target_ips(&self, host: &str) -> io::Result<Vec<Ipv4Addr>> {
-        let mut ips = self.resolve_via_ech_multi(host)?;
+        let mut ips = match self.resolve_via_ech_multi(host) {
+            Ok(ips) => ips,
+            Err(e) => {
+                // ECH DoH 引导失败（如对 cloudflare-dns.com 的 ECH 握手被服务端
+                // 拒绝）不等于目标域不可 ECH：改用国内公共加密 DNS 解析目标域，
+                // 拿到真实 CF IP 后仍按原流程 connect_ech（config 走直供/GREASE）。
+                log_e!("{host}: ECH DNS failed ({e}); fallback to pure DoH");
+                resolve_via_pure_doh(host)?
+            }
+        };
         let original_len = ips.len();
+        let all_ips = ips.clone();
         ips.retain(|ip| is_cloudflare_ip(*ip));
         if ips.is_empty() {
             // 该域解析结果里没有 Cloudflare 前置 IP ⇒ 它不可能从 ECH 受益。
-            // 记入负缓存, 让后续请求直接走直连, 而不是每次都重走 ECH 探测。
+            // 记入负缓存, 让后续请求直接走直连; 同时把 pure DoH 的解析结果
+            // 留给直连多 IP 尝试使用（系统 DNS 单 IP + 无超时容易卡满 SYN 超时）。
+            self.save_direct_ips(host, all_ips);
             self.mark_direct(host);
             return Err(io::Error::new(io::ErrorKind::Other, "target resolved to no Cloudflare IPs"));
         }
@@ -651,6 +701,20 @@ impl EchCache {
         self.direct_until
             .lock()
             .insert(host.to_string(), Instant::now());
+    }
+
+    /// 记录非 CF 域的直连候选 IP（pure DoH 解析结果），供直连多 IP 尝试。
+    fn save_direct_ips(&self, host: &str, ips: Vec<Ipv4Addr>) {
+        if ips.is_empty() {
+            return;
+        }
+        log_d!("{host} -> {:?} (direct candidates)", ips);
+        self.direct_ips.lock().insert(host.to_string(), ips);
+    }
+
+    /// 取非 CF 域的直连候选 IP（无则 None，回退系统 DNS）。
+    fn get_direct_ips(&self, host: &str) -> Option<Vec<Ipv4Addr>> {
+        self.direct_ips.lock().get(host).cloned()
     }
 
     /// 该域是否处于「直连」负缓存有效期内
@@ -750,7 +814,7 @@ impl EchCache {
 
     /// Resolve target host via Cloudflare DoH over ECH, return all A records
     fn resolve_via_ech_multi(&self, host: &str) -> io::Result<Vec<Ipv4Addr>> {
-        let ecl = self.get_ech()?;
+        let ecl = self.get_ech(host)?;
         let mut last_err = None;
         for cf_ip in self.cloudflare_doh_ips()? {
             match doh_query_via_ech(host, cf_ip, &ecl) {
@@ -837,6 +901,58 @@ fn resolve_doh_multi(server: &str, host: &str) -> io::Result<Vec<Ipv4Addr>> {
     } else {
         Ok(ips)
     }
+}
+
+/// 经国内公共 DoH（普通 TLS、IP 直连）解析 [host] 的 A 记录。
+/// TLS 一律 `tls_skip`：端点证书与其 SNI/Host 名的匹配不做校验（解析结果不承载
+/// 信任，后续 ECH 握手才真正验证 vhost）。不依赖 ECH 能力，no_ech 构建下同样可用。
+fn resolve_via_pure_doh(host: &str) -> io::Result<Vec<Ipv4Addr>> {
+    let mut last_err: Option<io::Error> = None;
+    for (ip, sni) in PURE_DOH_ENDPOINTS {
+        let path = format!("/dns-query?name={host}&type=A");
+        match doh_query_plain(*ip, sni, &path) {
+            Ok(body) => {
+                let ips = parse_a_records(&body);
+                if !ips.is_empty() {
+                    log_d!("pure DoH {ip} ({sni}) -> {host} {:?}", ips);
+                    return Ok(ips);
+                }
+                last_err = Some(io::Error::new(io::ErrorKind::NotFound, "no A"));
+            }
+            Err(e) => {
+                log_e!("pure DoH {ip} ({sni}): {e}");
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::Other, "pure DoH all failed")))
+}
+
+/// 以 [ip]:443 直连、[sni] 作 SNI 与 Host 头执行 DoH JSON 查询（TLS 跳过验证）。
+fn doh_query_plain(ip: Ipv4Addr, sni: &str, path: &str) -> io::Result<String> {
+    let tcp = TcpStream::connect_timeout(
+        &SocketAddrV4::new(ip, 443).into(),
+        std::time::Duration::from_secs(5),
+    )?;
+    tcp.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+    tcp.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
+    let mut s = tls_skip()
+        .connect(sni, tcp)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    s.write_all(
+        format!(
+            "GET {path} HTTP/1.1\r\nHost: {sni}\r\nAccept: application/dns-json\r\nConnection: close\r\n\r\n"
+        )
+        .as_bytes(),
+    )?;
+    s.flush()?;
+    let mut buf = vec![];
+    s.read_to_end(&mut buf)?;
+    let h = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no hdr"))?;
+    String::from_utf8(buf[h + 4..].to_vec()).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "utf8"))
 }
 
 /// DoH query over ECH to a specific CF DoH IP, return all A records
@@ -964,6 +1080,11 @@ fn build_client_ctx(min_tls13: bool) -> io::Result<openssl::ssl::SslContext> {
         ctx.set_min_proto_version(Some(openssl::ssl::SslVersion::TLS1_3))
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
     }
+    // ALPN：浏览器/curl 的 TLS ClientHello 必带 ALPN（h2,http/1.1）。不带 ALPN 的
+    // 客户端会被部分 CDN 的 WAF 判为非浏览器直连而统一返回 403（签名图片 CDN
+    // 实测如此）。引擎只转发 HTTP/1.1，故仅声明 http/1.1。
+    // 字节格式：len + protocol（ALPN 线格式）。
+    ctx.set_alpn_protos(b"\x08http/1.1").ok();
     ctx.set_verify(openssl::ssl::SslVerifyMode::NONE);
     Ok(ctx.build())
 }
@@ -1017,13 +1138,155 @@ fn cert_covers_host(ssl: &openssl::ssl::SslRef, host: &str) -> bool {
     false
 }
 
+/// 后端连接流：直连走 rust 模式 SslStream；ECH 走 fd BIO 模式（见 FdSslStream）。
+enum BackendStream {
+    Tls(openssl::ssl::SslStream<TcpStream>),
+    Ech(FdSslStream),
+}
+
+impl BackendStream {
+    fn get_ref(&self) -> &TcpStream {
+        match self {
+            BackendStream::Tls(s) => s.get_ref(),
+            BackendStream::Ech(s) => s.get_ref(),
+        }
+    }
+}
+
+impl std::io::Read for BackendStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            BackendStream::Tls(s) => std::io::Read::read(s, buf),
+            BackendStream::Ech(s) => std::io::Read::read(s, buf),
+        }
+    }
+}
+
+impl std::io::Write for BackendStream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            BackendStream::Tls(s) => std::io::Write::write(s, buf),
+            BackendStream::Ech(s) => std::io::Write::write(s, buf),
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            BackendStream::Tls(s) => std::io::Write::flush(s),
+            BackendStream::Ech(s) => std::io::Write::flush(s),
+        }
+    }
+}
+
+/// fd BIO 模式的 ECH 连接流：socket fd 直接交给 OpenSSL（与 ech_helper.c 的
+/// GREASE 探测完全同款）。OpenSSL 4.0.1 的 ECH 在 rust-openssl 的 BIO pair 模式
+/// 下处理服务器 retry 会命中未定义函数槽位（ssl_undefined_function），fd 模式
+/// 无此问题（GREASE 探测实测能完成与边缘的完整握手交互）。
+#[allow(dead_code)]
+struct FdSslStream {
+    // ssl 永不 drop：对齐 handle_mitm 的 ManuallyDrop 策略，避免在损坏状态下
+    // SSL_free 触发 SIGSEGV；进程存续期内的少量内存驻留可接受。
+    ssl: std::mem::ManuallyDrop<openssl::ssl::Ssl>,
+    tcp: TcpStream,
+}
+
+#[allow(dead_code)]
+impl FdSslStream {
+    fn get_ref(&self) -> &TcpStream {
+        &self.tcp
+    }
+}
+
+#[allow(dead_code)]
+impl std::io::Read for FdSslStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let ret = unsafe {
+            openssl_sys::SSL_read(
+                self.ssl.as_ptr(),
+                buf.as_mut_ptr() as *mut std::os::raw::c_void,
+                buf.len() as i32,
+            )
+        };
+        if ret > 0 {
+            return Ok(ret as usize);
+        }
+        match unsafe { openssl_sys::SSL_get_error(self.ssl.as_ptr(), ret) } {
+            openssl_sys::SSL_ERROR_ZERO_RETURN => Ok(0),
+            openssl_sys::SSL_ERROR_WANT_READ | openssl_sys::SSL_ERROR_WANT_WRITE => {
+                Err(io::Error::new(io::ErrorKind::WouldBlock, "ssl want read"))
+            }
+            _ => {
+                // 非阻塞 fd 超时/被远端断开：统一视为 EOF，relay 循环自行收尾
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::WouldBlock {
+                    Err(e)
+                } else {
+                    Ok(0)
+                }
+            }
+        }
+    }
+}
+
+#[allow(dead_code)]
+impl std::io::Write for FdSslStream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let ret = unsafe {
+            openssl_sys::SSL_write(
+                self.ssl.as_ptr(),
+                buf.as_ptr() as *const std::os::raw::c_void,
+                buf.len() as i32,
+            )
+        };
+        if ret > 0 {
+            return Ok(ret as usize);
+        }
+        match unsafe { openssl_sys::SSL_get_error(self.ssl.as_ptr(), ret) } {
+            openssl_sys::SSL_ERROR_WANT_READ | openssl_sys::SSL_ERROR_WANT_WRITE => {
+                Err(io::Error::new(io::ErrorKind::WouldBlock, "ssl want write"))
+            }
+            _ => Err(io::Error::new(io::ErrorKind::Other, "ssl write")),
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(has_ech)]
-fn connect_ech(host: &str, ip: Ipv4Addr, ecl: &[u8]) -> io::Result<openssl::ssl::SslStream<TcpStream>> {
+fn connect_ech(host: &str, ip: Ipv4Addr, ecl: &[u8]) -> io::Result<FdSslStream> {
+    match ech_handshake(host, ip, ecl) {
+        Ok(s) => Ok(s),
+        Err((e, retry)) => {
+            // 服务端不认当前 config 时 (SSL_R_ECH_REQUIRED), 握手 flight 里会带回
+            // retry config —— 按服务端下发的配置重连一次。拿不到就原样抛错。
+            match retry {
+                Some(rc) if rc != ecl => {
+                    // 记住该 host 被拒后服务器下发的 retry config: 后续连接直接用,
+                    // 省掉每条连接「失败握手 + 重连」的双轮开销。
+                    if let Ok(mut g) = LAST_RETRY.lock() {
+                        *g = Some((host.to_string(), rc.clone()));
+                    }
+                    log_d!("ECH retry config from server ({} bytes), retrying {host} -> {ip}", rc.len());
+                    ech_handshake(host, ip, &rc).map_err(|(e2, _)| e2)
+                }
+                _ => Err(e),
+            }
+        }
+    }
+}
+
+/// 单次 ECH 握手（fd BIO 模式）。Err 的第二项为服务端下发的 retry config（若有）。
+#[cfg(has_ech)]
+fn ech_handshake(
+    host: &str,
+    ip: Ipv4Addr,
+    ecl: &[u8],
+) -> Result<FdSslStream, (io::Error, Option<Vec<u8>>)> {
     // ECH config 与 server names 仍按连接 (SSL 对象) 设置, 只有 SSL_CTX 复用
-    let ssl = openssl::ssl::Ssl::new(shared_client_ctx(&ECH_SSL_CTX, true)?)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let ssl = openssl::ssl::Ssl::new(shared_client_ctx(&ECH_SSL_CTX, true).map_err(|e| (e, None))?)
+        .map_err(|e| (io::Error::new(io::ErrorKind::Other, e.to_string()), None))?;
     if unsafe { ffi::SSL_set1_ech_config_list(ssl.as_ptr(), ecl.as_ptr(), ecl.len()) } != 1 {
-        return Err(io::Error::new(io::ErrorKind::Other, "ech_config"));
+        return Err((io::Error::new(io::ErrorKind::Other, "ech_config"), None));
     }
     let ci = std::ffi::CString::new(host).unwrap();
     let co = std::ffi::CString::new(OUTER_SNI).unwrap();
@@ -1031,24 +1294,77 @@ fn connect_ech(host: &str, ip: Ipv4Addr, ecl: &[u8]) -> io::Result<openssl::ssl:
     let tcp = TcpStream::connect_timeout(
         &SocketAddrV4::new(ip, 443).into(),
         std::time::Duration::from_secs(10),
-    )?;
+    )
+    .map_err(|e| (io::Error::new(io::ErrorKind::Other, e.to_string()), None))?;
     tcp.set_nodelay(true).ok();
-    tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
-    tcp.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
-    let st = ssl.connect(tcp).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-    let _ = unsafe { ffi::SSL_ech_get1_status(st.ssl().as_ptr(), std::ptr::null_mut(), std::ptr::null_mut()) };
+    // 握手期保持阻塞 + 10s 超时（与 ech_helper.c 的 GREASE 探测一致）
+    tcp.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .map_err(|e| (e, None))?;
+    tcp.set_write_timeout(Some(std::time::Duration::from_secs(10)))
+        .map_err(|e| (e, None))?;
+    // fd BIO 模式: socket fd 直接交给 OpenSSL（勿用 SslStream/BIO pair —— 4.0.1 的
+    // ECH 在该模式下处理 retry 会走未定义函数槽位）
+    #[cfg(target_os = "windows")]
+    let fd: i32 = tcp.as_raw_socket() as i32;
+    #[cfg(not(target_os = "windows"))]
+    let fd: i32 = {
+        use std::os::unix::io::AsRawFd as _;
+        tcp.as_raw_fd()
+    };
+    unsafe { ffi::SSL_set_fd(ssl.as_ptr(), fd) };
+    if unsafe { ffi::SSL_connect(ssl.as_ptr()) } != 1 {
+        // fd 所有权已移交 OpenSSL: 失败时由本函数返回后的 SSL_free 负责关闭,
+        // 故 forget 掉 TcpStream 防止双重 close。
+        std::mem::forget(tcp);
+        // fd 模式下握手失败后调 get1_retry_config 是安全模式（ech_helper.c 同款）
+        let retry = extract_retry_config(ssl.as_ref());
+        return Err((io::Error::new(io::ErrorKind::Other, "ech handshake"), retry));
+    }
+    // 注意: 不要在此调 SSL_ech_get1_status —— OpenSSL 4.0.1 里它对「ECH 已被接受
+    // 的连接」会 internal error (ech_ssl_apis.c:178)，把成功的握手误判为失败。
+    // v16 真机日志: retry config 重连后 accept 成功, 却在此处被丢弃。
 
     // 宽作用域 (应用级 / 源级接管) 下必须核对 vhost, 否则「没启用 ECH 的 CF 前置域」
     // 会被静默接到错误的后端。bangumi 专用作用域保持与参考项目完全一致, 不引入新失败面。
     let strict = scope().lock().allow_any;
-    if strict && !cert_covers_host(st.ssl(), host) {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("ECH vhost mismatch for {host}: server did not honour the inner SNI"),
+    if strict && !cert_covers_host(ssl.as_ref(), host) {
+        return Err((
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("ECH vhost mismatch for {host}: server did not honour the inner SNI"),
+            ),
+            None,
         ));
     }
 
-    Ok(st)
+    // 成功: fd 归 OpenSSL 持续使用; tcp 由 FdSslStream 持有（关闭时收尾）
+    Ok(FdSslStream {
+        ssl: std::mem::ManuallyDrop::new(ssl),
+        tcp,
+    })
+}
+
+/// 从已失败的握手 SSL 对象里提取服务端下发的 ECH retry config。
+/// （v16 起不再使用：在握手中断的 SSL 上调 OpenSSL 4.0 的
+/// `SSL_ech_get1_retry_config` 会命中 `ssl_undefined_function` 槽位，
+/// 改由 `grease_ech` 用独立连接做 GREASE 探测。）
+#[cfg(has_ech)]
+#[allow(dead_code)]
+fn extract_retry_config(ssl: &openssl::ssl::SslRef) -> Option<Vec<u8>> {
+    unsafe {
+        let mut ec: *mut u8 = std::ptr::null_mut();
+        let mut len: usize = 0;
+        if ffi::SSL_ech_get1_retry_config(ssl.as_ptr(), &mut ec, &mut len) == 1
+            && !ec.is_null()
+            && len > 0
+        {
+            let v = std::slice::from_raw_parts(ec, len).to_vec();
+            ffi::ech_free(ec as *mut std::os::raw::c_void);
+            Some(v)
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(no_ech)]
@@ -1056,7 +1372,37 @@ fn connect_ech(_host: &str, _ip: Ipv4Addr, _ecl: &[u8]) -> io::Result<openssl::s
     Err(io::Error::new(io::ErrorKind::Unsupported, "ECH not available"))
 }
 
-fn connect_direct(host: &str, connect_ip: Option<Ipv4Addr>) -> io::Result<openssl::ssl::SslStream<TcpStream>> {
+/// 直连后端：优先用 pure DoH 解析出的候选 IP 列表逐个带超时尝试（首连即失败
+/// 的 IP 不会再拖满 OS SYN 超时）；无候选时回退系统 DNS 单次连接。
+fn connect_direct_multi(host: &str, cache: &Arc<EchCache>) -> io::Result<BackendStream> {
+    if let Some(ips) = cache.get_direct_ips(host) {
+        let mut last_err: Option<io::Error> = None;
+        for ip in ips {
+            match connect_direct(host, Some(ip)) {
+                Ok(s) => {
+                    log_d!("direct connected: {host} -> {ip}");
+                    return Ok(BackendStream::Ech(s));
+                }
+                Err(e) => {
+                    log_e!("direct {host} -> {ip}: {e}");
+                    last_err = Some(e);
+                }
+            }
+        }
+        if let Some(e) = last_err {
+            return Err(e);
+        }
+    }
+    connect_direct(host, None).map(BackendStream::Ech)
+}
+
+/// 直连后端（**fd BIO 模式**，与 `openssl s_client` 完全一致）。
+///
+/// 为什么不用 `SslStream::new`（rust-openssl 的 BIO pair 模式）：部分 CDN 的
+/// WAF 会把「BIO pair 客户端」的 TLS/HTTP 行为判为异常直接 403/断连；同一
+/// OpenSSL、同一 IP、同一 ALPN 下，`s_client`（fd 模式）实测 200。ECH 路径
+/// 早已因此改用 fd 模式，直连同样统一。
+fn connect_direct(host: &str, connect_ip: Option<Ipv4Addr>) -> io::Result<FdSslStream> {
     let ssl = openssl::ssl::Ssl::new(shared_client_ctx(&DIRECT_SSL_CTX, false)?)
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
     let host_c = std::ffi::CString::new(host).unwrap();
@@ -1071,8 +1417,23 @@ fn connect_direct(host: &str, connect_ip: Option<Ipv4Addr>) -> io::Result<openss
     tcp.set_nodelay(true).ok();
     tcp.set_read_timeout(Some(std::time::Duration::from_secs(15)))?;
     tcp.set_write_timeout(Some(std::time::Duration::from_secs(15)))?;
-    let st = ssl.connect(tcp).map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-    Ok(st)
+    #[cfg(target_os = "windows")]
+    let fd: i32 = tcp.as_raw_socket() as i32;
+    #[cfg(not(target_os = "windows"))]
+    let fd: i32 = {
+        use std::os::unix::io::AsRawFd as _;
+        tcp.as_raw_fd()
+    };
+    unsafe { ffi::SSL_set_fd(ssl.as_ptr(), fd) };
+    if unsafe { ffi::SSL_connect(ssl.as_ptr()) } != 1 {
+        // fd 所有权已移交 OpenSSL：由 SSL_free 关闭，防止 TcpStream 双重 close。
+        std::mem::forget(tcp);
+        return Err(io::Error::new(io::ErrorKind::Other, "direct handshake"));
+    }
+    Ok(FdSslStream {
+        ssl: std::mem::ManuallyDrop::new(ssl),
+        tcp,
+    })
 }
 
 /// Open backend connection.
@@ -1082,45 +1443,23 @@ fn connect_direct(host: &str, connect_ip: Option<Ipv4Addr>) -> io::Result<openss
 ///
 /// 为什么要回落: 应用级 / 源级接管必然经手「Cloudflare 前置但该 zone 没启用 ECH」的域,
 /// 这类域用 ECH 永远谈不成。参考项目因为没有回落, 只能靠编译期白名单把这类域挡在门外。
-fn open_backend(host: &str, cache: &Arc<EchCache>) -> io::Result<openssl::ssl::SslStream<TcpStream>> {
-    if !is_target(host) {
-        return connect_direct(host, None);
-    }
-
-    // 负缓存命中: 已知该域拿不到 ECH 收益, 直接直连, 省掉一次 DoH + ECH 探测
-    if cache.is_known_direct(host) {
-        log_d!("open_backend: {host} known direct, skip ECH");
-        return connect_direct(host, None);
-    }
-
-    let ecl = match cache.get_ech() {
-        Ok(ecl) => ecl,
-        Err(e) => {
-            // 故意不调 cache.invalidate(): get_ech 内部已按 ECH_FAIL_BACKOFF_SECS 退避,
-            // 若在这里清空缓存, 每个请求都会重新打一遍全部 CF DoH IP
-            log_d!("open_backend: {host} ECH config unavailable ({e}), fallback to direct");
-            return connect_direct(host, None);
-        }
-    };
-
-    let ips = match cache.get_target_ips(host) {
-        Ok(ips) => ips,
-        Err(e) => {
-            log_d!("open_backend: {host} no ECH-capable IP ({e}), fallback to direct");
-            return connect_direct(host, None);
-        }
-    };
-
+/// 对一组候选 IP 用同一 ECH config 尝试一轮 ECH 连接
+fn try_ech_ips(
+    host: &str,
+    ips: &[Ipv4Addr],
+    ecl: &[u8],
+    cache: &Arc<EchCache>,
+) -> io::Result<BackendStream> {
     let mut last_err: Option<io::Error> = None;
-    for ip in &ips {
+    for ip in ips {
         if !is_cloudflare_ip(*ip) {
             log_e!("{host} -> {ip}: non-CF IP, skipping ECH");
             continue;
         }
-        match connect_ech(host, *ip, &ecl) {
+        match connect_ech(host, *ip, ecl) {
             Ok(s) => {
                 log_d!("ECH connection successful: {host} -> {ip}");
-                return Ok(s);
+                return Ok(BackendStream::Ech(s));
             }
             Err(e) if is_timeout(&e) => {
                 log_e!("ECH {host} -> {ip}: timeout, trying next IP");
@@ -1133,6 +1472,134 @@ fn open_backend(host: &str, cache: &Arc<EchCache>) -> io::Result<openssl::ssl::S
             }
         }
     }
+    Err(last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::Other, "no candidate IP")))
+}
+
+/// 经国内公共 DoH 查询 ECHConfigList（live）：先查目标域自己的 HTTPS(SVCB) 记录
+/// （zone 专属配置），再查 `cloudflare-ech.com` 的（共享配置）。直供/缓存的 config
+/// 被 Cloudflare 轮换后，服务器会以 `ech required` (retry) 拒绝握手 —— 对策就是
+/// 每次取 live config 再试。返回 `(config, 来源)`。
+fn fetch_live_ech_config(host: &str) -> io::Result<(Vec<u8>, String)> {
+    let mut last_err: Option<io::Error> = None;
+    for query_host in [host, "cloudflare-ech.com"] {
+        let path = format!("/dns-query?name={query_host}&type=HTTPS");
+        for (ip, sni) in PURE_DOH_ENDPOINTS {
+            let body = match doh_query_plain(*ip, sni, &path) {
+                Ok(b) => b,
+                Err(e) => {
+                    log_e!("live ECH via {ip} ({sni}) [{query_host}]: {e}");
+                    last_err = Some(e);
+                    continue;
+                }
+            };
+            if let Some(ecl) = extract_ech_from_svcb(&body) {
+                log_d!(
+                    "live ECHConfigList ({query_host}) via {ip} ({sni}): {} bytes",
+                    ecl.len()
+                );
+                return Ok((ecl, query_host.to_string()));
+            }
+            log_d!("live ECH [{query_host}] via {ip}: no ech param in HTTPS RR");
+            last_err = Some(io::Error::new(io::ErrorKind::NotFound, "no ech param"));
+        }
+    }
+    Err(last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::Other, "live ECH all failed")))
+}
+
+/// 从 DoH JSON（HTTPS/SVCB 记录）的 data 文本里提取 `ech=` 参数并 base64 解码。
+/// 字符集兼容标准与 URL-safe 两种 base64（含 `-_` 与 padding `=`），解码宽容处理。
+fn extract_ech_from_svcb(json: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+    const NEEDLE: &str = "ech=";
+    let mut search_from = 0usize;
+    while let Some(pos) = json[search_from..].find(NEEDLE) {
+        let start = search_from + pos + NEEDLE.len();
+        let rest = &json[start..];
+        let end = rest
+            .find(|c: char| {
+                !(c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '-' || c == '_' || c == '=')
+            })
+            .unwrap_or(rest.len());
+        let token = &rest[..end];
+        if token.len() >= 8 {
+            let clean: String = token.chars().filter(|c| *c != '=').collect();
+            let engine = if clean.contains('-') || clean.contains('_') {
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            } else {
+                &base64::engine::general_purpose::STANDARD_NO_PAD
+            };
+            if let Ok(wire) = engine.decode(clean.as_bytes()) {
+                if !wire.is_empty() {
+                    return Some(wire);
+                }
+            }
+        }
+        search_from = start;
+    }
+    None
+}
+
+fn open_backend(host: &str, cache: &Arc<EchCache>) -> io::Result<BackendStream> {
+    if !is_target(host) {
+        return connect_direct_multi(host, cache);
+    }
+
+    // 负缓存命中: 已知该域拿不到 ECH 收益, 直接直连, 省掉一次 DoH + ECH 探测
+    if cache.is_known_direct(host) {
+        log_d!("open_backend: {host} known direct, skip ECH");
+        return connect_direct_multi(host, cache);
+    }
+
+    let ecl = match cache.get_ech(host) {
+        Ok(ecl) => ecl,
+        Err(e) => {
+            // 故意不调 cache.invalidate(): get_ech 内部已按 ECH_FAIL_BACKOFF_SECS 退避,
+            // 若在这里清空缓存, 每个请求都会重新打一遍全部 CF DoH IP
+            log_d!("open_backend: {host} ECH config unavailable ({e}), fallback to direct");
+            return connect_direct_multi(host, cache);
+        }
+    };
+
+    let ips = match cache.get_target_ips(host) {
+        Ok(ips) => ips,
+        Err(e) => {
+            log_d!("open_backend: {host} no ECH-capable IP ({e}), fallback to direct");
+            return connect_direct_multi(host, cache);
+        }
+    };
+
+    let mut last_err: Option<io::Error> = None;
+    match try_ech_ips(host, &ips, &ecl, cache) {
+        Ok(s) => return Ok(s),
+        Err(e) => last_err = Some(e),
+    }
+
+    // 直供 config 被服务端拒绝（`ech required` retry）时，向同一边缘做 GREASE 探测
+    // （ech_helper.c 的独立连接）拿该边缘下发的 retry config，再用它重试一轮。
+    // 注意：国内 DoH 的 HTTPS 记录会剥离 ech 参数（实测），DNS 查询路线不可用。
+    let mut retry_cfg: Option<Vec<u8>> = None;
+    for ip in &ips {
+        match grease_ech(*ip) {
+            Ok(c) => {
+                log_d!("GREASE retry config from {ip}: {} bytes", c.len());
+                retry_cfg = Some(c);
+                break;
+            }
+            Err(e) => {
+                log_e!("GREASE probe {ip}: {e}");
+            }
+        }
+    }
+    match retry_cfg {
+        Some(live) if live != ecl => {
+            log_d!("retry ECH with server retry config ({} bytes)", live.len());
+            match try_ech_ips(host, &ips, &live, cache) {
+                Ok(s) => return Ok(s),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        _ => {}
+    }
 
     // 全部 ECH 尝试失败 → 直连兜底。SNI 会暴露, 但这类域本来就无法通过 ECH 隐藏,
     // 「能连上」优先于「连不上但保持沉默」。
@@ -1143,7 +1610,7 @@ fn open_backend(host: &str, cache: &Arc<EchCache>) -> io::Result<openssl::ssl::S
             .map(|e| e.to_string())
             .unwrap_or_else(|| "no candidate IP".to_string())
     );
-    connect_direct(host, None)
+    connect_direct_multi(host, cache)
 }
 
 fn is_timeout(err: &io::Error) -> bool {
@@ -1230,6 +1697,87 @@ fn handle_tunnel(client: &mut TcpStream, host: &str, _cache: &EchCache) {
         }
     }
     client.set_nonblocking(false).ok();
+}
+
+/// 在 [haystack] 中查找 [needle] 首次出现的位置。
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// 规范化 HTTP/1.1 请求头（TLS 解密后的明文首块）：
+/// - 头名 Title-Case（RFC 9110 规范形态；Dart HttpClient 默认发小写）；
+/// - `Host` 提到首位（RFC 9112 规范形态）；
+/// - 删除原 `Connection` 并强制 `Connection: close`——每连接一个请求，使每个
+///   请求各自的「首请求头重写」都能生效（keep-alive 复用连接时后续请求头
+///   无法再被重写）。
+/// 请求行与头值保持原样；无法识别为请求头时原样返回。
+fn rewrite_http_head(head: &[u8]) -> Vec<u8> {
+    let Ok(text) = std::str::from_utf8(head) else {
+        return head.to_vec();
+    };
+    let mut lines = text.split("\r\n");
+    let request_line = match lines.next() {
+        Some(l)
+            if l.starts_with("GET ")
+                || l.starts_with("POST ")
+                || l.starts_with("HEAD ")
+                || l.starts_with("PUT ")
+                || l.starts_with("DELETE ")
+                || l.starts_with("OPTIONS ") =>
+        {
+            l
+        }
+        _ => return head.to_vec(),
+    };
+    let mut host: Option<String> = None;
+    let mut others: Vec<String> = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        let Some(colon) = line.find(':') else {
+            others.push(line.to_string());
+            continue;
+        };
+        let name = line[..colon].trim();
+        let value = line[colon + 1..].trim_start();
+        let lower = name.to_ascii_lowercase();
+        if lower == "host" {
+            host = Some(value.to_string());
+        } else if lower == "connection" {
+            // 丢弃：统一强制 close
+        } else {
+            let mut canonical = String::with_capacity(name.len());
+            for (i, seg) in name.split('-').enumerate() {
+                if i > 0 {
+                    canonical.push('-');
+                }
+                let mut chars = seg.chars();
+                if let Some(first) = chars.next() {
+                    canonical.push(first.to_ascii_uppercase());
+                    canonical.extend(chars);
+                }
+            }
+            others.push(format!("{canonical}: {value}"));
+        }
+    }
+    let mut out = String::with_capacity(text.len() + 24);
+    out.push_str(request_line);
+    out.push_str("\r\n");
+    if let Some(h) = host {
+        out.push_str("Host: ");
+        out.push_str(&h);
+        out.push_str("\r\n");
+    }
+    for l in others {
+        out.push_str(&l);
+        out.push_str("\r\n");
+    }
+    out.push_str("Connection: close\r\n\r\n");
+    out.into_bytes()
 }
 
 fn handle_mitm(client: &mut TcpStream, host: &str, cache: &Arc<EchCache>, ca: &MitmCa) {
@@ -1327,6 +1875,12 @@ fn handle_mitm(client: &mut TcpStream, host: &str, cache: &Arc<EchCache>, ca: &M
     let idle_timeout = std::time::Duration::from_secs(60); // 60s idle timeout
     let mut buf = vec![0u8; 32768]; // Larger buffer for images (32KB)
     let mut backend_error = false;
+    // 首个 HTTP 请求头重写状态：Dart 的 HttpClient 发出的请求是「Host 非首位 +
+    // 头名小写」形态，部分 CDN（签名图片 CDN 等）的 WAF 按该形态指纹直接 403；
+    // 浏览器/curl 是 Host 首位 + Title-Case。这里在转发前把首请求头规范化，
+    // 并强制 Connection: close（每连接一个请求 ⇒ 后续请求各自的首头都会被重写）。
+    let mut head_done = false;
+    let mut head_buf: Vec<u8> = Vec::new();
 
     loop {
         // Check timeouts
@@ -1346,7 +1900,41 @@ fn handle_mitm(client: &mut TcpStream, host: &str, cache: &Arc<EchCache>, ca: &M
                 break;
             }
             Ok(n) => {
-                if let Err(e) = backend.write_all(&buf[..n]) {
+                if !head_done {
+                    head_buf.extend_from_slice(&buf[..n]);
+                    if let Some(pos) = find_subslice(&head_buf, b"\r\n\r\n") {
+                        let head = &head_buf[..pos + 4];
+                        let rest: Vec<u8> = head_buf[pos + 4..].to_vec();
+                        let rewritten = rewrite_http_head(head);
+                        // 诊断：转发到上游的完整请求头（与 curl 200 头逐行对比用）
+                        if let Ok(s) = std::str::from_utf8(&rewritten) {
+                            log_d!("forward head >>>\n{}", s);
+                        }
+                        if let Err(e) = backend.write_all(&rewritten) {
+                            log_e!("handle_mitm: backend write (head) failed: {}", e);
+                            backend_error = true;
+                            break;
+                        }
+                        if !rest.is_empty() {
+                            if let Err(e) = backend.write_all(&rest) {
+                                log_e!("handle_mitm: backend write (body) failed: {}", e);
+                                backend_error = true;
+                                break;
+                            }
+                        }
+                        head_done = true;
+                        head_buf.clear();
+                    } else if head_buf.len() > 16384 {
+                        // 头异常大：原样转发（不阻断业务）
+                        if let Err(e) = backend.write_all(&head_buf) {
+                            log_e!("handle_mitm: backend write (oversized head) failed: {}", e);
+                            backend_error = true;
+                            break;
+                        }
+                        head_done = true;
+                        head_buf.clear();
+                    }
+                } else if let Err(e) = backend.write_all(&buf[..n]) {
                     log_e!("handle_mitm: backend write failed: {}", e);
                     backend_error = true;
                     break;
@@ -1551,7 +2139,7 @@ struct ProxyServer {
 }
 
 /// 最大并发连接数, 防止图片瀑布流打爆低端机
-const MAX_CONCURRENT: u32 = 32;
+const MAX_CONCURRENT: u32 = 64;
 
 /// 并发贴顶告警上次输出时间 (按 60s 节流)
 static LAST_LIMIT_WARN: Mutex<Option<Instant>> = Mutex::new(None);
