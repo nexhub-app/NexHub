@@ -6091,6 +6091,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get settingsCatDetailAppearanceDesc => '封面取色与模糊背景';
 
   @override
+  String get twoPaneDetail => '双栏详情';
+
+  @override
+  String get twoPaneDetailDesc => '平板横屏或宽窗口时详情在右侧栏打开；关闭后详情整页打开';
+
+  @override
   String get detailAppearanceDynamicAccent => '封面动态强调色';
 
   @override

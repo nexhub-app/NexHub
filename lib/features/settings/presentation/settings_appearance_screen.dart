@@ -658,6 +658,20 @@ class _SettingsAppearanceScreenState extends State<SettingsAppearanceScreen> {
                         'appearance.detailAppearance'),
                     header: l10n.settingsCatDetailAppearance,
                     children: <Widget>[
+                      // 双栏详情：宽屏（平板横屏 / 宽窗口）时详情在右侧栏
+                      // 打开；关闭后详情恒整页打开（手机档行为不变）。
+                      SettingsTile(
+                        icon: Icons.view_sidebar_rounded,
+                        title: l10n.twoPaneDetail,
+                        subtitle: l10n.twoPaneDetailDesc,
+                        trailing: Switch(
+                          value: s.twoPaneDetailEnabled,
+                          onChanged: (bool v) {
+                            v ? AppHaptics.toggleOn() : AppHaptics.toggleOff();
+                            store.setTwoPaneDetailEnabled(v);
+                          },
+                        ),
+                      ),
                       SettingsTile(
                         icon: Icons.colorize_rounded,
                         title: l10n.detailAppearanceDynamicAccent,

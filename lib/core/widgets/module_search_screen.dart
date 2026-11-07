@@ -8,6 +8,7 @@ import 'app_icon_button.dart';
 import 'search_suggestions.dart';
 import 'layout_picker_button.dart';
 import 'app_search_field.dart';
+import 'two_pane_detail.dart';
 
 /// 搜索布局切换（网格 / 列表）。
 class SearchLayoutToggle extends StatelessWidget {
@@ -144,7 +145,10 @@ class _ModuleSearchScreenState extends State<ModuleSearchScreen> {
   @override
   Widget build(BuildContext context) {
     final AppLocalizations l10n = AppLocalizations.of(context);
-    return Scaffold(
+    // 双栏详情宿主：宽屏（≥1120）且有详情打开时整页压缩到左侧、右侧渲染
+    // 全高详情栏（含 AppBar 只占列表侧）；窄窗口行为不变（见 TwoPaneDetailHost）。
+    return TwoPaneDetailHost(
+      child: Scaffold(
       appBar: AppBar(
         leading: AppIconButton(
           icon: Icons.arrow_back_rounded,
@@ -205,6 +209,7 @@ class _ModuleSearchScreenState extends State<ModuleSearchScreen> {
                 : widget.results,
           ),
         ],
+      ),
       ),
     );
   }

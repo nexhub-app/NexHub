@@ -11762,6 +11762,18 @@ abstract class AppLocalizations {
   /// **'Cover-based accent & blurred backdrop'**
   String get settingsCatDetailAppearanceDesc;
 
+  /// No description provided for @twoPaneDetail.
+  ///
+  /// In en, this message translates to:
+  /// **'Two-pane detail'**
+  String get twoPaneDetail;
+
+  /// No description provided for @twoPaneDetailDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'On wide screens (tablet landscape / wide window), open details in a side pane; off always opens details full-page'**
+  String get twoPaneDetailDesc;
+
   /// No description provided for @detailAppearanceDynamicAccent.
   ///
   /// In en, this message translates to:

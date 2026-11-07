@@ -6220,6 +6220,13 @@ class AppLocalizationsEn extends AppLocalizations {
       'Cover-based accent & blurred backdrop';
 
   @override
+  String get twoPaneDetail => 'Two-pane detail';
+
+  @override
+  String get twoPaneDetailDesc =>
+      'On wide screens (tablet landscape / wide window), open details in a side pane; off always opens details full-page';
+
+  @override
   String get detailAppearanceDynamicAccent => 'Dynamic accent from cover';
 
   @override

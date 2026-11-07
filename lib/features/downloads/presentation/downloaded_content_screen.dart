@@ -19,7 +19,6 @@ import 'downloaded_group_screen.dart';
 import 'package:nexhub/core/navigation/app_page_route.dart';
 import 'package:nexhub/core/widgets/app_alert_dialog.dart';
 import '../../../core/widgets/app_glass_bar.dart';
-import '../../../core/widgets/two_pane_detail.dart';
 
 enum _DownloadedTab { all, novel, media, comic, archived }
 
@@ -137,10 +136,7 @@ class _DownloadedContentScreenState extends State<DownloadedContentScreen> {
           ],
         ],
       ),
-      // 双栏详情宿主：宽屏（≥1120）且有详情打开时列表压缩到左侧、右侧
-      // 渲染详情栏；窄窗口行为不变（见 TwoPaneDetailHost）。
-      body: TwoPaneDetailHost(
-        child: Column(
+      body: Column(
         children: <Widget>[
           // 类型筛选 Tab
           Padding(
@@ -231,7 +227,6 @@ class _DownloadedContentScreenState extends State<DownloadedContentScreen> {
                   ),
           ),
         ],
-        ),
       ),
     );
   }

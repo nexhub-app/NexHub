@@ -3255,6 +3255,8 @@
   "settingsCatContentDesc": "Sources, RSS subscriptions, scraping, AI & network",
   "settingsCatDetailAppearance": "Detail Page Look",
   "settingsCatDetailAppearanceDesc": "Cover-based accent & blurred backdrop",
+  "twoPaneDetail": "Two-pane detail",
+  "twoPaneDetailDesc": "On wide screens (tablet landscape / wide window), open details in a side pane; off always opens details full-page",
   "detailAppearanceDynamicAccent": "Dynamic accent from cover",
   "detailAppearanceDynamicAccentDesc": "Tint the detail page accent with a color pulled from the cover or fetched image",
   "detailAppearanceBlurredBg": "Blurred cover background",

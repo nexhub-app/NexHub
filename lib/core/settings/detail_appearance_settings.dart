@@ -48,12 +48,17 @@ class DetailAppearanceSettings {
   /// 右滑（手指向右滑）触发的动作（默认已读）。
   final DetailSwipeAction rightSwipeAction;
 
+  /// 双栏详情：宽屏（窗口 ≥ 1120）时详情在右侧栏打开而非整页路由
+  /// （默认开启；关闭后详情恒整页打开，手机档行为不变）。
+  final bool twoPaneDetailEnabled;
+
   const DetailAppearanceSettings({
     this.dynamicAccentEnabled = false,
     this.blurredBackgroundEnabled = false,
     this.backgroundBlurSigma = 30.0,
     this.leftSwipeAction = DetailSwipeAction.download,
     this.rightSwipeAction = DetailSwipeAction.read,
+    this.twoPaneDetailEnabled = true,
   });
 
   DetailAppearanceSettings copyWith({
@@ -62,6 +67,7 @@ class DetailAppearanceSettings {
     double? backgroundBlurSigma,
     DetailSwipeAction? leftSwipeAction,
     DetailSwipeAction? rightSwipeAction,
+    bool? twoPaneDetailEnabled,
   }) =>
       DetailAppearanceSettings(
         dynamicAccentEnabled: dynamicAccentEnabled ?? this.dynamicAccentEnabled,
@@ -70,6 +76,7 @@ class DetailAppearanceSettings {
         backgroundBlurSigma: backgroundBlurSigma ?? this.backgroundBlurSigma,
         leftSwipeAction: leftSwipeAction ?? this.leftSwipeAction,
         rightSwipeAction: rightSwipeAction ?? this.rightSwipeAction,
+        twoPaneDetailEnabled: twoPaneDetailEnabled ?? this.twoPaneDetailEnabled,
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -78,6 +85,7 @@ class DetailAppearanceSettings {
         'backgroundBlurSigma': backgroundBlurSigma,
         'leftSwipeAction': leftSwipeAction.name,
         'rightSwipeAction': rightSwipeAction.name,
+        'twoPaneDetailEnabled': twoPaneDetailEnabled,
       };
 
   factory DetailAppearanceSettings.fromJson(Map<String, dynamic> json) {
@@ -85,6 +93,7 @@ class DetailAppearanceSettings {
     // 设置一起丢掉回默认值）。
     final Object? dynamicAccent = json['dynamicAccentEnabled'];
     final Object? blurBg = json['blurredBackgroundEnabled'];
+    final Object? twoPane = json['twoPaneDetailEnabled'];
     return DetailAppearanceSettings(
       // 缺省（老用户升级）回落 false：新视觉行为一律显式开启。
       dynamicAccentEnabled: dynamicAccent is bool ? dynamicAccent : false,
@@ -96,6 +105,9 @@ class DetailAppearanceSettings {
           fallback: DetailSwipeAction.download),
       rightSwipeAction: _parseSwipeAction(json['rightSwipeAction'],
           fallback: DetailSwipeAction.read),
+      // 双栏详情为导航行为而非视觉风格：缺省（老用户升级）回落 true，
+      // 与上线即默认生效的行为一致。
+      twoPaneDetailEnabled: twoPane is bool ? twoPane : true,
     );
   }
 
@@ -167,6 +179,12 @@ class DetailAppearanceStore extends ChangeNotifier {
   Future<void> setRightSwipeAction(DetailSwipeAction value) async {
     if (value == _settings.rightSwipeAction) return;
     await save(_settings.copyWith(rightSwipeAction: value));
+  }
+
+  /// 设置双栏详情开关（持久化、广播）。
+  Future<void> setTwoPaneDetailEnabled(bool value) async {
+    if (value == _settings.twoPaneDetailEnabled) return;
+    await save(_settings.copyWith(twoPaneDetailEnabled: value));
   }
 
   Future<DetailAppearanceSettings> load() async {

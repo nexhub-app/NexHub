@@ -3232,6 +3232,8 @@
   "settingsCatContentDesc": "源管理、RSS 订阅、网页爬取、AI 与网络设置",
   "settingsCatDetailAppearance": "详情页外观",
   "settingsCatDetailAppearanceDesc": "封面取色与模糊背景",
+  "twoPaneDetail": "双栏详情",
+  "twoPaneDetailDesc": "平板横屏或宽窗口时详情在右侧栏打开；关闭后详情整页打开",
   "detailAppearanceDynamicAccent": "封面动态强调色",
   "detailAppearanceDynamicAccentDesc": "根据封面或获取的图片自动提取详情页强调色",
   "detailAppearanceBlurredBg": "封面模糊背景",

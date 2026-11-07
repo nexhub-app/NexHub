@@ -20,7 +20,6 @@ import '../services/config_loader.dart';
 import '../settings/layout_settings.dart';
 import '../theme/app_tokens.dart';
 import 'content_card.dart';
-import 'two_pane_detail.dart';
 
 /// 用真实页面网址直接浏览该页内容（作者页 / 标签页 / 任意列表页）。
 ///
@@ -184,11 +183,8 @@ class _SourceUrlBrowseScreenState extends State<SourceUrlBrowseScreen> {
     final bool footer = busy || (!_hasMore && _items.isNotEmpty);
     return Scaffold(
       appBar: AppBar(title: Text(widget.title)),
-      // 双栏详情宿主：宽屏（≥1120）且有详情打开时列表压缩到左侧、右侧渲染
-      // 详情栏；窄窗口行为不变（见 TwoPaneDetailHost）。
-      body: TwoPaneDetailHost(
-        child: _initialLoaded && _items.isEmpty
-            ? Center(
+      body: _initialLoaded && _items.isEmpty
+          ? Center(
               child: _error != null
                   ? Column(
                       mainAxisSize: MainAxisSize.min,
@@ -256,7 +252,6 @@ class _SourceUrlBrowseScreenState extends State<SourceUrlBrowseScreen> {
                 );
               },
             ),
-      ),
     );
   }
 }

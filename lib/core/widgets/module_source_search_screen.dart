@@ -30,7 +30,6 @@ import '../../../core/theme/app_tokens.dart';
 import '../../../core/utils/app_haptics.dart';
 import '../../../core/widgets/app_empty_state.dart';
 import '../../../core/widgets/app_loading_indicator.dart';
-import '../../../core/widgets/two_pane_detail.dart';
 import '../../features/media_server/media_server_search_section.dart';
 import '../../../core/comic/comic_progress_manager.dart';
 import '../../../core/history/media_watched_manager.dart';
@@ -643,9 +642,7 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
       gridTooltip: l10n.gridView,
       listTooltip: l10n.listView,
       layoutButton: const LayoutPickerButton(),
-      // 双栏详情宿主：宽屏（≥1120）且有详情打开时结果区压缩到左侧、右侧
-      // 渲染详情栏；窄窗口行为不变（见 TwoPaneDetailHost）。
-      results: TwoPaneDetailHost(child: _buildResults(context, l10n)),
+      results: _buildResults(context, l10n),
       sourceType: widget.sourceType,
       header: _buildHeader(context, l10n),
       // 无痕模式：仅勾选单个源且该源已开启无痕时跳过搜索历史记录；
