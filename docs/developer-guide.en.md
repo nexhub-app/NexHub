@@ -116,29 +116,39 @@ Rules: a key that is **absent = inherit global**; a key that is set = **override
 
 ### 4.5.2 Source-authoring tutorial (tiered: Basic / Intermediate / Advanced)
 
-Below is the source-authoring tutorial tiered by difficulty, consistent with the online version. The complete bilingual version is at the [online tutorial](https://nexhub-app.github.io/website/) and the field cheat-sheet in this document.
+This section mirrors the official tutorial: 22 modules in three difficulty tiers, each with an explanation, a field table and a code sample. The online edition (bilingual, with a jumpable table of contents) is at [NexHub site · Source-authoring tutorial](https://nexhub-app.github.io/website/docs-tutorial.html).
 
-#### 🟢 Basic: what a source is & basic fields
+> Protocol details follow the actual parsing in `lib/core/models/plugin_config.dart`; this page and the official tutorial are kept in sync, and the code wins if they ever diverge.
 
-**What a source is**: a source is a JSON file describing "how to scrape anime / manga / novel / video from a website". NexHub only provides the generic engine; all site-specific parsing logic lives in this file — that's "Source-as-Plugin". The app has a built-in JS sandbox: you can extract fields declaratively with selectors (jsonpath / css / xpath), or embed JavaScript for complex pages.
+#### 🟢 Basics
 
-**Basic fields (every source has)**:
+##### 1. What is a Source
 
-| Field | Description |
+A Source is a JSON file that describes HOW to scrape a specific site for anime / manga / novel / video. NexHub only ships a generic engine; all site-specific parsing lives in this file — that is exactly 'source = plugin'.
+
+The app embeds a JS sandbox: you can use declarative selectors (jsonpath / css / xpath) to extract fields directly, or embed JavaScript in the source to handle complex pages. Anyone can import your source file with one tap, no full app update needed.
+
+##### 2. Basic fields (every source)
+
+Every source starts with these common header fields. Fill them in first so the app can identify, manage and upgrade your source.
+
+Note: the source model does NOT read lang / builtin keys — they are silently ignored, so don't rely on them as functional fields. author is now a real field shown on the source detail page.
+
+Age rating (ageRating) is also a basic field: general (all) / teen (13+/16+) / mature (18+), with aliases like all / 16 / r18 / nsfw accepted; default general. mature is hidden by default from users who have not enabled age confirmation.
+
+The parser.type values are detailed in sections 12-13.
+
+| Field / key | Description |
 | --- | --- |
-| `id` | Required, unique id (e.g. `manga_demo`); same-id sources upgrade/skip by `version` |
-| `name` | Required, display name |
-| `author` | Optional, source author name (shown on the source detail page, for attribution) |
-| `version` | Integer version (default 1); same-id sources upgrade/skip by version |
-| `type` | Required, media type: `animeSource` (video / anime) / `mangaSource` (manga) / `novelSource` (novel) |
-| `site` | Required, site info (see 4.5.1) |
-| `parser` | Parse config: `{ type, overrides?, script? }`; `type` is `builtin` / `hybrid` / `script` |
-| `ageRating` | **Optional, age rating**: `general` / `teen` (16+) / `mature` (18+); aliases like `all` / `16` / `r18` / `nsfw` accepted; **default `general`; `mature` is hidden by default** |
-| `enabled` | Optional, enabled (default true) |
-
-> Note: the source model **does not read** `lang` / `builtin` — writing them is ignored, don't treat them as functional fields; `author` is now a real field shown on the source detail page.
-
-**Minimal example (declarative anime source)**:
+| `id` | Unique id, e.g. manga_demo. Same-id sources upgrade or skip by version; avoid collisions. |
+| `name` | Display name, e.g. 'Demo Manga'. |
+| `author` | Optional. Source author name (shown on the source detail page, for attribution). |
+| `version` | Integer version (coerced to int, default 1). Same-id sources upgrade or skip by version. |
+| `type` | Media type: animeSource (video/anime) / mangaSource / novelSource. |
+| `site` | Site object (required): domain, baseUrl (root, for relative links), mirrors list; optional userAgent / cookies / headers. |
+| `parser` | Parser config: { type, overrides?, script? }. type is builtin / hybrid / script. |
+| `ageRating` | Optional. Age rating general / teen / mature; default general, mature hidden by default. |
+| `enabled` | Optional, whether enabled (default true). |
 
 ```json
 {
@@ -150,43 +160,208 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
   "site": {
     "domain": "example.com",
     "baseUrl": "https://example.com",
-    "mirrors": [ { "name": "Main", "domain": "example.com", "baseUrl": "https://example.com" } ]
+    "mirrors": [ { "name": "main", "domain": "example.com", "baseUrl": "https://example.com" } ]
   },
   "parser": { "type": "hybrid", "overrides": { "latest": { "type": "builtin" } } }
 }
 ```
 
-#### 🟡 Intermediate: six content modules
+#### 🟡 Intermediate
 
-**Search module (search / ruleSearch)** — triggered when the user types a keyword in the search box:
+##### 3. Search module (search / ruleSearch)
 
-- Video / manga (pattern A): define `search` in `routes` with `{keyword}` placeholder; extract the result list with `selectors` or a script;
-- Novel (pattern B, Legado-compatible): use the `ruleSearch` field with CSS selectors declaring each result's book name, author, cover, detail link;
-- Returned fields usually include: `id` (detail-page id), `title`, `cover`, `detailUrl`.
+Triggered when the user types a keyword. Two paradigms:
 
-**Discovery / Category module (discovery / ruleExplore)** — "Home" and "browse by category" use this module:
+- Anime/Manga (Paradigm A): define search url in routes (with {keyword}), then use selectors or script to extract the result list.
+- Novel (Paradigm B, Legado-compatible): use ruleSearch with CSS selectors declaring each result's title, author, cover, detail link.
 
-- Pattern A: `latest` / `explore` / `category` routes + `category.categoryEntries` table;
-- Pattern B: `ruleExplore` + `exploreUrl` (one "category name::URL" per line);
-- Home sections are defined by `homeSections` (title, route, style grid/list, count).
+Returned fields usually: id, title, cover, detailUrl.
 
-**Detail / Contents module (detail / ruleBookInfo)** — loaded when opening a work: title, cover, synopsis, author / cast, tags, status, and the contents (chapters / episodes) list.
-
-**Content module (content / ruleContent)** — a manga issue's images, a novel's body text, or a video's play page:
-
-- Novel pattern B: `ruleContent` (content / title / nextContentUrl);
-- Manga: `chapters` (episode list) → `images` (that episode's images) endpoints;
-- Video: `episodes` (episode list) → `video` (real play URL) endpoints.
-
-**Web favorites (`webFavorite`, optional)** — declare this when the source site itself provides a "bookshelf / favorites" web page, so the app's online-browsing page gets an extra "Web favorites" tab (via the source-site account, independent of the app's local favorites):
-
-| Key | Description |
+| Field / key | Description |
 | --- | --- |
-| `enabled` | Optional, enable the Web favorites tab (default true) |
-| `title` | Optional, tab display name, e.g. "My Bookshelf" |
-| `route` / `url` | Route name or full URL for viewing the favorites list; pick one, `route` must be defined in `routes` |
-| `addRoute` / `addUrl` | "Add to favorites" route or URL; `{id}` / `{detailUrl}` / `{title}` placeholders supported |
-| `requireLogin` | Optional, true requires logging in to the source site first |
+| `routes.search.url` | Paradigm A: search endpoint, {keyword} for query, {page} for page. |
+| `selectors.list / bookList` | Result container selector (jsonpath or css). |
+| `selectors.title / bookName` | Title field. |
+| `selectors.cover / bookCoverUrl` | Cover URL; relative paths auto-joined to baseUrl. |
+| `selectors.id / bookUrl` | Identifier or link used to open detail later. |
+
+```js
+// Paradigm A: routes + selectors (anime)
+"routes": {
+  "search": { "url": "/s?wd={keyword}&page={page}", "method": "get", "responseType": "json" }
+},
+"selectors": {
+  "list": "$.list",
+  "title": "$.vod_name",
+  "cover": "$.vod_pic",
+  "id": "$.vod_id"
+}
+
+// Paradigm B: novel ruleSearch (Legado)
+"ruleSearch": {
+  "bookList": ".bookbox",
+  "bookName": ".bookname a@text",
+  "bookAuthor": ".author@text",
+  "bookCoverUrl": ".bookimg img@src",
+  "bookUrl": ".bookname a@href"
+}
+```
+
+##### 4. Discovery / Category (discovery / ruleExplore)
+
+Used by the Home page and category browsing. Paradigm A uses latest/explore/category routes + categoryEntries; Paradigm B uses ruleExplore + exploreUrl (each line 'Category::URL').
+
+Home sections are defined by homeSections (title, route, style grid/list, limit).
+
+| Field / key | Description |
+| --- | --- |
+| `category.categoryEntries` | Paradigm A: category array, each {id, title}, plugged into the category route. |
+| `homeSections` | Home blocks (latest, popular…) referencing a route with a limit. |
+| `exploreUrl` | Paradigm B: newline-separated 'Category::URL' for the explore page. |
+
+```json
+"category": {
+  "categoryEntries": [
+    { "id": "all", "title": "All" },
+    { "id": "1", "title": "Anime" },
+    { "id": "2", "title": "Movies" }
+  ]
+},
+"homeSections": [
+  { "id": "latest", "title": "Latest", "route": "latest", "style": "grid", "limit": 18 }
+]
+```
+
+##### 5. Detail / Contents (detail / ruleBookInfo)
+
+Loaded when opening a title. Responsible for: title, cover, description, author/cast, tags, status, and the chapter/episode list.
+
+Paradigm A uses detail route + selectors.detail and episodes; Paradigm B uses ruleBookInfo (meta) + ruleToc (chapter list with chapterList / chapterName / chapterUrl).
+
+| Field / key | Description |
+| --- | --- |
+| `selectors.detail` | Paradigm A: object extracting title/cover/description/cast per field. |
+| `selectors.episodes` | Paradigm A: chapter link selector, e.g. ul li a. |
+| `ruleBookInfo.tocUrl` | Paradigm B: link into the contents page; empty means detail page itself is the TOC. |
+| `ruleToc.chapterList` | Paradigm B: chapter item selector; nextTocUrl supports paginated TOC. |
+
+```js
+// Paradigm A
+"selectors": {
+  "detail": {
+    "title": "$.list[0].vod_name",
+    "cover": "$.list[0].vod_pic",
+    "description": "$.list[0].vod_content"
+  },
+  "episodes": "ul.anthology-list-play li a"
+}
+
+// Paradigm B (novel)
+"ruleToc": {
+  "chapterList": ".chapter li a",
+  "chapterName": "@text",
+  "chapterUrl": "@href",
+  "nextTocUrl": "a:contains(下一页)@href"
+}
+```
+
+##### 6. Content module (content / ruleContent)
+
+Loaded when opening a specific chapter:
+
+- Novel (Paradigm B): ruleContent.content extracts body text (@textNodes for clean text, nextContentUrl for paginated body).
+- Manga: chapters route/script returns the chapter list, then images module parses that chapter's image URLs.
+- Anime: video module resolves the playable video URL.
+
+| Field / key | Description |
+| --- | --- |
+| `ruleContent.content` | Novel body selector, often #content@textNodes for paragraph text. |
+| `ruleContent.nextContentUrl` | Next-page link of the body for continuous reading. |
+| `chapters (manga)` | Returns chapter list, each with id and detail link, feeding images. |
+| `images (manga)` | Returns that chapter's image URL array, decryption supported. |
+
+```json
+"ruleContent": {
+  "content": "#nr1@textNodes",
+  "title": "#nr_title@text",
+  "nextContentUrl": "a:contains(下一页)@href"
+}
+
+// manga images (script returns image array)
+"images": {
+  "type": "script",
+  "function": "parseImages",
+  "script": "function parseImages(html, context){ /* parse & decrypt */ return [url1, url2]; }"
+}
+```
+
+##### 7. Video parsing (player / video)
+
+The core of anime sources. The video route gets the player page HTML, then a selector / script / WebView extracts the real video URL (m3u8 / mp4).
+
+Three ways: a declarative selector (e.g. //video/@src), embedded JS (overrides.type:"script"), or WebView rendering then extract (overrides.type:"webview" — common for m3u8 or when the page must execute JS to reveal the URL).
+
+If the source provides danmaku, the video module can additionally return a danmaku API. Multi-line: if an episode has several addresses, the app offers a 'source switch'.
+
+Async data: when an API call is needed first, the script returns {__meta:true,__fetchUrl,...}; the engine prefetches then calls the processor (see section 13).
+
+| Field / key | Description |
+| --- | --- |
+| `routes.video.url` | Player page URL (usually from episodes). |
+| `overrides.video.type` | How this endpoint is parsed: builtin / css / xpath / jsonpath / script / webview. Video often uses webview for m3u8. |
+| `selectors.video` | Video URL selector, e.g. //video/@src or jsonpath (declarative mode). |
+| `__meta async` | When an API call is needed first, the script returns {__meta:true,__fetchUrl,...}; the engine prefetches then calls the processor (see section 13). |
+
+```js
+// Option A: declarative
+"routes": { "video": { "url": "{url}", "method": "get", "responseType": "html" } },
+"parser": { "type": "hybrid", "overrides": { "video": { "type": "webview" } } }
+
+// Option B: script fetches API then parses
+function parseVideo(html, context){
+  var api = extractApi(html);
+  return { __meta: true, __fetchUrl: api, __processor: "__processVideo" };
+}
+function __processVideo(json, context){
+  return json.url; // real play URL
+}
+```
+
+##### 8. Manga image parsing (images)
+
+The most common script module for manga. Sites often encrypt image URLs, so decryption lives in the script. The images function receives the detail/API data and returns that chapter's image URL array.
+
+Note: many KR/CN sites obfuscate image URLs with a custom algorithm — implement it here.
+
+| Field / key | Description |
+| --- | --- |
+| `function` | Entry function name, e.g. parseImages, matching overrides.images.function. |
+| `returns` | A string array, each element a full image URL. |
+| `context.baseUrl` | Site baseUrl available in script to complete relative paths. |
+
+```js
+function parseImages(raw, context){
+  var baseUrl = (context.baseUrl || '').replace(/\/$/, '');
+  var urls = decrypt(raw);
+  return urls.map(function(u){ return u.indexOf('/')===0 ? baseUrl+u : u; });
+}
+```
+
+##### 9. Web favorites (webFavorite)
+
+If your source site itself offers a 'my bookshelf / favorites' page, declare webFavorite so the app shows an extra 'Web Favorites' tab in browse. What users see there comes from the site account (requires login), not the app's local favorites.
+
+Declare it by adding a webFavorite object at the source top level. enabled defaults true; title is the tab label; route / url is the 'view favorites list' route or address — when route points to a JSON API script endpoint, the favorites list is fetched via the script resolver and automatically carries the login token (good for auth-required App API favorites). addRoute / addUrl is the 'add to favorites' route or address, supporting {id} / {detailUrl} / {title} placeholders — when addRoute points to a script endpoint, the add is handled by the source script (multi-step request + auth, e.g. fetch the work uuid first then POST), no static form needed; requireLogin true means login is required first.
+
+Note: webFavorite and the app's local favorites are independent — local favorites are managed by the app, web favorites go through the site API.
+
+| Field / key | Description |
+| --- | --- |
+| `enabled` | Optional, whether to enable the Web Favorites tab (default true). |
+| `title` | Optional, the tab label, e.g. 'My Bookshelf'. |
+| `route / url` | View-favorites route name or full address; pick one, route must be defined in routes. |
+| `addRoute / addUrl` | Add-to-favorites route or address, supports {id} / {detailUrl} / {title} placeholders. When addRoute points to a script endpoint, the add is handled by the source script (multi-step + auth), good for App API sources. |
+| `requireLogin` | Optional, true requires site login first. |
 
 ```json
 "webFavorite": {
@@ -198,28 +373,45 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
 }
 ```
 
-**Source announcement (`announcement`, optional)** — source authors can publish an announcement (e.g. "site changed domain") shown as a banner at the top of the source's home / detail pages:
+##### 10. Source announcement (announcement)
 
-| Key | Description |
+Source authors can publish an announcement to users of the source (e.g. 'site changed domain, please update'). It renders as a banner at the top of the source's home and detail pages.
+
+announcement is an optional top-level object: title is required (announcement title); body is optional text; url is an optional 'view details' link; updatedAt is an optional update time (Unix seconds, used to show 'N days ago'). If url is omitted, the whole banner is non-clickable.
+
+| Field / key | Description |
 | --- | --- |
-| `title` | Required, announcement title |
-| `body` | Optional, announcement body |
-| `url` | Optional, link when tapping the announcement (e.g. a migration notice page); not clickable when absent |
-| `updatedAt` | Optional, update time as a Unix-seconds timestamp (for "N days ago") |
+| `title` | Required, announcement title. |
+| `body` | Optional, announcement body. |
+| `url` | Optional, link opened when the banner is tapped (e.g. a migration note). |
+| `updatedAt` | Optional, update time as Unix seconds. |
 
 ```json
 "announcement": {
-  "title": "Site has changed its domain",
-  "body": "The old domain example-old.com is decommissioned; please update to the new domain.",
+  "title": "Site domain changed",
+  "body": "Old domain example-old.com is down, please update to the new one.",
   "url": "https://example.com/notice",
   "updatedAt": 1700000000
 }
 ```
 
-**Weekly schedule (`schedule`, optional)** — let the source home show a "weekly schedule" (which works updated each day Mon–Sun):
+##### 11. Weekly schedule (schedule)
 
-1. Add an entry to `homeSections`: `{ "id": "week", "title": "Weekly", "route": "week", "style": "schedule", "limit": 0, "more": false }`;
-2. Define a `week` route with the same name in `routes`; its result must carry a "weekday" field (the app groups works into Mon–Sun by it).
+Want the source's home page to show a 'weekly schedule' (what updated each day Mon-Sun)? Use a homeSections entry with style 'schedule'; the app groups it by weekday.
+
+Steps:
+
+1. Add a homeSections entry { id, title, route:'week', style:'schedule', limit:0, more:false }. The route name is up to you (here 'week').
+2. Define a week route with the same name in routes; its results must carry a 'weekday' field (the app bins works into Mon-Sun by it).
+
+Users then see an update table grouped by weekday on the source home. limit:0 means no cap; more:false hides 'view more'.
+
+| Field / key | Description |
+| --- | --- |
+| `homeSections[].style` | Set to 'schedule' to enable the weekly board. |
+| `homeSections[].route` | Route name for the schedule data (must match routes). |
+| `routes.week` | Returns a list with weekday field; app bins into Mon-Sun. |
+| `limit / more` | limit:0 = no cap; more:false hides 'view more'. |
 
 ```json
 "homeSections": [
@@ -230,47 +422,125 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
 }
 ```
 
-#### 🔴 Advanced: selector syntax, JS script conventions, collection APIs, network / comments / login
+#### 🔴 Advanced
 
-**Two-layer parse structure**:
+##### 8 (cont.). Image byte decryption (imageTransform)
 
-- Top-level `parser.type` takes only three values: `builtin` (pure declarative), `hybrid` (declarative + per-API `overrides`, **most common**), `script` (everything through the JS sandbox);
-- Each API can specify its actual parse method via `parser.overrides.<api>.type`: `builtin` / `xpath` / `jsonpath` / `css` (four declarative subtypes) / `script` (JS sandbox) / `webview` (render in an embedded browser before extraction, commonly for m3u8 extraction) / `webview-html` (WebView fetches HTML then parses, commonly for anti-scraping search).
+Some image CDNs encrypt the **image bytes themselves** (the browser decrypts them client-side via the site's own JS). No matter how you set Referer/UA, the client receives ciphertext and decoding fails. Such sources can declare an imageTransform block at the top level: list the CDN hosts that need decryption and the algorithm; the engine decrypts uniformly at the image-download layer (all keys/algorithms come from the source JSON — the engine hard-codes no site logic).
 
-**Selector syntax cheat-sheet** (pick one per overrides.type):
+Coverage: common community image-byte encryption schemes — aes-cbc / aes-ecb / rc4 / xor; IV supports prefix-bytes / fixed / all-zero; padding supports pkcs7 / none; key and IV support utf8 / base64 / hex encodings. Decrypted plaintext goes into the on-disk cache; save/share inherit it automatically.
 
-- `jsonpath`: starts with `$`, for JSON APIs, e.g. `$.list[0].vod_name`;
-- `css`: standard CSS selectors, for HTML, e.g. `.bookname a`;
-- `xpath`: starts with `//` or `./`, for HTML, e.g. `//video/@src`;
-- Novel sources (Legado-compatible) additionally support: `@text` for text, `@href` / `@src` for attributes, `@textNodes` for clean body text, `||` as fallback selector, `a:contains(text)` to filter by visible text, and `.0` / `.1` / `-1` to pick the Nth element.
+Note: matchHosts must enumerate **all** CDN hosts that may serve images (some sites rotate image hosts by mirror domain — miss one host and that mirror's images break).
 
-**Embedded JS script conventions** (when declarative selectors aren't enough):
+| Field / key | Description |
+| --- | --- |
+| `matchHosts` | List of image CDN hosts to decrypt (exact match, case-insensitive). |
+| `decrypt.algo` | Decryption algorithm: aes-cbc / aes-ecb / rc4 / xor. |
+| `decrypt.key / keyEncoding` | Key bytes; keyEncoding supports utf8 (default) / base64 / hex. |
+| `decrypt.ivSource` | IV source: prefixBytes (the first ivLength bytes of the ciphertext are the IV, most common) / fixed (use decrypt.iv) / none (all-zero IV). |
+| `decrypt.padding` | Padding: pkcs7 (default) / none (ciphertext length always a multiple of 16). |
 
-1. Function signature is fixed as `parseXxx(html, context)`; `html` is the page string, `context` contains `baseUrl`, `log`, etc.;
-2. Must **return synchronously** (array or object);
-3. When async data is needed, return the `{ __meta: true, __fetchUrl, __processor }` protocol object — the engine prefetches that URL, then calls `__processor` as a synchronous handler; **this is the only safe async channel in the sandbox**. Use `__fetchUrls` (array) instead of `__fetchUrl` when several pages must be fetched before one synchronous pass;
-4. Never hard-code site constants into the app; keep everything in the source file.
+```json
+"imageTransform": {
+  "matchHosts": ["cdn.example.com", "cdn-mirror.example.com"],
+  "decrypt": {
+    "algo": "aes-cbc",
+    "key": "16-byte key literal",
+    "keyEncoding": "utf8",
+    "ivSource": "prefixBytes",
+    "ivLength": 16,
+    "padding": "pkcs7"
+  }
+}
+```
 
-**Collection API interfaces** — "Collection API" means the "set of scraping endpoints" a source exposes, i.e. the endpoints defined in `routes` (search / latest / detail / video / images …):
+##### 12. Selector syntax cheat-sheet
 
-- Each endpoint defines its url in `routes` first (placeholders `{keyword}` / `{page}` / `{id}` / `{url}` / `{detailUrl}` supported), plus method, responseType, headers, params;
-  - **Placeholder arithmetic**: numeric placeholders accept `{page-1}` / `{page+1}` / `{page*30-30}` (operators `+` `-` `*` `/` followed by a non-negative integer, evaluated left to right without precedence). The engine always counts from 1 — use `-1` for sites whose first page is `page=0`, and `{page*30-30}` to derive an `offset` for JSON APIs. Non-numeric values are left untouched and negative results clamp to 0;
-  - **Batch prefetch**: when a page only exposes N entry links that must each be followed, return `{ __meta: true, __fetchUrls: [...], __fetchResponseType: 'text', __processor: 'handlerName' }`. The engine fetches them concurrently in Dart (default 6, tunable via `__fetchConcurrency`, capped at 16) and hands the response array to `__processor`. A single failure becomes `null` at that position instead of aborting the batch;
-- Extraction is decided by `parser.overrides.<endpoint>`: `builtin` / `xpath` / `jsonpath` / `css` / `script` / `webview` / `webview-html`;
-- Declarative endpoints use `selectors.<endpoint>`; script endpoints provide functions via `overrides.<endpoint>.script`;
-- Common endpoints: `search` (search), `latest` (latest), `explore` / `category` (discovery / category), `detail` (detail + contents), `episodes` (episode list), `video` (video URL), `chapters` (manga episode list), `images` (manga images), `week` (weekly schedule).
+Parsing has two layers — the top-level parser.type and each API's overrides.type:
 
-**Source-level network / comments / login (new in v0.4.0)**:
+- Top-level parser.type takes only three values: builtin (pure declarative), hybrid (declarative + per-API overrides, most common), script (all JS sandbox).
+- Each API can set overrides.type to decide how THAT endpoint is parsed: builtin / xpath / jsonpath / css (the four declarative sub-types share one engine) / script (JS sandbox) / webview (render in an embedded browser then extract — common for m3u8) / webview-html (WebView returns HTML then parsed — common for anti-bot search).
 
-- `network`: source-level network override (see 4.5.1); absent = inherit global; invalid values only warn;
-- `comments`: declares the source's commenting capability. `provider` defaults to `source` (comments from the source site); `routes` declares `list` (**required**) / `replies` / `post` / `reply` / `like` / `report` (undeclared buttons are not rendered); `selectors` uses the same JSONPath / CSS / XPath engine;
-- `comments.login`: **source login declaration, three login types, combinable** —
-  - **WebView login**: `login.url` is the login page; the app opens it in a WebView and captures the session cookie locally after login;
-  - **Cookie login**: `login.checkCookie` is the cookie key that means "logged in" for a fast check; you can also paste a whole session cookie into `site.cookies` and every request carries it;
-  - **API key login**: set `login.sendTokenAs` to `"key"`; the user pastes the key in Source details, the app stores it in the local key store and appends `Authorization: <authScheme> <key>` to protected requests (prefix defaults to `Key`). For sites where login yields an access_token but favorites / profile need a separate API key (some sites' newer APIs explicitly require `Key <api_key>`, not Bearer);
-- Token carrier `login.sendTokenAs`: `null` (cookie only) / `"bearer"` (`Authorization: Bearer <cookie value of checkCookie>`) / `"key"` (`Authorization: <authScheme> <manual key>`, i.e. API key login);
-- Secondary session check: `login.checkUrl` + `login.loggedInSelector` (GET checkUrl; a non-empty selector match means the session is valid);
-- Credentials stay local only; without a login declaration the source is treated as read-only / no-login.
+The declarative selector syntax is chosen by overrides.type:
+
+- jsonpath: starts with $, for JSON APIs (e.g. $.list[0].vod_name).
+- css: standard CSS selectors for HTML (e.g. .bookname a).
+- xpath: starts with // or ./, for HTML (e.g. //video/@src).
+
+Novel sources (Legado-compatible) add custom syntax: @text gets text, @href/@src get attributes, @textNodes gets clean body, || is a fallback selector, a:contains(text) filters by visible text, .0/.1/-1 picks the Nth.
+
+| Field / key | Description |
+| --- | --- |
+| `top-level parser.type` | builtin / hybrid / script — the source-wide default. |
+| `overrides.<api>.type` | per-API: builtin / xpath / jsonpath / css / script / webview / webview-html. |
+| `$.field` | jsonpath, extract a JSON field. |
+| `.class a@text` | css + @text gets element text. |
+| `//video/@src` | xpath gets an attribute value. |
+| `a:contains(下一页)@href` | novel: filter links by visible text. |
+
+```js
+// top-level: hybrid + per-API type
+"parser": { "type": "hybrid", "overrides": {
+  "search": { "type": "jsonpath" },
+  "video": { "type": "webview" },
+  "detail": { "type": "css" }
+} }
+// jsonpath
+"title": "$.vod_name"
+// css (HTML)
+"bookName": ".bookname a@text"
+// xpath (HTML)
+"video": "//video/@src"
+```
+
+##### 13. Embedded JS conventions
+
+When declarative selectors are not enough, use parser.overrides to write JS. Each module can set type:'script' with a function name and script source.
+
+Key rules:
+
+1. Signature is fixed: parseXxx(html, context); html is the page string, context has baseUrl, log, etc.
+2. Must return synchronously (array or object).
+3. For async data, return the {__meta:true, __fetchUrl, __processor} protocol object; the engine prefetches that URL, then calls __processor synchronously — the only safe async channel.
+4. Never hardcode site constants into the app; keep everything in the source file.
+5. The sandbox now presets atob / btoa (browser-semantics polyfill, leniently stripping invalid chars and trailing '='), so scripts can call them directly without embedding a polyfill; a source's own same-name declaration overrides the default. Within one JsEngine instance, top-level variables persist across meta multi-hop calls — each hop's __processor no longer replays the whole script — matching the 'globals stay visible within one JsEngine' convention.
+
+| Field / key | Description |
+| --- | --- |
+| `function` | Entry function name, matching overrides.`<module>`.function. |
+| `context.baseUrl` | Current source's base URL, for relative links. |
+| `context.log` | Optional logger for debugging (context.log('msg')). |
+| `__meta protocol` | Async prefetch: return this object, engine calls __processor after fetch. |
+
+```json
+"parser": {
+  "type": "hybrid",
+  "overrides": {
+    "search": {
+      "type": "script",
+      "function": "parseList",
+      "script": "function parseList(html, context){ /* parse & return array */ return []; }"
+    }
+  }
+}
+```
+
+##### 14. Advanced: source-level network / comments / login (v0.4.0)
+
+| Field / key | Description |
+| --- | --- |
+| `network` | Source-level proxy / DNS / Hosts / SNI / ECH override; defaults to global. |
+| `network.sni` | SNI override, e.g. { "enabled": true, "defaultSni": "-" }; "-" skips SNI, a plain domain uses that as SNI, domainSni maps 'domain→SNI' with suffix wildcard. Effective for direct HTTPS; ignored when using a proxy. |
+| `network.ech` | ECH override (e.g. { "enabled": true, "configs": [...] }). Driven by a built-in native engine; takes effect for direct HTTPS. Scopes: app-level / per-source / Bangumi; now shipped with Android (three ABIs) and the Windows desktop build; macOS / Linux fall back to direct for now. |
+| `comments.provider / routes / selectors` | Declares site comments; routes.list is required when comments is set, others optional. |
+| `comments.login.url` | WebView login page URL; the app opens it for login and captures the session cookie (local only). |
+| `comments.login.checkCookie` | Cookie login: this cookie key means logged in (fast check). |
+| `comments.login.checkUrl / loggedInSelector` | Session probe: GET checkUrl; a non-empty selector match means the session is valid. |
+| `comments.login.sendTokenAs` | Token carrier (login type): null = cookie only; bearer → `Authorization: Bearer <cookie value of checkCookie>`; key → `Authorization: <authScheme> <manual key>`, i.e. API key login. |
+| `comments.login.authScheme` | Only when sendTokenAs==key: Authorization prefix, default Key; change it if the site wants Token / Bearer etc. |
+| `comments.login.apiKeyParam` | Only when sendTokenAs==key: key name in the local key store, default apiKey (stored as sourceId:apiKeyParam). |
+| `site.cookies` | Manual cookie login: paste the whole session cookie into site.cookies; every request carries it. |
+| `precedence` | User override > source network block > global > default; applies instantly, no restart. |
 
 ```json
 "network": { "proxy": "direct", "dns": "system" },
@@ -285,9 +555,9 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
     "loggedInSelector": ".user-info"
   }
 }
-// Manual cookie login: paste the session cookie into site.cookies
+// Manual cookie login: paste the whole session cookie into site.cookies
 "site": { "baseUrl": "https://example.com", "cookies": "sessionid=abc123; uid=42" }
-// API key login (same comments.login block)
+// API key login (same comments.login block): sendTokenAs=key
 "login": {
   "sendTokenAs": "key",    // appends Authorization: <authScheme> <pasted key>
   "authScheme": "Key",     // default Key; change if the site wants another prefix
@@ -295,11 +565,95 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
 }
 ```
 
-### 4.5.3 Full examples (novel / video / manga)
+##### 15. Writing 'You may also like'
 
-#### Example 1: Novel source (Legado-compatible)
+'You may also like' is the recommendation block on the detail page. Adding it lets readers keep discovering without going back to search.
 
-> Novel sources do **not** use the top-level `id` / `name` / `type` / `site` fields. Instead they use Legado fields such as `bookSourceName` / `bookSourceUrl` / `bookSourceType` / `ruleSearch` / `ruleToc` / `ruleContent` / `ruleBookInfo`; body text is handled by a script in `parser.overrides.content`.
+Three ways (pick per source type, can coexist):
+
+1. Recommendation route (recommended, works for anime / manga / novel): declare recommend (preferred) or related in routes; when the detail page opens the engine calls it with the {id} variable and renders the results as the block. If neither exists, the block is not rendered.
+2. Manga (mangaSource): add a recommendations object under selectors.detail with list / title / cover / url to extract the list straight from the detail page (used by some built-in sources).
+3. Novel (Legado): use ruleBookInfo.recommendations to extract recommended titles.
+
+Note: recommendations reuse the list parsing engine, with the same fields as search / latest (id / title / cover / detailUrl) — in most cases copying your search selectors just works.
+
+| Field / key | Description |
+| --- | --- |
+| `routes.recommend` | Recommendation endpoint (preferred): called with the {id} variable when the detail page opens; results render as the block. |
+| `routes.related` | Fallback recommendation endpoint; used when recommend is absent, same behaviour. |
+| `selectors.recommend` | Extraction selectors for recommendations (same shape as search / latest: list / title / cover / id); falls back to selectors.search. |
+| `selectors.detail.recommendations (manga)` | Object { list, title, cover, url } to extract the list straight from the detail page. |
+| `ruleBookInfo.recommendations (novel)` | Legado-compatible field, selector for recommended titles. |
+| `Not rendered when` | Neither recommend nor related is declared — the detail page then hides the block. |
+
+```js
+// 写法一（通用）：recommend 路由 + 选择器
+{
+  "routes": {
+    "recommend": { "url": "/api/recommend?id={id}", "method": "get", "responseType": "json" }
+  },
+  "selectors": {
+    "recommend": {
+      "list": "$.list",
+      "title": "$.vod_name",
+      "cover": "$.vod_pic",
+      "id": "$.vod_id"
+    }
+  }
+}
+
+// 写法二（漫画）：selectors.detail.recommendations 从详情页直接抽
+"detail": {
+  "title": "h1.text-xl@text",
+  "recommendations": {
+    "list": ".recommend-list a[href^=\"/manga/\"]",
+    "title": "h3@text",
+    "cover": "img@src||data-src",
+    "url": "@href"
+  }
+}
+```
+
+##### 16. Collection API interface
+
+The 'collection API' is the set of scrape endpoints a source exposes — i.e. the endpoints defined in routes (search / latest / detail / video / images …) and the extraction rules declared per endpoint via selectors or overrides. The app engine calls each endpoint in turn, turning site data into a unified structure.
+
+Endpoints and overrides:
+
+- Each endpoint first defines url in routes (supports {keyword}/{page}/{id}/{url}/{detailUrl} placeholders), method, responseType, headers, params.
+- How it is parsed is decided by parser.overrides.`<endpoint>`: builtin / xpath / jsonpath / css / script / webview / webview-html.
+- Declarative endpoints use selectors.`<endpoint>`; script endpoints use overrides.`<endpoint>`.script.
+
+Async protocol __meta: when an endpoint must call another API before parsing (e.g. video first calls an API to get the real URL), the script returns { __meta:true, __fetchUrl, __processor }. The engine prefetches __fetchUrl, then hands the result to __processor synchronously. This is the only safe async channel in the sandbox.
+
+Common endpoints: search, latest, explore / category, detail (+contents), episodes, video, chapters (manga), images (manga), week (schedule). Exact field names are in each module section and the 'Complete Source Field Reference'.
+
+| Field / key | Description |
+| --- | --- |
+| `routes.<name>` | Endpoint address and method; {keyword}/{page}/{id}/{url} auto-replaced. |
+| `parser.overrides.<name>` | How this endpoint is parsed: builtin / xpath / jsonpath / css / script / webview / webview-html. |
+| `selectors.<name>` | Extraction selectors for declarative endpoints. |
+| `__meta protocol` | Script endpoints that need a second request return {__meta:true,__fetchUrl,__processor}. |
+
+```js
+// A full endpoint declaration (routes + overrides + selectors)
+"routes": {
+  "search": { "url": "/s?wd={keyword}&page={page}", "method": "get", "responseType": "json" }
+},
+"parser": { "type": "hybrid", "overrides": { "search": { "type": "jsonpath" } } },
+"selectors": { "list": "$.list", "title": "$.vod_name", "cover": "$.vod_pic", "id": "$.vod_id" }
+
+// Video endpoint needing a second request
+function parseVideo(html, context){
+  var api = extractApi(html);
+  return { __meta: true, __fetchUrl: api, __processor: "__processVideo" };
+}
+function __processVideo(json, context){ return json.url; }
+```
+
+##### 17. Full example: novel source (Legado)
+
+A complete runnable novel source example (Legado-compatible format). Note: novel sources do NOT use the id / name / type / site top-level keys; instead they use Legado keys like bookSourceName / bookSourceUrl / bookSourceType / ruleSearch / ruleToc / ruleContent / ruleBookInfo; parsing is handled by parser.overrides.content. Replace example.com with a real site and the selectors with real rules, then import.
 
 ```json
 {
@@ -308,8 +662,8 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
   "bookSourceType": 0,
   "enabledExplore": true,
   "enabledSearch": true,
-  "exploreUrl": "Fantasy::https://m.example.com/xuanhuan/\nUrban::https://m.example.com/dushi/",
-  "bookSourceGroup": "Built-in book sources",
+  "exploreUrl": "Xuanhuan::https://m.example.com/xuanhuan/\nUrban::https://m.example.com/dushi/",
+  "bookSourceGroup": "Built-in",
   "concurrentRate": 0,
   "ruleSearch": {
     "bookList": ".bookbox",
@@ -328,23 +682,23 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
   },
   "ruleBookInfo": {
     "name": "h1@text",
-    "author": "p:contains(Author)@text",
+    "author": "p:contains(作者)@text",
     "coverUrl": ".block_img2 img@src",
     "intro": ".intro_info@text",
     "tocUrl": "a[href^=\"/book_\"]@href",
-    "lastChapter": "p:contains(Latest) a@text",
-    "bookStatus": "p:contains(Status) span@text"
+    "lastChapter": "p:contains(最新) a@text",
+    "bookStatus": "p:contains(状态) span@text"
   },
   "ruleToc": {
     "chapterList": "a[href^=\"/book_\"][href$=\".html\"]",
     "chapterName": "@text",
     "chapterUrl": "@href",
-    "nextTocUrl": "a:contains(Next page)@href"
+    "nextTocUrl": "a:contains(下一页)@href"
   },
   "ruleContent": {
     "content": "#nr1@html",
     "title": "#nr_title@text",
-    "nextContentUrl": "a:contains(Next chapter)@href"
+    "nextContentUrl": "a:contains(下一章)@href"
   },
   "parser": {
     "type": "hybrid",
@@ -352,22 +706,22 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
       "content": {
         "type": "script",
         "function": "parseContent",
-        "script": "function parseContent(html, context){ var raw = context.dom.queryHtml(html, '#nr1') || context.dom.queryHtml(html, '#content') || ''; raw = raw.replace(/<script.*?<\\/script>/gi, ''); return context.content.clean(raw); }"
+        "script": "function parseContent(html, context){ var raw = context.dom.queryHtml(html, '#nr1') || context.dom.queryHtml(html, '#content') || ''; raw = raw.replace(/<script.*?<\/script>/gi, ''); return context.content.clean(raw); }"
       }
     }
   },
-  "bookSourceComment": "Demo novel source, plain HTML body"
+  "bookSourceComment": "Demo novel source, plain HTML content"
 }
 ```
 
-#### Example 2: Video source (animeSource)
+##### 18. Full example: anime source (animeSource)
 
-> The core of a video source is the `video` endpoint: here it uses `webview` to extract the real play URL (for m3u8 / sites that need page JS execution to reveal the URL). **An anime source must include the `latest` route.**
+A complete runnable anime source example (animeSource). The core is the video endpoint: here we use webview to extract the real play URL (good for m3u8 / sites where the page must execute JS to reveal the URL). Note an anime source MUST include a latest route. Replace example.com with a real site and import.
 
 ```json
 {
   "id": "demo_anime",
-  "name": "Demo Video",
+  "name": "Demo Anime",
   "version": 1,
   "type": "animeSource",
   "responseType": "json",
@@ -375,7 +729,7 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
   "site": {
     "domain": "example.com",
     "baseUrl": "https://example.com",
-    "mirrors": [ { "name": "Main", "domain": "example.com", "baseUrl": "https://example.com" } ]
+    "mirrors": [ { "name": "main", "domain": "example.com", "baseUrl": "https://example.com" } ]
   },
   "parser": {
     "type": "hybrid",
@@ -411,19 +765,22 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
 }
 ```
 
-#### Example 3: Manga source (mangaSource, GoDa skeleton)
+##### 19. Full example: manga source (Demo Manga / mangaSource)
 
-> A manga source has two extra key endpoints over video / novel: `chapters` (episode list) and `images` (that episode's images). Key points:
-> - `chapters` often needs a second request — the script first grabs `data-mid` from the page, then returns `{ __meta: true, __fetchUrl, __processor }` so the engine prefetches the chapters API, then `__processChapters` handles it synchronously;
-> - Image URLs are usually encrypted: put the decryption logic in `parseImages` inside `overrides.images.script` and return the image URL array;
-> - The `id`s in `selectors.category.tags` use the site's real slug (e.g. 古风=`gufeng`, no hyphen); don't invent your own.
->
-> For readability, this example compresses the real source's long regex / decryption scripts into skeletons (importing directly yields empty results) — replace each `script` with real parsing logic before use.
+This is a complete manga source example modeled on the built-in 'Demo Manga' source (demo.example). Manga sources have two key endpoints beyond anime/novel: chapters (chapter list) and images (that chapter's images).
+
+Key points:
+
+- chapters often needs a second request — the script first grabs data-mid from the page, then returns {__meta:true, __fetchUrl, __processor} so the engine prefetches the chapter API (here api.example.com), then __processChapters handles it synchronously (async rules in section 13).
+- Image URLs are usually encrypted: put the decryption in parseImages under overrides.images.script and return the image URL array.
+- Category tags (selectors.category.tags) ids are the site's real slugs (e.g. 古风 = gufeng, no hyphen) — don't invent them.
+
+For readability the real source's long regex/decryption scripts are condensed to skeletons here (importing as-is yields empty results); replace each script with real parsing logic before use.
 
 ```json
 {
   "id": "manga_demo",
-  "name": "GoDa Manga",
+  "name": "示例漫画",
   "version": 4,
   "type": "mangaSource",
   "responseType": "html",
@@ -432,8 +789,16 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
     "domain": "demo.example",
     "baseUrl": "https://demo.example",
     "mirrors": [
-      { "name": "demo.example", "domain": "demo.example", "baseUrl": "https://demo.example" },
-      { "name": "m.demo.example", "domain": "m.demo.example", "baseUrl": "https://m.demo.example" }
+      {
+        "name": "demo.example",
+        "domain": "demo.example",
+        "baseUrl": "https://demo.example"
+      },
+      {
+        "name": "m.demo.example",
+        "domain": "m.demo.example",
+        "baseUrl": "https://m.demo.example"
+      }
     ]
   },
   "parser": {
@@ -442,9 +807,13 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
       "latest": {
         "type": "script",
         "function": "parseList",
-        "script": "function parseList(html, context){ var baseUrl = (context.baseUrl || '').replace(/\\/$/, ''); var results = []; /* regex-scrape <a href=\"/manga/...\"> blocks, grab h3 title & cover */ return results; }"
+        "script": "function parseList(html, context){ var baseUrl = (context.baseUrl || '').replace(/\\/$/, ''); var results = []; /* 正则抓 <a href=\"/manga/...\"> 块，取 h3 标题与封面 */ return results; }"
       },
-      "search": { "type": "script", "function": "parseList", "script": "function parseList(html, context){ return []; }" },
+      "search": {
+        "type": "script",
+        "function": "parseList",
+        "script": "function parseList(html, context){ return []; }"
+      },
       "detail": {
         "type": "script",
         "function": "parseDetail",
@@ -453,7 +822,7 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
       "chapters": {
         "type": "script",
         "function": "parseChapters",
-        "script": "function parseChapters(html, context){ var m = html.match(/data-mid=\"(\\d+)\"/i); if (!m) return []; return { __meta: true, __fetchUrl: 'https://v2.apikk.top/api/manga/get?mid=' + m[1] + '&mode=all', __processor: '__processChapters' }; }"
+        "script": "function parseChapters(html, context){ var m = html.match(/data-mid=\"(\\d+)\"/i); if (!m) return []; return { __meta: true, __fetchUrl: 'https://api.example.com/api/manga/get?mid=' + m[1] + '&mode=all', __processor: '__processChapters' }; }"
       },
       "images": {
         "type": "script",
@@ -463,61 +832,305 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
     }
   },
   "routes": {
-    "latest": { "url": "/manga/list/", "method": "get", "responseType": "html" },
-    "search": { "url": "/search?keyword={keyword}", "method": "get", "responseType": "html" },
-    "detail": { "url": "/manga/{id}", "method": "get", "responseType": "html" },
-    "chapters": { "url": "{url}", "method": "get", "responseType": "html" },
-    "images": { "url": "{url}", "method": "get", "responseType": "html" }
+    "latest": {
+      "url": "/",
+      "method": "GET",
+      "headers": {
+        "Referer": "https://demo.example/",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36"
+      }
+    },
+    "explore": {
+      "url": "/manga/page/{page}",
+      "method": "GET",
+      "headers": {
+        "Referer": "https://demo.example/",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36"
+      }
+    },
+    "category": {
+      "url": "{category}/page/{page}",
+      "method": "GET",
+      "headers": {
+        "Referer": "https://demo.example/",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36"
+      }
+    },
+    "search": {
+      "url": "/s/{keyword}?page={page}",
+      "method": "GET",
+      "headers": {
+        "Referer": "https://demo.example/",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36"
+      }
+    },
+    "detail": {
+      "url": "/manga/{id}",
+      "method": "GET",
+      "headers": {
+        "Referer": "https://demo.example/",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36"
+      }
+    },
+    "chapters": {
+      "url": "/manga/{id}",
+      "method": "GET",
+      "headers": {
+        "Referer": "https://demo.example/",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36"
+      }
+    },
+    "images": {
+      "url": "/manga/{id}/{chapter_id}",
+      "method": "GET",
+      "headers": {
+        "Referer": "https://demo.example/",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36"
+      }
+    }
   },
   "selectors": {
+    "latest": {
+      "list": "a[href^=\"/manga/\"]",
+      "title": "h3@text",
+      "cover": "img@src||data-src",
+      "id": "a@href"
+    },
+    "explore": {
+      "list": "a[href^=\"/manga/\"]",
+      "title": "h3@text",
+      "cover": "img@src||data-src",
+      "id": "a@href"
+    },
     "category": {
-      "categories": [ { "id": "gufeng", "name": "Gufeng" } ],
-      "tags": [ { "id": "gufeng", "name": "Gufeng", "url": "/manga-tag/gufeng" } ]
+      "list": "a[href^=\"/manga/\"]",
+      "title": "h3@text",
+      "cover": "img@src||data-src",
+      "id": "a@href",
+      "categories": [
+        {
+          "id": "manga",
+          "name": "全部"
+        },
+        {
+          "id": "manga-genre/kr",
+          "name": "韩漫"
+        },
+        {
+          "id": "manga-genre/cn",
+          "name": "国漫"
+        },
+        {
+          "id": "manga-genre/jp",
+          "name": "日漫"
+        },
+        {
+          "id": "manga-genre/ou-mei",
+          "name": "欧美"
+        }
+      ],
+      "tags": [
+        {
+          "id": "gufeng",
+          "name": "古风"
+        },
+        {
+          "id": "rexue",
+          "name": "热血"
+        },
+        {
+          "id": "chuanyue",
+          "name": "穿越"
+        },
+        {
+          "id": "xuanhuan",
+          "name": "玄幻"
+        }
+      ]
+    },
+    "search": {
+      "list": "a[href^=\"/manga/\"]",
+      "title": "h3@text",
+      "cover": "img@src||data-src",
+      "id": "a@href"
+    },
+    "detail": {
+      "title": "h1.text-xl@text",
+      "cover": ".object-cover img@src||data-src",
+      "author": "div:has(> span:contains(\"作者：\")) a[href^=\"/manga-author/\"]@text",
+      "tags": "a[href^=\"/manga-tag/\"] span@text",
+      "description": "p.text-medium@text",
+      "status": "div:has(> span:contains(\"状态：\"))@text"
+    },
+    "chapters": {
+      "list": ".chapteritem",
+      "title": ".chaptertitle@text",
+      "id": "a@href",
+      "url": "a@href",
+      "updatedAt": ".time@text"
+    },
+    "images": {
+      "list": "#chapcontent img",
+      "fallbackUrl": "img@data-src||img@data-original||img@src",
+      "config": {
+        "skipPatterns": [
+          "logo",
+          "icon",
+          "qrcode",
+          "avatar",
+          "banner"
+        ],
+        "sizeFilter": {
+          "minWidth": 100,
+          "minHeight": 100
+        },
+        "referer": {
+          "mode": "site"
+        },
+        "pagination": {
+          "mode": "none"
+        }
+      }
     }
   },
   "category": {
-    "dynamicCategories": false,
-    "categoryEntries": [ { "id": "all", "title": "All" } ]
+    "dynamicCategories": false
+  },
+  "stealthMode": true,
+  "antiHotlinking": {
+    "referer": "https://demo.example"
+  },
+  "webviewConfig": {
+    "adblock": true,
+    "timeoutSeconds": 20
   },
   "homeSections": [
-    { "id": "latest", "title": "Latest", "route": "latest", "style": "grid", "limit": 18 }
+    {
+      "id": "latest",
+      "route": "latest",
+      "title": "近期更新",
+      "style": "grid",
+      "limit": 18,
+      "more": true
+    },
+    {
+      "id": "hots",
+      "route": "category",
+      "title": "人气排行",
+      "style": "grid",
+      "limit": 12,
+      "more": true,
+      "params": {
+        "category": "hots"
+      }
+    },
+    {
+      "id": "kr",
+      "route": "category",
+      "title": "韩漫",
+      "style": "grid",
+      "limit": 6,
+      "more": true,
+      "params": {
+        "category": "manga-genre/kr"
+      }
+    },
+    {
+      "id": "cn",
+      "route": "category",
+      "title": "国漫",
+      "style": "grid",
+      "limit": 6,
+      "more": true,
+      "params": {
+        "category": "manga-genre/cn"
+      }
+    }
   ]
 }
 ```
 
-### 4.5.4 Source JSON field reference (authoritative cheat-sheet)
+##### 20. Debug & import
 
-> Fields follow what the app actually parses; the definitive constraint is the source code at `lib/core/models/plugin_config.dart`. All fields are optional except `id` / `name` / `type` / `site` / `parser`; unknown keys are ignored.
+How to verify after writing?
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `id` | string | Unique source id (same-id imports decide overwrite / skip by `version`) |
-| `name` | string | Source display name |
-| `type` | string | `animeSource` / `mangaSource` / `novelSource` |
-| `version` | int | Version (default 1); on importing a same-id source: `>=` installed version replaces it, `<` is skipped |
-| `ageRating` | string | Optional; `general` / `teen` / `mature` (aliases accepted, default `general`; `mature` hidden by default) |
-| `site` | object | Site info (**required**): see 4.5.1 |
-| `parser.type` | string | Top-level parse engine: `builtin` / `hybrid` / `script` |
-| `parser.overrides` | object | Per-API parse overrides, each `{ type, script?, function? }` |
-| `routes` | object | Endpoint set, each `{ url, method?, responseType?, headers?, params?, body?, parser? }` (body = POST/PUT request body); path placeholders support an optional form `{k?}` (included when matched, dropped otherwise); a plain string `"url"` is also accepted |
-| `selectors` | object | Declarative extraction rules (JSONPath / CSS / XPath per overrides.type) |
-| `category` | object | Category config: `dynamicCategories` / `categories` / `categoryEntries` (static category table) |
-| `homeSections` | array | Optional; custom home sections, each `{ id, title, route, params?, style?, limit?, more? }`; style: `grid` / `rank` / `scroll` / `schedule` |
-| `filters` | object | Optional; dynamic filters: `{ route?, groups?, byCategory?, defaults? }`; each group `{ id, title?, route?, param, multiSelect?, options[] }` |
-| `tagSearch` | object | Optional; tag-search route, used with `selectors.category.tags` to generate a tag filter |
-| `antiHotlinking` | object | Optional; anti-hotlink: `{ referer?, userAgent?, headers? }` |
-| `webviewConfig` | object | Optional; `{ adblock?, timeoutSeconds? }` |
-| `useWebview` | bool | Optional; use WebView rendering for the whole source |
-| `stealthMode` | bool | Optional; default value of incognito browsing for this source: when `true`, browse and search history are not recorded by default (the per-source "Incognito" toggle in source management can override anytime). Defaults to `false` |
-| `network` | object | Optional (v0.4.0); source-level network override: `proxy` / `dns` / `hosts` / `sni` / `ech` |
-| `comments` | object | Optional (v0.4.0); commenting: `provider` / `routes` / `selectors` / `login` |
-| `routes.recommend` / `routes.related` | object | Optional; 'You may also like' endpoint (`recommend` preferred, then `related`), called from the detail page with the `{id}` variable |
-| `selectors.detail.recommendations` | object | Optional (manga); `{ list, title, cover, url }` to extract the list straight from the detail page |
-| `ruleBookInfo.recommendations` | string | Optional (novel, Legado); selector for recommended titles |
-| `announcement` | object | Optional; source announcement: `title` (required) / `body` / `url` / `updatedAt` |
-| `webFavorite` | object | Optional; web favorites: `enabled` / `title` / `route` / `url` / `addRoute` / `addUrl` / `requireLogin` |
-| `deprecated` / `enabled` / `enabledExplore` / `isHidden` | bool | Optional; deprecated flag / enabled / explore enabled / hidden |
-| `migrationMessage` | string | Optional; migration notice |
+1. Use browser DevTools (F12) to confirm the real page's HTML/JSON structure matches your selectors.
+2. In the app, 'Import Source' and paste the JSON. If parsing fails, check JSON format (escaped quotes and newlines).
+3. Script sources can use context.log() inside overrides to print intermediate results.
+4. Start with a minimal source that only gets one module working (e.g. search), then progressively add detail / video / images.
+5. Share: send the JSON to friends, or submit to the community source repo — anyone can import it with one tap.
+
+| Field / key | Description |
+| --- | --- |
+| `Import` | App 'Source Management / Import Source' → paste or pick file. |
+| `Common errors` | JSON syntax error, selector returns empty, relative link not joined to baseUrl, script throws. |
+| `Upgrade` | Bump version; same-id sources auto-overwrite the old one on import. |
+
+##### 21. Complete Source Field Reference
+
+A fairly complete field cheat-sheet, grouped as top-level / site / parser / routes / selectors / advanced blocks. Everything except id, name, type, site and parser is optional; unknown keys (e.g. author / lang / builtin) are ignored by the model — do not treat them as functional fields.
+
+The authoritative constraints live in lib/core/models/plugin_config.dart; this table covers the fields used most often when writing a source.
+
+| Field / key | Description |
+| --- | --- |
+| `id` | Required. Unique source id (e.g. domain_typename to avoid collisions); same id is upgraded/skipped by version. |
+| `name` | Required. Display name. |
+| `version` | Integer version (default 1). On import, only >= installed version overwrites; < installed version is skipped. |
+| `type` | Required. animeSource (video/anime) / mangaSource (manga) / novelSource (novel). |
+| `responseType` | Optional. json \| html, sets the default parse engine; overridable per-route. |
+| `useWebview` | Optional bool. true = render the whole source via WebView before extraction (good for anti-bot sites). |
+| `site.domain` | Required. Site main domain. |
+| `site.baseUrl` | Required. Site root used to resolve relative links. |
+| `site.userAgent / cookies / headers` | Optional. Global request UA / cookies / custom headers. |
+| `site.mirrors[]` | Optional. Mirror list, each {name, domain, baseUrl}. |
+| `site.publishPageUrl / publishMirrorSelector` | Optional. Fallback publish page and mirror-extraction rule (regex or CSS) when the main domain dies. |
+| `parser.type` | Required. builtin / hybrid / script — the source-wide default parse mode. |
+| `parser.overrides.<api>` | Optional. Per-API parse mode: builtin / xpath / jsonpath / css / script / webview / webview-html. |
+| `parser.script / entrypoints` | Optional. JS source and entry-function map for script mode. |
+| `routes.<name>` | Optional. Endpoint addresses; string form or {url, method, headers, params, responseType, parser}; {keyword}/{page}/{id}/{url} placeholders auto-replaced. |
+| `selectors` | Optional. Declarative selectors (JSONPath / CSS / XPath), used with parser.overrides. |
+| `category.dynamicCategories / categoryEntries` | Optional. Dynamic category inference or static category table [{id,title}]. |
+| `homeSections[]` | Optional. Home sections: {id, title, route, style, limit}; falls back to a single 'latest' block when omitted. |
+| `filters` | Optional. Dynamic filters: groups, byCategory (per-category override), defaults (category default params). |
+| `stealthMode` | Optional bool. More aggressive anti-detection request strategy. |
+| `antiHotlinking.referer / headers / userAgent` | Optional. Anti-hotlink: add Referer / headers / specific UA. |
+| `webviewConfig.adblock / timeoutSeconds` | Optional. WebView adblock toggle and timeout (default true / 20s). |
+| `comments` | Optional. Comments config: provider(source/bangumi), routes(list required; replies/post/reply/like/report optional), selectors, login(url=WebView login page + checkCookie=cookie key + checkUrl/loggedInSelector=session probe). |
+| `network` | Optional. Source-level network override: proxy / dns / hosts / sni / ech; inherits global by default, invalid values only warn. (sni and ech are both runtime-effective for direct HTTPS) |
+| `announcement` | Optional. Source announcement: {title, body?, url?, updatedAt?}. |
+| `webFavorite` | Optional. Web favorites: enabled / title / route / url / addRoute / addUrl / requireLogin; when present, the 'Web Favorites' tab shows in browse. |
+| `ageRating` | Optional. Age rating: general (all) / teen (13+/16+) / mature (18+). Aliases like all/16/r18/nsfw accepted; default general. mature is hidden by default. |
+| `deprecated / migrationMessage` | Optional. Mark deprecated and show a migration hint. |
+| `enabled / enabledExplore / isHidden` | Optional bool. Enabled / shown in explore / hidden. |
+
+```js
+// Top-level field skeleton (illustrative, not a full source)
+{
+  "id": "demo_anime",
+  "name": "Demo Anime",
+  "version": 1,
+  "type": "animeSource",
+  "responseType": "json",
+  "useWebview": false,
+  "site": { "domain": "example.com", "baseUrl": "https://example.com" },
+  "parser": { "type": "hybrid", "overrides": { "video": { "type": "webview" } } },
+  "routes": { "latest": { "url": "/api/latest?page={page}" } },
+  "ageRating": "general",
+  "webFavorite": { "route": "fav", "addRoute": "fav_add" },
+  "network": { "proxy": "direct" }
+}
+```
+
+---
+
+### 4.5.3 Import rules, extra notes & contributions
+
+**About the `version` import rule (pay attention)**:
+
+- To release a new source version, simply bump `version` in the JSON;
+- Importing a same-id source: version **≥ installed** → replace (upgrade / same-version re-import applies your edits); version **< installed** → skip, preventing an old version from clobbering the new one;
+- Built-in sources cannot be overwritten; the "enabled / hidden" state is preserved on import.
 
 **`comments` sub-fields (new in v0.4.0, all optional)**:
 
@@ -534,19 +1147,24 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
 | `comments.login.authScheme` | Only when `sendTokenAs==key`; `Authorization` prefix, default `Key` |
 | `comments.login.apiKeyParam` | Only when `sendTokenAs==key`; key name in the local key store, default `apiKey` (stored as `sourceId:apiKeyParam`) |
 
-**About the `version` import rule (pay attention)**:
+**Batch prefetch of many pages (`__fetchUrls`)**:
 
-- To release a new source version, simply bump `version` in the JSON;
-- Importing a same-id source: version **≥ installed** → replace (upgrade / same-version re-import applies your edits); version **< installed** → skip, preventing an old version from clobbering the new one;
-- Built-in sources cannot be overwritten; the "enabled / hidden" state is preserved on import.
+When a script endpoint has to follow N pages one by one (e.g. a gallery page only lists thumbnails and the full image lives on each page), switch to the batch protocol: the engine fetches concurrently on the Dart side, then hands the results back to the script for synchronous processing.
 
-**Debugging & importing**:
+```json
+{
+  "__meta": true,
+  "__fetchUrls": ["/p/1", "/p/2", "/p/3"],
+  "__fetchResponseType": "text",
+  "__processor": "__processPages"
+}
+```
 
-1. Use browser dev tools (F12) to verify the real page's HTML / JSON structure matches your selectors;
-2. Import the JSON in the app via "Import source"; if parsing fails, check the JSON format (mind escaped quotes and newlines);
-3. For script sources, use `context.log()` in overrides to print intermediate results;
-4. First run one module (e.g. search) against a minimal dataset locally, then complete detail / video / images step by step;
-5. Share: send the JSON file to friends or submit it to a community source repo — others import it with one tap.
+- `__fetchResponseType`: `json` (default) / `text`;
+- `__fetchConcurrency`: concurrency, 6 by default, capped at 16;
+- `__fetchHeaders` / `__fetchMethod` / `__fetchBody`: extra headers / method (`get` by default, `post` allowed) / POST body;
+- `__processor` receives the responses **in input order**; a failed item is `null` and does not break the batch;
+- Within one `JsEngine` instance, `__meta` may chain up to 4 hops, and top-level variables stay visible across hops.
 
 **How to contribute**:
 
@@ -556,49 +1174,6 @@ Below is the source-authoring tutorial tiered by difficulty, consistent with the
 
 > Co-creation presumes **compliance and copyright respect**: only parse public content you have the right to access and that permits scraping; don't use sources to infringe others' lawful rights.
 
----
-
-### 4.5.5 Writing 'You may also like'
-
-"**You may also like**" is the recommendation block on the detail page. Adding it lets readers keep discovering without going back to search.
-
-Three ways (pick per source type, can coexist):
-
-1. **Recommendation route (recommended, works for anime / manga / novel)**: declare `recommend` (preferred) or `related` in `routes`; when the detail page opens the engine calls it with the `{id}` variable and renders the results as the block. If neither exists, the block is not rendered.
-2. **Manga (mangaSource)**: add a `recommendations` object under `selectors.detail` with `list` / `title` / `cover` / `url` to extract the list straight from the detail page (used by the built-in GoDa, Komiic and FavComic sources).
-3. **Novel (Legado)**: use `ruleBookInfo.recommendations` to extract recommended titles.
-
-> Recommendations reuse the list parsing engine, with the same fields as `search` / `latest` (`id` / `title` / `cover` / `detailUrl`) — in most cases copying your `search` selectors just works.
-
-```json
-// Way 1 (generic): recommend route + selectors
-{
-  "routes": {
-    "recommend": { "url": "/api/recommend?id={id}", "method": "get", "responseType": "json" }
-  },
-  "selectors": {
-    "recommend": {
-      "list": "$.list",
-      "title": "$.vod_name",
-      "cover": "$.vod_pic",
-      "id": "$.vod_id"
-    }
-  }
-}
-
-// Way 2 (manga): selectors.detail.recommendations straight from the detail page
-"detail": {
-  "title": "h1.text-xl@text",
-  "recommendations": {
-    "list": ".recommend-list a[href^=\"/manga/\"]",
-    "title": "h3@text",
-    "cover": "img@src||data-src",
-    "url": "@href"
-  }
-}
-```
-
-> The online tutorial (bilingual, with demos) is at [NexHub official site · Source-authoring tutorial](https://nexhub-app.github.io/website/), section 15.
 ## 4.6 Testing
 
 ```bash
