@@ -154,3 +154,19 @@ class MediaItem {
     }
   }
 }
+
+/// Hero 标签的条目键：id 为空时退回 sourceId+detailUrl+title 的稳定哈希。
+///
+/// 背景：选择器失效的源会把列表抓成「空壳条目」（id 为空），多张空壳卡共用
+/// `'${前缀}-'` 同一 Hero 标签，页面转场扫描时抛 "There are multiple heroes
+/// that share the same tag within a subtree"（crash_log 中 media- / search-
+/// 系列错误的直接根因）。稳定哈希兜底保证同一条目跨重建仍可 Hero 配对，
+/// 不同空壳条目几乎不会撞键。
+extension MediaItemHeroKey on MediaItem {
+  String heroKey() {
+    final id = this.id;
+    if (id.isNotEmpty) return id;
+    final seed = '${sourceId ?? ''}|${detailUrl ?? ''}|$title';
+    return 'h${seed.hashCode.abs().toRadixString(36)}';
+  }
+}

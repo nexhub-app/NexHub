@@ -954,9 +954,9 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
             meta: isLocal ? l10n.subTabLocal : source?.name,
             progress: snap.data,
             width: itemW,
-            heroTag: 'search-${item.id}',
+            heroTag: 'search-${item.heroKey()}',
             highlightQuery: _convText(_controller.text),
-            onTap: () => widget.onItemTap(item, 'search-${item.id}'),
+            onTap: () => widget.onItemTap(item, 'search-${item.heroKey()}'),
           ),
         );
       },
@@ -977,7 +977,7 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
             context.read<SourceRepository>().getById(item.sourceId ?? '');
         final bool isLocal = item.extra?['isLocal'] == true;
         return AppCard(
-          onTap: () => widget.onItemTap(item, 'search-${item.id}-list'),
+          onTap: () => widget.onItemTap(item, 'search-${item.heroKey()}-list'),
           padding: EdgeInsets.zero,
           child: ListTile(
             contentPadding: EdgeInsets.symmetric(
@@ -995,7 +995,7 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
                   title: item.title,
                   width: isCompact ? 40 : 56,
                   height: isCompact ? 56 : 78,
-                  heroTag: 'search-${item.id}-list',
+                  heroTag: 'search-${item.heroKey()}-list',
                   radius: layout.coverRadius,
                 ),
               ),
@@ -1045,7 +1045,7 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
                     },
                   )
                 : const Icon(Icons.chevron_right_rounded),
-            onTap: () => widget.onItemTap(item, 'search-${item.id}-list'),
+            onTap: () => widget.onItemTap(item, 'search-${item.heroKey()}-list'),
           ),
         );
       },

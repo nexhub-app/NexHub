@@ -2256,7 +2256,7 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
               title: item.title,
               width: isCompact ? 40 : 56,
               height: isCompact ? 56 : 78,
-              heroTag: '${widget.title}-${item.id}-list',
+              heroTag: '${widget.title}-${item.heroKey()}-list',
               radius: layout.coverRadius,
             ),
           ),
@@ -2326,9 +2326,9 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
             (layout.showAuthor && item.status != null) ? item.status : null,
         meta: (layout.showAuthor && item.author != null) ? item.author : null,
         width: itemW,
-        heroTag: '${widget.title}-${item.id}',
+        heroTag: '${widget.title}-${item.heroKey()}',
         progress: snap.data,
-        onTap: () => widget.onItemTap(item, '${widget.title}-${item.id}'),
+        onTap: () => widget.onItemTap(item, '${widget.title}-${item.heroKey()}'),
       ),
     );
   }
