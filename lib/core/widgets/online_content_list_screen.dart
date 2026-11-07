@@ -36,6 +36,7 @@ import 'layout_picker_button.dart';
 import 'source_image.dart';
 import 'source_url_browse_screen.dart';
 import 'app_glass_bar.dart';
+import 'two_pane_detail.dart';
 
 /// 拉取某源在指定分类 / 页码下的内容列表。
 typedef FetchItems = Future<List<MediaItem>> Function(
@@ -1168,20 +1169,24 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
                 const LayoutPickerButton(),
               ],
       ),
-      body: _source == null
-          ? AppEmptyState(icon: widget.emptyIcon, message: l10n.emptySources)
-          : Column(
-              children: <Widget>[
-                // 分类 TabBar（源切换已收进 AppBar 标题弹窗）
-                _buildCategoryTabBar(l10n),
-                Expanded(
-                  child: TabBarView(
-                    controller: _tabController,
-                    children: _buildTabViews(l10n),
+      // 双栏详情宿主：宽屏（≥1120）且有详情打开时列表压缩到左侧、右侧渲染
+      // 详情栏；窄窗口行为不变（见 TwoPaneDetailHost）。
+      body: TwoPaneDetailHost(
+        child: _source == null
+            ? AppEmptyState(icon: widget.emptyIcon, message: l10n.emptySources)
+            : Column(
+                children: <Widget>[
+                  // 分类 TabBar（源切换已收进 AppBar 标题弹窗）
+                  _buildCategoryTabBar(l10n),
+                  Expanded(
+                    child: TabBarView(
+                      controller: _tabController,
+                      children: _buildTabViews(l10n),
+                    ),
                   ),
-                ),
-              ],
-            ),
+                ],
+              ),
+      ),
     );
   }
 
