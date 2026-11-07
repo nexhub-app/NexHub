@@ -14,6 +14,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../features/media/presentation/content_detail_screen.dart';
 import '../models/media_item.dart';
+import '../platform/platform_service.dart';
 import '../settings/detail_appearance_settings.dart';
 import '../theme/app_tokens.dart';
 
@@ -56,11 +57,21 @@ class TwoPaneDetailController extends ChangeNotifier {
   static bool get settingEnabled =>
       DetailAppearanceStore.instance.settings.twoPaneDetailEnabled;
 
+  /// 双栏形态闸门：桌面 / 2in1 全可用；触屏设备按最短边判平板
+  /// （≥600 为平板才可用）——手机即使因显示缩放导致逻辑宽度很大，
+  /// 最短边仍小于 600，绝不会开双栏（用户决策：双栏不在手机端显示）。
+  static bool formFactorAllows(Size size) {
+    if (PlatformService.instance.isDesktopForm) {
+      return true;
+    }
+    return size.shortestSide >= 600;
+  }
+
   /// 尝试在右侧详情栏打开 [item]。
   ///
-  /// 条件：设置开关开启 + 祖先链上有 [TwoPaneDetailScope] + 窗口宽 >= 阈值。
-  /// 返回 true = 已由双栏承接（调用方无需再路由）；false = 回退整页路由
-  /// （原行为）。
+  /// 条件：设置开关开启 + 形态为桌面 / 平板（非手机）+ 祖先链上有
+  /// [TwoPaneDetailScope] + 窗口宽 >= 阈值。返回 true = 已由双栏承接
+  /// （调用方无需再路由）；false = 回退整页路由（原行为）。
   bool open({
     required BuildContext context,
     required MediaItem item,
@@ -69,10 +80,14 @@ class TwoPaneDetailController extends ChangeNotifier {
     if (!settingEnabled) {
       return false;
     }
+    final Size size = MediaQuery.sizeOf(context);
+    if (!formFactorAllows(size)) {
+      return false;
+    }
     if (TwoPaneDetailScope.of(context) == null) {
       return false;
     }
-    if (MediaQuery.sizeOf(context).width < AppTokens.twoPaneBreakpoint) {
+    if (size.width < AppTokens.twoPaneBreakpoint) {
       return false;
     }
     _item = item;
