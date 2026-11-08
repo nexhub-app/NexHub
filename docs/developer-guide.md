@@ -511,7 +511,7 @@ announcement 是源顶层的可选对象：title 为必填（公告标题）；b
 
 1. 函数签名固定为 parseXxx(html, context)，html 为页面字符串，context 含 baseUrl、log 等。
 2. 优先同步返回结果（数组或对象）。也支持 async 函数返回 Promise：引擎会等待其 resolve（默认 15 秒超时，超时按失败处理），同一调用内的简单 await 可以直接用，跨接口取数仍走下面的 __meta。
-3. 需要异步数据时，返回 {__meta:true, __fetchUrl, __processor} 协议对象，引擎会先预取该 URL，再调用 __processor——这是跨接口取数的推荐通道。单条预取时处理器按 `__processor(body, headers)` 收到两个独立参数（响应头在第二个）；兼容旧数组形态的处理器在开头用 `Array.isArray` 归一即可。
+3. 需要异步数据时，返回 {__meta:true, __fetchUrl, __processor} 协议对象，引擎会先预取该 URL，再调用 __processor——这是跨接口取数的推荐通道。单条预取时处理器按 `__processor(body, headers)` 收到两个独立参数（响应头在第二个，json / text 两种模式都会带上）；兼容旧数组形态的处理器在开头用 `Array.isArray` 归一即可。
 4. 不要写死任何站点常量到 App，全部留在源文件。
 5. 沙箱已预置 atob / btoa（浏览器语义 polyfill，宽松剥离非法字符与尾部 =），脚本可直接调用，无需在源里内嵌同名 polyfill；若源脚本自带同名声明则覆盖默认值。同一 JsEngine 实例内顶层变量跨 meta 多跳持续可见，多跳各跳的 __processor 不再重放整段脚本，符合「同一 JsEngine 内全局持续可见」的约定。
 
@@ -563,6 +563,7 @@ v0.4.0 起，源还能声明一些「站点级」能力，让 App 在不改引�
 | `comments.login.authScheme` | 仅 sendTokenAs==key 生效：Authorization 头前缀，默认 Key；站点要求 Token / Bearer 等前缀时改这里。 |
 | `comments.login.apiKeyParam` | 仅 sendTokenAs==key 生效：密钥在本地密钥库的参数名，默认 apiKey（按 sourceId:apiKeyParam 存储）。 |
 | `site.cookies` | 手动 Cookie 登录：把整段会话 Cookie 填到 site.cookies，全源请求自动携带。 |
+| Cookie 合并规则 | 路由 `headers` / 脚本 `__fetchHeaders` 里显式写的 Cookie 与会话 jar **按名合并**：同名以显式值为准，其余 jar 项保留。便于「页面内联 JS 写入 Cookie 后，二跳请求带挑战令牌」这类源。 |
 | `生效优先级` | 用户覆盖 > 源 network 块 > 全局设置 > 默认值；改完即时生效，无需重启。 |
 
 ```json
@@ -1122,7 +1123,7 @@ function __processVideo(json, context){ return json.url; }
 | `filters` | 可选。动态筛选：groups（筛选组）、byCategory（按分类覆盖）、defaults（分类默认参数）。 |
 | `stealthMode` | 可选布尔。开启更激进的反检测请求策略。 |
 | `antiHotlinking.referer / headers / userAgent` | 可选。反盗链：补 Referer / 头 / 特定 UA。 |
-| `mediaHostRewrite` | 可选。媒体域名改写映射 `{"原host": "目标host"}`（精确匹配，大小写不敏感）。封面等媒体 URL 的 host 按映射改写后再加载，适用于「签名 CDN 禁 Referer」「主 CDN 拒直连」等需要切换备用 CDN 的场景。 |
+| `mediaHostRewrite` | 可选。媒体域名改写映射 `{"原host": "目标host"}`（精确匹配，大小写不敏感）。封面等媒体 URL 的 host 按映射改写后再加载，适用于「签名 CDN 禁 Referer」「主 CDN 拒直连」等需要切换备用 CDN 的场景。改写后的目标域会纳入源级 ECH 接管范围，封面与页面共用同一条加密通道；图片缓存按源取网络档案（源级代理 / ECH 对图片同样生效）。 |
 | `webviewConfig.adblock / timeoutSeconds` | 可选。WebView 广告拦截开关与超时（默认 true / 20s）。 |
 | `comments` | 可选。评论配置：provider(source/bangumi)、routes(list 必需，replies/post/reply/like/report 可选)、selectors、login(url=WebView 登录页 + checkCookie=Cookie 键名 + checkUrl/loggedInSelector=登录态探测)。 |
 | `network` | 可选。源级网络覆盖：proxy / dns / hosts / sni / ech；缺省继承全局，非法值只告警不阻断启用。（sni 与 ech 均对直连 HTTPS 真实生效） |
@@ -1192,6 +1193,7 @@ function __processVideo(json, context){ return json.url; }
 - `__fetchConcurrency`：并发数，默认 6、上限 16；
 - `__fetchHeaders` / `__fetchMethod` / `__fetchBody`：附加请求头 / 方法（默认 `get`，可 `post`）/ POST 请求体；
 - `__processor` 收到的是**按输入顺序**排列的响应数组；单条失败该位置为 `null`，不中断整批；
+- **批量预取只返回响应体**：处理器拿不到响应头；需要读响应头（如播放凭证在头里）时改用单条 `__fetchUrl` 预取。
 - 同一 `JsEngine` 实例内 `__meta` 支持链式多跳（上限 4 跳），顶层变量跨跳持续可见。
 
 **贡献方式**：

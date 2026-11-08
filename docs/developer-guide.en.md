@@ -510,7 +510,7 @@ Key rules:
 
 1. Signature is fixed: parseXxx(html, context); html is the page string, context has baseUrl, log, etc.
 2. Returning synchronously (array or object) is preferred. An async function returning a Promise also works: the engine awaits it (15s timeout, treated as failure when exceeded) — fine for simple awaits inside one call, but cross-endpoint fetching still goes through __meta below.
-3. For async data, return the {__meta:true, __fetchUrl, __processor} protocol object; the engine prefetches that URL and then calls __processor — the recommended channel for cross-endpoint fetching. For a single prefetch the processor receives `__processor(body, headers)` as two separate arguments (headers second); processors still accepting the old array form just normalize with `Array.isArray` at the top.
+3. For async data, return the {__meta:true, __fetchUrl, __processor} protocol object; the engine prefetches that URL and then calls __processor — the recommended channel for cross-endpoint fetching. For a single prefetch the processor receives `__processor(body, headers)` as two separate arguments (headers second, delivered in both json and text modes); processors still accepting the old array form just normalize with `Array.isArray` at the top.
 4. Never hardcode site constants into the app; keep everything in the source file.
 5. The sandbox now presets atob / btoa (browser-semantics polyfill, leniently stripping invalid chars and trailing '='), so scripts can call them directly without embedding a polyfill; a source's own same-name declaration overrides the default. Within one JsEngine instance, top-level variables persist across meta multi-hop calls — each hop's __processor no longer replays the whole script — matching the 'globals stay visible within one JsEngine' convention.
 
@@ -549,6 +549,7 @@ Key rules:
 | `comments.login.authScheme` | Only when sendTokenAs==key: Authorization prefix, default Key; change it if the site wants Token / Bearer etc. |
 | `comments.login.apiKeyParam` | Only when sendTokenAs==key: key name in the local key store, default apiKey (stored as sourceId:apiKeyParam). |
 | `site.cookies` | Manual cookie login: paste the whole session cookie into site.cookies; every request carries it. |
+| Cookie merge rule | Cookies declared explicitly in route `headers` / script `__fetchHeaders` are merged **by name** with the session jar: the explicit value wins for the same name, other jar entries are kept. Useful for sources where inline page JS writes a cookie and the second hop must carry the challenge token. |
 | `precedence` | User override > source network block > global > default; applies instantly, no restart. |
 
 ```json
@@ -1105,7 +1106,7 @@ The authoritative constraints live in lib/core/models/plugin_config.dart; this t
 | `filters` | Optional. Dynamic filters: groups, byCategory (per-category override), defaults (category default params). |
 | `stealthMode` | Optional bool. More aggressive anti-detection request strategy. |
 | `antiHotlinking.referer / headers / userAgent` | Optional. Anti-hotlink: add Referer / headers / specific UA. |
-| `mediaHostRewrite` | Optional. Media host rewrite map `{"from-host": "to-host"}` (exact match, case-insensitive). Cover and other media URLs get their host rewritten before loading — for scenarios like signed CDNs that reject Referer or primary CDNs refusing direct connections, where a fallback CDN is needed. |
+| `mediaHostRewrite` | Optional. Media host rewrite map `{"from-host": "to-host"}` (exact match, case-insensitive). Cover and other media URLs get their host rewritten before loading — for scenarios like signed CDNs that reject Referer or primary CDNs refusing direct connections, where a fallback CDN is needed. Rewritten target hosts join the per-source ECH takeover scope, so covers and pages share one encrypted channel; the image cache reads the source's effective network profile (per-source proxy / ECH applies to images too). |
 | `webviewConfig.adblock / timeoutSeconds` | Optional. WebView adblock toggle and timeout (default true / 20s). |
 | `comments` | Optional. Comments config: provider(source/bangumi), routes(list required; replies/post/reply/like/report optional), selectors, login(url=WebView login page + checkCookie=cookie key + checkUrl/loggedInSelector=session probe). |
 | `network` | Optional. Source-level network override: proxy / dns / hosts / sni / ech; inherits global by default, invalid values only warn. (sni and ech are both runtime-effective for direct HTTPS) |
@@ -1175,6 +1176,7 @@ When a script endpoint has to follow N pages one by one (e.g. a gallery page onl
 - `__fetchConcurrency`: concurrency, 6 by default, capped at 16;
 - `__fetchHeaders` / `__fetchMethod` / `__fetchBody`: extra headers / method (`get` by default, `post` allowed) / POST body;
 - `__processor` receives the responses **in input order**; a failed item is `null` and does not break the batch;
+- **Batch prefetch returns response bodies only**: the processor does not get headers; when you need response headers (e.g. a playback credential delivered in a header), use a single `__fetchUrl` prefetch instead.
 - Within one `JsEngine` instance, `__meta` may chain up to 4 hops, and top-level variables stay visible across hops.
 
 **How to contribute**:
