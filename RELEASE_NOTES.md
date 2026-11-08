@@ -1,14 +1,14 @@
-# NexHub v3.4.0
+# NexHub v3.5.0
 
 > 四合一媒体聚合客户端（动漫 / 漫画 / 小说 / 影视）—— 源即插件 · 共创社区。
 
 这是 NexHub 的四合一媒体聚合客户端（动漫 / 漫画 / 小说 / 影视）。NexHub **不内置任何内容源**，所有内容都来自你自行导入的「源」。
 
-> ⚠️ **这是 3.4.0 正式版**：桌面卡片（小组件）落地版——Android 8 类小组件与鸿蒙 10 张服务卡片上线，继续观看显示真实进度、统计类卡片与 App 统计页同源、深浅色跟随系统，并新增卡片个性化设置；另修长列表入场动画断言刷屏、中英混排漏译、统计走漏隐藏源三类问题。**基础功能完整、可安全升级**。相对 v3.3.0 共 7 个提交。
+> ⚠️ **这是 3.5.0 正式版**：宽屏 / 平板体验与网络可靠性的合流版——宽屏列表与详情同屏（可拖拽、可开关、推入式页面同样适用）、鸿蒙平板设备类型与漫画宽屏自动双页；小说正文净化改为随包内置的全局规则包（旧书籍级规则自动迁移）；加密通道（ECH）与源级媒体域名改写加固，图片与页面共用同一条通道；另修 Bangumi 授权 401、跨平台备份导入、公告页加载、列表卡片点击崩溃等一批问题。**基础功能完整、可安全升级**。相对 v3.4.0 共 30 个提交。
 >
-> - **数据兼容**：经代码核查，本版**无破坏性数据变更**——书架、收藏、进度、书签、历史、分组直接沿用；旧源 JSON 无需修改、无需重新导入；沿用同一签名密钥可直接覆盖安装。
+> - **数据兼容**：经代码核查，本版**无破坏性数据变更**——书架、收藏、进度、书签、历史、分组直接沿用；旧源的书籍级净化规则首次打开该书时自动迁移为「仅本书」；旧源 JSON 无需修改、无需重新导入；沿用同一签名密钥可直接覆盖安装。
 > - **平台产物**：Android / Windows / Linux / macOS / iOS / 鸿蒙 HAP 统一发布在同一个 Release；鸿蒙 HAP 不带签名，需自行签名后侧载。
-> - **建议**：v3.3.0 用户直接覆盖安装；鸿蒙用户从 HAP 侧载升级；旧版统计卡（2×2 老布局）移除后重新添加。
+> - **建议**：v3.4.0 用户直接覆盖安装；鸿蒙平板用户可从 HAP 侧载升级，安装细节见 `docs/OHOS_INSTALL_GUIDE.md`。
 
 ## ✨ 核心特性
 
@@ -24,6 +24,7 @@
 - **网络配置**（v0.4.0 新增）：全局与源级的代理 / DNS（DoH、DoT）/ Hosts 配置，应对连不上与解析污染。
 - **收藏分组与评论**（v0.4.0 新增）：多分组标签式管理、本地评分短评；详情页源站评论与 Bangumi 吐槽。
 - **桌面卡片**（v3.4.0 新增）：Android 小组件与鸿蒙服务卡片，继续观看 / 追更 / 下载 / 统计 / 热力图 / 大数字 / 分模块 / 连续打卡 8 类，显示真实进度与当月打卡，深浅色跟随系统。
+- **宽屏双栏**（v3.5.0 新增）：宽窗口下一屏同看列表与详情，宽度可拖拽、可开关；鸿蒙平板原生全屏，漫画支持宽屏自动双页。
 - **下载管理 / 历史与更新追踪 / Material 3 动态配色 / 多语言 / 跨平台**。
 
 ## 📌 通用升级说明
@@ -33,6 +34,28 @@
 **签名密钥**：自 v0.3.0 起使用同一固定签名密钥（经 CI Secret 注入，不入库），可直接覆盖安装；更早的随机签名旧包需先卸载一次再装。v0.2.12 曾引入固定签名，v0.3.1 起改为 CI 注入（密钥本体一致）。
 
 ## 📝 更新日志（倒序 · 最新在前）
+
+### 📝 更新日志（v3.4.0 → v3.5.0）
+
+> 🎉 **正式版**。相对 v3.4.0 共 30 个提交，核心是**宽屏 / 平板双栏详情**（含设置开关、拖拽调宽、推入式页面承载与鸿蒙平板设备类型）、**小说正文净化全局规则包**（内置 12 条 / 旧规则自动迁移）、**网络与加密通道加固**（源级媒体域名改写、ECH retry 与直连多 IP、图片通道统一），以及 Bangumi 授权、跨平台备份、公告加载等一批修复。无破坏性数据变更，可直接覆盖安装。
+
+- **宽屏 · 双栏详情**：新增 `TwoPaneDetailController` 全局单例与右栏容器；`AppNavigator.openContentDetail` 成为统一入口（仅根路由 + 窗口 ≥1120 时由双栏承接，13 处直推调用点迁移过来）；`ContentDetailScreen` 增 embedded/onClose 内嵌模式，`TabbedShell` 透传 onBack；`AppTokens.twoPaneBreakpoint = 1120`；窗口拉窄自动收起并回退整页路由。
+- **宽屏 · 推入式页面**：`TwoPaneDetailHost` 包裹搜索 / 在线列表 / 真实网址浏览 / 下载页 body，判定改为「祖先链有宿主作用域」；窄窗口行为不变。
+- **宽屏 · 交互**：设置「详情页外观」新增「双栏详情」开关（默认开）；分隔条拖拽调宽（`ValueNotifier` 只重建栏区），钳制 [400, 窗口-520]，会话内保留。
+- **平板 · 鸿蒙**：`module.json5` deviceTypes 增 tablet；`PlatformService.isOHOSTablet`；新增 `core/widgets/responsive.dart` 宽度分档；漫画阅读器新增「宽屏自动双页」（横屏且 ≥840，竖排 / 长条不参与）；宽屏内容排版沿用桌面版式。
+- **小说 · 正文净化**：规则改全局存储（`novel_replace_rules_global_v1`），首启从 `assets/novel/replace_rules.json` 播种 12 条内置规则（10 条默认开）；规则新增 `applyTo`（全部 / 仅本书 / 仅本源）与 `isBuiltIn`；旧 `novel_replace_rules_v1::<bookId>` 首次打开该书时迁移为仅本书规则（带迁移标记防重复）；每书保留单一总开关；页面改用设置体系组件并全量走 l10n（40 个新键），支持长按拖动排序与恢复内置规则。
+- **网络 · 源级媒体域名改写**：`PluginConfig.mediaHostRewrite`（`{原host: 目标host}`，精确匹配、大小写不敏感）；`_absoluteCoverUrl` 走 `_rewriteMediaHost`，列表与详情封面两个出口全覆盖；ECH 接管范围纳入改写目标域，封面与页面共用同一通道；`antiHotlinking` 保持可选覆盖。
+- **网络 · 图片通道**：图片缓存服务按源取有效网络档案（此前固定全局档案，源级 ECH / 代理不生效）；`SourceImage.buildHeaders` 的 Accept 无条件为图片形态、删除 Referer 兜底注入（签名 CDN 无 Referer 才放行，防盗链由 `antiHotlinking.referer` 显式声明）；资产请求补 `Sec-Fetch-Site`，不再发送浏览器不会产生的残缺头组合；桌面「跟随系统代理」读 Windows 注册表代理项。
+- **网络 · 加密通道**：DoH 引导失败经纯加密 DNS 兜底解析目标域；服务端拒绝配置时按其下发的 retry 配置重连，并按域缓存实测可用配置；ECH 与直连统一 fd 模式（`SSL_set_fd` + 阻塞握手），规避 BIO pair 下的异常判定；直连改多 IP 逐个 `connect_timeout` 尝试并存缓存；补 ALPN `http/1.1`、请求头规范化（Host 置首、头名 Title-Case、`Connection: close`）；并发上限 32→64。
+- **源解析 · 动态分类**：`routes.categories` 通道（script / builtin 皆可）返回分类集合，UI 优先使用、失败回落 `categoryEntries`。
+- **源解析 · 预取响应头**：单条 JSON / 文本预取改用 `getJsonWithHeaders` / `postJsonWithHeaders` / `postTextWithHeaders`，响应头作为处理器第二参数（多参形态为数组 `[body, headers]`，单参处理器零影响）。
+- **源解析 · 其它**：详情接口 `episodeCount` 补映射；JS 沙箱异步入口按 Dart-Future 形态落到统一 `handlePromise`；显式 Cookie 头与会话 jar 按名合并，不再被回带顶掉；空 id 条目 Hero 标签用稳定哈希兜底。
+- **公告**：页面改为 `loadLocal()` 立即渲染（内存 → prefs 缓存 → 打包资源），再后台 `_refresh(silent)`；三源阶梯并发（600ms 一档）+ 单飞 `_pullRemote` + 8s `Timer` 硬上限 + 共享静态 Dio；空列表判失败。
+- **Bangumi**：令牌端点按「配置基址 → 官方 bgm.tv」兜底；`sessionExpired` / `lastAuthError` 与失效提示；12h 提前预续期（`onBeforeRequest`）；`sanitizeToken()` 净化零宽 / 引号 / `Bearer ` 前缀并在 `init()` 自愈；`tokenFingerprint` 便于定位；401 统一显示「登录已过期」。
+- **跨平台备份**：新增 `platform_path_compat.dart`（按 scheme 判定路径归属 + 导入过滤 + 启动自修复）；`backup_archive` / `cloud_sync_service` 写入前过滤；splash 逐箱 `_openBoxResilient`（损坏留档隔离）与 `downloadManager.init()` 失败重建；孤立下载记录恢复改为尽力而为。
+- **其它修复**：`AppCard` 改为 `Material(child: InkWell(...))`，修列表内点击崩溃并改善涟漪裁切；详情页标签类混排文本按 `label` 模式判定（`hasTranslatableLatinWord`），回显不写缓存。
+- **文档**：源编写教程按 22 节分级重组并与官网同步；`docs/OHOS_INSTALL_GUIDE.md` 新增、README 安装段改双路径；`developer-guide`（zh/en）字段表补媒体域名改写与动态分类。
+- **内部**：本地化文案补中英两套（正文净化 40 键、宽屏与设置若干）；无破坏性依赖变更。
 
 ### 📝 更新日志（v3.3.0 → v3.4.0）
 

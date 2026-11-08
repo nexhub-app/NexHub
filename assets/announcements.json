@@ -1,5 +1,16 @@
 [
   {
+    "id": "v3.5.0-announce",
+    "date": "2026-11-08",
+    "title": "NexHub 3.5.0 正式版",
+    "titleEn": "NexHub 3.5.0 (stable release)",
+    "body": "NexHub 3.5.0 正式版来了！宽屏和平板这次是重点：宽度够时列表与详情同屏展开，可拖拽调宽、可在设置里关掉，搜索与在线列表页也能用；鸿蒙新增平板设备类型，漫画支持宽屏自动双页。小说正文净化改为随包内置的全局规则包（12 条，旧规则自动迁移，可按全部/本书/本源生效）。网络侧补上源级媒体域名改写、加密通道重试与直连多 IP 兜底、图片通道按源走同一通道。另修 Bangumi 授权 401、跨平台备份导入后启动失败、公告页加载慢、列表卡片点击崩溃、标签混排漏译等问题。无破坏性数据变更，可直接覆盖安装。",
+    "bodyEn": "NexHub 3.5.0 (stable) is here! Wide screens and tablets are the focus: when the window is wide enough the list and the detail open side by side — drag to resize, toggle it off in Settings, and it works on search and online-list pages too. HarmonyOS gains a tablet device type, and the manga reader can auto-spread pages on wide screens. Novel text purging now ships as a global rule pack (12 built-in rules, old per-book rules migrate automatically, scopeable to all books / this book / this source). Networking gets source-level media host rewriting, ECH retry plus multi-IP direct fallback, and a unified image channel per source. Also fixed: Bangumi 401 auth, startup failure after importing cross-platform backups, slow announcement loading, list-card tap crash, and untranslated mixed-language tags. No breaking data changes — overwrite-install directly.",
+    "url": "",
+    "urlText": "",
+    "urlTextEn": ""
+  },
+  {
     "id": "v3.4.0-announce",
     "date": "2026-10-31",
     "title": "NexHub 3.4.0 正式版",

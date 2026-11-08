@@ -1091,6 +1091,7 @@ The authoritative constraints live in lib/core/models/plugin_config.dart; this t
 | `routes.<name>` | Optional. Endpoint addresses; string form or {url, method, headers, params, responseType, parser}; {keyword}/{page}/{id}/{url} placeholders auto-replaced. |
 | `selectors` | Optional. Declarative selectors (JSONPath / CSS / XPath), used with parser.overrides. |
 | `category.dynamicCategories / categoryEntries` | Optional. Dynamic category inference or static category table [{id,title}]. |
+| `routes.categories` | Optional. Dynamic category endpoint returning [{id, title}] (script or jsonpath); queried first, falling back to `categoryEntries` on failure. |
 | `homeSections[]` | Optional. Home sections: {id, title, route, style, limit}; falls back to a single 'latest' block when omitted. |
 | `filters` | Optional. Dynamic filters: groups, byCategory (per-category override), defaults (category default params). |
 | `stealthMode` | Optional bool. More aggressive anti-detection request strategy. |

@@ -1108,6 +1108,7 @@ function __processVideo(json, context){ return json.url; }
 | `routes.<name>` | 可选。各接口地址，支持字符串写法或 {url, method, headers, params, responseType, parser} 对象；{keyword}/{page}/{id}/{url} 占位符自动替换。 |
 | `selectors` | 可选。声明式选择器（JSONPath / CSS / XPath），与 parser.overrides 配合。 |
 | `category.dynamicCategories / categoryEntries` | 可选。动态分类推断或静态分类表 [{id,title}]。 |
+| `routes.categories` | 可选。动态分类接口：返回 [{id, title}]（script / jsonpath 皆可）。优先生效，请求失败自动回落 `categoryEntries`。 |
 | `homeSections[]` | 可选。首页板块：{id, title, route, style, limit}；缺省回退单块「最新更新」。 |
 | `filters` | 可选。动态筛选：groups（筛选组）、byCategory（按分类覆盖）、defaults（分类默认参数）。 |
 | `stealthMode` | 可选布尔。开启更激进的反检测请求策略。 |
