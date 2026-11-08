@@ -964,6 +964,9 @@ class ScriptResolver implements SourceResolver {
       director: _str(map['director']).isNotEmpty ? _str(map['director']) : null,
       actors: _str(map['actors']).isNotEmpty ? _str(map['actors']) : null,
       status: _str(map['status']),
+      // 脚本协议（script-protocol §4）声明 detail 条目可带 episodeCount；
+      // 此前漏映射导致脚本源的详情集数恒为 null。
+      episodeCount: int.tryParse(_str(map['episodeCount'])),
       tags: _tags(map['tags']),
       updatedAt: _parseDateTime(map['updatedAt']),
       wordCount: _str(map['wordCount']).isNotEmpty ? _str(map['wordCount']) : null,
