@@ -103,6 +103,14 @@ NexHub 的解析能力完全由源 JSON 驱动。一个源是一个 JSON 文件�
 >
 > 💡 ECH 现已接通：应用内置原生 ECH 引擎（OpenSSL），对直连 HTTPS 真实生效，不再依赖外部代理。作用域分应用级（接管任意 https 域，不支持 ECH 的站点由原生侧逐域自适应回落，不会搞断正常站点）、源级（只接管该源 `site.baseUrl` 的 host，可在源 JSON `network.ech` 或 UI 覆盖单独开关）、Bangumi 专用；原生库随 Android APK（arm64-v8a / armeabi-v7a / x86_64 三架构）、Windows 桌面端与鸿蒙 HAP（arm64-v8a）打包；macOS / Linux 暂未打包原生库，整套自动降级为直连。其余（proxy / dns / hosts / sni）依旧全部真实生效。
 
+> **加密通道的引擎行为与限制**：
+> - **DNS 引导兜底**：配置的 DoH 引导解析失败时，改用内置加密 DNS 兜底解析目标域，不再让整条链路中断。
+> - **服务端 retry 配置**：边缘拒绝旧配置时会下发 retry 配置，引擎据此重连一次，并按域名缓存实测可用的配置，后续连接一轮握手直达。
+> - **fd 模式握手**：加密通道与直连统一使用 fd 模式（`SSL_set_fd` + 阻塞握手），规避库层 BIO 模式下部分边缘的异常判定。
+> - **直连多 IP**：同一域名的解析结果逐个带超时尝试，单个坏 IP 不会拖死整批请求；转发并发上限 64。
+> - **请求形态**：声明 ALPN `http/1.1`；转发首个请求时 Host 置首、头名规范为 Title-Case，便于通过部分 CDN 的指纹校验。
+> - **平台边界**：Android（三架构）、Windows、鸿蒙 HAP（arm64-v8a）打包原生库；macOS / Linux 未打包，自动降级直连，此时能否连通取决于本机网络。
+
 > **`dns.resolveSuffix`（解析后缀）**：把「目标主机 + 后缀」交给 DNS 查询，用查到的地址建连，请求头里的 Host 仍是原主机名。
 > 用途：站点主域被 DNS 污染时，查一个不受干扰的别名（如 CDN 提供的别名域）拿到真实地址，**配置文件里不需要写死任何 IP**——地址由每台设备用自己的 DNS 现算，因此适合公开发布的源。
 >
@@ -242,6 +250,7 @@ NexHub 的解析能力完全由源 JSON 驱动。一个源是一个 JSON 文件�
 | --- | --- |
 | `selectors.detail` | 范式A：对象，逐字段抽取标题/封面/简介/演员等。 |
 | `selectors.episodes` | 范式A：章节链接选择器，如 ul li a。 |
+| `episodeCount`（脚本返回键） | 可选。作品总集 / 总话数；脚本源在 detail 返回对象里填它，详情页据此显示集数，缺省不显示。 |
 | `ruleBookInfo.tocUrl` | 范式B：进入目录页的链接；留空则详情页本身即目录。 |
 | `ruleToc.chapterList` | 范式B：章节项选择器；nextTocUrl 支持目录分页。 |
 
@@ -501,8 +510,8 @@ announcement 是源顶层的可选对象：title 为必填（公告标题）；b
 重要约定：
 
 1. 函数签名固定为 parseXxx(html, context)，html 为页面字符串，context 含 baseUrl、log 等。
-2. 必须同步返回结果（数组或对象）。
-3. 需要异步数据时，返回 {__meta:true, __fetchUrl, __processor} 协议对象，引擎会先预取该 URL，再调用 __processor 同步处理函数——这是唯一安全的异步通道。
+2. 优先同步返回结果（数组或对象）。也支持 async 函数返回 Promise：引擎会等待其 resolve（默认 15 秒超时，超时按失败处理），同一调用内的简单 await 可以直接用，跨接口取数仍走下面的 __meta。
+3. 需要异步数据时，返回 {__meta:true, __fetchUrl, __processor} 协议对象，引擎会先预取该 URL，再调用 __processor——这是跨接口取数的推荐通道。单条预取时处理器按 `__processor(body, headers)` 收到两个独立参数（响应头在第二个）；兼容旧数组形态的处理器在开头用 `Array.isArray` 归一即可。
 4. 不要写死任何站点常量到 App，全部留在源文件。
 5. 沙箱已预置 atob / btoa（浏览器语义 polyfill，宽松剥离非法字符与尾部 =），脚本可直接调用，无需在源里内嵌同名 polyfill；若源脚本自带同名声明则覆盖默认值。同一 JsEngine 实例内顶层变量跨 meta 多跳持续可见，多跳各跳的 __processor 不再重放整段脚本，符合「同一 JsEngine 内全局持续可见」的约定。
 

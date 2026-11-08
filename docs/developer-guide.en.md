@@ -103,6 +103,14 @@ Rules: a key that is **absent = inherit global**; a key that is set = **override
 >
 > 💡 ECH is now wired: a built-in native engine (OpenSSL) drives it and it takes effect for direct HTTPS — no external proxy needed. Scopes: app-level (covers any https domain; sites without ECH support fall back per-domain, so normal sites aren't broken), per-source (only the source's site.baseUrl host; toggle via source JSON network.ech or the UI override), and Bangumi-specific. The native lib ships with the Android APK (arm64-v8a / armeabi-v7a / x86_64), the Windows desktop build, and the HarmonyOS HAP (arm64-v8a); macOS / Linux are not bundled yet and auto-degrade to direct. The rest (proxy / dns / hosts / sni) all genuinely work.
 
+> **Encrypted-channel engine behaviour and limits**:
+> - **DNS bootstrap fallback**: if the configured DoH bootstrap fails, the engine resolves the target via a built-in encrypted DNS instead of aborting the whole chain.
+> - **Server retry config**: when the edge rejects an outdated config it returns a retry config; the engine reconnects with it and caches the working config per host, so later connections need a single handshake.
+> - **fd-mode handshake**: both the ECH path and plain direct connections use fd mode (`SSL_set_fd` + blocking handshake) to avoid the odd edge behaviour seen with the library's BIO-pair mode.
+> - **Multi-IP direct**: resolved addresses are tried one by one with a timeout, so one dead IP cannot stall the whole batch; forwarding concurrency is 64.
+> - **Request shape**: ALPN `http/1.1` is declared; the first forwarded request gets `Host` moved to the front and header names normalized to Title-Case, which some CDN fingerprint checks require.
+> - **Platform bounds**: native lib ships with Android (three ABIs), Windows and the HarmonyOS HAP (arm64-v8a); macOS / Linux are not bundled and degrade to direct — reachability then depends on the local network.
+
 > **`dns.resolveSuffix` (resolve suffix, added in v2.0.0)**: the resolver queries *target host + suffix* and connects to the returned address, while the Host header stays the original hostname.
 > Use case: when the site's own domain suffers DNS poisoning, query an unaffected alias (e.g. an alias domain served by the site's CDN) to obtain real addresses — **no IP needs to be hard-coded in the config file**, since each device resolves it with its own DNS. That makes it suitable for publicly shared sources.
 >
@@ -242,6 +250,7 @@ Paradigm A uses detail route + selectors.detail and episodes; Paradigm B uses ru
 | --- | --- |
 | `selectors.detail` | Paradigm A: object extracting title/cover/description/cast per field. |
 | `selectors.episodes` | Paradigm A: chapter link selector, e.g. ul li a. |
+| `episodeCount` (script return key) | Optional. Total episode / chapter count; script sources set it in the detail object so the detail page can show the count — hidden when absent. |
 | `ruleBookInfo.tocUrl` | Paradigm B: link into the contents page; empty means detail page itself is the TOC. |
 | `ruleToc.chapterList` | Paradigm B: chapter item selector; nextTocUrl supports paginated TOC. |
 
@@ -500,8 +509,8 @@ When declarative selectors are not enough, use parser.overrides to write JS. Eac
 Key rules:
 
 1. Signature is fixed: parseXxx(html, context); html is the page string, context has baseUrl, log, etc.
-2. Must return synchronously (array or object).
-3. For async data, return the {__meta:true, __fetchUrl, __processor} protocol object; the engine prefetches that URL, then calls __processor synchronously — the only safe async channel.
+2. Returning synchronously (array or object) is preferred. An async function returning a Promise also works: the engine awaits it (15s timeout, treated as failure when exceeded) — fine for simple awaits inside one call, but cross-endpoint fetching still goes through __meta below.
+3. For async data, return the {__meta:true, __fetchUrl, __processor} protocol object; the engine prefetches that URL and then calls __processor — the recommended channel for cross-endpoint fetching. For a single prefetch the processor receives `__processor(body, headers)` as two separate arguments (headers second); processors still accepting the old array form just normalize with `Array.isArray` at the top.
 4. Never hardcode site constants into the app; keep everything in the source file.
 5. The sandbox now presets atob / btoa (browser-semantics polyfill, leniently stripping invalid chars and trailing '='), so scripts can call them directly without embedding a polyfill; a source's own same-name declaration overrides the default. Within one JsEngine instance, top-level variables persist across meta multi-hop calls — each hop's __processor no longer replays the whole script — matching the 'globals stay visible within one JsEngine' convention.
 
