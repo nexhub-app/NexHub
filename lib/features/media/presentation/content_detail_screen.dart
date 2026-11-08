@@ -1313,7 +1313,12 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
     return ContentDetailTabbedShell(
       coverUrl: item.coverUrl,
       source: source,
-      heroTag: widget.heroTag,
+      // 双栏详情栏与来源列表卡片同处一个路由子树：若沿用来源卡片的 heroTag，
+      // 栏内封面 Hero 与卡片 Hero 同标签同子树，任何路由转场（如推入全屏
+      // 播放器）做 Hero 扫描即抛 "multiple heroes share the same tag"，
+      // 转场中断时 Hero 子树被整体隐藏——表现为详情栏封面消失。embedded
+      // 栏不参与路由转场动画，标签无效且有害，置空。
+      heroTag: widget.embedded ? null : widget.heroTag,
       onBack: widget.embedded ? _closeSelf : null,
       title: item.title,
       description: item.description ?? l10n.noDescription,
