@@ -641,9 +641,15 @@ class FlutterJsEngine implements JsEngine {
     }
     // 单参时裸传 args.first（如 HTML 字符串），避免脚本收到 ["<html>"] 这种
     // 数组包装——golden 脚本多声明 `function parseX(raw, context)`，期望 raw 为字符串。
-    // 多参时按原样 JSON 数组传参。统一追加 context 作为末参（沙箱能力入口）。
-    final arg =
-        args.length == 1 ? jsonEncode(args.first) : jsonEncode(args);
+    // 多参时逐参内联（各自 jsonEncode 后逗号连接）：meta 单条预取处理器按协议收
+    // (响应体, 响应头) 两个独立参数。历史实现把多参整体 jsonEncode 成一个数组
+    // 字面量作首参——处理器拿到的永远是包装数组，响应头取不到，且按
+    // 「入参=预取结果」写的处理器顶层取不到 data 键而恒空产出。
+    // 兼容：针对旧打包形态写过的源应在处理器开头做 Array.isArray 形态归一，
+    // 两种引擎形态都能跑。统一追加 context 作为末参（沙箱能力入口）。
+    final arg = args.length == 1
+        ? jsonEncode(args.first)
+        : args.map<String>(jsonEncode).join(',');
     final sid = _sourceId;
 
     // ══════════════════════════════════════════════════════════
@@ -786,9 +792,19 @@ class FlutterJsEngine implements JsEngine {
               '})()';
           final iifeRes = await _runtime.evaluateAsync(iife);
           final iifeIsPromise = iifeRes.isPromise ?? false;
+          // flutter_js 的 FFI QuickJS 运行时（quickjs_runtime2）对挂起 Promise
+          // 的返回形态：_jsToDart 把 JS Promise 包成 pending Dart Future
+          // （wrapper.dart），并把该 Future 的 toString() 写进 stringResult
+          // （即 "Instance of 'Future<dynamic>'"），isPromise 恒为 false——
+          // 仅凭 isPromise 做闸门会让 handlePromise 永远不可达。handlePromise
+          // 对该形态本就有专门分支：await rawResult + 20ms executePendingJob
+          // 持续泵动 QuickJS job 队列，settle 后返回值（IIFE 已 JSON.stringify）
+          // 即为合法 JSON 字符串。
+          final iifeRaw = iifeRes.stringResult ?? '';
+          final iifeIsDartFuture = iifeRaw.contains("Instance of 'Future");
           debugPrint(
-              '[JsContext] Phase3-B: IIFE结果, isPromise=$iifeIsPromise');
-          if (iifeIsPromise) {
+              '[JsContext] Phase3-B: IIFE结果, isPromise=$iifeIsPromise, dartFuture=$iifeIsDartFuture');
+          if (iifeIsPromise || iifeIsDartFuture) {
             final done = await _runtime.handlePromise(iifeRes,
                 timeout: const Duration(seconds: 15));
             resultStr = done.stringResult;
@@ -799,10 +815,10 @@ class FlutterJsEngine implements JsEngine {
             resolved = true;
           } else {
             // IIFE 未标记为 Promise 但可能有值（引擎直接解析了？）
-            final raw = iifeRes.stringResult ?? '';
+            final raw = iifeRaw;
             if (raw.isNotEmpty &&
                 raw != 'undefined' &&
-                raw != 'Instance of\'Future<dynamic>\'' &&
+                !raw.contains("Instance of 'Future") &&
                 !raw.startsWith('[object ')) {
               resultStr = raw;
               debugPrint(
