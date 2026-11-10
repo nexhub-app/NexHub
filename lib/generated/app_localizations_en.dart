@@ -6047,6 +6047,23 @@ class AppLocalizationsEn extends AppLocalizations {
   String get novelScrollImageAlignRight => 'Right';
 
   @override
+  String get novelScrollAutoNextChapter => 'Continue to next chapter';
+
+  @override
+  String get novelScrollAutoNextChapterHint =>
+      'In scroll mode, append the next chapter\'s text below the current one at the end, so you can keep reading continuously';
+
+  @override
+  String get novelScrollEndLoading => 'Loading next chapter…';
+
+  @override
+  String get novelScrollEndOfBook => 'You have reached the last chapter';
+
+  @override
+  String get novelScrollEndRetry =>
+      'Failed to load the next chapter, tap to retry';
+
+  @override
   String get novelUnderlineThickness => 'Underline thickness';
 
   @override

@@ -590,6 +590,30 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   }
 
   ScrollController? _scrollController;
+
+  /// 滚动模式「无缝连排」的章节缓冲段（按章节升序）。
+  ///
+  /// 滚动模式下恒有至少一段（当前章）；开启
+  /// [NovelReaderPreferences.scrollAutoNextChapter] 时，临近段末会自动把
+  /// 下一章正文追加到列表尾部，读者可以一路向下滚跨章，不必手动翻章。
+  /// 翻页模式不使用该缓冲。
+  final List<_NovelScrollSegment> _scrollSegments = <_NovelScrollSegment>[];
+
+  /// 各段在扁平列表中的起始下标（末项 = 总项数）。
+  final List<int> _scrollSegStarts = <int>[0];
+
+  /// 正在追加下一章段（防重入，同时驱动列表尾部加载提示）。
+  bool _scrollAppending = false;
+
+  /// 最近一次追加失败的章节下标与时间：尾部提供「点击重试」，并做请求退避
+  /// （避免用户在章末轻微滚动时反复发起失败的抓取）。
+  int _scrollAppendFailedFor = -1;
+  DateTime? _scrollAppendFailedAt;
+
+  /// 滚动连排是否生效：滚动模式 + 用户开启「章末自动接续」。
+  bool get _scrollAutoNextEnabled =>
+      _prefs.pageAnimation.isScroll && _prefs.scrollAutoNextChapter;
+
   int _currentPage = 0;
   bool _uiVisible = false;
   int _contentVersion = 0;
@@ -636,6 +660,10 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
 
   /// 触发落盘所需的下滑距离（屏高比例）。
   static const double _bookmarkSwipeThresholdRatio = 0.18;
+
+  /// 判定「主导章」时允许的顶部容差（像素）：段首滚到视口上沿附近即算
+  /// 进入该章，避免浮点误差导致跨界瞬间来回抖动。
+  static const double _kScrollChapterAnchorSlack = 2.0;
 
   /// 判定：下滑手势（dy > 0）且纵向位移明显大于横向（absY > absX * 1.5
   /// 的通用判定比例），由亮度手势（仅左 1/3 屏生效）之外的区域触发。
@@ -1577,14 +1605,52 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   }
 
   /// 朗读章末自动续下一章（跨章连播）。
-  Future<void> _onTtsChapterFinished() async {    final chapters = _effectiveChapters;
+  Future<void> _onTtsChapterFinished() async {
+    final chapters = _effectiveChapters;
     if (_chapterIndex >= chapters.length - 1) {
       await _tts.stop();
       return;
     }
-    final target = _chapterIndex + 1;
+    final int target = _chapterIndex + 1;
+    // 连排缓冲里已经有下一章：直接切段续读，不重新抓取、不重建缓冲，
+    // 视图随朗读继续向下滚（真正的「无缝」跨章朗读）。
+    final _NovelScrollSegment? nextSeg = _segmentByChapter(target);
+    if (nextSeg != null) {
+      setState(() {
+        _chapterIndex = target;
+        _paragraphs = nextSeg.blocks;
+        _rawParagraphs = nextSeg.rawBlocks;
+        _pagination = null;
+        _paginationSig = null;
+        _currentPage = 0;
+      });
+      _bindSelection();
+      unawaited(_reloadHighlightsForChapter());
+      _saveProgress(0);
+      _maybePreDownload();
+      if (!mounted || _tts.state == NovelTtsState.stopped) return;
+      if (_chapterIndex != target) return;
+      await _speakChapter(0);
+      return;
+    }
+    // 尚未连排：先推进章节指针再加载。`_loadChapter` 只负责取正文、不改
+    // `_chapterIndex`，而控制器重建 / 进度落盘 / 朗读缓存键都以它为准。
+    if (_chapterLoading) {
+      // 有并发加载（用户刚跳章）：稍等一次，仍忙则停止朗读，避免状态错位。
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      if (_chapterLoading) {
+        await _tts.stop();
+        return;
+      }
+    }
+    _chapterIndex = target;
+    _currentPage = 0;
     try {
-      await _loadChapter(target);
+      if (_isLocalMode) {
+        await _loadLocalText();
+      } else {
+        await _loadChapter(target);
+      }
     } on Object {
       // 加载失败（网络等）：停止朗读，避免停在无声播放态。
       await _tts.stop();
@@ -3170,14 +3236,406 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     if (_prefs.pageAnimation.isScroll) {
       _scrollController = ScrollController();
       _scrollController!.addListener(_onScrollChanged);
+      // 章节内容换了（或偏好重排）：连排缓冲重置为「当前章单段」，
+      // 后续滚到段末再按需追加下一章。
+      _resetScrollSegments();
       // 滚动模式此前只把 _currentPage 赋成 restorePage，却从未把滚动位置挪
       // 过去，视图始终停在开头。这里按「等效页码 ↔ 滚动比例」恢复位置，
       // 与 [_onScrollChanged] 的保存逻辑严格对称。
       _restoreScrollPosition(restorePage);
+    } else {
+      _resetScrollSegments();
     }
     // paged 模式由 NovelAnimatedPageView 内部管理页状态；
     // _contentVersion 变更会触发 widget 重建并使用 initialPage。
     if (mounted) setState(() {});
+  }
+
+  /// 重置滚动连排缓冲为「当前章单段」。
+  ///
+  /// 章节内容替换（切章 / 本地解析完成 / 偏好重排）后调用，保证缓冲与
+  /// [_paragraphs] 同源；后续滚到段末再按需追加下一章。
+  void _resetScrollSegments() {
+    _scrollSegments.clear();
+    _scrollSegStarts
+      ..clear()
+      ..add(0);
+    _scrollAppending = false;
+    _scrollAppendFailedFor = -1;
+    _scrollAppendFailedAt = null;
+    if (!_prefs.pageAnimation.isScroll) return;
+    final chs = _effectiveChapters;
+    if (chs.isEmpty || _paragraphs.isEmpty) return;
+    final int idx = _chapterIndex.clamp(0, chs.length - 1);
+    final String title = chs[idx].title;
+    _scrollSegments.add(
+      _NovelScrollSegment(
+        chapterIndex: idx,
+        title: title,
+        blocks: _paragraphs,
+        rawBlocks: _rawParagraphs,
+        showTitle: _prefs.showChapterTitleInBody && title.isNotEmpty,
+      ),
+    );
+    _rebuildScrollStarts();
+  }
+
+  /// 重建各段在扁平列表中的起始下标（末项 = 总项数）。
+  void _rebuildScrollStarts() {
+    _scrollSegStarts
+      ..clear()
+      ..add(0);
+    for (final seg in _scrollSegments) {
+      _scrollSegStarts.add(_scrollSegStarts.last + seg.itemCount);
+    }
+  }
+
+  _NovelScrollSegment? _segmentByChapter(int chapterIndex) {
+    for (final seg in _scrollSegments) {
+      if (seg.chapterIndex == chapterIndex) return seg;
+    }
+    return null;
+  }
+
+  /// 段首在滚动坐标系（内容坐标，不随滚动变化）中的位置。
+  double? _segmentTopPixels(_NovelScrollSegment seg, ScrollPosition pos) {
+    final BuildContext? ctx = seg.anchorKey.currentContext;
+    final RenderObject? ro = ctx?.findRenderObject();
+    if (ro is RenderBox && ro.attached && ro.hasSize) {
+      final double top = pos.pixels + ro.localToGlobal(Offset.zero).dy;
+      seg.lastTopPixels = top;
+      return top;
+    }
+    // 段首项被列表回收（滚出缓存区）时用最近一次测量值兜底。
+    return seg.lastTopPixels;
+  }
+
+  /// 段高（像素）：相邻段段首差分；末段用内容总高推算。
+  double? _segmentHeight(_NovelScrollSegment seg, ScrollPosition pos) {
+    final double? top = _segmentTopPixels(seg, pos);
+    if (top == null) return null;
+    final _NovelScrollSegment? next = _segmentByChapter(seg.chapterIndex + 1);
+    if (next != null) {
+      final double? nextTop = _segmentTopPixels(next, pos);
+      if (nextTop != null && nextTop > top) return nextTop - top;
+      // 下一段刚追加、尚未完成首帧测量：此刻无法确定本章高度。
+      // 绝不能退回「内容总高 - 段首」（会把下一章高度算进本章，导致
+      // 章内比例被严重低估、进度被写错）；交给调用方沿用上一次比例。
+      return null;
+    }
+    // 真·末段：用内容总高推算。
+    final double contentH = pos.maxScrollExtent + pos.viewportDimension;
+    final double h = contentH - top;
+    return h > 0 ? h : null;
+  }
+
+  /// 视口顶部所在章段（「主导章」）。
+  int? _dominantScrollChapter(ScrollPosition pos) {
+    int? best;
+    for (final seg in _scrollSegments) {
+      final double? top = _segmentTopPixels(seg, pos);
+      if (top == null) continue;
+      if (top <= pos.pixels + _kScrollChapterAnchorSlack) {
+        best = seg.chapterIndex;
+      }
+    }
+    return best;
+  }
+
+  /// 章内滚动比例（0..1）。
+  ///
+  /// 单段时等价于原始的「offset / maxScrollExtent」；连排多段时按段内
+  /// 位置换算，保证底部进度条与阅读位置仍是「本章进度」而非整条缓冲的
+  /// 比例（跨章后归零，符合直觉）。
+  ///
+  /// [chapterIndex] 可显式指定要换算的章（默认当前章）：主导章切换的
+  /// 瞬间需要「按新章」先算出比例再去改状态。无法测量时沿用上一次比例，
+  /// 避免用整条缓冲的全局比例把章内进度写小。
+  double _chapterScrollRatio(ScrollPosition pos, {int? chapterIndex}) {
+    final int target = chapterIndex ?? _chapterIndex;
+    if (_scrollSegments.length <= 1) {
+      final double max = pos.maxScrollExtent;
+      return max > 0 ? (pos.pixels / max).clamp(0.0, 1.0) : 0.0;
+    }
+    final _NovelScrollSegment? seg = _segmentByChapter(target);
+    if (seg == null) return _scrollFraction;
+    final double? top = _segmentTopPixels(seg, pos);
+    final double? height = _segmentHeight(seg, pos);
+    if (top == null || height == null || height <= 0) return _scrollFraction;
+    return ((pos.pixels - top) / height).clamp(0.0, 1.0);
+  }
+
+  /// 临近段末时追加下一章（提前约一屏半准备，接缝处不空窗）。
+  void _maybeAppendNextSegment(ScrollPosition pos) {
+    if (!_scrollAutoNextEnabled || _scrollAppending) return;
+    if (_scrollSegments.isEmpty) return;
+    if (!pos.hasContentDimensions || !pos.hasViewportDimension) return;
+    final chs = _effectiveChapters;
+    final int last = _scrollSegments.last.chapterIndex;
+    if (last >= chs.length - 1) return;
+    if (_segmentByChapter(last + 1) != null) return;
+    // 失败退避：同一章 10 秒内不重复自动请求（重试入口由尾部提示提供）。
+    if (_scrollAppendFailedFor == last + 1) {
+      final DateTime? at = _scrollAppendFailedAt;
+      if (at == null ||
+          DateTime.now().difference(at) < const Duration(seconds: 10)) {
+        return;
+      }
+    }
+    final double remain = pos.maxScrollExtent - pos.pixels;
+    if (remain > pos.viewportDimension * 1.5) return;
+    unawaited(_appendNextScrollSegment());
+  }
+
+  /// 抓取并追加下一章为新的滚动段（列表尾部增长，不扰动当前位置）。
+  Future<void> _appendNextScrollSegment() async {
+    if (_scrollAppending) return;
+    if (!_scrollAutoNextEnabled || _scrollSegments.isEmpty) return;
+    final chs = _effectiveChapters;
+    final int next = _scrollSegments.last.chapterIndex + 1;
+    if (next >= chs.length) return;
+    if (_segmentByChapter(next) != null) return;
+    _scrollAppending = true;
+    if (mounted) setState(() {});
+    try {
+      final List<NovelBlock>? blocks = await _blocksForChapterIndex(next);
+      if (blocks == null || !mounted) return;
+      final List<NovelBlock> effective =
+          await _applyContentEditOverride(chs[next].id, blocks);
+      if (!mounted) return;
+      final String title = chs[next].title;
+      setState(() {
+        _scrollSegments.add(
+          _NovelScrollSegment(
+            chapterIndex: next,
+            title: title,
+            blocks: _applyConvert(effective),
+            rawBlocks: effective,
+            showTitle: _prefs.showChapterTitleInBody && title.isNotEmpty,
+          ),
+        );
+        _rebuildScrollStarts();
+        _scrollAppendFailedFor = -1;
+        _scrollAppendFailedAt = null;
+      });
+    } on Object catch (e) {
+      // 追加失败不影响当前章阅读：不弹错，尾部提示提供重试入口。
+      _scrollAppendFailedFor = next;
+      _scrollAppendFailedAt = DateTime.now();
+      AppLog.instance.w('[小说连排] 追加第 ${next + 1} 章失败: $e');
+    } finally {
+      _scrollAppending = false;
+      if (mounted) setState(() {});
+    }
+  }
+
+  /// 取指定章节的正文块（不改变当前阅读状态）。
+  Future<List<NovelBlock>?> _blocksForChapterIndex(int index) async {
+    final chs = _effectiveChapters;
+    if (index < 0 || index >= chs.length) return null;
+    final Episode ep = chs[index];
+    if (_isLocalMode) return _localBlocksForChapter(index);
+    final source = _repo.getById(widget.sourceId);
+    if (source == null) return null;
+    final List<NovelBlock>? cached =
+        await _preDownloader.cached(widget.novelId, ep.id);
+    if (cached != null) return cached;
+    return _service.fetchNovelContent(
+      source,
+      novelId: widget.novelId,
+      chapterUrl: ep.url,
+    );
+  }
+
+  /// 本地模式取指定章节的正文块（纯内存切片）。
+  ///
+  /// 覆盖「聚合模式 EPUB/TXT 内部章节」与「单文件 EPUB/TXT 逐章切片」；
+  /// 聚合 collapsed 模式（每文件一章、文件未解析缓存）返回 null，即该
+  /// 形态下不参与连排（需要读盘解析，留给显式翻章）。
+  List<NovelBlock>? _localBlocksForChapter(int index) {
+    final chs = _effectiveChapters;
+    if (index < 0 || index >= chs.length) return null;
+    final Episode ep = chs[index];
+    // 聚合模式 EPUB 内部章节：整本已缓存，直接切片。
+    final int sep = ep.id.indexOf('|');
+    if (sep >= 0) {
+      final LocalNovelBook? book = _aggEpubBooks[ep.id.substring(0, sep)];
+      final int ci = int.tryParse(ep.id.substring(sep + 1)) ?? 0;
+      if (book == null || book.chapters.isEmpty) return null;
+      final LocalNovelChapter ch =
+          book.chapters[ci.clamp(0, book.chapters.length - 1)];
+      return <NovelBlock>[
+        if (ch.title.isNotEmpty) NovelTextBlock(ch.title, isHeading: true),
+        for (final p in ch.content)
+          if (p.trim().isNotEmpty) NovelTextBlock(p),
+      ];
+    }
+    // 聚合模式 TXT 内部章节：整本已缓存，按路由切片。
+    final (String, int)? meta = _aggTxtEpisodeMeta[ep.id];
+    if (meta != null) {
+      final LocalNovelBook? book = _aggTxtBooks[meta.$1];
+      if (book == null || book.chapters.isEmpty) return null;
+      final int ci = meta.$2;
+      if (ci < 0) {
+        return <NovelBlock>[
+          for (final ch in book.chapters) ...<NovelBlock>[
+            if (ch.title.isNotEmpty)
+              NovelTextBlock(ch.title, isHeading: true),
+            for (final p in ch.content)
+              if (p.trim().isNotEmpty) _localBlockFromLine(p),
+          ],
+        ];
+      }
+      final LocalNovelChapter ch =
+          book.chapters[ci.clamp(0, book.chapters.length - 1)];
+      return <NovelBlock>[
+        if (ch.title.isNotEmpty) NovelTextBlock(ch.title, isHeading: true),
+        for (final p in ch.content)
+          if (p.trim().isNotEmpty) _localBlockFromLine(p),
+      ];
+    }
+    // 单文件（EPUB / TXT）：解析结果已在内存，按章切片。
+    final List<LocalNovelChapter>? parsed = _localParsedChapters;
+    if (parsed == null || parsed.isEmpty) return null;
+    final LocalNovelChapter ch =
+        parsed[index.clamp(0, parsed.length - 1)];
+    return <NovelBlock>[
+      if (ch.title.isNotEmpty) NovelTextBlock(ch.title, isHeading: true),
+      for (final p in ch.content)
+        if (p.trim().isNotEmpty) _localBlockFromLine(p),
+    ];
+  }
+
+  /// 本地正文行 → 块（下载器占位行还原为本地插图）。
+  NovelBlock _localBlockFromLine(String line) {
+    if (line.startsWith(kNexhubImgMarker)) {
+      final String url = line.substring(kNexhubImgMarker.length).trim();
+      if (url.isNotEmpty) return NovelImageBlock(url, source: _source);
+    }
+    return NovelTextBlock(line);
+  }
+
+  /// 滚动停稳后把「主导章」同步为当前章（选区 / 进度 / 预下载跟随）。
+  ///
+  /// 只在滚动结束触发，避免滚动过程中 setState 重建整棵阅读器（掉帧），
+  /// 也避免分页在滚动中被同步重算。
+  void _settleScrollChapter() {
+    if (!mounted || !_scrollAutoNextEnabled) return;
+    if (_scrollSegments.length <= 1) return;
+    // 朗读中不切主导章：TTS 内部段落索引与朗读进度仍按启动时的章节维护，
+    // 此时切换会让高亮 / 跳转索引错位（章末续读由 TTS 自己的回调处理）。
+    if (_tts.state != NovelTtsState.stopped) return;
+    final sc = _scrollController;
+    if (sc == null || !sc.hasClients) return;
+    final int? idx = _dominantScrollChapter(sc.position);
+    if (idx == null || idx == _chapterIndex) return;
+    final _NovelScrollSegment? seg = _segmentByChapter(idx);
+    if (seg == null) return;
+    // 先按「新章」算出段内比例，切章瞬间进度条不归零（否则表现为
+    // 「翻回上一章进度恒为 0%」）。
+    final double ratio = _chapterScrollRatio(sc.position, chapterIndex: idx);
+    setState(() {
+      _chapterIndex = idx;
+      _paragraphs = seg.blocks;
+      _rawParagraphs = seg.rawBlocks;
+      // 分页随章变化，交给 LayoutBuilder 用新正文重算。
+      _pagination = null;
+      _paginationSig = null;
+      _currentPage = 0;
+      _scrollFraction = ratio;
+    });
+    _bindSelection();
+    unawaited(_reloadHighlightsForChapter());
+    _maybePreDownload();
+    _warmNextChapterCache();
+    // 分页就绪后再把「章内实际页码」算准并落盘 / 刷新进度条。
+    // 切章瞬间不写 page 0：那会把存档覆盖成本章首页，且与旧章页号错配
+    // （退出时 _persistProgressNow 会拿新章 + 旧页号写盘）。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final ScrollPosition? pos = _scrollController?.position;
+      if (pos == null) return;
+      if (_paginationChapterIndex != _chapterIndex) return;
+      final int total = _pagination?.pages.length ?? 0;
+      final double liveRatio = _chapterScrollRatio(pos);
+      final int page = total > 0
+          ? (liveRatio * (total - 1)).round().clamp(0, total - 1)
+          : 0;
+      final bool changed = page != _currentPage ||
+          (liveRatio - _scrollFraction).abs() > 0.005;
+      if (changed) {
+        setState(() {
+          _currentPage = page;
+          _scrollFraction = liveRatio;
+        });
+      }
+      // 章号已经变了，存档必须跟上（否则退出重进会回到上一章末尾）。
+      _saveProgress(page);
+    });
+  }
+
+  /// 连排列表尾项：加载下一章提示 / 全书读完提示。
+  Widget _buildScrollFooter(Color bg, Color textColor) {
+    final l10n = AppLocalizations.of(context);
+    final chs = _effectiveChapters;
+    final int last =
+        _scrollSegments.isEmpty ? -1 : _scrollSegments.last.chapterIndex;
+    final bool atEnd = last >= chs.length - 1;
+    final Widget child;
+    if (_scrollAppending) {
+      child = Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: <Widget>[
+          SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: _prefs.resolveTextColor(bg).withValues(alpha: 0.6),
+            ),
+          ),
+          const SizedBox(width: AppTokens.spaceSm),
+          Text(
+            l10n.novelScrollEndLoading,
+            style: Theme.of(context)
+                .textTheme
+                .bodySmall
+                ?.copyWith(color: _prefs.resolveTextColor(bg)),
+          ),
+        ],
+      );
+    } else if (_scrollAppendFailedFor == last + 1) {
+      // 下一章抓取失败：给出可点重试入口（失败不退避时不自动重发）。
+      child = TextButton.icon(
+        onPressed: () {
+          _scrollAppendFailedFor = -1;
+          _scrollAppendFailedAt = null;
+          unawaited(_appendNextScrollSegment());
+        },
+        icon: const Icon(Icons.refresh_rounded, size: 16),
+        label: Text(
+          l10n.novelScrollEndRetry,
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: _prefs.resolveTextColor(bg).withValues(alpha: 0.75),
+              ),
+        ),
+      );
+    } else if (atEnd && _scrollSegments.isNotEmpty) {
+      child = Text(
+        l10n.novelScrollEndOfBook,
+        style: Theme.of(context)
+            .textTheme
+            .bodySmall
+            ?.copyWith(color: _prefs.resolveTextColor(bg).withValues(alpha: 0.6)),
+      );
+    } else {
+      child = const SizedBox.shrink();
+    }
+    // 固定高度的占位，避免「加载中 ↔ 读完」切换时列表高度抖动。
+    return SizedBox(
+      height: 88,
+      child: Center(child: child),
+    );
   }
 
   /// scroll 模式滚动监听：记录阅读位置 + 更新 [_scrollFraction] 同步底部滑条。
@@ -3187,8 +3645,9 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     if (_restoringPage) return;
     final sc = _scrollController;
     if (sc == null || !sc.hasClients) return;
-    final max = sc.position.maxScrollExtent;
-    final frac = max > 0 ? (sc.offset / max).clamp(0.0, 1.0) : 0.0;
+    // 临近章末先把下一章追加进来（无缝连排）。
+    _maybeAppendNextSegment(sc.position);
+    final double frac = _chapterScrollRatio(sc.position);
     // 滚动模式此前完全不保存阅读位置（只有分页模式的 _onPageChanged 会存），
     // 退出重进永远回到第一页。这里把滚动比例换算成与分页模式同语义的
     // 「等效页码」后写盘，两种模式互相切换也不会错位。
@@ -3237,9 +3696,17 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
         return;
       }
       final double max = sc.position.maxScrollExtent;
-      final double target = page < 0 ? max : (page / (total - 1)) * max;
-      sc.jumpTo(target.clamp(0.0, max));
+      final double target =
+          (page < 0 ? max : (page / (total - 1)) * max).clamp(0.0, max);
+      sc.jumpTo(target);
       if (page >= 0) _currentPage = page;
+      // 同步进度条比例：恢复期间 [_onScrollChanged] 被封锁，不主动刷新的话
+      // 底部滑条会停在 0%（表现为「翻回上一章进度恒为 0」）。
+      if (mounted) {
+        setState(() {
+          _scrollFraction = max > 0 ? (target / max).clamp(0.0, 1.0) : 0.0;
+        });
+      }
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _restoringPage = false;
       });
@@ -4522,6 +4989,10 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     final convertChanged = next.chineseConvert != _prefs.chineseConvert;
     final autoPageChanged = next.autoPageInterval != _prefs.autoPageInterval;
     final volumeKeyChanged = next.volumeKeyPageTurn != _prefs.volumeKeyPageTurn;
+    // 章末自动接续开关切换：关掉后要把已经拼进列表的后续章段收回，
+    // 否则仍停留在「已接续」的位置却不再跟随主导章，选区/进度会错位。
+    final autoNextChanged =
+        next.scrollAutoNextChapter != _prefs.scrollAutoNextChapter;
     // 记录本次真正改动的字段为「本书单独设置」，未动过的字段继续跟随总设置。
     _overrideKeys.addAll(novelPrefsChangedKeys(_prefs, next));
     _prefs = next;
@@ -4539,6 +5010,31 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       _contentVersion++;
       _setupControllers(restorePage: _currentPage);
     } else {
+      if (autoNextChanged && _prefs.pageAnimation.isScroll) {
+        // 收回已追加的后续章段：按「当前章内比例」把视图恢复到同一处，
+        // 并在恢复期间封锁进度写盘——否则 jumpTo 会先把页码记成 0，
+        // 表现为「一切换开关进度就丢了」。
+        final ScrollController? sc = _scrollController;
+        final double ratio = (sc != null && sc.hasClients)
+            ? _chapterScrollRatio(sc.position)
+            : _scrollFraction;
+        _resetScrollSegments();
+        _restoringPage = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) {
+            _restoringPage = false;
+            return;
+          }
+          final ScrollController? sc2 = _scrollController;
+          if (sc2 != null && sc2.hasClients) {
+            final double max = sc2.position.maxScrollExtent;
+            sc2.jumpTo((ratio * max).clamp(0.0, max));
+          }
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _restoringPage = false;
+          });
+        });
+      }
       if (mounted) setState(() {});
     }
     if (autoPageChanged) {
@@ -5368,15 +5864,15 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     final sc = _scrollController;
     if (sc == null) return const SizedBox.shrink();
 
-    final scrollChapters = _effectiveChapters;
-    final String scrollChapterTitle = scrollChapters.isEmpty
-        ? ''
-        : scrollChapters[_chapterIndex.clamp(0, scrollChapters.length - 1)]
-            .title;
-    final bool showTitle =
-        _prefs.showChapterTitleInBody && scrollChapterTitle.isNotEmpty;
-    // 显示标题时列表首项为标题，其后为图文块。
-    final int itemCount = _paragraphs.length + (showTitle ? 1 : 0);
+    // 连排缓冲为空（非滚动模式 / 章节尚未就绪）时回退到「当前章单段」，
+    // 避免渲染空列表。
+    if (_scrollSegments.isEmpty) _resetScrollSegments();
+    final List<_NovelScrollSegment> segments = _scrollSegments;
+    if (_scrollSegStarts.length != segments.length + 1) {
+      _rebuildScrollStarts();
+    }
+    // 列表项 = 所有段的正文项 + 尾部提示项（加载下一章 / 全书读完）。
+    final int itemCount = _scrollSegStarts.last + 1;
 
     return GestureDetector(
       // 滚动模式：点按空白处收起选区工具条或切换控制面板。
@@ -5397,156 +5893,200 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
           _toggleUi();
         }
       },
-      child: ListView.builder(
-        controller: sc,
-        padding: EdgeInsets.symmetric(
-          horizontal: _prefs.margin,
-          vertical: _prefs.margin,
-        ),
-        // 预构建视口外一段内容，滚动/插图撑高时减少白屏与掉帧。
-        scrollCacheExtent: ScrollCacheExtent.pixels(600),
-        itemCount: itemCount,
-        itemBuilder: (BuildContext ctx, int i) {
-          if (showTitle && i == 0) {
-            return _buildChapterTitleWidget(
-              _prefs,
-              scrollChapterTitle,
-              widget.title,
-            );
-          }
-          final int idx = showTitle ? i - 1 : i;
-          final block = _paragraphs[idx];
-          // 插图块：滚动模式图文混排，固定比例缩略显示，点开看大图。
-          // banner 模式铺满整行（按源 style 或全宽，高度自适应）；
-          // card 模式按正文宽 72% 卡片式缩列 + [scrollImageAlign] 水平对齐。
-          if (block is NovelImageBlock) {
-            final double bodyW =
-                MediaQuery.of(ctx).size.width - _prefs.margin * 2;
-            // banner 模式自适应完整显示（按图片真实宽高比撑高，
-            // 加载前以 2:1 占位）；card 模式按正文宽 72% 卡片式缩列 +
-            // [scrollImageAlign] 水平对齐。两种模式均不再裁切。
-            final bool card =
-                _prefs.scrollImageMode == NovelScrollImageMode.card;
-            final Widget image = card
-                ? SourceImage(
-                    url: block.url,
-                    source: block.source ?? _source,
-                    width: bodyW * 0.72,
-                    fit: BoxFit.fitWidth,
-                    radius: 8,
-                  )
-                : _AdaptiveScrollImage(
-                    url: block.url,
-                    source: block.source ?? _source,
-                    width: bodyW,
-                  );
-            final Widget aligned = card
-                ? Align(
-                    alignment: switch (_prefs.scrollImageAlign) {
-                      NovelScrollImageAlign.left => Alignment.centerLeft,
-                      NovelScrollImageAlign.right => Alignment.centerRight,
-                      NovelScrollImageAlign.center => Alignment.center,
-                    },
-                    child: image,
-                  )
-                : image;
-            return Padding(
-              padding: EdgeInsets.only(bottom: _prefs.paragraphSpacing),
-              child: GestureDetector(
-                onTap: () =>
-                    _showImageViewer(block.url, block.source ?? _source),
-                child: aligned,
-              ),
-            );
-          }
-          final String text = block is NovelTextBlock ? block.text : '';
-          // 章节标题块：居中 + 大字号 + 加粗 + 加大上下间距，让滚动浏览时
-          // 一眼能看到「第N章」的章节分界（本地 EPUB 修复）。
-          final isHeading = block is NovelTextBlock && block.isHeading;
-          final baseStyle = _prefs.resolveBodyTextStyle(textColor);
-          final headingStyle = isHeading
-              ? baseStyle.copyWith(
-                  fontSize: (baseStyle.fontSize ?? 16) * 1.4,
-                  fontWeight: FontWeight.w700,
-                  height: 1.5,
-                )
-              : baseStyle;
-          final Widget bodyText = _buildHighlightedBodyText(
-            text,
-            baseStyle,
-            headingStyle,
-            isHeading,
-          );
-          // 滚动模式选区：非 TTS 态文本块包长按手势，复用与分页同源的
-          // 章节全局字符偏移坐标系（[NovelSelectionController.setBlocks]）。
-          // 块为整段多行文本，Phase 4 长按直接选整块（精确折行 x 命中留待后续），
-          // 拖拽扩选由工具条「整段」按钮覆盖（与分页行内限制一致）。
-          // TTS 态：当前朗读段高亮强调 + 点按段落跳转朗读 +
-          // 自动滚动跟随（段挂 key，_onTtsChanged 帧后 ensureVisible）。
-          final Widget wrapped;
-          if (_ttsActiveForBody()) {
-            final bool isCurrent = idx == _tts.currentIndex;
-            final Widget text = isCurrent
-                ? Container(
-                    decoration: BoxDecoration(
-                      color:
-                          _prefs.resolveTextColor(bg).withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(AppTokens.radiusXs),
-                    ),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                    child: bodyText,
-                  )
-                : bodyText;
-            final Widget tappable = GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              excludeFromSemantics: true,
-              onTap: () => _onParagraphTapped(idx),
-              child: isCurrent
-                  ? KeyedSubtree(key: _ttsParagraphKey, child: text)
-                  : text,
-            );
-            wrapped = tappable;
-          } else {
-            // 滚动模式选区：长按手势识别器必须「稳定」，不能包在监听 selectionController
-            // 的 AnimatedBuilder 内——否则 setSelection 触发的 notifyListeners 会重建
-            // RawGestureDetector、新建识别器，进行中的长按被打断（表现为「长按闪一下」）。
-            // 这里把识别器放在外层（StatefulWidget 稳定持有识别器实例），仅内层文本随
-            // 选区变化重建。
-            final Widget selected = _StableLongPressDetector(
-              onLongPressStart: (_) => _onSelLongPressStartScroll(idx, text),
-              onLongPressEnd: _onSelLongPressEndScroll,
-              child: AnimatedBuilder(
-                animation: _selectionController,
-                builder: (ctx, _) {
-                  final spans = _selectionController.blockSpans(
-                    _paragraphs,
-                    idx,
-                    text,
-                  );
-                  return spans.isEmpty
-                      ? bodyText
-                      : buildSelectionRichText(
-                          text,
-                          isHeading ? headingStyle : baseStyle,
-                          spans,
-                          softWrap: true,
-                        );
-                },
-              ),
-            );
-            wrapped = selected;
-          }
-          return Padding(
-            padding: EdgeInsets.only(
-              top: isHeading ? _prefs.paragraphSpacing * 2 : 0,
-              bottom: isHeading
-                  ? _prefs.paragraphSpacing * 2
-                  : _prefs.paragraphSpacing,
-            ),
-            child: wrapped,
-          );
+      child: NotificationListener<ScrollEndNotification>(
+        // 滚动停稳后再结算「主导章」：滚动中切章会重建整棵阅读器并同步
+        // 重算分页，必然掉帧，因此只在停稳时做一次。
+        onNotification: (ScrollEndNotification n) {
+          _settleScrollChapter();
+          return false;
         },
+        child: ListView.builder(
+          controller: sc,
+          padding: EdgeInsets.symmetric(
+            horizontal: _prefs.margin,
+            vertical: _prefs.margin,
+          ),
+          // 预构建视口外一段内容，滚动/插图撑高时减少白屏与掉帧。
+          scrollCacheExtent: ScrollCacheExtent.pixels(600),
+          itemCount: itemCount,
+          itemBuilder: (BuildContext ctx, int i) {
+            // 尾部提示项（加载中 / 全书读完）。
+            if (i >= _scrollSegStarts.last) {
+              return _buildScrollFooter(bg, textColor);
+            }
+            // 定位所在段与段内偏移。
+            int si = 0;
+            while (si + 1 < segments.length &&
+                _scrollSegStarts[si + 1] <= i) {
+              si++;
+            }
+            final _NovelScrollSegment seg = segments[si];
+            final int local = i - _scrollSegStarts[si];
+            final bool showTitle = seg.showTitle && seg.blocks.isNotEmpty;
+            // 只有「主导章」（当前章）参与选区 / 朗读高亮 / 章内搜索，
+            // 其余段按普通正文渲染，避免跨章索引错位。
+            final bool isActive = seg.chapterIndex == _chapterIndex;
+            if (showTitle && local == 0) {
+              return KeyedSubtree(
+                key: seg.anchorKey,
+                child: _buildChapterTitleWidget(
+                  _prefs,
+                  seg.title,
+                  widget.title,
+                ),
+              );
+            }
+            final int idx = showTitle ? local - 1 : local;
+            if (idx < 0 || idx >= seg.blocks.length) {
+              return const SizedBox.shrink();
+            }
+            final block = seg.blocks[idx];
+            // 段首落在首个正文块（不显示章标题时）也需挂锚点，
+            // 供滚动位置判定复用。
+            final Key? anchorKey =
+                (!showTitle && local == 0) ? seg.anchorKey : null;
+            // 插图块：滚动模式图文混排，固定比例缩略显示，点开看大图。
+            // banner 模式铺满整行（按源 style 或全宽，高度自适应）；
+            // card 模式按正文宽 72% 卡片式缩列 + [scrollImageAlign] 水平对齐。
+            if (block is NovelImageBlock) {
+              final double bodyW =
+                  MediaQuery.of(ctx).size.width - _prefs.margin * 2;
+              // banner 模式自适应完整显示（按图片真实宽高比撑高，
+              // 加载前以 2:1 占位）；card 模式按正文宽 72% 卡片式缩列 +
+              // [scrollImageAlign] 水平对齐。两种模式均不再裁切。
+              final bool card =
+                  _prefs.scrollImageMode == NovelScrollImageMode.card;
+              final Widget image = card
+                  ? SourceImage(
+                      url: block.url,
+                      source: block.source ?? _source,
+                      width: bodyW * 0.72,
+                      fit: BoxFit.fitWidth,
+                      radius: 8,
+                    )
+                  : _AdaptiveScrollImage(
+                      url: block.url,
+                      source: block.source ?? _source,
+                      width: bodyW,
+                    );
+              final Widget aligned = card
+                  ? Align(
+                      alignment: switch (_prefs.scrollImageAlign) {
+                        NovelScrollImageAlign.left => Alignment.centerLeft,
+                        NovelScrollImageAlign.right => Alignment.centerRight,
+                        NovelScrollImageAlign.center => Alignment.center,
+                      },
+                      child: image,
+                    )
+                  : image;
+              final Widget imageItem = Padding(
+                padding: EdgeInsets.only(bottom: _prefs.paragraphSpacing),
+                child: GestureDetector(
+                  onTap: () =>
+                      _showImageViewer(block.url, block.source ?? _source),
+                  child: aligned,
+                ),
+              );
+              return anchorKey == null
+                  ? imageItem
+                  : KeyedSubtree(key: anchorKey, child: imageItem);
+            }
+            final String text = block is NovelTextBlock ? block.text : '';
+            // 章节标题块：居中 + 大字号 + 加粗 + 加大上下间距，让滚动浏览时
+            // 一眼能看到「第N章」的章节分界（本地 EPUB 修复）。
+            final isHeading = block is NovelTextBlock && block.isHeading;
+            final baseStyle = _prefs.resolveBodyTextStyle(textColor);
+            final headingStyle = isHeading
+                ? baseStyle.copyWith(
+                    fontSize: (baseStyle.fontSize ?? 16) * 1.4,
+                    fontWeight: FontWeight.w700,
+                    height: 1.5,
+                  )
+                : baseStyle;
+            final Widget bodyText = _buildHighlightedBodyText(
+              text,
+              baseStyle,
+              headingStyle,
+              isHeading,
+            );
+            // 滚动模式选区：非 TTS 态文本块包长按手势，复用与分页同源的
+            // 章节全局字符偏移坐标系（[NovelSelectionController.setBlocks]）。
+            // 块为整段多行文本，Phase 4 长按直接选整块（精确折行 x 命中留待后续），
+            // 拖拽扩选由工具条「整段」按钮覆盖（与分页行内限制一致）。
+            // TTS 态：当前朗读段高亮强调 + 点按段落跳转朗读 +
+            // 自动滚动跟随（段挂 key，_onTtsChanged 帧后 ensureVisible）。
+            final Widget wrapped;
+            if (isActive && _ttsActiveForBody()) {
+              final bool isCurrent = idx == _tts.currentIndex;
+              final Widget textWidget = isCurrent
+                  ? Container(
+                      decoration: BoxDecoration(
+                        color:
+                            _prefs.resolveTextColor(bg).withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(AppTokens.radiusXs),
+                      ),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 4, vertical: 2),
+                      child: bodyText,
+                    )
+                  : bodyText;
+              final Widget tappable = GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                excludeFromSemantics: true,
+                onTap: () => _onParagraphTapped(idx),
+                child: isCurrent
+                    ? KeyedSubtree(key: _ttsParagraphKey, child: textWidget)
+                    : textWidget,
+              );
+              wrapped = tappable;
+            } else if (isActive) {
+              // 滚动模式选区：长按手势识别器必须「稳定」，不能包在监听
+              // selectionController 的 AnimatedBuilder 内——否则 setSelection
+              // 触发的 notifyListeners 会重建 RawGestureDetector、新建识别器，
+              // 进行中的长按被打断（表现为「长按闪一下」）。这里把识别器放在
+              // 外层（StatefulWidget 稳定持有识别器实例），仅内层文本随选区
+              // 变化重建。
+              final Widget selected = _StableLongPressDetector(
+                onLongPressStart: (_) => _onSelLongPressStartScroll(idx, text),
+                onLongPressEnd: _onSelLongPressEndScroll,
+                child: AnimatedBuilder(
+                  animation: _selectionController,
+                  builder: (ctx, _) {
+                    final spans = _selectionController.blockSpans(
+                      _paragraphs,
+                      idx,
+                      text,
+                    );
+                    return spans.isEmpty
+                        ? bodyText
+                        : buildSelectionRichText(
+                            text,
+                            isHeading ? headingStyle : baseStyle,
+                            spans,
+                            softWrap: true,
+                          );
+                  },
+                ),
+              );
+              wrapped = selected;
+            } else {
+              // 非主导段：纯文本渲染（选区 / 朗读 / 章内搜索都只对当前章有效）。
+              wrapped = bodyText;
+            }
+            final Widget content = Padding(
+              padding: EdgeInsets.only(
+                top: isHeading ? _prefs.paragraphSpacing * 2 : 0,
+                bottom: isHeading
+                    ? _prefs.paragraphSpacing * 2
+                    : _prefs.paragraphSpacing,
+              ),
+              child: wrapped,
+            );
+            return anchorKey == null
+                ? content
+                : KeyedSubtree(key: anchorKey, child: content);
+          },
+        ),
       ),
     );
   }
@@ -6096,12 +6636,26 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   }
 
   /// scroll 模式：按拖动比例跳转到对应滚动位置。
+  ///
+  /// 连排多段时 [fraction] 是「本章内比例」，按段首 + 段高换算成绝对像素，
+  /// 保证拖动进度条只在当前章内跳转（与原单章语义一致）。
   void _onSeekScroll(double fraction) {
     final sc = _scrollController;
     if (sc == null || !sc.hasClients) return;
-    final max = sc.position.maxScrollExtent;
+    final ScrollPosition pos = sc.position;
+    double target = fraction * pos.maxScrollExtent;
+    if (_scrollSegments.length > 1) {
+      final _NovelScrollSegment? seg = _segmentByChapter(_chapterIndex);
+      if (seg != null) {
+        final double? top = _segmentTopPixels(seg, pos);
+        final double? height = _segmentHeight(seg, pos);
+        if (top != null && height != null && height > 0) {
+          target = top + fraction * height;
+        }
+      }
+    }
     sc.animateTo(
-      (fraction * max).clamp(0.0, max),
+      target.clamp(0.0, pos.maxScrollExtent),
       duration: AppTokens.durFast,
       curve: Curves.easeInOut,
     );
@@ -7220,6 +7774,49 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
 }
 
 /// 居中的提示信息（错误 / 空）。
+
+/// 滚动模式「无缝连排」的单个章节段。
+///
+/// 一个段承载一章的正文块与排版元信息，多个段按章节升序拼在同一条
+/// [ListView] 里，形成「滚到底即可继续读下一章」的连续正文。
+class _NovelScrollSegment {
+  _NovelScrollSegment({
+    required this.chapterIndex,
+    required this.title,
+    required this.blocks,
+    required this.rawBlocks,
+    required this.showTitle,
+  });
+
+  /// 章节目录下标（[_NovelReaderScreenState._effectiveChapters] 的下标）。
+  final int chapterIndex;
+
+  /// 章节标题（段首标题项 / 页脚显示）。
+  final String title;
+
+  /// 已应用净化规则与繁简转换的正文块（渲染用）。
+  final List<NovelBlock> blocks;
+
+  /// 抓取到的原始正文块（切回该章时回填 `_rawParagraphs`，供重新转换）。
+  final List<NovelBlock> rawBlocks;
+
+  /// 是否在段首渲染章节大标题。
+  final bool showTitle;
+
+  /// 段首锚点：用于按视口位置判定「当前主导章」与段内滚动比例。
+  ///
+  /// 首项为标题项；不显示标题时挂在第一个正文块上。
+  final GlobalKey anchorKey = GlobalKey();
+
+  /// 最近一次测量到的段首内容坐标（= 滚动像素 + 视口 dy）。
+  ///
+  /// 内容坐标不随滚动变化，因此列表把段首项回收（RenderObject 失联）后
+  /// 仍可用它判定段位置；仅在图片加载等导致段高变化时轻微失真，下一次
+  /// 测量即修正。
+  double? lastTopPixels;
+
+  int get itemCount => blocks.length + (showTitle ? 1 : 0);
+}
 
 /// 阅读速览面板：模式切换（离线/云端）+ 章节内容摘要 + 云端 API 设置 +
 /// 阅读数据统计（折叠于底部）。独立 StatefulWidget 便于管理输入框与生成态。
@@ -8646,6 +9243,10 @@ const List<String> _kNovelSecTypographyTerms = <String>[
   '下划线样式',
   '波浪线',
   '自然',
+  '接续',
+  '下一章',
+  '连排',
+  '章末',
 ];
 const List<String> _kNovelSecTitleTerms = <String>[
   '章节标题',
@@ -9449,6 +10050,19 @@ class _NovelInlineSettings extends StatelessWidget {
                                 scrollImageAlign: NovelScrollImageAlign.right)),
                           ),
                         ],
+                      ),
+                      // 章末自动接续：滚动模式滚到章末无缝拼接下一章正文。
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(l10n.novelScrollAutoNextChapter),
+                        subtitle: Text(l10n.novelScrollAutoNextChapterHint),
+                        value: prefs.scrollAutoNextChapter,
+                        onChanged: (v) {
+                          v == true
+                              ? AppHaptics.toggleOn()
+                              : AppHaptics.toggleOff();
+                          onChanged(prefs.copyWith(scrollAutoNextChapter: v));
+                        },
                       ),
                     ],
                   ),

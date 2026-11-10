@@ -5923,6 +5923,21 @@ class AppLocalizationsZh extends AppLocalizations {
   String get novelScrollImageAlignRight => '靠右';
 
   @override
+  String get novelScrollAutoNextChapter => '章末自动接续下一章';
+
+  @override
+  String get novelScrollAutoNextChapterHint => '滚动模式滚到章末时，自动把下一章正文接在下方，可一路连续阅读';
+
+  @override
+  String get novelScrollEndLoading => '正在接续下一章…';
+
+  @override
+  String get novelScrollEndOfBook => '已读完最后一章';
+
+  @override
+  String get novelScrollEndRetry => '下一章载入失败，点击重试';
+
+  @override
   String get novelUnderlineThickness => '下划线线宽';
 
   @override

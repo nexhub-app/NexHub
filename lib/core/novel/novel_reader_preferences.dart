@@ -473,6 +473,14 @@ class NovelReaderPreferences {
   /// 滚动模式插图水平对齐（card 模式生效）。
   final NovelScrollImageAlign scrollImageAlign;
 
+  // ─────────────── 滚动模式章末接续 ───────────────
+  /// 滚动模式章末自动接续下一章（无缝连排）。
+  ///
+  /// 开启后滚动到章末会把下一章正文直接接在当前章下方，读者可一路向下
+  /// 滚动跨章，无需手动翻章；关闭则停在章末（便于看目录/评论）。
+  /// 仅作用于滚动模式，翻页模式不受影响。
+  final bool scrollAutoNextChapter;
+
   const NovelReaderPreferences({
     this.fontSize = 18.0,
     this.lineHeight = 1.8,
@@ -553,6 +561,7 @@ class NovelReaderPreferences {
     // 滚动模式图文增强
     this.scrollImageMode = NovelScrollImageMode.banner,
     this.scrollImageAlign = NovelScrollImageAlign.center,
+    this.scrollAutoNextChapter = true,
   });
 
   NovelReaderPreferences copyWith({
@@ -631,6 +640,8 @@ class NovelReaderPreferences {
     // 滚动模式图文增强
     NovelScrollImageMode? scrollImageMode,
     NovelScrollImageAlign? scrollImageAlign,
+    // 滚动模式章末接续
+    bool? scrollAutoNextChapter,
   }) {
     return NovelReaderPreferences(
       fontSize: fontSize ?? this.fontSize,
@@ -735,6 +746,9 @@ class NovelReaderPreferences {
       // 滚动模式图文增强
       scrollImageMode: scrollImageMode ?? this.scrollImageMode,
       scrollImageAlign: scrollImageAlign ?? this.scrollImageAlign,
+      // 滚动模式章末接续
+      scrollAutoNextChapter:
+          scrollAutoNextChapter ?? this.scrollAutoNextChapter,
     );
   }
 
@@ -937,6 +951,11 @@ class NovelReaderPreferences {
       scrollImageAlign: identical(scrollImageAlign, def.scrollImageAlign)
           ? base.scrollImageAlign
           : scrollImageAlign,
+      // 滚动模式章末接续
+      scrollAutoNextChapter: identical(
+              scrollAutoNextChapter, def.scrollAutoNextChapter)
+          ? base.scrollAutoNextChapter
+          : scrollAutoNextChapter,
     );
   }
 
@@ -1203,6 +1222,7 @@ class NovelReaderPreferences {
         // 滚动模式图文增强
         'scrollImageMode': scrollImageMode.name,
         'scrollImageAlign': scrollImageAlign.name,
+        'scrollAutoNextChapter': scrollAutoNextChapter,
       };
 
   /// 从 JSON 反序列化。
@@ -1305,6 +1325,7 @@ class NovelReaderPreferences {
           json['scrollImageMode'] as String?),
       scrollImageAlign: NovelScrollImageAlign.fromString(
           json['scrollImageAlign'] as String?),
+      scrollAutoNextChapter: json['scrollAutoNextChapter'] as bool? ?? true,
     );
   }
 }

@@ -11426,6 +11426,36 @@ abstract class AppLocalizations {
   /// **'Right'**
   String get novelScrollImageAlignRight;
 
+  /// No description provided for @novelScrollAutoNextChapter.
+  ///
+  /// In en, this message translates to:
+  /// **'Continue to next chapter'**
+  String get novelScrollAutoNextChapter;
+
+  /// No description provided for @novelScrollAutoNextChapterHint.
+  ///
+  /// In en, this message translates to:
+  /// **'In scroll mode, append the next chapter\'s text below the current one at the end, so you can keep reading continuously'**
+  String get novelScrollAutoNextChapterHint;
+
+  /// No description provided for @novelScrollEndLoading.
+  ///
+  /// In en, this message translates to:
+  /// **'Loading next chapter…'**
+  String get novelScrollEndLoading;
+
+  /// No description provided for @novelScrollEndOfBook.
+  ///
+  /// In en, this message translates to:
+  /// **'You have reached the last chapter'**
+  String get novelScrollEndOfBook;
+
+  /// No description provided for @novelScrollEndRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to load the next chapter, tap to retry'**
+  String get novelScrollEndRetry;
+
   /// No description provided for @novelUnderlineThickness.
   ///
   /// In en, this message translates to:
