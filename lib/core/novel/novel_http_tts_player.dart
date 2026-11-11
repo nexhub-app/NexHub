@@ -92,8 +92,11 @@ class NovelHttpTtsPlayer {
   /// 全部段落播完回调（自动续章 的触发点）。
   void Function()? onCompleted;
 
-  /// 当前句索引（调试 / UI 高亮）。
+  /// 当前朗读的**段落索引**（正文块索引，非句索引；阅读器据此推进高亮）。
   int currentIndex = 0;
+
+  /// 段落切换回调：朗读推进到新段落时通知上层（高亮 / 自动跟随滚动）。
+  void Function(int paragraphIndex)? onParagraphChanged;
 
   bool _cancelled = false;
 
@@ -138,7 +141,7 @@ class NovelHttpTtsPlayer {
     TtsVoiceResolver? voiceResolver,
   }) async {
     _cancelled = false;
-    currentIndex = 0;
+    currentIndex = startParagraphIndex;
     _consecutiveFailures = 0;
 
     // 1) 分句（本地角色 + 性别推断）。
@@ -210,7 +213,12 @@ class NovelHttpTtsPlayer {
         await Future<void>.delayed(const Duration(milliseconds: 120));
       }
       if (_cancelled) return;
-      currentIndex = i;
+      // 上报段落推进（同一段多句时不重复上报）。
+      final int paraIdx = units[i].paragraphIndex;
+      if (paraIdx != currentIndex) {
+        currentIndex = paraIdx;
+        onParagraphChanged?.call(paraIdx);
+      }
       final bytes = (await results[i].future).bytes;
       if (bytes == null) {
         _consecutiveFailures++;

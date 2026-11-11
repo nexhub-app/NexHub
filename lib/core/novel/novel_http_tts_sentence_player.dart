@@ -93,7 +93,10 @@ TtsSentencePlayer buildDefaultTtsSentencePlayer({
       final player = Player();
       control?.attach(player);
       try {
-        await player.open(Media(file.path));
+        // 先只加载、不自动播：让 mpv 把文件 demux 完、解码器与音频输出
+        // 通道就绪后再显式 play()。直接 open(play: true) 会在输出设备
+        // 就绪前推进播放时钟，听感上就是「每句开头被吞掉一小段」。
+        await player.open(Media(file.path), play: false);
         // 等待播放完成：轮询 position+state（无原生 completion 事件，
         // 用「不再播放」回调简化处理——音频很短，等待播放状态结束即可）。
         final completer = Completer<bool>();
@@ -103,6 +106,7 @@ TtsSentencePlayer buildDefaultTtsSentencePlayer({
         player.stream.error.listen((_) {
           if (!completer.isCompleted) completer.complete(false);
         });
+        await player.play();
         final ok = await completer.future.timeout(const Duration(seconds: 60),
             onTimeout: () {
           try {

@@ -91,6 +91,9 @@ class NovelTtsController extends ChangeNotifier {
   /// 章末回调（[autoNext] 开启时触发；由阅读器翻章续读）。
   Future<void> Function()? onChapterFinished;
 
+  /// 朗读位置推进回调（段落索引变化时触发，阅读器据此持久化进度）。
+  void Function(int paragraphIndex)? onProgress;
+
   /// 系统引擎声音表（名字 → 声音；懒加载）。
   Map<String, NovelTtsVoice>? _systemVoicesByName;
 
@@ -274,6 +277,16 @@ class NovelTtsController extends ChangeNotifier {
       ),
     );
     _onlinePlayer = player;
+    // 段落推进 → 阅读器高亮 / 自动跟随滚动（在线链路此前完全不推进
+    // `_currentIndex`，高亮永远停在第 0 段，自动跟随也一直往章首滚）。
+    player.onParagraphChanged = (int paragraphIndex) {
+      if (generation != _sessionGeneration) return;
+      if (_state == NovelTtsState.stopped) return;
+      if (paragraphIndex == _currentIndex) return;
+      _currentIndex = paragraphIndex;
+      notifyListeners();
+      onProgress?.call(paragraphIndex);
+    };
     player.onCompleted = () {
       if (_state == NovelTtsState.stopped ||
           generation != _sessionGeneration) {
@@ -415,6 +428,7 @@ class NovelTtsController extends ChangeNotifier {
     if (entry.paragraphIndex != _currentIndex) {
       _currentIndex = entry.paragraphIndex;
       notifyListeners();
+      onProgress?.call(_currentIndex);
     }
     _isSpeaking = true;
     await _tts!.speak(segment.text);

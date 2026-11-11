@@ -48,6 +48,7 @@ import '../../../core/download/local_to_online.dart';
 import '../../../core/novel/novel_page_animation.dart';
 import '../../../core/novel/novel_progress_conflict.dart';
 import '../../../core/novel/novel_progress_manager.dart';
+import '../../../core/novel/novel_tts_progress_store.dart';
 import '../../../core/novel/novel_reader_preferences.dart';
 import '../../../core/novel/novel_tts_router.dart' show NovelTtsSystemSlots;
 import '../../../core/novel/novel_pre_download_preferences.dart';
@@ -1543,6 +1544,8 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   Future<void> _clearReadingProgress() async {
     final l10n = AppLocalizations.of(context);
     await _progress.clear(widget.novelId);
+    // 朗读位置一并清掉，否则「清除进度」后点朗读仍会从旧位置续读。
+    await NovelTtsProgressStore.instance.clear(widget.novelId);
     if (mounted) {
       setState(() {
         _chapterIndex = 0;
@@ -1581,12 +1584,34 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   Future<void> _startTtsFromParagraph() async {
     _tts.setBackground(_prefs.ttsBackground);
     await _tts.setRate(_prefs.ttsSpeechRate);
-    await _speakChapter(0, sleepTimer: _prefs.ttsSleepTimer);
+    // 续读上次的朗读位置（同一章内才续；跨章从当前章章首开始，
+    // 避免用户已经在别的章阅读却被拽回上次朗读的位置）。
+    int startIndex = 0;
+    try {
+      final NovelTtsPosition? saved =
+          await NovelTtsProgressStore.instance.get(widget.novelId);
+      if (saved != null &&
+          saved.chapterIndex == _chapterIndex &&
+          _paragraphs.isNotEmpty) {
+        startIndex = saved.paragraphIndex.clamp(0, _paragraphs.length - 1);
+      }
+    } on Object {
+      // 读取失败按章首处理。
+    }
+    if (!mounted) return;
+    await _speakChapter(startIndex, sleepTimer: _prefs.ttsSleepTimer);
+  }
+
+  /// 朗读推进到新段落：持久化位置（退出/重进后据此续读）。
+  void _onTtsProgress(int paragraphIndex) {
+    unawaited(NovelTtsProgressStore.instance
+        .save(widget.novelId, _chapterIndex, paragraphIndex));
   }
 
   /// 以多角色上下文朗读当前章（跨章续读复用）。
   Future<void> _speakChapter(int startIndex, {int sleepTimer = 0}) async {
     _tts.onChapterFinished = _prefs.ttsAutoNext ? _onTtsChapterFinished : null;
+    _tts.onProgress = _onTtsProgress;
     await _tts.speak(
       _paragraphTexts,
       startIndex: startIndex,
@@ -3394,19 +3419,29 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   double _chapterScrollRatio(ScrollPosition pos, {int? chapterIndex}) {
     final int target = chapterIndex ?? _chapterIndex;
     final double max = pos.maxScrollExtent;
+    if (max <= 0) return 0;
+    // 滚到列表最底＝读完（末章末页 / 已无更多内容）：直接给 100%，
+    // 不再依赖段高测量精度。
+    if (pos.pixels >= max - 1) return 1.0;
     if (_scrollSegments.length <= 1) {
-      return max > 0 ? (pos.pixels / max).clamp(0.0, 1.0) : 0.0;
+      return (pos.pixels / max).clamp(0.0, 1.0);
     }
     final _NovelScrollSegment? seg = _segmentByChapter(target);
     if (seg == null) return _scrollFraction;
     final double? top = _segmentTopPixels(seg, pos);
-    final double? height = _segmentHeight(seg, pos);
-    if (top == null || height == null || height <= 0) return _scrollFraction;
-    final double scrollable = height - pos.viewportDimension;
-    if (scrollable <= 1) {
-      // 短章（整段不到一屏）：读到该段即视为读完。
-      return pos.pixels >= top ? 1.0 : 0.0;
-    }
+    if (top == null) return _scrollFraction;
+    final _NovelScrollSegment? next = _segmentByChapter(target + 1);
+    // 本章正文的结束位置：下一段段首；末段则扣掉列表底部留白与尾项。
+    final double? end = next != null
+        ? _segmentTopPixels(next, pos)
+        : (pos.maxScrollExtent +
+            pos.viewportDimension -
+            _prefs.margin -
+            _kScrollFooterHeight);
+    if (end == null || end <= top) return _scrollFraction;
+    // 分母 = 本章可滚距离（视口顶部从章首走到「视口底贴章末」）。
+    final double scrollable = end - top - pos.viewportDimension;
+    if (scrollable <= 1) return 1.0; // 整章不到一屏：看到即读完
     return ((pos.pixels - top) / scrollable).clamp(0.0, 1.0);
   }
 
