@@ -496,7 +496,7 @@ class ReaderDefaultSettings {
     this.novelHeaderFooterColor,
     this.novelHeaderFooterMargin = 12.0,
     this.novelTtsBackground = false,
-    this.novelTtsAutoNext = false,
+    this.novelTtsAutoNext = true,
     this.novelTtsSleepTimer = 0,
     this.novelScrollWheelInverted = false,
     // 排版增强
@@ -886,6 +886,8 @@ class ReaderDefaultSettings {
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
+        // 存档结构版本（见 [ReaderDefaultSettings.fromJson] 的迁移说明）。
+        'schema': kNovelPrefsSchema,
         'readingMode': readingMode.name,
         'doubleTapZoom': doubleTapZoom,
         'novelFontSize': novelFontSize,
@@ -1034,6 +1036,10 @@ class ReaderDefaultSettings {
       };
 
   factory ReaderDefaultSettings.fromJson(Map<String, dynamic> json) {
+    // 旧版（无 schema）里的 novelTtsAutoNext=false 只是历史默认值，
+    // 一律按新默认值（true）读取；用户改过后会以 v2 写回。
+    final int schema = (json['schema'] as num?)?.toInt() ?? 1;
+    final bool legacyAutoNext = schema < kNovelPrefsSchema;
     ReadingMode mode = ReadingMode.singleLTR;
     if (json['readingMode'] is String) {
       mode = ReadingMode.values.firstWhere(
@@ -1329,7 +1335,8 @@ class ReaderDefaultSettings {
           (json['novelHeaderFooterMargin'] as num?)?.toDouble() ?? 12.0,
       novelTtsBackground:
           json['novelTtsBackground'] as bool? ?? false,
-      novelTtsAutoNext: json['novelTtsAutoNext'] as bool? ?? false,
+      novelTtsAutoNext:
+          legacyAutoNext ? true : (json['novelTtsAutoNext'] as bool? ?? true),
       novelTtsSleepTimer:
           (json['novelTtsSleepTimer'] as num?)?.toInt() ?? 0,
       novelScrollWheelInverted:

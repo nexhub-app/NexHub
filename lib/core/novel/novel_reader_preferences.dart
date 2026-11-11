@@ -38,6 +38,13 @@ const _NovelPrefsFontFamilySentinel _kNovelPrefsFontFamilySentinel =
 /// 需要真正清除 customBgColor，否则预设不生效。
 const Object _kNovelPrefsColorUnset = Object();
 
+/// 阅读偏好存档结构版本。
+///
+/// 2：`ttsAutoNext`（朗读章末自动续读）默认值由 false 改为 true。旧存档
+/// 里存的 false 只是「当时的默认值」，无法与「用户主动关闭」区分，因此
+/// 版本 < 2 的存档一律按新默认值读取一次；用户之后的选择会以 v2 写回。
+const int kNovelPrefsSchema = 2;
+
 /// copyWith 哨兵：用于可空的字体文件路径字段（customFontPath /
 /// titleCustomFontPath），区分「未传入」与「显式传 null（清除文件）」。
 const Object _kNovelPrefsPathUnset = Object();
@@ -522,7 +529,7 @@ class NovelReaderPreferences {
     this.ttsSpeechRate = 1.0,
     this.ttsSleepTimer = 0,
     this.ttsBackground = false,
-    this.ttsAutoNext = false,
+    this.ttsAutoNext = true,
     this.ttsSystemNarratorVoice = '',
     this.ttsSystemMaleVoice = '',
     this.ttsSystemFemaleVoice = '',
@@ -1145,6 +1152,8 @@ class NovelReaderPreferences {
 
   /// 序列化为 JSON。
   Map<String, dynamic> toJson() => <String, dynamic>{
+        // 存档结构版本：用于「新默认值」的一次性迁移（见 [fromJson]）。
+        'schema': kNovelPrefsSchema,
         'fontSize': fontSize,
         'lineHeight': lineHeight,
         'paragraphSpacing': paragraphSpacing,
@@ -1227,6 +1236,10 @@ class NovelReaderPreferences {
 
   /// 从 JSON 反序列化。
   factory NovelReaderPreferences.fromJson(Map<String, dynamic> json) {
+    // 旧版存档（无 schema 或 < 2）里的 ttsAutoNext=false 只是历史默认值，
+    // 一律按新默认值（true）读取；用户改过之后会以 v2 写回，尊重其选择。
+    final int schema = (json['schema'] as num?)?.toInt() ?? 1;
+    final bool legacyAutoNext = schema < kNovelPrefsSchema;
     return NovelReaderPreferences(
       fontSize: (json['fontSize'] as num?)?.toDouble() ?? 18.0,
       lineHeight: (json['lineHeight'] as num?)?.toDouble() ?? 1.8,
@@ -1271,7 +1284,9 @@ class NovelReaderPreferences {
       ttsSpeechRate: (json['ttsSpeechRate'] as num?)?.toDouble() ?? 1.0,
       ttsSleepTimer: (json['ttsSleepTimer'] as num?)?.toInt() ?? 0,
       ttsBackground: json['ttsBackground'] as bool? ?? false,
-      ttsAutoNext: json['ttsAutoNext'] as bool? ?? false,
+      ttsAutoNext: legacyAutoNext
+          ? true
+          : (json['ttsAutoNext'] as bool? ?? true),
       ttsSystemNarratorVoice: json['ttsSystemNarratorVoice'] as String? ?? '',
       ttsSystemMaleVoice: json['ttsSystemMaleVoice'] as String? ?? '',
       ttsSystemFemaleVoice: json['ttsSystemFemaleVoice'] as String? ?? '',
