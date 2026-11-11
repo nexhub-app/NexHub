@@ -212,6 +212,15 @@ class NovelTtsController extends ChangeNotifier {
     _onlinePlayer?.cancel();
     _onlinePlayer = null;
     _systemEntries = const <_SystemEntry>[];
+    // 系统引擎的上一句必须显式 stop：否则点段落跳读 / 换章重读时，
+    // 旧句会继续念完（听感上是「两段朗读叠在一起」）。
+    if (_tts != null) {
+      try {
+        await _tts!.stop();
+      } on Object {
+        // 部分平台未初始化时 stop 抛错，忽略。
+      }
+    }
     autoNext = autoNextChapter;
 
     _paragraphs = paragraphs;
@@ -251,12 +260,17 @@ class NovelTtsController extends ChangeNotifier {
     final engine = cfg.isEdge
         ? EdgeTtsSynthesisEngine(rate: _rate, cache: cache)
         : HttpTtsPreloader(config: cfg, rate: _rate, cache: cache);
+    final control = MediaKitTtsPlaybackControl();
     final player = NovelHttpTtsPlayer(
       config: cfg,
       rate: _rate,
       engine: engine,
+      control: control,
       player: buildDefaultTtsSentencePlayer(
-        cancelled: () => _state == NovelTtsState.stopped || generation != _sessionGeneration,
+        cancelled: () =>
+            _state == NovelTtsState.stopped ||
+            generation != _sessionGeneration,
+        control: control,
       ),
     );
     _onlinePlayer = player;
@@ -440,9 +454,26 @@ class NovelTtsController extends ChangeNotifier {
   }
 
   /// 暂停朗读。
+  ///
+  /// 两条链路分别处理：
+  /// - 在线链路：直接暂停 media_kit 当前句（保留进度），并让句间不再起播；
+  /// - 系统链路：多数平台的原生 TTS `pause` 不可靠（会继续念完），改为
+  ///   `stop` 当前句并记住位置，恢复时从该句重读。
   Future<void> pause() async {
-    if (_tts == null || _state != NovelTtsState.playing) return;
-    await _tts!.pause();
+    if (_state != NovelTtsState.playing) return;
+    if (_onlinePlayer != null) {
+      await _onlinePlayer!.pause();
+      _state = NovelTtsState.paused;
+      _isSpeaking = false;
+      notifyListeners();
+      return;
+    }
+    if (_tts == null) return;
+    try {
+      await _tts!.stop();
+    } on Object {
+      // 停止失败不阻断状态切换（宁可静音也不继续念）。
+    }
     _state = NovelTtsState.paused;
     _isSpeaking = false;
     notifyListeners();
@@ -450,21 +481,16 @@ class NovelTtsController extends ChangeNotifier {
 
   /// 恢复朗读。
   Future<void> resume() async {
-    if (_tts == null || _state != NovelTtsState.paused) return;
+    if (_state != NovelTtsState.paused) return;
     _state = NovelTtsState.playing;
     notifyListeners();
     await _setAwake(true);
     if (_onlinePlayer != null) {
-      // 在线链路：重新起播剩余句（从当前段起重复合成会命中缓存）。
-      final session = _session;
-      await speak(_paragraphs,
-          startIndex: _currentIndex,
-          novelId:
-              (session == null || session.novelId.isEmpty) ? null : session.novelId,
-          chapterId: session?.chapterId,
-          systemSlots: session?.router.systemSlots);
+      // 在线链路：接着播完当前句，随后照常推进（不重建会话、不重头念）。
+      await _onlinePlayer!.resume();
       return;
     }
+    if (_tts == null) return;
     await _speakSystemCurrent(_sessionGeneration);
   }
 

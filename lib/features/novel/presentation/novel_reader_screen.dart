@@ -438,10 +438,13 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   final NovelContentEditManager _contentEdits = NovelContentEditManager();
   bool _currentChapterEdited = false;
 
-  /// 仅文本块列表（供 TTS 朗读，跳过插图；索引与排版段落序号一致）。
-  List<String> get _paragraphTexts => [
-        for (final b in _paragraphs)
-          if (b is NovelTextBlock) b.text
+  /// 朗读用段落文本：**与正文块一一对应**（插图块占位为空串）。
+  ///
+  /// 早前这里直接跳过插图块，导致「文本索引」与「正文块索引」在有插图的
+  /// 章节里错位：朗读高亮 / 点段落跳读 / 自动定位全都指到错误的段落。
+  /// 现在保持同长（空串不参与分句），索引即正文块索引，各处比对一致。
+  List<String> get _paragraphTexts => <String>[
+        for (final b in _paragraphs) b is NovelTextBlock ? b.text : '',
       ];
   NovelPaginationResult? _pagination;
 
@@ -664,6 +667,18 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   /// 判定「主导章」时允许的顶部容差（像素）：段首滚到视口上沿附近即算
   /// 进入该章，避免浮点误差导致跨界瞬间来回抖动。
   static const double _kScrollChapterAnchorSlack = 2.0;
+
+  /// 连排列表尾部提示项（加载中 / 全书完 / 重试）的固定高度。
+  ///
+  /// 固定高度有两个用途：避免状态切换时列表高度抖动；末段章内比例换算
+  /// 时从内容总高里扣掉它，保证滚到章末正好 100%。
+  static const double _kScrollFooterHeight = 88.0;
+
+  /// 向下切主导章所需的「越过段首」距离（像素）。
+  ///
+  /// 不留死区的话，手指停在章界附近时主导章会在两章之间来回判定，
+  /// 底部进度条随之在 100% / 0% 之间跳动（表现为「进度回弹」）。
+  static const double _kScrollChapterHysteresis = 24.0;
 
   /// 判定：下滑手势（dy > 0）且纵向位移明显大于横向（absY > absX * 1.5
   /// 的通用判定比例），由亮度手势（仅左 1/3 屏生效）之外的区域触发。
@@ -1090,7 +1105,11 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   /// - TXT（[localTextPath]）：整文件作为扁平段落列表。
   /// - EPUB（[localEpubPath]）：经 [LocalNovelParser.parseEpub] 解析为章节，
   /// 章节标题与正文段落统一展平为 [NovelTextBlock]，复用同一套分页/渲染路径。
-  Future<void> _loadLocalText({int restorePage = 0}) async {
+  Future<void> _loadLocalText({int restorePage = 0, bool keepTts = false}) async {
+    // 与 [_loadChapter] 一致：用户跳章先停朗读（TTS 自身续章传 [keepTts]）。
+    if (!keepTts && _tts.state != NovelTtsState.stopped) {
+      await _tts.stop();
+    }
     final int token = _loadSession.next();
     if (mounted) setState(() => _loading = true);
     _stopAutoPage();
@@ -1647,9 +1666,9 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     _currentPage = 0;
     try {
       if (_isLocalMode) {
-        await _loadLocalText();
+        await _loadLocalText(keepTts: true);
       } else {
-        await _loadChapter(target);
+        await _loadChapter(target, keepTts: true);
       }
     } on Object {
       // 加载失败（网络等）：停止朗读，避免停在无声播放态。
@@ -2961,10 +2980,17 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     await _loadChapter(_chapterIndex, restorePage: _currentPage);
   }
 
-  Future<void> _loadChapter(int index, {int restorePage = 0}) async {
+  Future<void> _loadChapter(int index,
+      {int restorePage = 0, bool keepTts = false}) async {
     // 防并发：章节加载期间忽略新的切章请求（快速连按上一页/下一页时）。
     if (_chapterLoading) return;
     _chapterLoading = true;
+    // 用户跳章（目录 / 书签 / 搜索 / 上一章下一章）：先停朗读再加载，
+    // 否则旧章的朗读会一直念到章末（听感像「跳转后还在念上一章」）。
+    // TTS 自身跨章续读传 [keepTts] 跳过。
+    if (!keepTts && _tts.state != NovelTtsState.stopped) {
+      await _tts.stop();
+    }
     if (mounted) setState(() => _loading = true);
     // 切换章节时必须取消自动翻页定时器（项目约束）。
     _stopAutoPage();
@@ -3313,20 +3339,30 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   /// 段高（像素）：相邻段段首差分；末段用内容总高推算。
   double? _segmentHeight(_NovelScrollSegment seg, ScrollPosition pos) {
     final double? top = _segmentTopPixels(seg, pos);
-    if (top == null) return null;
+    if (top == null) return seg.knownHeight;
     final _NovelScrollSegment? next = _segmentByChapter(seg.chapterIndex + 1);
     if (next != null) {
       final double? nextTop = _segmentTopPixels(next, pos);
-      if (nextTop != null && nextTop > top) return nextTop - top;
-      // 下一段刚追加、尚未完成首帧测量：此刻无法确定本章高度。
+      if (nextTop != null && nextTop > top) {
+        final double h = nextTop - top;
+        seg.knownHeight = h;
+        return h;
+      }
+      // 下一段刚追加、尚未完成首帧测量：用上一次已知段高兜底。
       // 绝不能退回「内容总高 - 段首」（会把下一章高度算进本章，导致
-      // 章内比例被严重低估、进度被写错）；交给调用方沿用上一次比例。
-      return null;
+      // 章内比例被严重低估、进度被写错）。
+      return seg.knownHeight;
     }
-    // 真·末段：用内容总高推算。
-    final double contentH = pos.maxScrollExtent + pos.viewportDimension;
+    // 真·末段：用内容总高推算，但必须扣掉列表底部留白与尾部提示项，
+    // 否则章末比例永远差一截（到不了 100%）。
+    final double contentH = pos.maxScrollExtent +
+        pos.viewportDimension -
+        _prefs.margin -
+        _kScrollFooterHeight;
     final double h = contentH - top;
-    return h > 0 ? h : null;
+    if (h <= 0) return seg.knownHeight;
+    seg.knownHeight = h;
+    return h;
   }
 
   /// 视口顶部所在章段（「主导章」）。
@@ -3348,13 +3384,17 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   /// 位置换算，保证底部进度条与阅读位置仍是「本章进度」而非整条缓冲的
   /// 比例（跨章后归零，符合直觉）。
   ///
+  /// **分母用「可滚动距离」（段高 − 视口高）而不是段高**：滚动位置记的是
+  /// 视口顶部，只有视口底部顶到段末才算读完该章；用段高当分母会导致
+  /// 章末最多只到 ~85%，永远到不了 100%。
+  ///
   /// [chapterIndex] 可显式指定要换算的章（默认当前章）：主导章切换的
   /// 瞬间需要「按新章」先算出比例再去改状态。无法测量时沿用上一次比例，
-  /// 避免用整条缓冲的全局比例把章内进度写小。
+  /// 避免用整条缓冲的全局比例把章内进度写小（表现为进度条回弹）。
   double _chapterScrollRatio(ScrollPosition pos, {int? chapterIndex}) {
     final int target = chapterIndex ?? _chapterIndex;
+    final double max = pos.maxScrollExtent;
     if (_scrollSegments.length <= 1) {
-      final double max = pos.maxScrollExtent;
       return max > 0 ? (pos.pixels / max).clamp(0.0, 1.0) : 0.0;
     }
     final _NovelScrollSegment? seg = _segmentByChapter(target);
@@ -3362,7 +3402,12 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     final double? top = _segmentTopPixels(seg, pos);
     final double? height = _segmentHeight(seg, pos);
     if (top == null || height == null || height <= 0) return _scrollFraction;
-    return ((pos.pixels - top) / height).clamp(0.0, 1.0);
+    final double scrollable = height - pos.viewportDimension;
+    if (scrollable <= 1) {
+      // 短章（整段不到一屏）：读到该段即视为读完。
+      return pos.pixels >= top ? 1.0 : 0.0;
+    }
+    return ((pos.pixels - top) / scrollable).clamp(0.0, 1.0);
   }
 
   /// 临近段末时追加下一章（提前约一屏半准备，接缝处不空窗）。
@@ -3531,6 +3576,14 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     if (idx == null || idx == _chapterIndex) return;
     final _NovelScrollSegment? seg = _segmentByChapter(idx);
     if (seg == null) return;
+    // 向下切章留死区：段首刚碰到视口上沿时不切，要求真正滚过去一点，
+    // 避免手指停在章界时主导章反复切换、进度条 100%↔0% 来回跳。
+    if (idx > _chapterIndex) {
+      final double? top = _segmentTopPixels(seg, sc.position);
+      if (top != null && top > sc.position.pixels - _kScrollChapterHysteresis) {
+        return;
+      }
+    }
     // 先按「新章」算出段内比例，切章瞬间进度条不归零（否则表现为
     // 「翻回上一章进度恒为 0%」）。
     final double ratio = _chapterScrollRatio(sc.position, chapterIndex: idx);
@@ -3633,7 +3686,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     }
     // 固定高度的占位，避免「加载中 ↔ 读完」切换时列表高度抖动。
     return SizedBox(
-      height: 88,
+      height: _kScrollFooterHeight,
       child: Center(child: child),
     );
   }
@@ -4882,6 +4935,11 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     // TTS 朗读中音量键恢复系统调音量（不翻页），状态变化时重新同步拦截。
     unawaited(_syncVolumeKey());
     if (_tts.state == NovelTtsState.stopped) return;
+    if (_tts.state != NovelTtsState.playing) {
+      // 暂停：只刷新 UI（暂停图标 / 按钮），不跟随滚动。
+      setState(() {});
+      return;
+    }
     final int idx = _tts.currentIndex;
     final pages = _pagination?.pages;
     if (pages == null || pages.isEmpty) return;
@@ -4912,7 +4970,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   void _scheduleTtsParagraphScroll() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      if (_tts.state == NovelTtsState.stopped) return;
+      if (_tts.state != NovelTtsState.playing) return;
       final BuildContext? paragraphCtx = _ttsParagraphKey.currentContext;
       if (paragraphCtx == null) return;
       try {
@@ -4946,16 +5004,11 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       }
     }
     // 从点击的段落重新开始 TTS 朗读。
-    if (_tts.isPlaying || _tts.isPaused) {
-      _tts.speak(_paragraphTexts,
-          startIndex: clamped, sleepTimer: _prefs.ttsSleepTimer);
-    } else {
-      // TTS 未启动时，直接从该段开始朗读。
-      _tts.setBackground(_prefs.ttsBackground);
-      _tts.setRate(_prefs.ttsSpeechRate);
-      _tts.speak(_paragraphTexts,
-          startIndex: clamped, sleepTimer: _prefs.ttsSleepTimer);
-    }
+    // 必须走 [_speakChapter]：它负责注入跨章续读回调与 autoNext，
+    // 直接调 `_tts.speak` 会让「点段落起播」的会话永远不跨章。
+    _tts.setBackground(_prefs.ttsBackground);
+    _tts.setRate(_prefs.ttsSpeechRate);
+    unawaited(_speakChapter(clamped, sleepTimer: _prefs.ttsSleepTimer));
     setState(() {});
   }
 
@@ -7814,6 +7867,12 @@ class _NovelScrollSegment {
   /// 仍可用它判定段位置；仅在图片加载等导致段高变化时轻微失真，下一次
   /// 测量即修正。
   double? lastTopPixels;
+
+  /// 最近一次测得的段高（像素）。
+  ///
+  /// 相邻段段首只有一端被列表构建时测不出差值，用该缓存兜底——否则章内
+  /// 比例会退回上一次的旧值再跳变（表现为进度条回弹）。
+  double? knownHeight;
 
   int get itemCount => blocks.length + (showTitle ? 1 : 0);
 }

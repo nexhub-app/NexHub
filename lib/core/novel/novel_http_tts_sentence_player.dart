@@ -15,16 +15,72 @@ import 'dart:typed_data';
 
 import 'package:media_kit/media_kit.dart';
 
-import 'novel_http_tts_player.dart' show TtsSentencePlayer;
+import 'novel_http_tts_player.dart' show TtsPlaybackControl, TtsSentencePlayer;
 
 /// 播放器取消回调（调用方在停止/退出时触发）。
 typedef TtsPlaybackCanceller = Future<void> Function();
 
+/// 基于 media_kit 的句播放控制句柄。
+///
+/// 默认播放器每句新建一个 media_kit [Player]（播完即 dispose），上层拿不到
+/// 实例，导致「暂停 / 继续 / 立即停止」只能等整句播完才生效（表现为点了
+/// 暂停还在念）。本句柄由播放器在创建/释放时回填当前实例，上层即可把
+/// 控制直接作用在音频进程上。
+class MediaKitTtsPlaybackControl implements TtsPlaybackControl {
+  Player? _player;
+
+  void attach(Player player) => _player = player;
+
+  void detach(Player player) {
+    if (identical(_player, player)) _player = null;
+  }
+
+  bool get hasActivePlayer => _player != null;
+
+  /// 暂停当前句（保留播放进度，继续时从断点播完）。
+  @override
+  Future<void> pause() async {
+    final Player? p = _player;
+    if (p == null) return;
+    try {
+      await p.pause();
+    } on Object {
+      // 内核不支持时忽略（退化为「念完当前句」）。
+    }
+  }
+
+  /// 继续当前句。
+  @override
+  Future<void> resume() async {
+    final Player? p = _player;
+    if (p == null) return;
+    try {
+      await p.play();
+    } on Object {
+      // 同上。
+    }
+  }
+
+  /// 立即停止当前句（退出 / 停止朗读时用，避免残留声音）。
+  @override
+  Future<void> stop() async {
+    final Player? p = _player;
+    if (p == null) return;
+    try {
+      await p.stop();
+    } on Object {
+      // 同上。
+    }
+  }
+}
+
 /// 返回默认的逐句播放函数。
 ///
 /// [cancelled] 返回 true 时立即中断当前句（返回 false 触发降级/终止）。
+/// [control] 提供后可对正在播放的句子做暂停 / 继续 / 停止。
 TtsSentencePlayer buildDefaultTtsSentencePlayer({
   required bool Function() cancelled,
+  MediaKitTtsPlaybackControl? control,
 }) {
   return (Uint8List bytes) async {
     if (cancelled()) return false;
@@ -35,6 +91,7 @@ TtsSentencePlayer buildDefaultTtsSentencePlayer({
       await file.writeAsBytes(bytes);
       // 鸿蒙内核默认随包可用（media_kit_libs_ohos）；创建失败由外层 catch 兜底。
       final player = Player();
+      control?.attach(player);
       try {
         await player.open(Media(file.path));
         // 等待播放完成：轮询 position+state（无原生 completion 事件，
@@ -55,11 +112,16 @@ TtsSentencePlayer buildDefaultTtsSentencePlayer({
           }
           return false;
         });
-        await player.dispose();
         return ok;
       } on Object {
-        await player.dispose();
         return false;
+      } finally {
+        control?.detach(player);
+        try {
+          await player.dispose();
+        } on Object {
+          // 忽略释放异常
+        }
       }
     } on Object {
       return false;

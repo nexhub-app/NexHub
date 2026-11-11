@@ -20,6 +20,17 @@ import 'novel_http_tts_config.dart';
 import 'novel_http_tts_engine.dart';
 import 'novel_speech_segmenter.dart';
 
+/// 句播放控制接口（暂停 / 继续 / 立即停止）。
+///
+/// 由具体播放器实现（默认实现基于 media_kit，见
+/// `novel_http_tts_sentence_player.dart`）。抽象成接口是为了让本文件保持
+/// 无原生依赖，便于纯 Dart 单测。
+abstract class TtsPlaybackControl {
+  Future<void> pause();
+  Future<void> resume();
+  Future<void> stop();
+}
+
 /// 单句播放结果：成功 / 跳过（静音占位）/ 终止（连续失败达阈值）。
 enum TtsSentenceOutcome {
   /// 播放成功（或成功并入队列）。
@@ -66,6 +77,7 @@ class NovelHttpTtsPlayer {
     required this.config,
     required this.player,
     this.rate = 1.0,
+    this.control,
     TtsSynthesisEngine? engine,
   }) : engine = engine ?? HttpTtsPreloader(config: config, rate: rate);
 
@@ -73,6 +85,9 @@ class NovelHttpTtsPlayer {
   final TtsSentencePlayer player;
   final double rate;
   final TtsSynthesisEngine engine;
+
+  /// 当前句播放控制（可选）：让暂停 / 继续 / 立即停止作用在音频进程上。
+  final TtsPlaybackControl? control;
 
   /// 全部段落播完回调（自动续章 的触发点）。
   void Function()? onCompleted;
@@ -82,13 +97,36 @@ class NovelHttpTtsPlayer {
 
   bool _cancelled = false;
 
+  /// 暂停态：句间暂停时不再起播下一句，等待 [resume]。
+  bool _paused = false;
+
+  bool get paused => _paused;
+
+  /// 暂停：当前句立即止声（保留进度），后续句不再起播。
+  Future<void> pause() async {
+    if (_cancelled) return;
+    _paused = true;
+    await control?.pause();
+  }
+
+  /// 继续：从暂停处接着播完当前句，然后照常推进。
+  Future<void> resume() async {
+    if (_cancelled) return;
+    _paused = false;
+    await control?.resume();
+  }
+
   /// 连续合成失败句数（成功复位；达阈值后 worker 不再领取新句）。
   int _consecutiveFailures = 0;
 
   bool get _halted => _consecutiveFailures >= config.maxConsecutiveFailures;
 
-  /// 取消本轮朗读（停止后续合成与播放）。
-  void cancel() => _cancelled = true;
+  /// 取消本轮朗读（停止后续合成与播放，并立即停掉正在播的音频）。
+  void cancel() {
+    _cancelled = true;
+    _paused = false;
+    unawaited(control?.stop());
+  }
 
   /// 朗读一组段落（[startParagraphIndex] 起的段落参与合成，之前的跳过——
   /// 章中开始朗读时不重读前文）。
@@ -166,6 +204,11 @@ class NovelHttpTtsPlayer {
     // 3) 按句序播放。
     var aborted = false;
     for (var i = 0; i < units.length; i++) {
+      if (_cancelled) return;
+      // 暂停态：当前句已被 control.pause 止声，句间不再起播下一句。
+      while (_paused && !_cancelled) {
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+      }
       if (_cancelled) return;
       currentIndex = i;
       final bytes = (await results[i].future).bytes;
