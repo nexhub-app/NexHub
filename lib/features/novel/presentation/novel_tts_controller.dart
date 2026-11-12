@@ -356,7 +356,36 @@ class NovelTtsController extends ChangeNotifier {
         entries.add(_SystemEntry(p, seg));
       }
     }
-    _systemEntries = entries;
+    // 同角色连续句合并成一次朗读：系统引擎每次 speak 都要"起转"，
+    // 起转期间的音频会被丢掉（每句开头少几个字）。合并后调用次数减少
+    // 一半以上，段内也不再断句重起；跨角色的边界照旧分开，音色不串。
+    final merged = <_SystemEntry>[];
+    for (final e in entries) {
+      if (merged.isNotEmpty) {
+        final prev = merged.last;
+        final bool samePart = prev.paragraphIndex == e.paragraphIndex;
+        final bool sameRole = prev.segment.role == e.segment.role &&
+            prev.segment.gender == e.segment.gender;
+        if (samePart && sameRole) {
+          // 前一句没有结束标点时补一个逗号，避免两句粘连成一句。
+          final String head = prev.segment.text;
+          final bool hasStop = head.isNotEmpty &&
+              '。！？；…，、,.!?;:~'.contains(head[head.length - 1]);
+          merged[merged.length - 1] = _SystemEntry(
+            prev.paragraphIndex,
+            SpeechSegment(
+              text: '$head${hasStop ? '' : '，'}${e.segment.text}',
+              role: prev.segment.role,
+              sourceRole: prev.segment.sourceRole,
+              gender: prev.segment.gender,
+            ),
+          );
+          continue;
+        }
+      }
+      merged.add(e);
+    }
+    _systemEntries = merged;
     _systemIdx = 0;
     _lastAppliedSystemVoice = '';
     _systemVoicesByName ??= <String, NovelTtsVoice>{
