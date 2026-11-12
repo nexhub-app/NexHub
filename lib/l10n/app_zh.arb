@@ -3911,6 +3911,7 @@
   },
   "viewLibrarySources": "查看源",
   "librarySubscribeFailed": "订阅失败，请检查 URL",
+  "libraryFetchFailed": "拉取源库失败，请检查网络或地址后重试",
   "libraryImportResult": "已导入 {success}/{total} 个源（{failed} 失败）",
   "@libraryImportResult": {
     "placeholders": {

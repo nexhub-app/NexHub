@@ -14576,6 +14576,12 @@ abstract class AppLocalizations {
   /// **'Subscribe failed. Please check the URL.'**
   String get librarySubscribeFailed;
 
+  /// No description provided for @libraryFetchFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to load this source library. Check your network or the URL and try again.'**
+  String get libraryFetchFailed;
+
   /// No description provided for @libraryImportResult.
   ///
   /// In en, this message translates to:

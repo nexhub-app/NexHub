@@ -1,5 +1,6 @@
-/// 源库查看页：拉取某个 [SourceLibrary] 的 manifest，列出全部源（按 [SourceType] 分组
-/// 显示），用户可勾选要导入的源，点底部「导入选中」一次性写入 [SourceRepository]。
+/// 源库查看页：拉取某个 [SourceLibrary] 的 manifest，列出全部源（按 [SourceType]
+/// 分成「小说 / 媒体 / 漫画」页签，未识别类型归「其他」），用户可勾选要导入的源，
+/// 点底部「导入选中」一次性写入 [SourceRepository]。
 ///
 /// 与 [SourceImportScreen] 的「库导入」区别：导入时按用户勾选按需抓取 rawUrl，
 /// 避免大库全量拉取浪费流量与时间。
@@ -19,7 +20,7 @@ import 'package:nexhub/generated/app_localizations.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/models/plugin_config.dart';
-import '../../../core/scraper/http_fetcher.dart';
+import '../../../core/services/cdn_mirror.dart';
 import '../../../core/services/source_library_subscription.dart';
 import '../../../core/services/source_repository.dart';
 import '../../../core/theme/app_tokens.dart';
@@ -28,6 +29,7 @@ import '../../../core/widgets/app_card.dart';
 import '../../../core/widgets/app_error_state.dart';
 import '../../../core/widgets/app_loading_indicator.dart';
 import '../../../core/widgets/app_glass_bar.dart';
+import '../../../core/widgets/app_tab_bar.dart';
 
 /// 源库查看页：列出库内全部源供用户勾选导入。
 class LibrarySourcesScreen extends StatefulWidget {
@@ -39,7 +41,10 @@ class LibrarySourcesScreen extends StatefulWidget {
   State<LibrarySourcesScreen> createState() => _LibrarySourcesScreenState();
 }
 
-class _LibrarySourcesScreenState extends State<LibrarySourcesScreen> {
+class _LibrarySourcesScreenState extends State<LibrarySourcesScreen>
+    // 分类页签控制器会随分类集合重建（旧控制器延后一帧销毁），同一时刻可能
+    // 存在两个 ticker，故用多 ticker 版本而非 SingleTicker。
+    with TickerProviderStateMixin {
   bool _loading = true;
   bool _importing = false;
   String? _error;
@@ -49,6 +54,17 @@ class _LibrarySourcesScreenState extends State<LibrarySourcesScreen> {
 
   /// 选中的条目下标集合。
   Set<int> _selectedIndices = const <int>{};
+
+  /// 分类页签（按 [SourceType] 归一化后的长词，顺序固定为
+  /// 小说 → 媒体 → 漫画 → 其他，仅保留库内实际存在的分类）。
+  List<String> _tabTypes = const <String>[];
+
+  /// 分类页签控制器；库内无源（加载中 / 报错 / 空库）时为 null。
+  TabController? _tab;
+
+  /// 记住上次停留的页签下标：重载（导入后自动刷新）期间不显示 TabBar，
+  /// 重建控制器时据此恢复到原分类，避免每次都跳回第一个页签。
+  int _lastTabIndex = 0;
 
   /// 已安装版本映射（id → 已装 version）；缺失即未安装。用于「源库」展示
   /// 当前版本、标记可更新（库版本 > 已装版本）。
@@ -93,8 +109,24 @@ class _LibrarySourcesScreenState extends State<LibrarySourcesScreen> {
     _load();
   }
 
+  /// 进行中的清单拉取（单飞）：被墙/超时时用户容易反复点刷新或反复进出页面，
+  /// 复用同一次请求，避免同一地址在日志里刷成一片。
+  Future<void>? _inflightLoad;
+
+  /// 拉取库 manifest（单飞包装，见 [_inflightLoad]）。
+  Future<void> _load() {
+    final existing = _inflightLoad;
+    if (existing != null) return existing;
+    late final Future<void> future;
+    future = _loadOnce().whenComplete(() {
+      if (identical(_inflightLoad, future)) _inflightLoad = null;
+    });
+    _inflightLoad = future;
+    return future;
+  }
+
   /// 拉取库 manifest 并解析成 [_LibEntry] 列表（rawUrl 按需再抓）。
-  Future<void> _load() async {
+  Future<void> _loadOnce() async {
     _resolveGen++; // 终止仍在运行的旧后台等级解析
     final gen = _resolveGen;
     setState(() {
@@ -105,7 +137,11 @@ class _LibrarySourcesScreenState extends State<LibrarySourcesScreen> {
       _ageRatings = <String, SourceAgeRating>{};
     });
     try {
-      final text = await HttpFetcher.instance.getHtml(widget.library.url);
+      // jsDelivr 在国内常被墙：清单地址按 jsDelivr → GitHub raw → 国内反代
+      // 竞速拉取，任一可达即用；[resolvedBase] 用于解析清单里的相对路径。
+      final manifest = await CdnMirror.fetch(widget.library.url);
+      final String text = manifest.text;
+      final String resolvedBase = manifest.url;
       final dynamic decoded = jsonDecode(text);
       final List<Map<String, dynamic>> raw;
       if (decoded is Map<String, dynamic> && decoded['sources'] is List) {
@@ -123,7 +159,7 @@ class _LibrarySourcesScreenState extends State<LibrarySourcesScreen> {
       }
       final entries = <_LibEntry>[];
       for (final e in raw) {
-        entries.add(_LibEntry.fromManifest(e, base: widget.library.url));
+        entries.add(_LibEntry.fromManifest(e, base: resolvedBase));
       }
       // 比对已安装版本，标记可更新；默认只勾选「未安装」或「可更新」的条目，
       // 已是最新的源不预勾选，避免误触「导入选中」重复写库。
@@ -183,8 +219,11 @@ class _LibrarySourcesScreenState extends State<LibrarySourcesScreen> {
       unawaited(_resolveMissingRatings(gen, repo));
     } catch (e) {
       if (!mounted) return;
+      // 详细原因（DNS/超时/JSON 结构错）只进运行日志：界面上给一句可读提示，
+      // 不把 `Bad state: ...` 之类的内部异常串糊到用户脸上。
+      debugPrint('[SourceLibrary] manifest 拉取失败 ${widget.library.url}: $e');
       setState(() {
-        _error = e.toString();
+        _error = AppLocalizations.of(context).libraryFetchFailed;
         _loading = false;
       });
     }
@@ -221,7 +260,7 @@ class _LibrarySourcesScreenState extends State<LibrarySourcesScreen> {
         SourceAgeRating? rating = _ageRatingCache[url];
         if (rating == null) {
           try {
-            final t = await HttpFetcher.instance.getHtml(url);
+            final t = (await CdnMirror.fetch(url)).text;
             final cfgs = SourceRepository.parseMixedSources(t);
             if (cfgs.isNotEmpty) {
               rating = _strictestRating(cfgs);
@@ -281,7 +320,7 @@ class _LibrarySourcesScreenState extends State<LibrarySourcesScreen> {
         // 优先用 rawUrl 抓远端源 JSON；若没有 rawUrl 或抓失败，回退用条目本身解析。
         if (entry.rawUrl != null && entry.rawUrl!.isNotEmpty) {
           try {
-            final t = await HttpFetcher.instance.getHtml(entry.rawUrl!);
+            final t = (await CdnMirror.fetch(entry.rawUrl!)).text;
             parsed = SourceRepository.parseMixedSources(t);
           } on Object {
             // 抓 rawUrl 失败时回退到条目本身
@@ -389,12 +428,72 @@ class _LibrarySourcesScreenState extends State<LibrarySourcesScreen> {
   }
 
   @override
+  void dispose() {
+    _tab?.dispose();
+    super.dispose();
+  }
+
+  /// 分类页签：按类型集合变化时重建控制器（尽量保留当前页签），
+  /// 库内无源时销毁（此时不显示 TabBar）。
+  void _syncTabs(List<String> types) {
+    if (_tab != null && _sameTypes(types, _tabTypes)) return;
+    final TabController? prev = _tab;
+    if (prev != null) _lastTabIndex = prev.index;
+    _tab = types.isEmpty
+        ? null
+        : TabController(
+            length: types.length,
+            vsync: this,
+            initialIndex: _lastTabIndex.clamp(0, types.length - 1),
+          );
+    _tabTypes = types;
+    if (prev != null) {
+      // 旧控制器可能仍在播放指示器动画，延后一帧销毁避免断言。
+      WidgetsBinding.instance.addPostFrameCallback((_) => prev.dispose());
+    }
+  }
+
+  static bool _sameTypes(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (int i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  @override
   Widget build(BuildContext context) {
     final AppLocalizations l10n = AppLocalizations.of(context);
     final ColorScheme scheme = Theme.of(context).colorScheme;
+    // 按类型分组供页签使用。年龄限制开启时，已判定为成人 (18+) 的条目
+    // 整行隐藏；某分类被清空则不出页签。
+    final repo = context.read<SourceRepository>();
+    final groups = <String, List<int>>{};
+    for (int i = 0; i < _entries.length; i++) {
+      if (_isEntryHidden(_entries[i], repo)) continue;
+      groups.putIfAbsent(_canonicalType(_entries[i].type), () => <int>[]).add(i);
+    }
+    final types = <String>[
+      if (groups.containsKey('novelSource')) 'novelSource',
+      if (groups.containsKey('animeSource')) 'animeSource',
+      if (groups.containsKey('mangaSource')) 'mangaSource',
+      if (groups.containsKey('unknown')) 'unknown',
+    ];
+    _syncTabs(types);
+
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.library.name),
+        bottom: (_tab == null || types.length < 2)
+            ? null
+            : AppTabBar(
+                controller: _tab!,
+                compact: true,
+                items: <AppTabItem>[
+                  for (final t in types)
+                    AppTabItem(icon: _typeIcon(t), label: _groupLabel(t, l10n)),
+                ],
+              ),
         actions: <Widget>[
           if (_hasUpdatable)
             IconButton(
@@ -419,7 +518,7 @@ class _LibrarySourcesScreenState extends State<LibrarySourcesScreen> {
           ),
         ],
       ),
-      body: _buildBody(l10n, scheme),
+      body: _buildBody(l10n, scheme, groups, types),
       bottomNavigationBar: _selectedIndices.isEmpty
           ? null
           : SafeArea(
@@ -448,7 +547,12 @@ class _LibrarySourcesScreenState extends State<LibrarySourcesScreen> {
     );
   }
 
-  Widget _buildBody(AppLocalizations l10n, ColorScheme scheme) {
+  Widget _buildBody(
+    AppLocalizations l10n,
+    ColorScheme scheme,
+    Map<String, List<int>> groups,
+    List<String> types,
+  ) {
     if (_loading) {
       return AppLoadingIndicator(message: l10n.loading);
     }
@@ -459,7 +563,8 @@ class _LibrarySourcesScreenState extends State<LibrarySourcesScreen> {
         retryLabel: l10n.retry,
       );
     }
-    if (_entries.isEmpty) {
+    // 库内无源，或全部条目都被年龄限制隐藏。
+    if (_tab == null || types.isEmpty) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(AppTokens.spaceXl),
@@ -474,73 +579,34 @@ class _LibrarySourcesScreenState extends State<LibrarySourcesScreen> {
       );
     }
 
-    // 按类型分组。manifest 里 type 字段可能有多种写法（官方库用短词
-    // `anime`/`manga`/`novel`，老书源格式用 `bookSource`，旧版用
-    // `animeSource` 等长词），统一归到三类后再排序展示，未识别则归「未分类」。
-    // 年龄限制开启时，已判定为成人 (18+) 的条目整行隐藏。
-    final repo = context.read<SourceRepository>();
-    final groups = <String, List<int>>{};
-    for (int i = 0; i < _entries.length; i++) {
-      if (_isEntryHidden(_entries[i], repo)) continue;
-      final t = _canonicalType(_entries[i].type);
-      groups.putIfAbsent(t, () => <int>[]).add(i);
-    }
-    if (groups.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(AppTokens.spaceXl),
-          child: Text(
-            l10n.libraryEmpty,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                ),
-            textAlign: TextAlign.center,
-          ),
-        ),
-      );
-    }
-    final orderedTypes = <String>[
-      if (groups.containsKey('novelSource')) 'novelSource',
-      if (groups.containsKey('animeSource')) 'animeSource',
-      if (groups.containsKey('mangaSource')) 'mangaSource',
-      if (groups.containsKey('unknown')) 'unknown',
-    ];
-
-    return ListView(
-      padding: context.pageInset(AppTokens.spaceMd),
-      children: <Widget>[
-        for (final t in orderedTypes) ...<Widget>[
-          Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: AppTokens.spaceXs,
-              vertical: AppTokens.spaceSm,
-            ),
-            child: Text(
-              _groupLabel(t, l10n),
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    color: scheme.primary,
-                  ),
-            ),
-          ),
-          AppCard(
-            padding: EdgeInsets.zero,
-            child: Column(
-              children: <Widget>[
-                for (int j = 0; j < groups[t]!.length; j++) ...<Widget>[
-                  if (j > 0)
-                    Divider(
-                      height: 1,
-                      color: scheme.outlineVariant.withValues(alpha: 0.3),
-                    ),
-                  _buildRow(groups[t]![j], l10n, scheme),
+    // 每个分类一页：整页只有一张连体卡，行间发丝线分隔。
+    final pages = <Widget>[
+      for (final t in types)
+        ListView(
+          padding: context.pageInset(AppTokens.spaceMd),
+          children: <Widget>[
+            AppCard(
+              padding: EdgeInsets.zero,
+              child: Column(
+                children: <Widget>[
+                  for (int j = 0; j < groups[t]!.length; j++) ...<Widget>[
+                    if (j > 0)
+                      Divider(
+                        height: 1,
+                        color: scheme.outlineVariant.withValues(alpha: 0.3),
+                      ),
+                    _buildRow(groups[t]![j], l10n, scheme),
+                  ],
                 ],
-              ],
+              ),
             ),
-          ),
-          const SizedBox(height: AppTokens.spaceMd),
-        ],
-      ],
-    );
+            const SizedBox(height: AppTokens.spaceMd),
+          ],
+        ),
+    ];
+    // 只有一个分类（如清单里 source type 全缺失）时不显示单个页签，直接铺列表。
+    if (pages.length < 2) return pages.first;
+    return TabBarView(controller: _tab, children: pages);
   }
 
   Widget _buildRow(int index, AppLocalizations l10n, ColorScheme scheme) {
@@ -668,6 +734,20 @@ class _LibrarySourcesScreenState extends State<LibrarySourcesScreen> {
         return l10n.sourceCategoryComic;
       default:
         return l10n.sourceTypeOther;
+    }
+  }
+
+  /// 分类页签图标（与「源列表」分类胶囊保持同一套语义）。
+  static IconData _typeIcon(String type) {
+    switch (type) {
+      case 'novelSource':
+        return Icons.book_rounded;
+      case 'animeSource':
+        return Icons.movie_rounded;
+      case 'mangaSource':
+        return Icons.image_rounded;
+      default:
+        return Icons.extension_rounded;
     }
   }
 

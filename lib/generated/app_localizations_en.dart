@@ -7750,6 +7750,10 @@ class AppLocalizationsEn extends AppLocalizations {
       'Subscribe failed. Please check the URL.';
 
   @override
+  String get libraryFetchFailed =>
+      'Failed to load this source library. Check your network or the URL and try again.';
+
+  @override
   String libraryImportResult(int success, int total, int failed) {
     return 'Imported $success/$total sources ($failed failed)';
   }

@@ -3955,6 +3955,7 @@
   },
   "viewLibrarySources": "View sources",
   "librarySubscribeFailed": "Subscribe failed. Please check the URL.",
+  "libraryFetchFailed": "Failed to load this source library. Check your network or the URL and try again.",
   "libraryImportResult": "Imported {success}/{total} sources ({failed} failed)",
   "@libraryImportResult": {
     "placeholders": {

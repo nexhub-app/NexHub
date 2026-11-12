@@ -7573,6 +7573,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get librarySubscribeFailed => '订阅失败，请检查 URL';
 
   @override
+  String get libraryFetchFailed => '拉取源库失败，请检查网络或地址后重试';
+
+  @override
   String libraryImportResult(int success, int total, int failed) {
     return '已导入 $success/$total 个源（$failed 失败）';
   }

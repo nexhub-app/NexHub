@@ -227,8 +227,15 @@ class HttpFetcher {
         handler.next(response);
       },
       onError: (DioException e, handler) {
+        // e.message 常为 null（连接层失败时真正的根因在 e.error：
+        // SocketException「Failed host lookup」/ HandshakeException 等），
+        // 只打 type 会让「为什么连不上」在日志里彻底不可诊断。
+        final String? msg = e.message?.trim();
+        final String detail = (msg != null && msg.isNotEmpty)
+            ? msg
+            : (e.error?.toString() ?? '(无详情)');
         final String line = '[HTTP!] ${e.requestOptions.method} '
-            '${e.requestOptions.uri} -> ${e.type} ${e.message}';
+            '${e.requestOptions.uri} -> ${e.type} $detail';
         // 网络异常总是记录（错误级）——不依赖详细日志开关。
         AppLog.instance.e(line);
         handler.next(e);
