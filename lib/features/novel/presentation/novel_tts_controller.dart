@@ -446,8 +446,20 @@ class NovelTtsController extends ChangeNotifier {
       ));
     }
     // 声音路由：解析到名字才切换；解析不出保持当前声音。
-    final voiceName =
-        _session?.router.route(segment.role, segment.gender).systemVoice ?? '';
+    //
+    // 只在**用户确实配置了多音色**时才切换系统声音：每次 setVoice 都会让
+    // 系统引擎重新加载语音资源，紧接着的 speak 开头会被吞掉几个字。
+    // 没配角色卡 / 声音槽时统一用系统默认音色，避免旁白↔对话来回切换。
+    final NovelTtsSystemSlots slots =
+        _session?.router.systemSlots ?? const NovelTtsSystemSlots();
+    final bool multiVoice = slots.narrator.isNotEmpty ||
+        slots.male.isNotEmpty ||
+        slots.female.isNotEmpty ||
+        (_session?.knownGenders.isNotEmpty ?? false);
+    final String voiceName = multiVoice
+        ? (_session?.router.route(segment.role, segment.gender).systemVoice ??
+            '')
+        : '';
     if (voiceName.isNotEmpty && voiceName != _lastAppliedSystemVoice) {
       final voice = _systemVoicesByName?[voiceName] ??
           NovelTtsVoice(name: voiceName);
@@ -460,10 +472,10 @@ class NovelTtsController extends ChangeNotifier {
       onProgress?.call(_currentIndex);
     }
     _isSpeaking = true;
-    // 前导顿号：系统引擎每次 speak 都要"起转"，头几十毫秒的音频会被
-    // 丢掉（听感是每句开头少几个字）。前面加一个静默标点，让引擎先处理
-    // 标点把起转时间耗掉，正文就能完整读出。
-    await _tts!.speak('、${segment.text}');
+    // 前导标点：系统引擎每次 speak 都要"起转"，头几十毫秒的音频会被
+    // 丢掉（听感是每句开头少几个字）。前面垫两个静默逗号，让引擎先把
+    // 起转时间耗在标点停顿上，正文就能完整读出。
+    await _tts!.speak('，，${segment.text}');
   }
 
   /// 句在其段落内的序号（AI 分镜 unitKey 对位用）。
