@@ -3427,7 +3427,12 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     // 不再依赖段高测量精度。
     if (pos.pixels >= max - 1) return 1.0;
     if (_scrollSegments.length <= 1) {
-      return (pos.pixels / max).clamp(0.0, 1.0);
+      // 单章（无后续段）时列表尾部还有「底部留白 + 尾项」，滚到章末并不
+      // 等于滚到 maxScrollExtent；分母扣掉这两段空白，章末才能到 100%。
+      final double scrollable =
+          max - _prefs.margin - _kScrollFooterHeight;
+      if (scrollable <= 1) return 1.0;
+      return (pos.pixels / scrollable).clamp(0.0, 1.0);
     }
     final _NovelScrollSegment? seg = _segmentByChapter(target);
     if (seg == null) return _scrollFraction;
@@ -3463,7 +3468,9 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       }
     }
     final double remain = pos.maxScrollExtent - pos.pixels;
-    if (remain > pos.viewportDimension * 1.5) return;
+    // 提前量必须小于列表的预构建范围（cacheExtent 600），否则新追加的
+    // 章段首帧不会被构建，拿不到段首位置 → 章内比例算不出来、进度卡住。
+    if (remain > pos.viewportDimension * 0.5) return;
     unawaited(_appendNextScrollSegment());
   }
 
@@ -3497,6 +3504,17 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
         _rebuildScrollStarts();
         _scrollAppendFailedFor = -1;
         _scrollAppendFailedAt = null;
+      });
+      // 追加后帧末重算一次章内比例：新段段首此时已完成布局，
+      // 段高可测，比例不必等到用户下一次滚动才更新（否则进度像卡住）。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        final ScrollController? ctrl = _scrollController;
+        if (ctrl == null || !ctrl.hasClients) return;
+        final double frac = _chapterScrollRatio(ctrl.position);
+        if ((frac - _scrollFraction).abs() < 0.005) return;
+        _scrollFraction = frac;
+        if (_uiVisible) setState(() {});
       });
     } on Object catch (e) {
       // 追加失败不影响当前章阅读：不弹错，尾部提示提供重试入口。
@@ -3737,11 +3755,12 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     _maybeAppendNextSegment(sc.position);
     double frac = _chapterScrollRatio(sc.position);
     // 同章内防回退：图片加载等布局变化会让段首位置漂移，章内比例随之
-    // 往回跳几个百分点（表现为「进度条回弹」）。只要用户不是在向上滚，
-    // 就把比例钳在当前值之上。
-    if (sc.position.userScrollDirection != ScrollDirection.forward &&
-        frac < _scrollFraction) {
-      frac = _scrollFraction;
+    // 往回跳几个百分点（表现为「进度条回弹」）。只吸收**小幅**回落；
+    // 跨章、追加下一章这类真实语义变化会让比例大幅下降，必须放行，
+    // 否则进度会永远卡在上一个值上不动。
+    if (sc.position.userScrollDirection != ScrollDirection.forward) {
+      final double drop = _scrollFraction - frac;
+      if (drop > 0 && drop < 0.05) frac = _scrollFraction;
     }
     // 滚动模式此前完全不保存阅读位置（只有分页模式的 _onPageChanged 会存），
     // 退出重进永远回到第一页。这里把滚动比例换算成与分页模式同语义的
@@ -6739,7 +6758,12 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     if (sc == null || !sc.hasClients) return;
     final ScrollPosition pos = sc.position;
     double target = fraction * pos.maxScrollExtent;
-    if (_scrollSegments.length > 1) {
+    if (_scrollSegments.length <= 1) {
+      // 单章：章末在 maxScrollExtent 之前（尾部还有留白与尾项）。
+      final double scrollable =
+          pos.maxScrollExtent - _prefs.margin - _kScrollFooterHeight;
+      target = fraction * (scrollable > 1 ? scrollable : pos.maxScrollExtent);
+    } else {
       final _NovelScrollSegment? seg = _segmentByChapter(_chapterIndex);
       if (seg != null) {
         final double? top = _segmentTopPixels(seg, pos);

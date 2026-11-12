@@ -22,15 +22,20 @@ typedef TtsPlaybackCanceller = Future<void> Function();
 
 /// 基于 media_kit 的句播放控制句柄。
 ///
-/// 默认播放器每句新建一个 media_kit [Player]（播完即 dispose），上层拿不到
-/// 实例，导致「暂停 / 继续 / 立即停止」只能等整句播完才生效（表现为点了
-/// 暂停还在念）。本句柄由播放器在创建/释放时回填当前实例，上层即可把
-/// 控制直接作用在音频进程上。
+/// 每句独立 [Player]（播完即释放），句柄只跟踪「当前正在播的那个」，
+/// 让暂停 / 继续 / 立即停止能直接作用在音频进程上。
+///
+/// 注：曾尝试整段会话复用同一个 Player 想省掉设备初始化，但复用后
+/// `completed` / `duration` / `error` 这些广播流会带着上一句的残留值，
+/// 反而造成「整句被误判已播完」或「等待时长失效」，实测更差，故维持
+/// 每句独立实例。
 class MediaKitTtsPlaybackControl implements TtsPlaybackControl {
   Player? _player;
 
+  /// 播放器创建后回填（当前句）。
   void attach(Player player) => _player = player;
 
+  /// 播放器销毁前解绑。
   void detach(Player player) {
     if (identical(_player, player)) _player = null;
   }
@@ -72,12 +77,16 @@ class MediaKitTtsPlaybackControl implements TtsPlaybackControl {
       // 同上。
     }
   }
+
+  /// 结束会话：等同立即停止当前句（播放器由句播放函数自行释放）。
+  @override
+  Future<void> dispose() => stop();
 }
 
 /// 返回默认的逐句播放函数。
 ///
 /// [cancelled] 返回 true 时立即中断当前句（返回 false 触发降级/终止）。
-/// [control] 提供后可对正在播放的句子做暂停 / 继续 / 停止。
+/// [control] 提供后可复用播放器并支持暂停 / 继续 / 停止。
 TtsSentencePlayer buildDefaultTtsSentencePlayer({
   required bool Function() cancelled,
   MediaKitTtsPlaybackControl? control,
@@ -87,36 +96,26 @@ TtsSentencePlayer buildDefaultTtsSentencePlayer({
     // 落盘临时 mp3（TTS 服务通常返回 mp3/ogg；扩展名不影响内核解码）。
     final dir = await Directory.systemTemp.createTemp('nexhub_tts_');
     final file = File('${dir.path}/sentence.mp3');
+    // 每句独立播放器：广播流不残留上一句的状态，耗时换正确性。
+    final Player player = Player();
+    control?.attach(player);
     try {
       await file.writeAsBytes(bytes);
-      // 鸿蒙内核默认随包可用（media_kit_libs_ohos）；创建失败由外层 catch 兜底。
-      final player = Player();
-      control?.attach(player);
+      // 交给 media_kit 自己决定起播时机（open 默认立即播）：早期改成
+      // 「先 open(play:false) 再手动 play」反而打乱了内核的 ready 时序，
+      // 实测每句开头更容易丢音，故维持原生 open 行为。
+      await player.open(Media(file.path));
+      // 等待播放完成（新建播放器，completed 初值可靠）。
+      final Completer<bool> completer = Completer<bool>();
+      final StreamSubscription<bool> doneSub =
+          player.stream.completed.listen((bool done) {
+        if (done && !completer.isCompleted) completer.complete(true);
+      });
+      final StreamSubscription<String> errSub =
+          player.stream.error.listen((_) {
+        if (!completer.isCompleted) completer.complete(false);
+      });
       try {
-        // 先只加载、不自动播：让 mpv 把文件 demux 完、解码器与音频输出
-        // 通道就绪后再显式 play()。直接 open(play: true) 会在输出设备
-        // 就绪前推进播放时钟，听感上就是「每句开头被吞掉一小段」。
-        await player.open(Media(file.path), play: false);
-        // 等解码器探到时长再起播（多数平台 open 返回后仍在校验/建音频
-        // 输出通道，此刻 play 会吞掉开头几十毫秒）。拿不到时长就按
-        // 超时兜底继续，不阻塞朗读。
-        try {
-          await player.stream.duration
-              .firstWhere((Duration d) => d > Duration.zero)
-              .timeout(const Duration(milliseconds: 400));
-        } on Object {
-          // 超时 / 无时长推送：直接起播。
-        }
-        // 等待播放完成：轮询 position+state（无原生 completion 事件，
-        // 用「不再播放」回调简化处理——音频很短，等待播放状态结束即可）。
-        final completer = Completer<bool>();
-        player.stream.completed.listen((bool done) {
-          if (done && !completer.isCompleted) completer.complete(true);
-        });
-        player.stream.error.listen((_) {
-          if (!completer.isCompleted) completer.complete(false);
-        });
-        await player.play();
         final ok = await completer.future.timeout(const Duration(seconds: 60),
             onTimeout: () {
           try {
@@ -127,19 +126,19 @@ TtsSentencePlayer buildDefaultTtsSentencePlayer({
           return false;
         });
         return ok;
-      } on Object {
-        return false;
       } finally {
-        control?.detach(player);
-        try {
-          await player.dispose();
-        } on Object {
-          // 忽略释放异常
-        }
+        await doneSub.cancel();
+        await errSub.cancel();
       }
     } on Object {
       return false;
     } finally {
+      control?.detach(player);
+      try {
+        await player.dispose();
+      } on Object {
+        // 忽略释放异常
+      }
       try {
         await dir.delete(recursive: true);
       } on Object {

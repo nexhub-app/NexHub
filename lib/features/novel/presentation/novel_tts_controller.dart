@@ -664,8 +664,10 @@ class NovelTtsController extends ChangeNotifier {
     }
     // 完成事件可能由原生在非平台线程回调，延后到事件循环再朗读下一句，
     // 规避 flutter_tts 通道线程告警（shell.cc: The ... channel sent a
-    // message ... on a non-platform thread）。
-    Future.microtask(() => _speakSystemCurrent(_sessionGeneration));
+    // message ... on a non-platform thread）。再留 ~40ms 间隙：原生引擎
+    // 在上一句刚结束时立刻 speak，句首容易被削掉（每句开头缺字）。
+    Future<void>.delayed(const Duration(milliseconds: 40),
+        () => _speakSystemCurrent(_sessionGeneration));
   }
 
   @override

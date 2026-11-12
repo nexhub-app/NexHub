@@ -29,6 +29,9 @@ abstract class TtsPlaybackControl {
   Future<void> pause();
   Future<void> resume();
   Future<void> stop();
+
+  /// 释放播放器（会话结束 / 取消朗读时调用，避免原生资源残留）。
+  Future<void> dispose();
 }
 
 /// 单句播放结果：成功 / 跳过（静音占位）/ 终止（连续失败达阈值）。
@@ -124,11 +127,11 @@ class NovelHttpTtsPlayer {
 
   bool get _halted => _consecutiveFailures >= config.maxConsecutiveFailures;
 
-  /// 取消本轮朗读（停止后续合成与播放，并立即停掉正在播的音频）。
+  /// 取消本轮朗读（停止后续合成与播放，并立即释放音频资源）。
   void cancel() {
     _cancelled = true;
     _paused = false;
-    unawaited(control?.stop());
+    unawaited(control?.dispose());
   }
 
   /// 朗读一组段落（[startParagraphIndex] 起的段落参与合成，之前的跳过——
