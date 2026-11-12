@@ -2306,9 +2306,11 @@
     "description": "Error message shown when a local file fails to load in specialized readers"
   },
   "playerDefaultOrientation": "锁定方向",
-  "playerOrientationAuto": "自动跟随",
+  "playerOrientationFollowVideo": "跟随视频",
+  "playerOrientationAuto": "跟随系统",
   "playerOrientationPortrait": "竖屏",
   "playerOrientationLandscape": "横屏",
+  "playerRotateScreen": "旋转屏幕",
   "playerGestureSeekMultiplier": "拖动进度倍率",
   "playerSeekHalf": "0.5x",
   "playerSeekNormal": "1x",

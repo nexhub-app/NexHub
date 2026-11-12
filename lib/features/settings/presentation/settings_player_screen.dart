@@ -566,7 +566,13 @@ class _SettingsPlayerScreenState extends State<SettingsPlayerScreen> {
                         },
                         onSelectionChanged: (s) => _update(
                             _settings.copyWith(lockOrientation: s.first)),
+                        // 四段较长：关闭选中对勾 + 允许横向滚动，窄屏不溢出。
+                        showSelectedIcon: false,
+                        scrollable: true,
                         segments: <ButtonSegment<PlayerLockOrientation>>[
+                          ButtonSegment<PlayerLockOrientation>(
+                              value: PlayerLockOrientation.followVideo,
+                              label: Text(l10n.playerOrientationFollowVideo)),
                           ButtonSegment<PlayerLockOrientation>(
                               value: PlayerLockOrientation.auto,
                               label: Text(l10n.playerOrientationAuto)),

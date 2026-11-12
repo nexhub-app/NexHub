@@ -34,6 +34,7 @@ import '../../../core/models/plugin_config.dart';
 import '../../../core/player/player_controller.dart';
 import '../../../core/player/demuxer_cache_policy.dart';
 import '../../../core/player/player_capability.dart';
+import '../../../core/player/player_orientation.dart';
 import '../../../core/player/audio_playback_service.dart';
 import '../../../core/player/pip_actions_bridge.dart';
 import '../../../core/player/play_queue_store.dart';
@@ -64,11 +65,7 @@ import '../../../core/local/saf_bridge.dart' show resolveSafVideoFile;
 import '../../../core/widgets/app_error_state.dart';
 import '../../../core/player/player_runtime.dart';
 import '../../../core/platform/ohos_public_storage.dart'
-    show
-        OhosPublicStorage,
-        isOhosDocPath,
-        ohosDocJoin,
-        ohosDocToPlainPath;
+    show OhosPublicStorage, isOhosDocPath, ohosDocJoin, ohosDocToPlainPath;
 import '../../../core/platform/ohos_storage_location_sheet.dart';
 import '../../../core/platform/platform_service.dart';
 import 'dart:io';
@@ -404,6 +401,88 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   /// 横滑 seek 倍率（来自 PlayerSettings.seekMultiplier，0.5/1.0/2.0）。
   double _seekMultiplierFactor = 1.0;
+
+  // ─────────────────────── 视频比例 → 屏幕方向 ───────────────────────
+  /// 当前视频宽高（媒体元数据上报；null/0 表示尚未就绪）。
+  int? _videoWidth;
+  int? _videoHeight;
+
+  /// 本次媒体是否已按「跟随视频」自动判定过方向（每个媒体只判定一次，切集重置）。
+  bool _autoOrientationApplied = false;
+
+  /// 手动旋转覆盖的方向（null = 未覆盖）。会话内有效，不写持久化。
+  List<DeviceOrientation>? _manualOrientationOverride;
+
+  StreamSubscription<int?>? _videoWidthSub;
+  StreamSubscription<int?>? _videoHeightSub;
+
+  /// 订阅视频宽高事件，供「跟随视频」方向判定使用。
+  /// 每次 _init 创建新 Player 时重新绑定（旧 Player 的流随旧控制器作废）。
+  void _bindVideoOrientationTracking() {
+    _videoWidthSub?.cancel();
+    _videoHeightSub?.cancel();
+    _videoWidth = null;
+    _videoHeight = null;
+    _autoOrientationApplied = false;
+    _videoWidthSub = _controller.player.stream.width.listen((int? w) {
+      if (_disposed) return;
+      _videoWidth = (w != null && w > 0) ? w : null;
+      unawaited(_maybeApplyVideoOrientation());
+    });
+    _videoHeightSub = _controller.player.stream.height.listen((int? h) {
+      if (_disposed) return;
+      _videoHeight = (h != null && h > 0) ? h : null;
+      unawaited(_maybeApplyVideoOrientation());
+    });
+  }
+
+  /// 宽高就绪后按「跟随视频」判定一次横竖屏；手动旋转过则不再自动判定。
+  Future<void> _maybeApplyVideoOrientation() async {
+    if (_disposed || !mounted) return;
+    final int? w = _videoWidth;
+    final int? h = _videoHeight;
+    if (w == null || h == null) return;
+    if (_autoOrientationApplied || _manualOrientationOverride != null) return;
+    if (_playerSettings.lockOrientation != PlayerLockOrientation.followVideo) {
+      return;
+    }
+    final bool isPhone = MediaQuery.of(context).size.shortestSide < 600;
+    final List<DeviceOrientation>? orients = resolvePlayerOrientations(
+      mode: PlayerLockOrientation.followVideo,
+      isPhone: isPhone,
+      videoWidth: w,
+      videoHeight: h,
+    );
+    if (orients == null) return;
+    _autoOrientationApplied = true;
+    _controller.setBaseOrientations(orients);
+    if (!isPhone || !PlatformService.instance.isMobile) return;
+    try {
+      await SystemChrome.setPreferredOrientations(orients);
+    } on Object {
+      // 平台不支持，忽略。
+    }
+  }
+
+  /// 手动旋转（底部栏按钮）：锁到与当前方向相反的方向，会话内覆盖自动判定。
+  Future<void> _rotateOrientation() async {
+    final bool isPortrait =
+        MediaQuery.of(context).orientation == Orientation.portrait;
+    final List<DeviceOrientation> orients = isPortrait
+        ? const <DeviceOrientation>[
+            DeviceOrientation.landscapeLeft,
+            DeviceOrientation.landscapeRight,
+          ]
+        : const <DeviceOrientation>[DeviceOrientation.portraitUp];
+    _manualOrientationOverride = orients;
+    _controller.setBaseOrientations(orients);
+    if (!PlatformService.instance.isMobile) return;
+    try {
+      await SystemChrome.setPreferredOrientations(orients);
+    } on Object {
+      // 平台不支持，忽略。
+    }
+  }
 
   // ─────────────────────── 解析进度条（功能3） ───────────────────────
   /// 解析进度 notifier（null=隐藏）。放 State 而非 PlayerController：_initFuture
@@ -968,6 +1047,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _controller.addListener(_onControllerChanged);
     _controllerCreated = true;
     _videoController = VideoController(_controller.player);
+    // 视频宽高 → 方向判定（跟随视频模式）绑定到新控制器。
+    _bindVideoOrientationTracking();
     // 视频实时翻译：绑定新控制器（恢复持久化开关；进行中的翻译状态随旧实例失效）。
     unawaited(_subtitleTranslator.attach(_controller));
 
@@ -1001,7 +1082,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       // 本地 / 直链模式：跳过在线源解析，直接打开给定地址。
       // 直链带防盗链请求头（嗅探到的 m3u8 常需 Referer，缺了会被 CDN 403）。
       String direct = widget.directUrl ?? widget.localUri!;
-      // SAF / content:// 文档 URI 不能直接交给 media_kit（mpv 读不了 content:// 
+      // SAF / content:// 文档 URI 不能直接交给 media_kit（mpv 读不了 content://
       // 会既不报错也不完成 → UI 无限转圈）。统一在此落为应用私有真实文件再打开，
       // 这样「下载页」（编码 SAF 路径）与「浏览页」（file_picker 的 content://）
       // 走同一可靠路径。
@@ -1289,21 +1370,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   Future<void> _applyLockOrientation(PlayerLockOrientation o) async {
     // 桌面端（短边 ≥ 600）不强制方向，窗口自由调整（项 3：仅手机自动横屏）。
     final bool isPhone = MediaQuery.of(context).size.shortestSide < 600;
-    final List<DeviceOrientation> orients;
-    switch (o) {
-      case PlayerLockOrientation.portrait:
-        orients = const <DeviceOrientation>[DeviceOrientation.portraitUp];
-      case PlayerLockOrientation.landscape:
-        orients = const <DeviceOrientation>[
-          DeviceOrientation.landscapeLeft,
-          DeviceOrientation.landscapeRight,
-        ];
-      case PlayerLockOrientation.auto:
-        orients = const <DeviceOrientation>[];
+    // 本次会话已手动旋转过：以手动方向为准（设置改动 / 重试不夺回方向）。
+    final List<DeviceOrientation>? orients = _manualOrientationOverride ??
+        resolvePlayerOrientations(
+          mode: o,
+          isPhone: isPhone,
+          videoWidth: _videoWidth,
+          videoHeight: _videoHeight,
+        );
+    // 跟随视频且宽高未就绪：先不锁方向，等首个视频尺寸事件后再应用，
+    // 避免先锁错方向再旋转造成闪烁。
+    if (orients == null) {
+      _controller.setBaseOrientations(const <DeviceOrientation>[]);
+      return;
     }
-    // 记录退出全屏后要恢复的方向（进入全屏临时强制横屏，退出回到此处）。
-    _controller
-        .setBaseOrientations(isPhone ? orients : const <DeviceOrientation>[]);
+    // 记录全屏切换时应用/恢复的方向（进入全屏沿用此方向，不再写死横屏）。
+    _controller.setBaseOrientations(orients);
     if (!isPhone || !PlatformService.instance.isMobile) return;
     try {
       await SystemChrome.setPreferredOrientations(orients);
@@ -2073,8 +2155,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final posMs = _position.inMilliseconds;
     final paused = !_isPlaying;
     final jumped = (posMs - _lastServerReportedMs).abs() > 10000;
-    final due = now.difference(_lastServerReportAt) >=
-        const Duration(seconds: 10);
+    final due =
+        now.difference(_lastServerReportAt) >= const Duration(seconds: 10);
     if (!due && paused == _lastServerPaused && !jumped) return;
     _lastServerReportAt = now;
     _lastServerPaused = paused;
@@ -2159,7 +2241,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   /// 码率档位选择（more_menu / 管理页共用交互）。
-  Future<void> _pickServerBitrate(BuildContext ctx, AppLocalizations l10n) async {
+  Future<void> _pickServerBitrate(
+      BuildContext ctx, AppLocalizations l10n) async {
     final settings = MediaServerPlaybackSettings.instance;
     await settings.load();
     final picked = await showDialog<MediaServerBitrateTier>(
@@ -2237,10 +2320,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               children: <Widget>[
                 for (final s in streams)
                   ListTile(
-                    leading: (_serverAudioStreamIndex ?? _defaultAudioIndex()) ==
-                            s.index
-                        ? const Icon(Icons.check_rounded)
-                        : null,
+                    leading:
+                        (_serverAudioStreamIndex ?? _defaultAudioIndex()) ==
+                                s.index
+                            ? const Icon(Icons.check_rounded)
+                            : null,
                     title: Text(s.label()),
                     onTap: () => Navigator.of(sheetCtx).pop(s.index),
                   ),
@@ -2289,7 +2373,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   int? _defaultAudioIndex() {
-    final streams = _serverLastInfo?.audioStreams ?? const <ServerMediaStream>[];
+    final streams =
+        _serverLastInfo?.audioStreams ?? const <ServerMediaStream>[];
     for (final s in streams) {
       if (s.isDefault) return s.index;
     }
@@ -3244,6 +3329,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       _edSkippedThisEpisode = false;
       // 新一集恢复「播放自动全屏」资格。
       _autoFullscreenDone = false;
+      // 新一集重新按视频比例判定横竖（跟随视频模式；手动旋转覆盖保留）。
+      _videoWidth = null;
+      _videoHeight = null;
+      _autoOrientationApplied = false;
     });
 
     final ep = widget.episodes![index];
@@ -3889,6 +3978,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _playingFalseDebounce?.cancel();
     _pipActionSub?.cancel();
     _pipActionSub = null;
+    _videoWidthSub?.cancel();
+    _videoHeightSub?.cancel();
     // 关闭可能残留的 SnackBar：其退出动画的 AnimationController 在 widget 失活后
     // 仍会 tick，并尝试访问已销毁的 Scaffold 祖先 → 抛「deactivated widget」
     // （见用户日志 AnimationController#...for SnackBar）。deactivate 阶段 context
@@ -3952,6 +4043,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _playingFalseDebounce?.cancel();
     _pipActionSub?.cancel();
     _pipActionSub = null;
+    _videoWidthSub?.cancel();
+    _videoHeightSub?.cancel();
     // 退出播放器取消网络变化订阅（缓存档位随播放器生命周期）。
     unawaited(_connectivitySub?.cancel());
     _connectivitySub = null;
@@ -3981,7 +4074,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // 还原系统亮度（避免退出后保留手势调节值）。
     // 注意：resetScreenBrightness 是异步方法，其 PlatformException 在后续微任务抛出，
     // 同步 try/catch 捕获不到，会形成「Uncaught zone error」；故用 .catchError 兜底。
-    _brightnessPlugin.resetApplicationScreenBrightness().catchError((Object _) {});
+    _brightnessPlugin
+        .resetApplicationScreenBrightness()
+        .catchError((Object _) {});
     // 仍在桌面 PiP 时直接退出播放器（返回/Esc/路由替换），兜底恢复
     // 窗口原状（标题栏/尺寸/位置/最大化/置顶），否则小窗状态会残留到其他页面。
     if (_desktopPipActive) {
@@ -4088,7 +4183,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   ),
                   onPressed: () => Navigator.of(context).pop(),
                   visualDensity: VisualDensity.compact,
-                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                  constraints:
+                      const BoxConstraints(minWidth: 36, minHeight: 36),
                   padding: const EdgeInsets.all(7),
                 ),
               ],
@@ -4391,16 +4487,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 ),
               ),
 
-              // 左边缘常驻锁定按钮（锁定时仍可见，作解锁入口）。任何播放/暂停/
-              // 控制层状态都常驻可用（PiP 小窗除外）——纵向与画面中央的播放钮
-              // 同高（Alignment(0, -0.15)），横向错开不会相互遮挡。
-              if (!pipMode)
+              // 左边缘锁定按钮（控制层可见时显示；锁定时仍作为解锁入口）。
+              // 纵向与画面正中的播放钮同高（Alignment.center），横向错开不遮挡。
+              if (_uiVisible && !pipMode)
                 Positioned(
                   left: AppTokens.spaceLg,
                   top: 0,
                   bottom: 0,
                   child: Align(
-                    alignment: const Alignment(0, -0.15),
+                    alignment: Alignment.center,
                     child: _ControlButton(
                       key: const Key('player_lock_edge'),
                       icon: _controller.isLocked
@@ -4414,14 +4509,14 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   ),
                 ),
 
-              // 右边缘常驻截图按钮（与中央播放钮同高；锁定态 / PiP 小窗隐藏，避免误触）
-              if (!_controller.isLocked && !pipMode)
+              // 右边缘截图按钮（控制层可见时显示；锁定态 / PiP 小窗隐藏，避免误触）
+              if (_uiVisible && !_controller.isLocked && !pipMode)
                 Positioned(
                   right: AppTokens.spaceLg,
                   top: 0,
                   bottom: 0,
                   child: Align(
-                    alignment: const Alignment(0, -0.15),
+                    alignment: Alignment.center,
                     child: _ControlButton(
                       key: const Key('player_screenshot_edge'),
                       icon: Icons.camera_alt_rounded,
@@ -4448,7 +4543,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 // 动画（依赖跨状态保持挂载）会被打断。
                 if (!pipMode)
                   Align(
-                    alignment: const Alignment(0, -0.15),
+                    alignment: Alignment.center,
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: <Widget>[
@@ -4457,8 +4552,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                           visible: !_isPlaying && _uiVisible,
                           backward: true,
                           tooltip: l10n.playerPreviousFrame,
-                          onTap: () => unawaited(
-                              _controller.frameStep(backward: true)),
+                          onTap: () =>
+                              unawaited(_controller.frameStep(backward: true)),
                         ),
                         _CenterPlayButton(
                           key: const Key('player_play_pause'),
@@ -4476,8 +4571,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                           visible: !_isPlaying && _uiVisible,
                           backward: false,
                           tooltip: l10n.playerNextFrame,
-                          onTap: () => unawaited(
-                              _controller.frameStep(backward: false)),
+                          onTap: () =>
+                              unawaited(_controller.frameStep(backward: false)),
                         ),
                       ],
                     ),
@@ -4643,6 +4738,174 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final hasPrev = widget.episodes != null && _episodeIndex > 0;
     final hasNext =
         widget.episodes != null && _episodeIndex < widget.episodes!.length - 1;
+    final bool showRotate = PlatformService.instance.isMobile;
+
+    // 底栏按钮统一尺寸 40dp（与 _ControlButton / _DanmakuToggle 一致），
+    // 用于自然宽度估算与窄屏等比缩放。
+    const double btn = 40;
+    const TextStyle timeStyle = TextStyle(color: Colors.white, fontSize: 12);
+    const TextStyle durationStyle =
+        TextStyle(color: Colors.white54, fontSize: 12);
+
+    // 上一集 / 下一集：与横屏一致，仅在有相邻集时显示。
+    final Widget? prevButton = hasPrev
+        ? _ControlButton(
+            key: const Key('player_prev_ep'),
+            icon: Icons.skip_previous_rounded,
+            tooltip: l10n.playerPreviousEpisode,
+            onTap: _goPrevEpisode,
+          )
+        : null;
+    // 播放 / 暂停
+    final Widget playButton = _ControlButton(
+      key: const Key('player_play_pause_bottom'),
+      icon: _isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
+      tooltip: _isPlaying ? l10n.pause : l10n.play,
+      onTap: () {
+        // 用户手动重播则取消进行中的连播倒计时。
+        _cancelAutoNextCountdown();
+        if (_isPlaying) {
+          _controller.pause();
+        } else {
+          _controller.play();
+        }
+        setState(() => _isPlaying = !_isPlaying);
+      },
+    );
+    // 下一集（不可用时隐藏，同上）
+    final Widget? nextButton = hasNext
+        ? _ControlButton(
+            key: const Key('player_next_ep'),
+            icon: Icons.skip_next_rounded,
+            tooltip: l10n.playerNextEpisode,
+            onTap: _goNextEpisode,
+          )
+        : null;
+    // 弹幕区域（开关 + 发送[开时] + 设置[开时]）
+    // 媒体服务器内容无弹幕源，入口隐藏（§2.5）。
+    final Widget danmakuArea = _DanmakuToggle(
+      key: const Key('player_danmaku_area'),
+      isOn: _danmakuOn,
+      l10n: l10n,
+      onToggle: _toggleDanmaku,
+      onSend: _showDanmakuInput,
+      onSettings: _openDanmakuSettings,
+      onLongPressSettings: _openDanmakuSource,
+    );
+    // 倍速（弹出选择面板）
+    final Widget speedButton = _ControlButton(
+      key: const Key('player_quick_speed'),
+      icon: Icons.speed_rounded,
+      tooltip: '${l10n.playerPlaybackSpeed} ${_controller.playbackSpeed}x',
+      onTap: () => _showSpeedPicker(l10n),
+    );
+    // 比例（循环 default / 4:3 / 16:9 / fill）
+    final Widget aspectButton = _ControlButton(
+      key: const Key('player_quick_aspect'),
+      icon: Icons.aspect_ratio_rounded,
+      tooltip: l10n.playerAspectRatio,
+      onTap: () {
+        const ratios = <String>['default', '4:3', '16:9', 'fill'];
+        final cur = _controller.currentAspectRatio;
+        final idx = ratios.indexOf(cur);
+        final next = ratios[(idx + 1) % ratios.length];
+        unawaited(_controller.setAspectRatio(next));
+        _playerSettings = _playerSettings.copyWith(
+          aspectRatio: PlayerAspectRatio.values.firstWhere(
+            (e) => _aspectRatioToMpv(e) == next,
+            orElse: () => PlayerAspectRatio.defaultRatio,
+          ),
+        );
+        unawaited(_saveEpisodeSetting(
+          'aspectRatio',
+          _playerSettings.aspectRatio.name,
+        ));
+      },
+    );
+
+    final List<Widget> utilityButtons = <Widget>[
+      speedButton,
+      aspectButton,
+      // 手动旋转：自动判定失误时的兜底（仅手机端；桌面窗口自由缩放无需旋转）。
+      if (showRotate)
+        _ControlButton(
+          key: const Key('player_rotate'),
+          icon: Icons.screen_rotation_rounded,
+          tooltip: l10n.playerRotateScreen,
+          onTap: () => unawaited(_rotateOrientation()),
+        ),
+      // 选集：本地合并多集（每文件=一集）也显示；单集 / 无全集列表时隐藏。
+      if (widget.episodes != null && widget.episodes!.length > 1)
+        _ControlButton(
+          key: const Key('player_quick_episodes'),
+          icon: Icons.video_library_rounded,
+          tooltip: l10n.playerEpisodes,
+          onTap: () => _showLineSheet(l10n),
+        ),
+    ];
+
+    // 与横屏一致的按钮顺序：上一集 播放 下一集 | 弹幕 …… 倍速 比例 旋转 选集；
+    // 时间放在进度条两端，控件行只留固定 40dp 的按钮，宽度可精确计算。
+    // 窄屏放不下时左右两组按同一系数等比缩小，按钮尺寸始终一致。
+    // （无全屏按钮：起播自动进入全屏，桌面可用 F 键手动切换。）
+    final int transportCount =
+        1 + (prevButton != null ? 1 : 0) + (nextButton != null ? 1 : 0);
+    final int danmakuCount = _isMediaServer ? 0 : (_danmakuOn ? 3 : 1);
+    final double leftNatural = btn * (transportCount + danmakuCount);
+    final double rightNatural = btn * utilityButtons.length;
+    final Widget controlsRow = LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        const double gap = AppTokens.spaceSm;
+        // 极窄屏时左右两组按同一系数等比收缩，按钮尺寸始终一致。
+        final double need = leftNatural + rightNatural + gap;
+        final double scale = constraints.maxWidth >= need
+            ? 1.0
+            : (constraints.maxWidth / need).clamp(0.0, 1.0);
+        Widget fit(Widget child, double naturalWidth) {
+          if (naturalWidth <= 0) return const SizedBox.shrink();
+          if (scale >= 0.999) return child;
+          // FittedBox(BoxFit.fill) + 等比目标盒 = 精确统一缩放；
+          // 目标盒宽高同比，BoxFit.fill 不会变形。
+          return SizedBox(
+            width: naturalWidth * scale,
+            height: btn * scale,
+            child: FittedBox(
+              fit: BoxFit.fill,
+              child: SizedBox(
+                width: naturalWidth,
+                height: btn,
+                child: child,
+              ),
+            ),
+          );
+        }
+
+        return Row(
+          children: <Widget>[
+            fit(
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  if (prevButton != null) prevButton,
+                  playButton,
+                  if (nextButton != null) nextButton,
+                  if (!_isMediaServer) danmakuArea,
+                ],
+              ),
+              leftNatural,
+            ),
+            const Spacer(),
+            fit(
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: utilityButtons,
+              ),
+              rightNatural,
+            ),
+          ],
+        );
+      },
+    );
 
     return Positioned(
       bottom: 0,
@@ -4682,121 +4945,32 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 );
               },
             ),
-            // 进度条在上、控件行沉底
-            SeekBar(
-              position: _position,
-              duration: _duration,
-              onSeek: _onSeek,
-              // 拖动期间持有控制栏，防止自动隐藏打断拖拽。
-              onDragStart: _acquirePanelHold,
-              onDragEnd: _releasePanelHold,
-            ),
-            // 单行控件：时间 | 上一集 | 播放/暂停 | 下一集 | 弹幕 | 弹幕设置 ‖ 倍速 | 比例 | 选集
-            // （无全屏按钮：起播自动进入全屏，桌面可用 F 键手动切换。）
+            // 进度条独占一行，时间分别放在进度条两端。
             Row(
               children: <Widget>[
-                // 时间
                 Text(
                   _formatDuration(_position),
-                  style: const TextStyle(color: Colors.white, fontSize: 12),
-                ),
-                const Text(
-                  ' / ',
-                  style: TextStyle(color: Colors.white54, fontSize: 12),
-                ),
-                Text(
-                  _formatDuration(_duration),
-                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                  style: timeStyle,
                 ),
                 const SizedBox(width: AppTokens.spaceSm),
-                // 上一集
-                if (hasPrev)
-                  _ControlButton(
-                    key: const Key('player_prev_ep'),
-                    icon: Icons.skip_previous_rounded,
-                    tooltip: l10n.playerPreviousEpisode,
-                    onTap: _goPrevEpisode,
+                Expanded(
+                  child: SeekBar(
+                    position: _position,
+                    duration: _duration,
+                    onSeek: _onSeek,
+                    // 拖动期间持有控制栏，防止自动隐藏打断拖拽。
+                    onDragStart: _acquirePanelHold,
+                    onDragEnd: _releasePanelHold,
                   ),
-                // 播放 / 暂停
-                _ControlButton(
-                  key: const Key('player_play_pause_bottom'),
-                  icon: _isPlaying
-                      ? Icons.pause_rounded
-                      : Icons.play_arrow_rounded,
-                  tooltip: _isPlaying ? l10n.pause : l10n.play,
-                  onTap: () {
-                    // 用户手动重播则取消进行中的连播倒计时。
-                    _cancelAutoNextCountdown();
-                    if (_isPlaying) {
-                      _controller.pause();
-                    } else {
-                      _controller.play();
-                    }
-                    setState(() => _isPlaying = !_isPlaying);
-                  },
                 ),
-                // 下一集
-                if (hasNext)
-                  _ControlButton(
-                    key: const Key('player_next_ep'),
-                    icon: Icons.skip_next_rounded,
-                    tooltip: l10n.playerNextEpisode,
-                    onTap: _goNextEpisode,
-                  ),
-                // 弹幕区域（开关 + 发送[开时] + 设置[开时]）
-                // 媒体服务器内容无弹幕源，入口隐藏（§2.5）。
-                if (!_isMediaServer)
-                  _DanmakuToggle(
-                    key: const Key('player_danmaku_area'),
-                    isOn: _danmakuOn,
-                    l10n: l10n,
-                    onToggle: _toggleDanmaku,
-                    onSend: _showDanmakuInput,
-                    onSettings: _openDanmakuSettings,
-                    onLongPressSettings: _openDanmakuSource,
-                  ),
-                const Spacer(),
-                // 倍速（弹出选择面板）
-                _ControlButton(
-                  key: const Key('player_quick_speed'),
-                  icon: Icons.speed_rounded,
-                  tooltip:
-                      '${l10n.playerPlaybackSpeed} ${_controller.playbackSpeed}x',
-                  onTap: () => _showSpeedPicker(l10n),
+                const SizedBox(width: AppTokens.spaceSm),
+                Text(
+                  _formatDuration(_duration),
+                  style: durationStyle,
                 ),
-                // 比例（循环 default / 4:3 / 16:9 / fill）
-                _ControlButton(
-                  key: const Key('player_quick_aspect'),
-                  icon: Icons.aspect_ratio_rounded,
-                  tooltip: l10n.playerAspectRatio,
-                  onTap: () {
-                    const ratios = <String>['default', '4:3', '16:9', 'fill'];
-                    final cur = _controller.currentAspectRatio;
-                    final idx = ratios.indexOf(cur);
-                    final next = ratios[(idx + 1) % ratios.length];
-                    unawaited(_controller.setAspectRatio(next));
-                    _playerSettings = _playerSettings.copyWith(
-                      aspectRatio: PlayerAspectRatio.values.firstWhere(
-                        (e) => _aspectRatioToMpv(e) == next,
-                        orElse: () => PlayerAspectRatio.defaultRatio,
-                      ),
-                    );
-                    unawaited(_saveEpisodeSetting(
-                      'aspectRatio',
-                      _playerSettings.aspectRatio.name,
-                    ));
-                  },
-                ),
-                // 选集：本地合并多集（每文件=一集）也显示；单集 / 无全集列表时隐藏。
-                if (widget.episodes != null && widget.episodes!.length > 1)
-                  _ControlButton(
-                    key: const Key('player_quick_episodes'),
-                    icon: Icons.video_library_rounded,
-                    tooltip: l10n.playerEpisodes,
-                    onTap: () => _showLineSheet(l10n),
-                  ),
               ],
             ),
+            controlsRow,
           ],
         ),
       ),

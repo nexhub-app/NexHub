@@ -8024,6 +8024,12 @@ abstract class AppLocalizations {
   /// **'Lock Orientation'**
   String get playerDefaultOrientation;
 
+  /// No description provided for @playerOrientationFollowVideo.
+  ///
+  /// In en, this message translates to:
+  /// **'Follow Video'**
+  String get playerOrientationFollowVideo;
+
   /// No description provided for @playerOrientationAuto.
   ///
   /// In en, this message translates to:
@@ -8041,6 +8047,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Landscape'**
   String get playerOrientationLandscape;
+
+  /// No description provided for @playerRotateScreen.
+  ///
+  /// In en, this message translates to:
+  /// **'Rotate Screen'**
+  String get playerRotateScreen;
 
   /// No description provided for @playerGestureSeekMultiplier.
   ///

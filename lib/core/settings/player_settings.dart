@@ -18,7 +18,10 @@ enum AudioChannel { auto, stereo, mono }
 enum PlayerAspectRatio { defaultRatio, ratio43, ratio169, fill }
 
 /// 播放器锁定方向（项 1：合并旧 playerDefaultOrientation + 锁方向）。
-enum PlayerLockOrientation { auto, portrait, landscape }
+///
+/// [followVideo]：按视频宽高自动切横竖（竖视频锁竖屏 / 横视频锁横屏），
+/// 默认值；[auto]：不锁定，跟随系统旋转设置。
+enum PlayerLockOrientation { auto, portrait, landscape, followVideo }
 
 /// 播放器左右拖动 Seek 区间倍率。
 enum SeekMultiplier { half, normal, double }
@@ -71,7 +74,7 @@ class PlayerSettings {
     this.autoSelectLine = true,
     this.autoPlayCountdownSeconds = 0,
     this.subtitleFontSize = 16.0,
-    this.lockOrientation = PlayerLockOrientation.landscape,
+    this.lockOrientation = PlayerLockOrientation.followVideo,
     this.seekMultiplier = SeekMultiplier.normal,
     this.longPressSpeedUp = true,
     this.longPressSpeed = 2.0,
@@ -201,11 +204,12 @@ class PlayerSettings {
         orElse: () => PlayerAspectRatio.defaultRatio,
       );
     }
-    PlayerLockOrientation lockOrientation = PlayerLockOrientation.auto;
+    // 缺失 / 非法值回退到默认「跟随视频」，老用户已持久化过的选择不受影响。
+    PlayerLockOrientation lockOrientation = PlayerLockOrientation.followVideo;
     if (json['lockOrientation'] is String) {
       lockOrientation = PlayerLockOrientation.values.firstWhere(
         (e) => e.name == json['lockOrientation'],
-        orElse: () => PlayerLockOrientation.auto,
+        orElse: () => PlayerLockOrientation.followVideo,
       );
     }
     SeekMultiplier seekMultiplier = SeekMultiplier.normal;

@@ -4130,13 +4130,19 @@ class AppLocalizationsZh extends AppLocalizations {
   String get playerDefaultOrientation => '锁定方向';
 
   @override
-  String get playerOrientationAuto => '自动跟随';
+  String get playerOrientationFollowVideo => '跟随视频';
+
+  @override
+  String get playerOrientationAuto => '跟随系统';
 
   @override
   String get playerOrientationPortrait => '竖屏';
 
   @override
   String get playerOrientationLandscape => '横屏';
+
+  @override
+  String get playerRotateScreen => '旋转屏幕';
 
   @override
   String get playerGestureSeekMultiplier => '拖动进度倍率';

@@ -417,6 +417,13 @@ class SettingsSegmentedTile<T extends Object> extends StatelessWidget {
   /// 场景——与卡内其他行（文本框/开关）视觉统一，不出现「卡中卡」。
   final bool boxed;
 
+  /// 选中段是否显示对勾图标（默认 true，MD3 标准行为）。
+  /// 段数较多（≥4）时分段按钮宽度吃紧，可关掉对勾避免窄屏溢出。
+  final bool showSelectedIcon;
+
+  /// 段数多到窄屏放不下时是否允许横向滚动（默认 false，保持原布局）。
+  final bool scrollable;
+
   const SettingsSegmentedTile({
     super.key,
     required this.title,
@@ -426,6 +433,8 @@ class SettingsSegmentedTile<T extends Object> extends StatelessWidget {
     required this.segments,
     this.margin,
     this.boxed = true,
+    this.showSelectedIcon = true,
+    this.scrollable = false,
   });
 
   @override
@@ -435,6 +444,7 @@ class SettingsSegmentedTile<T extends Object> extends StatelessWidget {
       from: 0.93,
       child: SegmentedButton<T>(
         selected: selected,
+        showSelectedIcon: showSelectedIcon,
         onSelectionChanged: (selection) {
           // MD3「Selected」：单选组选中 → tick。
           AppHaptics.tick();
@@ -443,6 +453,13 @@ class SettingsSegmentedTile<T extends Object> extends StatelessWidget {
         segments: segments,
       ),
     );
+    // 段数多时允许横向滚动：窄屏下不出现 RenderFlex 溢出。
+    final Widget segmentedView = scrollable
+        ? SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: segmented,
+          )
+        : segmented;
     // 非卡框模式：平铺（标题/说明由本控件渲染，无卡中卡）。
     if (!boxed) {
       return Padding(
@@ -457,7 +474,7 @@ class SettingsSegmentedTile<T extends Object> extends StatelessWidget {
                   ),
             ),
             const SizedBox(height: AppTokens.spaceXs),
-            segmented,
+            segmentedView,
           ],
         ),
       );
@@ -466,7 +483,7 @@ class SettingsSegmentedTile<T extends Object> extends StatelessWidget {
       title: title,
       description: description,
       margin: margin,
-      children: <Widget>[segmented],
+      children: <Widget>[segmentedView],
     );
   }
 }

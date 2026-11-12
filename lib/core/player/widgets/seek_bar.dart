@@ -73,6 +73,9 @@ class _SeekBarState extends State<SeekBar> {
             SliderTheme(
               data: SliderThemeData(
                 trackHeight: 4,
+                // 指定 padding 后轨道铺满控件宽度（默认左右各让出 24dp
+                // overlay 半径，窄屏上显得两端很空）；6dp 恰好容下拇指。
+                padding: const EdgeInsets.symmetric(horizontal: 6),
                 activeTrackColor: scheme.primary,
                 inactiveTrackColor: scheme.onSurface.withValues(alpha: 0.2),
                 thumbColor: scheme.primary,

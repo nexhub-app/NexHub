@@ -4217,6 +4217,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get playerDefaultOrientation => 'Lock Orientation';
 
   @override
+  String get playerOrientationFollowVideo => 'Follow Video';
+
+  @override
   String get playerOrientationAuto => 'Follow System';
 
   @override
@@ -4224,6 +4227,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get playerOrientationLandscape => 'Landscape';
+
+  @override
+  String get playerRotateScreen => 'Rotate Screen';
 
   @override
   String get playerGestureSeekMultiplier => 'Drag Seek Multiplier';

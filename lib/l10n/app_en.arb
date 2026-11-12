@@ -2330,9 +2330,11 @@
     "description": "Error message shown when a local file fails to load in specialized readers"
   },
   "playerDefaultOrientation": "Lock Orientation",
+  "playerOrientationFollowVideo": "Follow Video",
   "playerOrientationAuto": "Follow System",
   "playerOrientationPortrait": "Portrait",
   "playerOrientationLandscape": "Landscape",
+  "playerRotateScreen": "Rotate Screen",
   "playerGestureSeekMultiplier": "Drag Seek Multiplier",
   "playerSeekHalf": "0.5x",
   "playerSeekNormal": "1x",

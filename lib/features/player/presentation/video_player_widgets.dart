@@ -18,8 +18,8 @@ class _DanmakuToggle extends StatelessWidget {
   final VoidCallback? onSettings;
   final VoidCallback? onLongPressSettings;
 
-  /// 弹幕区紧凑图标按钮：无背景框，触控区 32×32 + compact 密度，
-  /// 不抬高所在控件行的高度。
+  /// 弹幕区紧凑图标按钮：无背景框，触控区 40×40。
+  /// compact 密度会把约束下界减 8，故传 48 保证实际 40。
   Widget _miniBtn({
     required IconData icon,
     required Color color,
@@ -28,12 +28,12 @@ class _DanmakuToggle extends StatelessWidget {
     VoidCallback? onLongPress,
   }) =>
       IconButton(
-        icon: Icon(icon, color: color, size: 20),
+        icon: Icon(icon, color: color, size: 24),
         tooltip: tooltip,
         onPressed: onTap,
         onLongPress: onLongPress,
         visualDensity: VisualDensity.compact,
-        constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+        constraints: const BoxConstraints(minWidth: 48, minHeight: 48),
         padding: EdgeInsets.zero,
       );
 
@@ -242,9 +242,8 @@ class _CenterPlayButtonState extends State<_CenterPlayButton>
               // 在被移出树前闪现一下——未展示状态强制透明兜底。
               final double fade =
                   1.0 - Curves.easeIn.transform(Interval(0.3, 1).transform(e));
-              final double opacity = _exit.isAnimating
-                  ? fade
-                  : (_shown ? 1.0 : 0.0);
+              final double opacity =
+                  _exit.isAnimating ? fade : (_shown ? 1.0 : 0.0);
               return Opacity(
                 opacity: opacity,
                 child: Transform.scale(
@@ -327,15 +326,15 @@ class _ControlButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return IconButton(
-      icon: Icon(icon, color: Colors.white, size: 22),
+      icon: Icon(icon, color: Colors.white, size: 24),
       tooltip: tooltip,
       onPressed: onTap,
       onLongPress: onLongPress,
-      // compact 密度 + 36px 约束：默认 padded 触控目标会把按钮撑到 48px 高，
-      // 拉高整个控件行；compact 后实际触控区即 36px。
+      // 统一 40×40 触控区 + 24 图标：底栏左右两侧按钮尺寸一致，视觉对齐
+      // 弹幕区图标；compact 密度会把约束下界减 8，实际尺寸由图标+内边距撑到 40。
       visualDensity: VisualDensity.compact,
-      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-      padding: const EdgeInsets.all(6),
+      constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+      padding: const EdgeInsets.all(8),
     );
   }
 }

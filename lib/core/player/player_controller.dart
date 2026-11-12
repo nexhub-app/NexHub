@@ -156,8 +156,8 @@ class PlayerController extends ChangeNotifier {
   bool _isFullscreen = false;
   bool get isFullscreen => _isFullscreen;
 
- /// 退出全屏后恢复的方向（由播放页按「锁定方向」设置注入；默认自动跟随）。
- /// 进入全屏时临时强制横屏，退出时回到此处声明的方向（项 3 协调）。
+ /// 退出全屏后恢复的方向（由播放页按「锁定方向」设置 / 视频比例注入；
+ /// 默认自动跟随）。全屏切换进出都应用此方向（项 3 协调）。
   List<DeviceOrientation> _baseOrientations = const <DeviceOrientation>[];
   void setBaseOrientations(List<DeviceOrientation> o) => _baseOrientations = o;
 
@@ -176,26 +176,19 @@ class PlayerController extends ChangeNotifier {
     notifyListeners();
   }
 
- /// 切换全屏：进入时锁定横屏 + 隐藏系统 UI；退出时还原。
+ /// 切换全屏：进入时应用当前有效方向（由播放页按锁定方向 / 视频比例注入，
+ /// 不再写死横屏）+ 隐藏系统 UI；退出时还原同一方向 + 恢复系统 UI。
   Future<void> toggleFullscreen() async {
     _isFullscreen = !_isFullscreen;
     try {
       // 方向锁定与系统 UI 模式仅对移动形态有意义；桌面 / 鸿蒙 PC 不产生系统调用。
       if (PlatformService.instance.isMobile) {
-        if (_isFullscreen) {
-          await SystemChrome.setPreferredOrientations(<DeviceOrientation>[
-            DeviceOrientation.landscapeLeft,
-            DeviceOrientation.landscapeRight,
-          ]);
-          await SystemChrome.setEnabledSystemUIMode(
-            SystemUiMode.immersiveSticky,
-          );
-        } else {
-          await SystemChrome.setPreferredOrientations(_baseOrientations);
-          await SystemChrome.setEnabledSystemUIMode(
-            SystemUiMode.edgeToEdge,
-          );
-        }
+        await SystemChrome.setPreferredOrientations(_baseOrientations);
+        await SystemChrome.setEnabledSystemUIMode(
+          _isFullscreen
+              ? SystemUiMode.immersiveSticky
+              : SystemUiMode.edgeToEdge,
+        );
       }
     } on Object {
    // 测试环境或当前平台不支持，忽略。
@@ -1087,7 +1080,7 @@ class PlayerController extends ChangeNotifier {
     _activeTrackRestoreTimer?.cancel();
   // 退出时始终还原方向与系统 UI。
   // 无论是否经过全屏切换，进入播放页时 _applyLockOrientation 可能已锁定方向
-  // （默认 lockOrientation=landscape），必须在此无条件解除。
+  // （横屏 / 竖屏 / 跟随视频），必须在此无条件解除。
   // 桌面 / 鸿蒙 PC 从未改动方向与系统 UI，无需复位。
     if (PlatformService.instance.isMobile) {
       try {
