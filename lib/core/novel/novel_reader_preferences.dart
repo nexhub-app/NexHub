@@ -370,6 +370,10 @@ class NovelReaderPreferences {
   /// 跨章连播开关：一章读完自动加载下一章继续朗读。
   final bool ttsAutoNext;
 
+  /// 记住朗读位置：开启后按书记录「读到第几章第几段」，退出朗读/离开
+  /// 阅读器后再点朗读从该处续读；关闭则每次都从当前章开头读。
+  final bool ttsRememberPosition;
+
   /// 系统 TTS 旁白声音名（空 = 引擎默认）。
   final String ttsSystemNarratorVoice;
 
@@ -530,6 +534,7 @@ class NovelReaderPreferences {
     this.ttsSleepTimer = 0,
     this.ttsBackground = false,
     this.ttsAutoNext = true,
+    this.ttsRememberPosition = true,
     this.ttsSystemNarratorVoice = '',
     this.ttsSystemMaleVoice = '',
     this.ttsSystemFemaleVoice = '',
@@ -609,6 +614,7 @@ class NovelReaderPreferences {
     int? ttsSleepTimer,
     bool? ttsBackground,
     bool? ttsAutoNext,
+    bool? ttsRememberPosition,
     String? ttsSystemNarratorVoice,
     String? ttsSystemMaleVoice,
     String? ttsSystemFemaleVoice,
@@ -703,6 +709,8 @@ class NovelReaderPreferences {
       ttsSleepTimer: ttsSleepTimer ?? this.ttsSleepTimer,
       ttsBackground: ttsBackground ?? this.ttsBackground,
       ttsAutoNext: ttsAutoNext ?? this.ttsAutoNext,
+      ttsRememberPosition:
+          ttsRememberPosition ?? this.ttsRememberPosition,
       ttsSystemNarratorVoice:
           ttsSystemNarratorVoice ?? this.ttsSystemNarratorVoice,
       ttsSystemMaleVoice: ttsSystemMaleVoice ?? this.ttsSystemMaleVoice,
@@ -856,6 +864,10 @@ class NovelReaderPreferences {
       ttsAutoNext: identical(ttsAutoNext, def.ttsAutoNext)
           ? base.ttsAutoNext
           : ttsAutoNext,
+      ttsRememberPosition:
+          identical(ttsRememberPosition, def.ttsRememberPosition)
+              ? base.ttsRememberPosition
+              : ttsRememberPosition,
       ttsSystemNarratorVoice: ttsSystemNarratorVoice == def.ttsSystemNarratorVoice
           ? base.ttsSystemNarratorVoice
           : ttsSystemNarratorVoice,
@@ -1192,6 +1204,7 @@ class NovelReaderPreferences {
         'ttsSleepTimer': ttsSleepTimer,
         'ttsBackground': ttsBackground,
         'ttsAutoNext': ttsAutoNext,
+        'ttsRememberPosition': ttsRememberPosition,
         'ttsSystemNarratorVoice': ttsSystemNarratorVoice,
         'ttsSystemMaleVoice': ttsSystemMaleVoice,
         'ttsSystemFemaleVoice': ttsSystemFemaleVoice,
@@ -1284,6 +1297,8 @@ class NovelReaderPreferences {
       ttsSpeechRate: (json['ttsSpeechRate'] as num?)?.toDouble() ?? 1.0,
       ttsSleepTimer: (json['ttsSleepTimer'] as num?)?.toInt() ?? 0,
       ttsBackground: json['ttsBackground'] as bool? ?? false,
+      ttsRememberPosition:
+          json['ttsRememberPosition'] as bool? ?? true,
       ttsAutoNext: legacyAutoNext
           ? true
           : (json['ttsAutoNext'] as bool? ?? true),

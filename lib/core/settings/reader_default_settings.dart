@@ -322,6 +322,9 @@ class ReaderDefaultSettings {
 
   /// 跨章连播默认值：一章读完自动续读下一章。
   final bool novelTtsAutoNext;
+
+  /// 记住朗读位置默认值：退出朗读/重进后从上次段落续读。
+  final bool novelTtsRememberPosition;
   final int novelTtsSleepTimer;
 
   /// 小说：鼠标滚轮翻页方向反转（仅翻页模式生效；滚动模式由底层滚动接管）。
@@ -497,6 +500,7 @@ class ReaderDefaultSettings {
     this.novelHeaderFooterMargin = 12.0,
     this.novelTtsBackground = false,
     this.novelTtsAutoNext = true,
+    this.novelTtsRememberPosition = true,
     this.novelTtsSleepTimer = 0,
     this.novelScrollWheelInverted = false,
     // 排版增强
@@ -641,6 +645,7 @@ class ReaderDefaultSettings {
     double? novelHeaderFooterMargin,
     bool? novelTtsBackground,
     bool? novelTtsAutoNext,
+    bool? novelTtsRememberPosition,
     int? novelTtsSleepTimer,
     bool? novelScrollWheelInverted,
     // 排版增强
@@ -848,6 +853,8 @@ class ReaderDefaultSettings {
             novelHeaderFooterMargin ?? this.novelHeaderFooterMargin,
         novelTtsBackground: novelTtsBackground ?? this.novelTtsBackground,
         novelTtsAutoNext: novelTtsAutoNext ?? this.novelTtsAutoNext,
+        novelTtsRememberPosition:
+            novelTtsRememberPosition ?? this.novelTtsRememberPosition,
         novelTtsSleepTimer: novelTtsSleepTimer ?? this.novelTtsSleepTimer,
         novelScrollWheelInverted:
             novelScrollWheelInverted ?? this.novelScrollWheelInverted,
@@ -1009,6 +1016,7 @@ class ReaderDefaultSettings {
         'novelHeaderFooterMargin': novelHeaderFooterMargin,
         'novelTtsBackground': novelTtsBackground,
         'novelTtsAutoNext': novelTtsAutoNext,
+        'novelTtsRememberPosition': novelTtsRememberPosition,
         'novelTtsSleepTimer': novelTtsSleepTimer,
         'novelScrollWheelInverted': novelScrollWheelInverted,
         // 排版增强
@@ -1337,6 +1345,8 @@ class ReaderDefaultSettings {
           json['novelTtsBackground'] as bool? ?? false,
       novelTtsAutoNext:
           legacyAutoNext ? true : (json['novelTtsAutoNext'] as bool? ?? true),
+      novelTtsRememberPosition:
+          json['novelTtsRememberPosition'] as bool? ?? true,
       novelTtsSleepTimer:
           (json['novelTtsSleepTimer'] as num?)?.toInt() ?? 0,
       novelScrollWheelInverted:
@@ -1570,6 +1580,7 @@ class ReaderDefaultSettings {
       ttsSpeechRate: novelTtsSpeechRate,
       ttsBackground: novelTtsBackground,
       ttsAutoNext: novelTtsAutoNext,
+      ttsRememberPosition: novelTtsRememberPosition,
       ttsSleepTimer: novelTtsSleepTimer,
       scrollWheelInverted: novelScrollWheelInverted,
       // 排版增强

@@ -97,6 +97,16 @@ TtsSentencePlayer buildDefaultTtsSentencePlayer({
         // 通道就绪后再显式 play()。直接 open(play: true) 会在输出设备
         // 就绪前推进播放时钟，听感上就是「每句开头被吞掉一小段」。
         await player.open(Media(file.path), play: false);
+        // 等解码器探到时长再起播（多数平台 open 返回后仍在校验/建音频
+        // 输出通道，此刻 play 会吞掉开头几十毫秒）。拿不到时长就按
+        // 超时兜底继续，不阻塞朗读。
+        try {
+          await player.stream.duration
+              .firstWhere((Duration d) => d > Duration.zero)
+              .timeout(const Duration(milliseconds: 400));
+        } on Object {
+          // 超时 / 无时长推送：直接起播。
+        }
         // 等待播放完成：轮询 position+state（无原生 completion 事件，
         // 用「不再播放」回调简化处理——音频很短，等待播放状态结束即可）。
         final completer = Completer<bool>();

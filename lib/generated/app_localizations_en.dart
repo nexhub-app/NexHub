@@ -10145,6 +10145,13 @@ class AppLocalizationsEn extends AppLocalizations {
       'Load and read the next chapter automatically when one finishes';
 
   @override
+  String get ttsRememberPosition => 'Remember reading position';
+
+  @override
+  String get ttsRememberPositionDesc =>
+      'Resume from the paragraph you last listened to after stopping or leaving the reader';
+
+  @override
   String get ttsCastTitle => 'Characters & voices';
 
   @override

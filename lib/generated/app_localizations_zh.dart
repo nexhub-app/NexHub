@@ -9883,6 +9883,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get ttsAutoNextDesc => '一章读完自动加载下一章继续朗读';
 
   @override
+  String get ttsRememberPosition => '记住朗读位置';
+
+  @override
+  String get ttsRememberPositionDesc => '退出朗读或离开阅读器后，下次从上次读到的段落继续';
+
+  @override
   String get ttsCastTitle => '角色与声音';
 
   @override

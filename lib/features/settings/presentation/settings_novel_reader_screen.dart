@@ -1959,6 +1959,13 @@ class _SettingsNovelReaderScreenState extends State<SettingsNovelReaderScreen> {
                         onChanged: (v) =>
                             _update(_settings.copyWith(novelTtsAutoNext: v)),
                       ),
+                      SettingsSwitchTile(
+                        title: l10n.ttsRememberPosition,
+                        subtitle: l10n.ttsRememberPositionDesc,
+                        value: _settings.novelTtsRememberPosition,
+                        onChanged: (v) => _update(
+                            _settings.copyWith(novelTtsRememberPosition: v)),
+                      ),
                       const SizedBox(height: AppTokens.spaceMd),
                       const Divider(height: 1),
                       const SizedBox(height: AppTokens.spaceMd),

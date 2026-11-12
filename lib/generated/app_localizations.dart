@@ -18912,6 +18912,18 @@ abstract class AppLocalizations {
   /// TTS cast sheet string
   ///
   /// In en, this message translates to:
+  /// **'Remember reading position'**
+  String get ttsRememberPosition;
+
+  /// No description provided for @ttsRememberPositionDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Resume from the paragraph you last listened to after stopping or leaving the reader'**
+  String get ttsRememberPositionDesc;
+
+  /// TTS cast sheet string
+  ///
+  /// In en, this message translates to:
   /// **'Characters & voices'**
   String get ttsCastTitle;
 

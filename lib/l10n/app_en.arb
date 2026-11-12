@@ -5551,6 +5551,11 @@
   "@ttsAutoNextDesc": {
     "description": "TTS cast sheet string"
   },
+  "ttsRememberPosition": "Remember reading position",
+  "@ttsRememberPosition": {
+    "description": "TTS cast sheet string"
+  },
+  "ttsRememberPositionDesc": "Resume from the paragraph you last listened to after stopping or leaving the reader",
   "ttsCastTitle": "Characters & voices",
   "@ttsCastTitle": {
     "description": "TTS cast sheet string"

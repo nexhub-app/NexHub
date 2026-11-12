@@ -1588,12 +1588,14 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     // 避免用户已经在别的章阅读却被拽回上次朗读的位置）。
     int startIndex = 0;
     try {
-      final NovelTtsPosition? saved =
-          await NovelTtsProgressStore.instance.get(widget.novelId);
-      if (saved != null &&
-          saved.chapterIndex == _chapterIndex &&
-          _paragraphs.isNotEmpty) {
-        startIndex = saved.paragraphIndex.clamp(0, _paragraphs.length - 1);
+      if (_prefs.ttsRememberPosition) {
+        final NovelTtsPosition? saved =
+            await NovelTtsProgressStore.instance.get(widget.novelId);
+        if (saved != null &&
+            saved.chapterIndex == _chapterIndex &&
+            _paragraphs.isNotEmpty) {
+          startIndex = saved.paragraphIndex.clamp(0, _paragraphs.length - 1);
+        }
       }
     } on Object {
       // 读取失败按章首处理。
@@ -1604,6 +1606,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
 
   /// 朗读推进到新段落：持久化位置（退出/重进后据此续读）。
   void _onTtsProgress(int paragraphIndex) {
+    if (!_prefs.ttsRememberPosition) return;
     unawaited(NovelTtsProgressStore.instance
         .save(widget.novelId, _chapterIndex, paragraphIndex));
   }
@@ -3430,19 +3433,16 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     if (seg == null) return _scrollFraction;
     final double? top = _segmentTopPixels(seg, pos);
     if (top == null) return _scrollFraction;
-    final _NovelScrollSegment? next = _segmentByChapter(target + 1);
-    // 本章正文的结束位置：下一段段首；末段则扣掉列表底部留白与尾项。
-    final double? end = next != null
-        ? _segmentTopPixels(next, pos)
-        : (pos.maxScrollExtent +
-            pos.viewportDimension -
-            _prefs.margin -
-            _kScrollFooterHeight);
-    if (end == null || end <= top) return _scrollFraction;
-    // 分母 = 本章可滚距离（视口顶部从章首走到「视口底贴章末」）。
-    final double scrollable = end - top - pos.viewportDimension;
+    // 段高内部优先「相邻段段首差分」，退而用上次已知段高，末段扣留白。
+    final double? height = _segmentHeight(seg, pos);
+    if (height == null || height <= 0) return _scrollFraction;
+    final double scrollable = height - pos.viewportDimension;
     if (scrollable <= 1) return 1.0; // 整章不到一屏：看到即读完
-    return ((pos.pixels - top) / scrollable).clamp(0.0, 1.0);
+    final double ratio =
+        ((pos.pixels - top) / scrollable).clamp(0.0, 1.0);
+    // 读到 98.5% 以上即视为本章读完：显示层四舍五入不该把「已到章末」
+    // 呈现成 99%，也避免最后几像素的测量误差让进度卡在 99%。
+    return ratio >= 0.985 ? 1.0 : ratio;
   }
 
   /// 临近段末时追加下一章（提前约一屏半准备，接缝处不空窗）。
@@ -3735,7 +3735,14 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     if (sc == null || !sc.hasClients) return;
     // 临近章末先把下一章追加进来（无缝连排）。
     _maybeAppendNextSegment(sc.position);
-    final double frac = _chapterScrollRatio(sc.position);
+    double frac = _chapterScrollRatio(sc.position);
+    // 同章内防回退：图片加载等布局变化会让段首位置漂移，章内比例随之
+    // 往回跳几个百分点（表现为「进度条回弹」）。只要用户不是在向上滚，
+    // 就把比例钳在当前值之上。
+    if (sc.position.userScrollDirection != ScrollDirection.forward &&
+        frac < _scrollFraction) {
+      frac = _scrollFraction;
+    }
     // 滚动模式此前完全不保存阅读位置（只有分页模式的 _onPageChanged 会存），
     // 退出重进永远回到第一页。这里把滚动比例换算成与分页模式同语义的
     // 「等效页码」后写盘，两种模式互相切换也不会错位。
@@ -10879,6 +10886,19 @@ class _NovelInlineSettings extends StatelessWidget {
                                     ? AppHaptics.toggleOn()
                                     : AppHaptics.toggleOff();
                                 onChanged(prefs.copyWith(ttsAutoNext: v));
+                              },
+                            ),
+                            SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: Text(l10n.ttsRememberPosition),
+                              subtitle: Text(l10n.ttsRememberPositionDesc),
+                              value: prefs.ttsRememberPosition,
+                              onChanged: (v) {
+                                v == true
+                                    ? AppHaptics.toggleOn()
+                                    : AppHaptics.toggleOff();
+                                onChanged(prefs
+                                    .copyWith(ttsRememberPosition: v));
                               },
                             ),
                             ListTile(

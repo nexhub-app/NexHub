@@ -5507,6 +5507,11 @@
   "@ttsAutoNextDesc": {
     "description": "TTS cast sheet string"
   },
+  "ttsRememberPosition": "记住朗读位置",
+  "@ttsRememberPosition": {
+    "description": "TTS cast sheet string"
+  },
+  "ttsRememberPositionDesc": "退出朗读或离开阅读器后，下次从上次读到的段落继续",
   "ttsCastTitle": "角色与声音",
   "@ttsCastTitle": {
     "description": "TTS cast sheet string"
