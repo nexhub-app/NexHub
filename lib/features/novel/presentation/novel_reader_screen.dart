@@ -3352,15 +3352,41 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   }
 
   /// 段首在滚动坐标系（内容坐标，不随滚动变化）中的位置。
+  /// 段首的**内容坐标**（可用于和 [ScrollPosition.pixels] 直接比较）。
+  ///
+  /// 用 [RenderAbstractViewport.getOffsetToReveal]（`Scrollable.ensureVisible`
+  /// 内部用的同一套 API）换算，而不是「pixels + 屏幕 y」：
+  /// 正文区在屏幕上不一定从 0 开始（安全区 / 外层留白），用屏幕坐标会让
+  /// 段首永远差一个常量偏移 —— 主导章判定因此几乎永不成立、进度就按旧章
+  /// 一直算（表现为卡住 / 恒 0）。
   double? _segmentTopPixels(_NovelScrollSegment seg, ScrollPosition pos) {
     final BuildContext? ctx = seg.anchorKey.currentContext;
     final RenderObject? ro = ctx?.findRenderObject();
     if (ro is RenderBox && ro.attached && ro.hasSize) {
-      final double top = pos.pixels + ro.localToGlobal(Offset.zero).dy;
-      seg.lastTopPixels = top;
-      return top;
+      try {
+        final RenderAbstractViewport viewport =
+            RenderAbstractViewport.of(ro);
+        final double offset = viewport.getOffsetToReveal(ro, 0.0).offset;
+        seg.lastTopPixels = offset;
+        return offset;
+      } on Object {
+        // 视口不可用（极端布局）时退回屏幕坐标换算。
+        final double top = pos.pixels + ro.localToGlobal(Offset.zero).dy;
+        seg.lastTopPixels = top;
+        return top;
+      }
     }
     // 段首项被列表回收（滚出缓存区）时用最近一次测量值兜底。
+    if (seg.lastTopPixels == null &&
+        _scrollSegments.isNotEmpty &&
+        identical(_scrollSegments.first, seg)) {
+      // 从未测量过：缓冲区第一段的段首一定在内容起点（顶部留白处）。
+      // 没有这条兜底，从章末进入/直接拖到章末时第一段永远没坐标，
+      // 主导章判定整个失效（进度卡住）。
+      final double origin = _prefs.margin;
+      seg.lastTopPixels = origin;
+      return origin;
+    }
     return seg.lastTopPixels;
   }
 
@@ -3368,29 +3394,31 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   double? _segmentHeight(_NovelScrollSegment seg, ScrollPosition pos) {
     final double? top = _segmentTopPixels(seg, pos);
     if (top == null) return seg.knownHeight;
+    double? measured;
     final _NovelScrollSegment? next = _segmentByChapter(seg.chapterIndex + 1);
     if (next != null) {
       final double? nextTop = _segmentTopPixels(next, pos);
-      if (nextTop != null && nextTop > top) {
-        final double h = nextTop - top;
-        seg.knownHeight = h;
-        return h;
-      }
-      // 下一段刚追加、尚未完成首帧测量：用上一次已知段高兜底。
-      // 绝不能退回「内容总高 - 段首」（会把下一章高度算进本章，导致
-      // 章内比例被严重低估、进度被写错）。
-      return seg.knownHeight;
+      // 下一段尚未测量时不能退回「内容总高 - 段首」（会把下一章算进本章）。
+      if (nextTop != null && nextTop > top) measured = nextTop - top;
+    } else {
+      // 真·末段：用内容总高推算，但要扣掉列表底部留白与尾部提示项。
+      final double contentH = pos.maxScrollExtent +
+          pos.viewportDimension -
+          _prefs.margin -
+          _kScrollFooterHeight;
+      final double h = contentH - top;
+      if (h > 0) measured = h;
     }
-    // 真·末段：用内容总高推算，但必须扣掉列表底部留白与尾部提示项，
-    // 否则章末比例永远差一截（到不了 100%）。
-    final double contentH = pos.maxScrollExtent +
-        pos.viewportDimension -
-        _prefs.margin -
-        _kScrollFooterHeight;
-    final double h = contentH - top;
-    if (h <= 0) return seg.knownHeight;
-    seg.knownHeight = h;
-    return h;
+    if (measured == null) return seg.knownHeight;
+    final double? prev = seg.knownHeight;
+    // 死区：图片逐步加载会让段高反复小幅变化，直接采用会让进度条每次
+    // 抖动几个百分点（用户说的「回弹」）。变化 <10% 时沿用旧值。
+    if (prev != null && prev > 1) {
+      final double diff = (measured - prev).abs() / prev;
+      if (diff < 0.10) return prev;
+    }
+    seg.knownHeight = measured;
+    return measured;
   }
 
   /// 视口顶部所在章段（「主导章」）。
@@ -3420,7 +3448,6 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   /// 瞬间需要「按新章」先算出比例再去改状态。无法测量时沿用上一次比例，
   /// 避免用整条缓冲的全局比例把章内进度写小（表现为进度条回弹）。
   double _chapterScrollRatio(ScrollPosition pos, {int? chapterIndex}) {
-    final int target = chapterIndex ?? _chapterIndex;
     final double max = pos.maxScrollExtent;
     if (max <= 0) return 0;
     // 滚到列表最底＝读完（末章末页 / 已无更多内容）：直接给 100%，
@@ -3434,15 +3461,30 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       if (scrollable <= 1) return 1.0;
       return (pos.pixels / scrollable).clamp(0.0, 1.0);
     }
+    // 默认按「视口当前所在的章」计算，而不是 `_chapterIndex`：
+    // 朗读中会刻意不切主导章，若仍按它算，往回翻到上一章时比例会一直是 0。
+    final int target =
+        chapterIndex ?? _dominantScrollChapter(pos) ?? _chapterIndex;
     final _NovelScrollSegment? seg = _segmentByChapter(target);
     if (seg == null) return _scrollFraction;
     final double? top = _segmentTopPixels(seg, pos);
     if (top == null) return _scrollFraction;
     // 段高内部优先「相邻段段首差分」，退而用上次已知段高，末段扣留白。
     final double? height = _segmentHeight(seg, pos);
-    if (height == null || height <= 0) return _scrollFraction;
-    final double scrollable = height - pos.viewportDimension;
-    if (scrollable <= 1) return 1.0; // 整章不到一屏：看到即读完
+    final double scrollable = (height ?? 0) - pos.viewportDimension;
+    if (height == null || scrollable <= 1) {
+      // 段高测不到（新段未布局 / 段短于一屏）：用「内容末尾扣尾部留白」
+      // 近似当章末，保证比例仍随滚动变化——绝不能返回旧值把进度卡死。
+      final double approxEnd = max +
+          pos.viewportDimension -
+          _prefs.margin -
+          _kScrollFooterHeight;
+      final double denom = approxEnd - top - pos.viewportDimension;
+      if (denom > 1) {
+        return ((pos.pixels - top) / denom).clamp(0.0, 1.0);
+      }
+      return pos.pixels >= top ? 1.0 : 0.0;
+    }
     final double ratio =
         ((pos.pixels - top) / scrollable).clamp(0.0, 1.0);
     // 读到 98.5% 以上即视为本章读完：显示层四舍五入不该把「已到章末」
@@ -3751,6 +3793,13 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     if (_restoringPage) return;
     final sc = _scrollController;
     if (sc == null || !sc.hasClients) return;
+    // 先刷新各段「段首位置」缓存：段首 anchor 一旦滚出列表缓存区就再也
+    // 测不到（RenderObject 被回收），必须在它还可见时把内容坐标记下来。
+    // 否则多段时主导章判定全是 null、章内比例只能用旧值 —— 这正是
+    // 「滑到章末后进度卡住 / 往回翻恒 0」的根因。
+    for (final _NovelScrollSegment seg in _scrollSegments) {
+      _segmentTopPixels(seg, sc.position);
+    }
     // 临近章末先把下一章追加进来（无缝连排）。
     _maybeAppendNextSegment(sc.position);
     double frac = _chapterScrollRatio(sc.position);
@@ -6764,12 +6813,16 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
           pos.maxScrollExtent - _prefs.margin - _kScrollFooterHeight;
       target = fraction * (scrollable > 1 ? scrollable : pos.maxScrollExtent);
     } else {
-      final _NovelScrollSegment? seg = _segmentByChapter(_chapterIndex);
+      // 基准章取「视口当前所在章」，与进度显示口径一致。
+      final int seekChapter = _dominantScrollChapter(pos) ?? _chapterIndex;
+      final _NovelScrollSegment? seg = _segmentByChapter(seekChapter);
       if (seg != null) {
         final double? top = _segmentTopPixels(seg, pos);
         final double? height = _segmentHeight(seg, pos);
         if (top != null && height != null && height > 0) {
-          target = top + fraction * height;
+          // 比例口径是「可滚距离」（段高 − 视口），不是段高。
+          final double scrollable = height - pos.viewportDimension;
+          target = top + fraction * (scrollable > 1 ? scrollable : 0);
         }
       }
     }

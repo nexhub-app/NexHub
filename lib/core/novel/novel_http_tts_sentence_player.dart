@@ -100,12 +100,17 @@ TtsSentencePlayer buildDefaultTtsSentencePlayer({
     final Player player = Player();
     control?.attach(player);
     try {
-      await file.writeAsBytes(bytes);
-      // 交给 media_kit 自己决定起播时机（open 默认立即播）：早期改成
-      // 「先 open(play:false) 再手动 play」反而打乱了内核的 ready 时序，
-      // 实测每句开头更容易丢音，故维持原生 open 行为。
-      await player.open(Media(file.path));
-      // 等待播放完成（新建播放器，completed 初值可靠）。
+      // flush: 必须等字节真正落盘再播放。默认不刷盘时播放器可能读到
+      // 尚未写完的头部（尤其是刚创建的小文件），开头若干帧解析失败
+      // 被跳过 —— 听感正是「起播丢几个字」。
+      await file.writeAsBytes(bytes, flush: true);
+      // 起播丢帧对策（「预热后重播」）：
+      // 每句新建播放器时，音频输出设备要几百毫秒才真正出声，这段时间
+      // 相当于把句子开头几个字吞掉（用户感受就是「每段开头丢几个字」）。
+      // 做法：先静音起播把设备顶起来，等设备稳定后 seek 回 0 再放开音量
+      // ——丢帧发生在静音期间，用户实际听到的是完整句子。
+      await player.open(Media(file.path), play: false);
+      // 先挂好完成监听（起播前挂，避免短句错过）。
       final Completer<bool> completer = Completer<bool>();
       final StreamSubscription<bool> doneSub =
           player.stream.completed.listen((bool done) {
@@ -116,6 +121,28 @@ TtsSentencePlayer buildDefaultTtsSentencePlayer({
         if (!completer.isCompleted) completer.complete(false);
       });
       try {
+        try {
+          await player.setVolume(0);
+          await player.play();
+          // 给音频设备约 200ms 启动时间（覆盖典型起播丢帧窗口）。
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+          if (!completer.isCompleted) {
+            // 回到句首再恢复音量：保证第一个字完整。
+            try {
+              await player.seek(Duration.zero);
+            } on Object {
+              // seek 失败就按当前位置继续（部分内核不支持短音频 seek）。
+            }
+            await player.setVolume(100);
+          }
+        } on Object {
+          // 音量控制不可用：退回直接播放（至少不阻断朗读）。
+          try {
+            await player.play();
+          } on Object {
+            // 起播失败交由下方超时兜底。
+          }
+        }
         final ok = await completer.future.timeout(const Duration(seconds: 60),
             onTimeout: () {
           try {

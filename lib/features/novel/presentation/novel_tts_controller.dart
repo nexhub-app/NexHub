@@ -431,7 +431,10 @@ class NovelTtsController extends ChangeNotifier {
       onProgress?.call(_currentIndex);
     }
     _isSpeaking = true;
-    await _tts!.speak(segment.text);
+    // 前导顿号：系统引擎每次 speak 都要"起转"，头几十毫秒的音频会被
+    // 丢掉（听感是每句开头少几个字）。前面加一个静默标点，让引擎先处理
+    // 标点把起转时间耗掉，正文就能完整读出。
+    await _tts!.speak('、${segment.text}');
   }
 
   /// 句在其段落内的序号（AI 分镜 unitKey 对位用）。
@@ -664,9 +667,9 @@ class NovelTtsController extends ChangeNotifier {
     }
     // 完成事件可能由原生在非平台线程回调，延后到事件循环再朗读下一句，
     // 规避 flutter_tts 通道线程告警（shell.cc: The ... channel sent a
-    // message ... on a non-platform thread）。再留 ~40ms 间隙：原生引擎
+    // message ... on a non-platform thread）。再留 ~80ms 间隙：原生引擎
     // 在上一句刚结束时立刻 speak，句首容易被削掉（每句开头缺字）。
-    Future<void>.delayed(const Duration(milliseconds: 40),
+    Future<void>.delayed(const Duration(milliseconds: 80),
         () => _speakSystemCurrent(_sessionGeneration));
   }
 

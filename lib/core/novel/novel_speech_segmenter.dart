@@ -288,7 +288,13 @@ void _appendNarrationSentence(String raw, List<SpeechSegment> out,
     final content = s.substring(colon + 1).trim();
     if (maybeRole.isNotEmpty && content.isNotEmpty) {
       final role = _stripCueSuffix(maybeRole);
-      if (role.isNotEmpty) {
+      // 必须真的剥掉了「说话 cue」才算「角色 + 内容」句式。
+      // 否则普通句子里的冒号（如「他抬头看了看：天色不早了」）会被当成
+      // 说话人前缀，冒号前的整段文字被吞掉——听感就是「每段开头缺字」。
+      final bool hadCue = role != maybeRole.trim();
+      // 角色名限 4 字以内：「老王叹了口气说：」这类是「动作 + 说」，
+      // 若当成角色名会把「叹了口气」整段吞掉，宁可整句按旁白读。
+      if (role.isNotEmpty && hadCue && role.length <= 4) {
         out.add(SpeechSegment(
           text: content,
           role: role,
