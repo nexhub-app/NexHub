@@ -9506,6 +9506,12 @@ abstract class AppLocalizations {
   /// **'About a second after you stop on a page (page turn or scroll settle) it is rendered in the background; toggle and tune each effect below'**
   String get motionEffectEnabledDesc;
 
+  /// No description provided for @motionEffectDevWarning.
+  ///
+  /// In en, this message translates to:
+  /// **'In development, highly unstable: may crash, overheat, drain more battery, or glitch. Enable for testing only'**
+  String get motionEffectDevWarning;
+
   /// No description provided for @motionInteractiveTitle.
   ///
   /// In en, this message translates to:

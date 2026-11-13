@@ -5015,6 +5015,10 @@ class AppLocalizationsEn extends AppLocalizations {
       'About a second after you stop on a page (page turn or scroll settle) it is rendered in the background; toggle and tune each effect below';
 
   @override
+  String get motionEffectDevWarning =>
+      'In development, highly unstable: may crash, overheat, drain more battery, or glitch. Enable for testing only';
+
+  @override
   String get motionInteractiveTitle => 'Interactive reading';
 
   @override

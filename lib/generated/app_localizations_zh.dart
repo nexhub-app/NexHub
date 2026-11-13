@@ -4916,6 +4916,10 @@ class AppLocalizationsZh extends AppLocalizations {
       '翻页停留或条漫滚动停止约 1 秒后，当前页在后台自动渲染为动态页；下方可逐项开关与调参';
 
   @override
+  String get motionEffectDevWarning =>
+      '开发阶段 · 极不稳定：可能出现闪退、发热、耗电加剧或画面异常，建议仅在体验时开启';
+
+  @override
   String get motionInteractiveTitle => '互动阅读';
 
   @override

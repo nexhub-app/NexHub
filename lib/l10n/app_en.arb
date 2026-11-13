@@ -2741,6 +2741,7 @@
   "motionEffectDesc": "Render static comic pages into layered motion (parallax / breathing / particles / light / manga action). Works in paged and webtoon modes",
   "motionEffectEnabled": "Enable motion effects",
   "motionEffectEnabledDesc": "About a second after you stop on a page (page turn or scroll settle) it is rendered in the background; toggle and tune each effect below",
+  "motionEffectDevWarning": "In development, highly unstable: may crash, overheat, drain more battery, or glitch. Enable for testing only",
   "motionInteractiveTitle": "Interactive reading",
   "motionInteractiveDesc": "In single-page paged mode, tap the centre of the page to focus it and reveal the motion through a tear; tap again to dismiss. Zoomed, rotated, webtoon and double-page views keep the plain motion overlay",
   "motionEffectStateOff": "Off",

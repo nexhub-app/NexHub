@@ -164,6 +164,9 @@ class MotionEffectsAdjustments extends StatelessWidget {
           value: m.enabled,
           onChanged: (v) => onChanged(m.copyWith(enabled: v)),
         ),
+        // 开发阶段警示：开关关闭时同样展示，先告知风险。
+        const SizedBox(height: AppTokens.spaceXs),
+        _DevStageBanner(text: l10n.motionEffectDevWarning),
         SettingsExpand(
           visible: m.enabled,
           padding: EdgeInsets.zero,
@@ -350,6 +353,50 @@ class MotionEffectsAdjustments extends StatelessWidget {
           children: chips,
         ),
       ],
+    );
+  }
+}
+
+/// 开发阶段警示条（图标 + 文案，低饱和警示底色）。
+///
+/// 动态效果主开关旁的常驻提示：不随开关状态隐藏，说明功能成熟度与风险。
+class _DevStageBanner extends StatelessWidget {
+  const _DevStageBanner({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    final Color warn = AppStatusColors.warn(scheme);
+
+    return Container(
+      key: const ValueKey<String>('motion.devStageBanner'),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppTokens.spaceMd,
+        vertical: AppTokens.spaceSm,
+      ),
+      decoration: BoxDecoration(
+        color: AppStatusColors.containerOf(warn),
+        borderRadius: BorderRadius.circular(AppTokens.radiusSm),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Icon(Icons.science_outlined, size: 16, color: warn),
+          const SizedBox(width: AppTokens.spaceSm),
+          Expanded(
+            child: Text(
+              text,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: warn, height: 1.35),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

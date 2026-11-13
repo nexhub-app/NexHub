@@ -2719,6 +2719,7 @@
   "motionEffectDesc": "把静态漫画页渲染成分层动效（视差 / 呼吸 / 粒子 / 光效 / 漫画动势），翻页与条漫滚动模式均生效",
   "motionEffectEnabled": "开启动态效果",
   "motionEffectEnabledDesc": "翻页停留或条漫滚动停止约 1 秒后，当前页在后台自动渲染为动态页；下方可逐项开关与调参",
+  "motionEffectDevWarning": "开发阶段 · 极不稳定：可能出现闪退、发热、耗电加剧或画面异常，建议仅在体验时开启",
   "motionInteractiveTitle": "互动阅读",
   "motionInteractiveDesc": "翻页单页模式下点按页面中心，聚焦当前页并撕开揭示动效，再点收回；放大、旋转、条漫与双页模式保持普通动态页",
   "motionEffectStateOff": "已关闭",
