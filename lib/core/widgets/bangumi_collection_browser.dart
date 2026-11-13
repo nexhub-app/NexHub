@@ -15,6 +15,7 @@ import '../services/bangumi/bangumi_sync_service.dart';
 import '../theme/app_tokens.dart';
 import '../utils/app_haptics.dart';
 import 'bangumi_subject_sheet.dart';
+import 'desktop_horizontal_scroll.dart';
 
 class BangumiCollectionBrowser extends StatefulWidget {
   const BangumiCollectionBrowser({super.key});
@@ -151,16 +152,27 @@ class _BangumiCollectionBrowserState extends State<BangumiCollectionBrowser> {
           ],
         ),
         const SizedBox(height: AppTokens.spaceSm),
-        // ───── 收藏状态筛选 ─────
-        Wrap(
-          spacing: AppTokens.spaceSm,
-          children: <Widget>[
-            _statusChip(l10n.bangumiStateWish, BangumiCollectionType.wish),
-            _statusChip(l10n.bangumiStateDoing, BangumiCollectionType.doing),
-            _statusChip(l10n.bangumiStateCollect, BangumiCollectionType.collect),
-            _statusChip(l10n.bangumiStateOnHold, BangumiCollectionType.onHold),
-            _statusChip(l10n.bangumiStateDropped, BangumiCollectionType.dropped),
-          ],
+        // ───── 收藏状态筛选（固定一排，横向滚动）─────
+        DesktopHorizontalScroll(
+          builder: (context, controller) => SingleChildScrollView(
+            controller: controller,
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: <Widget>[
+                _statusChip(l10n.bangumiStateWish, BangumiCollectionType.wish),
+                const SizedBox(width: AppTokens.spaceSm),
+                _statusChip(l10n.bangumiStateDoing, BangumiCollectionType.doing),
+                const SizedBox(width: AppTokens.spaceSm),
+                _statusChip(
+                    l10n.bangumiStateCollect, BangumiCollectionType.collect),
+                const SizedBox(width: AppTokens.spaceSm),
+                _statusChip(l10n.bangumiStateOnHold, BangumiCollectionType.onHold),
+                const SizedBox(width: AppTokens.spaceSm),
+                _statusChip(
+                    l10n.bangumiStateDropped, BangumiCollectionType.dropped),
+              ],
+            ),
+          ),
         ),
         const SizedBox(height: AppTokens.spaceMd),
         // ───── 结果 ─────
