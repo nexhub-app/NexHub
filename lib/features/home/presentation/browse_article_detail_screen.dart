@@ -1357,9 +1357,11 @@ class _HtmlImage extends StatelessWidget {
     final int index = images.indexOf(url);
     return GestureDetector(
       // 长按：保存 / 复制 / 分享（对齐漫画阅读器图片功能）。
-      onLongPress: () => unawaited(
-        showRssImageActions(context, url: url, pageUrl: pageUrl),
-      ),
+      // MD3「Thunk」：长按呼出正文图片操作菜单。
+      onLongPress: () {
+        AppHaptics.thunk();
+        unawaited(showRssImageActions(context, url: url, pageUrl: pageUrl));
+      },
       onTap: () {
         if (images.isEmpty) return;
         Navigator.of(context).push(

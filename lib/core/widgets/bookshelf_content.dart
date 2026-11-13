@@ -1074,6 +1074,7 @@ class _BookshelfGridState extends State<_BookshelfGrid> {
         itemCount: _items.length,
         onReorderItem: _onReorderItem,
         buildDefaultDragHandles: false,
+        onReorderStart: (_) => AppHaptics.thunk(),
         proxyDecorator: _listProxyDecorator,
         itemBuilder: (ctx, i) => KeyedSubtree(
           key: ValueKey<String>(_items[i].id),

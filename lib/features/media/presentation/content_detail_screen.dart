@@ -59,6 +59,7 @@ import '../../../core/services/source_repository.dart';
 import '../../../core/theme/app_tokens.dart';
 import '../../../core/theme/image_accent_extractor.dart';
 import '../../../core/theme/theme_controller.dart';
+import '../../../core/utils/app_haptics.dart';
 import '../../../core/widgets/app_cover_image.dart';
 import '../../../core/widgets/app_error_state.dart';
 import '../../../core/widgets/bangumi_full_tab.dart';
@@ -626,6 +627,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
     final AppLocalizations l10n = AppLocalizations.of(context);
     final FavoritesManager fav = context.read<FavoritesManager>();
     final bool wasFavorite = fav.isFavorite(widget.item.id, _favType);
+    // MD3「Toggle」：收藏开关切换 → tick。
+    wasFavorite ? AppHaptics.toggleOff() : AppHaptics.toggleOn();
     // 显式传入 _favType：脚本源条目缺 sourceType，若让 manager 自行兜底
     // animeSource，会与上方 isFavorite(_favType) 查询的类型不一致，
     // 表现为「详情页点收藏无效」（收藏进了别的书架，图标不亮）。
@@ -663,6 +666,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
 
   Future<void> _removeFromFavorites() async {
     final AppLocalizations l10n = AppLocalizations.of(context);
+    // MD3「Toggle」：取消收藏 → tick。
+    AppHaptics.toggleOff();
     await context.read<FavoritesManager>().removeFavorite(
           widget.item.id,
           _favType,
@@ -788,6 +793,10 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
   }
 
   Future<void> _toggleRead(Episode ep, int index) async {
+    // MD3「Toggle」：已读开关切换 → tick。
+    _progressRepo.isRead(widget.item.id, index)
+        ? AppHaptics.toggleOff()
+        : AppHaptics.toggleOn();
     await _progressRepo.toggleRead(widget.item.id, index);
     if (mounted) setState(() {});
   }
@@ -795,11 +804,14 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
   Future<void> _toggleBookmark(Episode ep, int index) async {
     final UnifiedBookmarkRepository? repo = _bookmarkRepo;
     if (repo == null) return;
+    final bool currentlyBookmarked = _bookmarkedIndices.contains(index);
+    // MD3「Toggle」：书签开关切换 → tick。
+    currentlyBookmarked ? AppHaptics.toggleOff() : AppHaptics.toggleOn();
     final bool nowBookmarked = await repo.toggle(
       widget.item.id,
       ep,
       index,
-      currentlyBookmarked: _bookmarkedIndices.contains(index),
+      currentlyBookmarked: currentlyBookmarked,
     );
     if (!mounted) return;
     setState(() {

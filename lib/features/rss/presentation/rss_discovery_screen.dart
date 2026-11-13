@@ -18,6 +18,7 @@ import '../../../core/rss/rss_feed_discovery.dart';
 import '../../../core/rss/rss_manager.dart';
 import '../../../core/scraper/http_fetcher.dart';
 import '../../../core/theme/app_tokens.dart';
+import '../../../core/utils/app_haptics.dart';
 import '../../../core/widgets/app_animations.dart';
 import '../../../core/widgets/app_list_tile.dart';
 import '../../../features/settings/presentation/widgets/settings_widgets.dart';
@@ -247,9 +248,14 @@ class _RssDiscoveryScreenState extends State<RssDiscoveryScreen> {
                 onceKey: 'disc:${c.url}',
                 child: CheckboxListTile(
                   value: on,
-                  onChanged: (v) => setState(() {
-                    v == true ? _selected.add(c.url) : _selected.remove(c.url);
-                  }),
+                  onChanged: (v) {
+                    v == true ? AppHaptics.toggleOn() : AppHaptics.toggleOff();
+                    setState(() {
+                      v == true
+                          ? _selected.add(c.url)
+                          : _selected.remove(c.url);
+                    });
+                  },
                   title: Text(c.title ?? c.url,
                       maxLines: 1, overflow: TextOverflow.ellipsis),
                   subtitle: Text(

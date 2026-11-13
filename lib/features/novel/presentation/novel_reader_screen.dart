@@ -1504,6 +1504,8 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       detailUrl: widget.detailUrl,
       coverUrl: widget.coverUrl,
     );
+    // MD3「Toggle」：收藏开关切换 → tick。
+    wasFavorite ? AppHaptics.toggleOff() : AppHaptics.toggleOn();
     await fav.toggleFavorite(item);
     if (mounted) {
       setState(() => _isFav = !wasFavorite);
@@ -7774,6 +7776,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
                           ? Center(child: Text(l10n.slotsHidden))
                           : ReorderableListView(
                               buildDefaultDragHandles: false,
+                              onReorderStart: (_) => AppHaptics.thunk(),
                               onReorderItem: (int oldI, int newI) {
                                 setSheetState(() {
                                   final item = working.removeAt(oldI);
@@ -9001,8 +9004,12 @@ class _NovelPageWidget extends StatelessWidget {
             height: scrollH,
             child: GestureDetector(
               onTap: () => onImageTap?.call(item.image.url, item.image.source),
-              onLongPress: () =>
-                  onImageTap?.call(item.image.url, item.image.source),
+              onLongPress: onImageTap == null
+                  ? null
+                  : () {
+                      AppHaptics.light();
+                      onImageTap!(item.image.url, item.image.source);
+                    },
               child: SourceImage(
                 url: item.image.url,
                 source: item.image.source ?? source,
@@ -12418,6 +12425,8 @@ class _NovelImageFavoriteViewerState extends State<_NovelImageFavoriteViewer> {
 
   Future<void> _toggleFavorite() async {
     final AppLocalizations l10n = AppLocalizations.of(context);
+    // MD3「Toggle」：图片收藏开关切换 → tick。
+    (_isFavorite ?? false) ? AppHaptics.toggleOff() : AppHaptics.toggleOn();
     final bool added = await _manager.toggleByUrl(
       source: ImageFavoriteSource.novel,
       workId: widget.workId,
@@ -13017,6 +13026,7 @@ class _NovelTranslationSheetState extends State<_NovelTranslationSheet> {
 
   /// 切换精译开关：持久化并重算缓存过期状态（开关改变指纹输入）。
   Future<void> _toggleRefined(bool v) async {
+    v ? AppHaptics.toggleOn() : AppHaptics.toggleOff();
     setState(() => _refined = v);
     try {
       await TranslationOptionsStore().setRefinedEnabled(v);

@@ -24,6 +24,7 @@ import '../../../core/media/media_kit_network.dart';
 import '../../../core/player/player_runtime.dart';
 import '../../../core/rss/rss_feed.dart';
 import '../../../core/theme/app_tokens.dart';
+import '../../../core/utils/app_haptics.dart';
 
 /// 文章内的播客音频播放控件。
 class RssPodcastPlayer extends StatefulWidget {
@@ -279,6 +280,7 @@ class _RssPodcastPlayerState extends State<RssPodcastPlayer> {
                         max: _duration.inSeconds > 0
                             ? _duration.inSeconds.toDouble()
                             : 1,
+                        onChangeStart: (_) => AppHaptics.light(),
                         onChanged: (double v) =>
                             _player.seek(Duration(seconds: v.toInt())),
                       ),

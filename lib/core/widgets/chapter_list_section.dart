@@ -786,6 +786,8 @@ class _ChapterListSectionState extends State<ChapterListSection> {
     int i,
     bool isRead,
   ) {
+    // MD3「Thunk」：长按呼出章节操作菜单。
+    AppHaptics.thunk();
     final AppLocalizations l10n = AppLocalizations.of(context);
     final List<Widget> items = <Widget>[
       if (widget.onToggleRead != null)

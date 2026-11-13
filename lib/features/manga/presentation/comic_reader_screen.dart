@@ -1191,6 +1191,9 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
     if (url == null) return;
     final l10n = AppLocalizations.of(context);
     final bool added;
+    final bool willFavorite = !_isPageImageFav;
+    // MD3「Toggle」：图片收藏开关切换 → tick。
+    willFavorite ? AppHaptics.toggleOn() : AppHaptics.toggleOff();
     try {
       // URL 身份去重：避免章节/页码顺序漂移导致收藏重启后「丢失」。
       added = await _imageFavMgr.toggleComicImage(
@@ -1244,6 +1247,8 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
       detailUrl: widget.detailUrl,
       coverUrl: widget.coverUrl,
     );
+    // MD3「Toggle」：收藏开关切换 → tick。
+    wasFavorite ? AppHaptics.toggleOff() : AppHaptics.toggleOn();
     await fav.toggleFavorite(item);
     if (mounted) {
       setState(() => _isFav = !wasFavorite);
@@ -1361,6 +1366,8 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
     final chapter =
         widget.chapters.isEmpty ? null : widget.chapters[_chapterIndex];
     final bool added;
+    // MD3「Toggle」：章节书签开关切换 → tick。
+    _chapterBookmarked ? AppHaptics.toggleOff() : AppHaptics.toggleOn();
     try {
       added = await _bookmarks.toggleChapter(
         widget.comicId,

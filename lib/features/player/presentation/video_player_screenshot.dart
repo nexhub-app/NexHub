@@ -82,6 +82,8 @@ extension _VideoScreenshot on _VideoPlayerScreenState {
       label: label,
       imageUrl: path,
     );
+    // MD3「Toggle」：截图收藏开关切换 → tick。
+    added ? AppHaptics.toggleOn() : AppHaptics.toggleOff();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(

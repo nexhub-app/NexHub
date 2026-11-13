@@ -291,6 +291,7 @@ class _NovelReplaceRuleScreenState extends State<NovelReplaceRuleScreen> {
         child: _buildHeader(l10n, rules.length),
       ),
       buildDefaultDragHandles: false,
+      onReorderStart: (_) => AppHaptics.thunk(),
       // 拖起时的浮卡：只加一层随拖动渐入的投影，卡片自身样式不变。
       proxyDecorator: (Widget child, int index, Animation<double> animation) {
         return AnimatedBuilder(

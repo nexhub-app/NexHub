@@ -16,6 +16,7 @@ import '../../../core/favorites/favorite_group.dart';
 import '../../../core/favorites/favorites_manager.dart';
 import '../../../core/models/plugin_config.dart';
 import '../../../core/theme/app_tokens.dart';
+import '../../../core/utils/app_haptics.dart';
 import '../../../core/widgets/app_alert_dialog.dart';
 import '../../../core/widgets/app_animations.dart';
 import '../../../core/widgets/app_glass_bar.dart';
@@ -84,6 +85,7 @@ class _SettingsCategoriesScreenState extends State<SettingsCategoriesScreen> {
                 ? _EmptyState(l10n: l10n)
                 : ReorderableListView.builder(
                     buildDefaultDragHandles: false,
+                    onReorderStart: (_) => AppHaptics.thunk(),
 padding: EdgeInsets.fromLTRB(
                       AppTokens.spaceLg,
                       AppTokens.spaceXs,

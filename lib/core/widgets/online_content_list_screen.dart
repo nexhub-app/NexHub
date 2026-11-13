@@ -18,6 +18,7 @@ import '../settings/layout_settings.dart';
 import '../novel/novel_progress_manager.dart';
 import '../comic/comic_progress_manager.dart';
 import '../theme/app_tokens.dart';
+import '../utils/app_haptics.dart';
 import 'app_alert_dialog.dart';
 import 'app_animations.dart';
 import 'app_card.dart';
@@ -1268,6 +1269,8 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
               behavior: desktopHorizontalDragBehavior(context),
               child: TabBar(
                 controller: _tabController,
+                // MD3「Selected」：分类页签单选 → tick。
+                onTap: (_) => AppHaptics.tick(),
                 isScrollable: true,
                 indicatorSize: TabBarIndicatorSize.tab,
                 indicator: BoxDecoration(

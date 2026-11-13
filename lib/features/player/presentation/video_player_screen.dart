@@ -3680,6 +3680,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       detailUrl: widget.detailUrl,
       coverUrl: widget.coverUrl,
     );
+    // MD3「Toggle」：收藏开关切换 → tick。
+    wasFavorite ? AppHaptics.toggleOff() : AppHaptics.toggleOn();
     await fav.toggleFavorite(item);
     if (mounted) {
       setState(() => _isFav = !wasFavorite);
@@ -4239,6 +4241,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 // 换方向则重置），指示器按累加秒数显示。
                 onDoubleTapDown: (TapDownDetails d) {
                   if (_controller.isLocked) return;
+                  // 双击跳转 / 暂停：轻震确认已识别为双击。
+                  AppHaptics.light();
                   final width = context.size?.width ?? 0;
                   final dx = d.localPosition.dx;
                   final int direction =

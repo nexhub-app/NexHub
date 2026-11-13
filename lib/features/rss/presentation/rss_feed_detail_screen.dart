@@ -238,6 +238,10 @@ class _RssFeedDetailScreenState extends State<RssFeedDetailScreen> {
   }
 
   Future<void> _onToggleFavorite(RssItem item) async {
+    // MD3「Toggle」：文章收藏开关切换 → tick。
+    _store.isFavorite(widget.feed.id, item)
+        ? AppHaptics.toggleOff()
+        : AppHaptics.toggleOn();
     final fav = await _store.toggleFavorite(widget.feed.id, item);
     if (mounted) {
       setState(() {});

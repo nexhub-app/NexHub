@@ -23,6 +23,7 @@ import 'package:provider/provider.dart';
 
 import '../../home/presentation/browse_article_detail_screen.dart';
 import 'rss_article_tiles.dart';
+import '../../../core/utils/app_haptics.dart';
 import '../../../core/widgets/app_glass_bar.dart';
 
 /// 一条聚合搜索结果：来自哪个订阅源 + 哪篇文章。
@@ -118,6 +119,10 @@ class _RssSearchScreenState extends State<RssSearchScreen> {
   }
 
   Future<void> _toggleFavorite(_SearchHit hit) async {
+    // MD3「Toggle」：文章收藏开关切换 → tick。
+    RssArticleStore.instance.isFavorite(hit.feed.id, hit.item)
+        ? AppHaptics.toggleOff()
+        : AppHaptics.toggleOn();
     await RssArticleStore.instance.toggleFavorite(hit.feed.id, hit.item);
     if (mounted) setState(() {});
   }

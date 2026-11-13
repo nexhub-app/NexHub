@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/gestures.dart';
 
 import '../../../core/comic/models/reader_preferences.dart';
+import '../../../core/utils/app_haptics.dart';
 
 /// 点击区域动作。
 enum _TapAction { prev, next, toggle }
@@ -238,6 +239,8 @@ class _ReaderTapZonesState extends State<ReaderTapZones> {
         _longPressFired = true;
         _longPressHeld = true;
         final pos = _downPos;
+        // 长按缩放启动：一次轻震确认进入手势。
+        AppHaptics.light();
         if (widget.onLongPressAt != null && pos != null) {
           widget.onLongPressAt!(pos);
         } else {

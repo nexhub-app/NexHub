@@ -7,6 +7,7 @@ import '../../../core/platform/platform_service.dart';
 import '../../../core/settings/general_settings.dart';
 import '../../../core/theme/app_tokens.dart';
 import '../../../core/theme/app_theme.dart';
+import '../../../core/utils/app_haptics.dart';
 import '../../../core/widgets/app_animations.dart';
 import '../../../core/widgets/app_alert_dialog.dart';
 import 'package:nexhub/generated/app_localizations.dart';
@@ -108,6 +109,7 @@ class _SettingsHeroScreenState extends State<SettingsHeroScreen> {
                   : ReorderableListView(
                       padding: const EdgeInsets.all(AppTokens.spaceLg),
                       buildDefaultDragHandles: false,
+                      onReorderStart: (_) => AppHaptics.thunk(),
                       // 美化拖动动画：缓出曲线 + 上浮 + 主色描边 + 双层阴影
                       // 与源管理页保持一致风格。
                       proxyDecorator: (Widget child, int index,

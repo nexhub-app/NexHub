@@ -14,35 +14,55 @@
 /// - [confirm]：任务成功（下载完成、导入成功）→ mediumImpact；
 /// - [reject]：任务失败/操作被拒 → heavyImpact；
 /// - [gestureThreshold]：手势越阈（下拉刷新触发）→ lightImpact。
+///
+/// 鸿蒙适配：OHOS 引擎把各常量实现为固定时长的裸震动（selectionClick
+/// 100ms、mediumImpact 150ms、heavyImpact 300ms，无振幅控制，见引擎
+/// PlatformPlugin.vibrateHapticFeedback），实际手感比 Android 的振幅包络
+/// 触感重得多。故在鸿蒙上整体降一档：轻量反馈统一用 lightImpact(25ms)，
+/// 确认类用 selectionClick(100ms)，重击类用 mediumImpact(150ms)。
 library;
 
 import 'package:flutter/services.dart';
+
+import '../platform/platform_service.dart';
 
 /// 触觉反馈入口。各方法即 MD3 触感语义，实现全部为官方 [HapticFeedback]。
 class AppHaptics {
   AppHaptics._();
 
+  static bool get _isOhos => PlatformService.instance.isOHOS;
+
   /// MD3「Tick」：轻刻度反馈。离散值变化与单选：滑块分档、分段按钮、
   /// 底部导航切换、筛选 chip 选中、翻页。
-  static Future<void> tick() => HapticFeedback.selectionClick();
+  static Future<void> tick() => _isOhos
+      ? HapticFeedback.lightImpact()
+      : HapticFeedback.selectionClick();
 
   /// MD3「Click」：点按确认。按钮、列表项、图标按钮等常规点按。
   static Future<void> click() => HapticFeedback.lightImpact();
 
   /// MD3「Toggle on」：开关/复选框切换到开启。
-  static Future<void> toggleOn() => HapticFeedback.selectionClick();
+  static Future<void> toggleOn() => _isOhos
+      ? HapticFeedback.lightImpact()
+      : HapticFeedback.selectionClick();
 
   /// MD3「Toggle off」：开关/复选框切换到关闭。
-  static Future<void> toggleOff() => HapticFeedback.selectionClick();
+  static Future<void> toggleOff() => _isOhos
+      ? HapticFeedback.lightImpact()
+      : HapticFeedback.selectionClick();
 
   /// MD3「Thunk」：重击。长按菜单开始、拖拽拿起（重排序）、破坏性操作确认。
-  static Future<void> thunk() => HapticFeedback.heavyImpact();
+  static Future<void> thunk() =>
+      _isOhos ? HapticFeedback.mediumImpact() : HapticFeedback.heavyImpact();
 
   /// MD3「Confirm」：任务成功确认。下载/安装完成、导入/保存成功。
-  static Future<void> confirm() => HapticFeedback.mediumImpact();
+  static Future<void> confirm() => _isOhos
+      ? HapticFeedback.selectionClick()
+      : HapticFeedback.mediumImpact();
 
   /// MD3「Reject」：任务失败/操作被拒。下载失败、校验不通过等错误场景。
-  static Future<void> reject() => HapticFeedback.heavyImpact();
+  static Future<void> reject() =>
+      _isOhos ? HapticFeedback.mediumImpact() : HapticFeedback.heavyImpact();
 
   /// MD3「Gesture threshold」：手势越过触发阈值。下拉刷新开始刷新的一刻。
   static Future<void> gestureThreshold() => HapticFeedback.lightImpact();

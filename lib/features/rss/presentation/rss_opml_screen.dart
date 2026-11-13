@@ -20,6 +20,7 @@ import '../../../core/widgets/app_alert_dialog.dart';
 import '../../../core/rss/rss_manager.dart';
 import '../../../core/rss/rss_opml.dart';
 import '../../../core/theme/app_tokens.dart';
+import '../../../core/utils/app_haptics.dart';
 import '../../../core/widgets/app_animations.dart';
 import '../../../core/widgets/app_card.dart';
 import '../../../core/widgets/app_list_tile.dart';
@@ -353,11 +354,16 @@ class _OpmlImportPreviewSheetState extends State<_OpmlImportPreviewSheet> {
                       onceKey: 'opmlprev:${e.xmlUrl}',
                       child: CheckboxListTile(
                         value: on,
-                        onChanged: (v) => setState(() {
+                        onChanged: (v) {
                           v == true
-                              ? _selected.add(e.xmlUrl)
-                              : _selected.remove(e.xmlUrl);
-                        }),
+                              ? AppHaptics.toggleOn()
+                              : AppHaptics.toggleOff();
+                          setState(() {
+                            v == true
+                                ? _selected.add(e.xmlUrl)
+                                : _selected.remove(e.xmlUrl);
+                          });
+                        },
                         title: Text(e.title,
                             maxLines: 1, overflow: TextOverflow.ellipsis),
                         subtitle: e.categories.isNotEmpty

@@ -14,6 +14,7 @@ import '../models/plugin_config.dart';
 import '../search/hot_search_keywords.dart';
 import '../search/search_history_store.dart';
 import '../theme/app_tokens.dart';
+import '../utils/app_haptics.dart';
 import 'package:nexhub/core/widgets/app_alert_dialog.dart';
 
 /// A focus-triggered suggestions panel with history + hot keywords.
@@ -87,6 +88,8 @@ class _SearchSuggestionsState extends State<SearchSuggestions> {
 
   /// 长按历史胶囊：确认后删除该条历史。
   Future<void> _confirmRemoveEntry(String keyword) async {
+    // MD3「Thunk」：长按删除搜索历史（破坏性确认）。
+    AppHaptics.thunk();
     final AppLocalizations l10n = AppLocalizations.of(context);
     final bool? confirmed = await showDialog<bool>(
       context: context,

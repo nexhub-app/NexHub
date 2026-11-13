@@ -1,5 +1,6 @@
 import 'package:material_ui/material_ui.dart';
 import '../theme/app_tokens.dart';
+import '../utils/app_haptics.dart';
 
 /// 顶部 Tab 项定义（图标 + 文字，文字来自 l10n）。
 class AppTabItem {
@@ -39,6 +40,8 @@ class AppTabBar extends StatelessWidget implements PreferredSizeWidget {
         compact ? Theme.of(context).textTheme.labelLarge : null;
     return TabBar(
       controller: controller,
+      // MD3「Selected」：页签单选 → tick。
+      onTap: (_) => AppHaptics.tick(),
       dividerColor: scheme.outlineVariant,
       labelColor: scheme.primary,
       unselectedLabelColor: scheme.onSurfaceVariant,

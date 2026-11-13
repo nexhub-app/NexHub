@@ -13,6 +13,7 @@ import '../favorites/favorite_group.dart';
 import '../favorites/favorites_manager.dart';
 import '../models/plugin_config.dart';
 import '../theme/app_tokens.dart';
+import '../utils/app_haptics.dart';
 import 'app_alert_dialog.dart';
 import 'app_animations.dart';
 
@@ -208,6 +209,7 @@ class _GroupManageSheet extends StatelessWidget {
                   child: ReorderableListView.builder(
                     shrinkWrap: true,
                     buildDefaultDragHandles: false,
+                    onReorderStart: (_) => AppHaptics.thunk(),
                     itemCount: groups.length,
                     onReorderItem: (oldIndex, newIndex) {
                       final List<String> ids =

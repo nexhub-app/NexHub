@@ -33,6 +33,7 @@ import 'package:nexhub/generated/app_localizations.dart';
 import '../models/plugin_config.dart';
 import '../settings/detail_appearance_settings.dart';
 import '../theme/app_tokens.dart';
+import '../utils/app_haptics.dart';
 import 'app_animations.dart';
 import 'app_card.dart';
 import 'bangumi_sync_dialog.dart';
@@ -967,6 +968,8 @@ class _ContentDetailTabbedShellState extends State<ContentDetailTabbedShell>
               ),
               bottom: TabBar(
                 controller: controller,
+                // MD3「Selected」：页签单选 → tick。
+                onTap: (_) => AppHaptics.tick(),
                 isScrollable: _tabs.length > 3,
                 tabAlignment:
                     _tabs.length > 3 ? TabAlignment.start : TabAlignment.fill,

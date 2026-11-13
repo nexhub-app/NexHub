@@ -971,6 +971,8 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
       // 拖起：记录被拖项几何与指针基准，断口从起始位开始跟随；落下：
       // 清空，行圆角复位、融回连体卡。全程不整页 setState。
       onReorderStart: (int index) {
+        // MD3「Thunk」：拖拽拿起。
+        AppHaptics.thunk();
         final Rect? r = _dragItemRect(sources[index].id);
         _proxyTile = _sourceTile(l10n, auth, sources[index]);
         _dragSources = sources;

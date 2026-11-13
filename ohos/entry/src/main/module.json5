@@ -75,6 +75,8 @@
     ],
     "requestPermissions": [
       {"name" :  "ohos.permission.INTERNET"},
+      // Flutter HapticFeedback 经引擎调用 vibrator，未声明时系统拒绝震动。
+      {"name" :  "ohos.permission.VIBRATE"},
       {
         "name": "ohos.permission.KEEP_BACKGROUND_RUNNING",
         "reason": "$string:keep_background_running_reason",

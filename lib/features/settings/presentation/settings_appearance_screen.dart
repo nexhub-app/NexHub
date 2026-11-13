@@ -464,6 +464,7 @@ class _SettingsAppearanceScreenState extends State<SettingsAppearanceScreen> {
                                   divisions: 8,
                                   value: store.settings.glassBlurSigma
                                       .clamp(0.0, 40.0),
+                                  onChangeStart: (_) => AppHaptics.light(),
                                   onChanged: store.setGlassBlurSigma,
                                 ),
                               ),
@@ -482,6 +483,7 @@ class _SettingsAppearanceScreenState extends State<SettingsAppearanceScreen> {
                                   divisions: 11,
                                   value: store.settings.glassBarOpacity
                                       .clamp(0.4, 0.95),
+                                  onChangeStart: (_) => AppHaptics.light(),
                                   onChanged: store.setGlassBarOpacity,
                                 ),
                               ),
@@ -715,6 +717,7 @@ class _SettingsAppearanceScreenState extends State<SettingsAppearanceScreen> {
                                   .round(),
                               value: s.backgroundBlurSigma
                                   .clamp(kDetailBlurSigmaMin, kDetailBlurSigmaMax),
+                              onChangeStart: (_) => AppHaptics.light(),
                               onChanged: store.setBackgroundBlurSigma,
                             ),
                           ),

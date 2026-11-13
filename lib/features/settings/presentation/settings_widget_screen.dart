@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../core/home_widget/home_widget_settings.dart';
 import '../../../core/theme/app_tokens.dart';
+import '../../../core/utils/app_haptics.dart';
 import '../../../core/widgets/app_animations.dart';
 import '../../../core/widgets/app_glass_bar.dart';
 import '../../../generated/app_localizations.dart';
@@ -83,6 +84,7 @@ class SettingsWidgetScreen extends StatelessWidget {
                             max: 40,
                             divisions: 8,
                             value: s.blurSigma.clamp(0.0, 40.0),
+                            onChangeStart: (_) => AppHaptics.light(),
                             onChanged: store.setBlurSigma,
                           ),
                         ),
@@ -98,6 +100,7 @@ class SettingsWidgetScreen extends StatelessWidget {
                             max: 1.0,
                             divisions: 8,
                             value: s.opacity.clamp(0.2, 1.0),
+                            onChangeStart: (_) => AppHaptics.light(),
                             onChanged: store.setOpacity,
                           ),
                         ),
@@ -120,6 +123,7 @@ class SettingsWidgetScreen extends StatelessWidget {
                             max: 8,
                             divisions: 5,
                             value: s.continueLimit.toDouble(),
+                            onChangeStart: (_) => AppHaptics.light(),
                             onChanged: (double v) =>
                                 store.setContinueLimit(v.round()),
                           ),

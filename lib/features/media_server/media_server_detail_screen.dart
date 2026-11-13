@@ -230,6 +230,8 @@ class _MediaServerDetailScreenState extends State<MediaServerDetailScreen> {
     final l10n = AppLocalizations.of(context);
     final current = detail.userData?.isFavorite ?? false;
     final target = !current;
+    // MD3「Toggle」：收藏开关切换 → tick。
+    target ? AppHaptics.toggleOn() : AppHaptics.toggleOff();
     setState(() {
       _detail = detail.copyWith(
         userData: (detail.userData ?? const ServerUserData(played: false))
@@ -269,6 +271,8 @@ class _MediaServerDetailScreenState extends State<MediaServerDetailScreen> {
     if (detail == null) return;
     final current = detail.userData?.played ?? false;
     final target = !current;
+    // MD3「Toggle」：已看开关切换 → tick。
+    target ? AppHaptics.toggleOn() : AppHaptics.toggleOff();
     setState(() {
       _detail = detail.copyWith(
         userData: (detail.userData ?? const ServerUserData(played: false))
@@ -306,6 +310,8 @@ class _MediaServerDetailScreenState extends State<MediaServerDetailScreen> {
     final target = !current;
     final index = episodes.indexWhere((e) => e.id == ep.id);
     if (index < 0) return;
+    // MD3「Toggle」：单集已看开关切换 → tick。
+    target ? AppHaptics.toggleOn() : AppHaptics.toggleOff();
     setState(() {
       _episodes = <ServerMediaItem>[
         for (final e in episodes)

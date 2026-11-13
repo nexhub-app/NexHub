@@ -21,6 +21,7 @@ import '../comments/comment_api_service.dart';
 import '../models/plugin_config.dart';
 import '../navigation/app_page_route.dart';
 import '../theme/app_tokens.dart';
+import '../utils/app_haptics.dart';
 import 'app_animations.dart';
 import 'app_card.dart';
 import 'app_shimmer.dart';
@@ -345,6 +346,8 @@ class _CommentTileState extends State<CommentTile> {
 
   Future<void> _like(AppLocalizations l10n) async {
     if (_liked || !_requireLogin()) return;
+    // MD3「Toggle」：点赞 → tick。
+    AppHaptics.toggleOn();
     // 乐观更新：先 +1，失败回滚。
     setState(() {
       _liked = true;

@@ -312,6 +312,8 @@ class _SourceEditScreenState extends State<SourceEditScreen>
             if (tabController != null && tabs.isNotEmpty) ...<Widget>[
               TabBar(
                 controller: tabController,
+                // MD3「Selected」：页签单选 → tick。
+                onTap: (_) => AppHaptics.tick(),
                 isScrollable: true,
                 tabAlignment: TabAlignment.start,
                 tabs: <Widget>[
