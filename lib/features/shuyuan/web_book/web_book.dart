@@ -394,7 +394,9 @@ class WebBook {
       source: source,
     );
 
-    final firstBody = await firstAnalyze.getStrResponse();
+    // ruleContent.sourceRegex：响应体预过滤（legado 语义，命中组为正文源）。
+    final firstBody =
+        await firstAnalyze.getStrResponse(sourceRegex: contentRule.sourceRegex);
     if (firstBody.isEmpty) {
       return BookContentResult(content: '', error: '正文为空');
     }

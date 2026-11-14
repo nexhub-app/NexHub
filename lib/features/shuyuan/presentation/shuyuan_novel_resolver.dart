@@ -100,7 +100,9 @@ class ShuyuanNovelResolver
         // Cookie 验证无效。改为抛 [WebViewHtmlRequest]，交由 UI 打开真浏览器
         // 取回渲染后 HTML 再回灌源选择器解析；未声明 useWebview 的书源维持原
         // 验证流程（仅影响已显式开启的书源，不影响其它书源）。
-        if (source.useWebview) {
+        // 源级 useWebview 声明或本次请求 URL 选项 webView:true 均走
+        // WebView 渲染回灌（legado useWebView 语义）。
+        if (source.useWebview || e.preferWebView) {
           throw WebViewHtmlRequest(
             sourceId: source.id,
             apiName: apiName,

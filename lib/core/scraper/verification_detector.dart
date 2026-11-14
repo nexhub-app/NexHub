@@ -12,11 +12,16 @@ class VerificationRequiredException implements Exception {
   final String? body;
   final int? statusCode;
 
+  /// 该请求的 URL 选项声明了 webView:true（legado useWebView 语义）——
+  /// 上层据此优先走 WebView 渲染回灌而非直连重试。
+  final bool preferWebView;
+
   const VerificationRequiredException({
     required this.url,
     this.headers,
     this.body,
     this.statusCode,
+    this.preferWebView = false,
   });
 
   @override

@@ -574,6 +574,7 @@ class AnalyzeUrl {
           url: url,
           body: body,
           statusCode: response.statusCode,
+          preferWebView: useWebView,
         );
       }
 
