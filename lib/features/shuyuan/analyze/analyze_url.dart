@@ -14,6 +14,7 @@ import 'package:dio/io.dart';
 import 'package:fast_gbk/fast_gbk.dart';
 import '../../../core/utils/app_log.dart';
 import 'analyze_rule.dart';
+import 'js_engine.dart';
 import '../../../core/scraper/browser_faithful_adapter.dart';
 import '../../../core/scraper/verification_detector.dart';
 import '../../../core/scraper/http_fetcher.dart';
@@ -579,6 +580,17 @@ class AnalyzeUrl {
       if (response.statusCode != null && response.statusCode! >= 400) {
         throw Exception('请求失败：HTTP ${response.statusCode}，URL：$url');
       }
+
+      // loginCheckJs 消费（legado 五环节 check 语义）：书源声明的登录校验
+      // 脚本，种子 result={code,body} 可改写；code==500 → 未登录。
+      final checkJs = source?.loginCheckJs;
+      if (checkJs != null && checkJs.trim().isNotEmpty) {
+        final code = _runLoginCheck(checkJs, response.statusCode ?? 0, body);
+        if (code == 500) {
+          throw ShuyuanLoginRequiredException(
+              url: url, sourceName: source?.bookSourceName ?? '');
+        }
+      }
       if (response.redirects.isNotEmpty) {
         url = response.redirects.last.location.toString();
       }
@@ -828,4 +840,43 @@ class AnalyzeUrl {
     if (end < 0) return '';
     return lowerBody.substring(gt + 1, end).trim();
   }
+
+  /// loginCheckJs 求值：种子 result={code,body}，脚本可改写后返回；
+  /// 最终 code==500 即未登录（legado 语义）。局部引擎：loginCheck 仅
+  /// 声明了该脚本的源才会走到这里。
+  int _runLoginCheck(String js, int statusCode, String body) {
+    try {
+      final engine = JsEngine();
+      final activeCtx = ShuyuanSourceContext.current;
+      if (activeCtx != null) {
+        engine.runtime
+            .evaluate('var __shuyuanCtx = ${jsonEncode(activeCtx.toSeed())};');
+      }
+      final wrapped = 'var result = {code: $statusCode, body: ${jsonEncode(body)}};\n'
+          'JSON.stringify((function(){\n${js.trim()}\nreturn result;})())';
+      final r = engine.eval(wrapped);
+      if (r.isEmpty) return statusCode;
+      final decoded = jsonDecode(r);
+      if (decoded is Map) {
+        final code = decoded['code'];
+        return code is int ? code : int.tryParse('$code') ?? statusCode;
+      }
+      return statusCode;
+    } catch (_) {
+      return statusCode;
+    }
+  }
+}
+
+/// loginCheckJs 判定未登录（legado 语义：code==500）。上层据此引导用户
+/// 前往源管理完成登录。
+class ShuyuanLoginRequiredException implements Exception {
+  ShuyuanLoginRequiredException({required this.url, required this.sourceName});
+
+  final String url;
+  final String sourceName;
+
+  @override
+  String toString() =>
+      '书源「$sourceName」需要登录（loginCheckJs 判定未登录）：$url';
 }

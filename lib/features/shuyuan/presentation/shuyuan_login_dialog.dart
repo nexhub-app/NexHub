@@ -1,0 +1,202 @@
+/// legado 书源登录入口（P2-1）。
+///
+/// loginUrl 形态分派：
+/// - URL（非脚本）→ [WebViewLoginScreen]（startUrl 覆盖），Cookie 经
+///   「获取 Cookie」回灌 HttpFetcher jar → 书源请求经 AnalyzeUrl 共享
+///   合并自动生效（零新增管线）；
+/// - `@js:`/`<js>` 脚本 → loginUi（RowUi）表单收集值写入 ctx.loginInfo →
+///   执行脚本（mini-settle：脚本内 java.ajax 走确定性重放）。
+///
+/// loginCheckJs 校验在 AnalyzeUrl 请求链路自动消费（code==500 →
+/// ShuyuanLoginRequiredException）。
+library;
+
+import 'dart:convert';
+
+import 'package:material_ui/material_ui.dart';
+import 'package:nexhub/generated/app_localizations.dart';
+import 'package:nexhub/features/verification/presentation/webview_login_screen.dart';
+
+import '../../../core/models/plugin_config.dart';
+import '../../../core/theme/app_tokens.dart';
+import '../../../core/navigation/app_page_route.dart';
+import '../analyze/js_engine.dart';
+import '../analyze/source_context.dart';
+import '../shuyuan_source_service.dart';
+import 'shuyuan_variable_dialog.dart' show isShuyuanSourceConfig;
+
+/// 提取书源的 loginUrl（selectors['xiaoshuo'] 原图内）。
+String? shuyuanLoginUrl(PluginConfig source) {
+  if (!isShuyuanSourceConfig(source)) return null;
+  final xiaoshuo = source.selectors!['xiaoshuo'] as Map<String, dynamic>;
+  final v = xiaoshuo['loginUrl'];
+  if (v == null) return null;
+  final s = '$v'.trim();
+  return s.isEmpty ? null : s;
+}
+
+/// 提取书源的 loginUi（RowUi 数组，JSON 字符串或数组形态）。
+List<Map<String, dynamic>> shuyuanLoginUi(PluginConfig source) {
+  if (!isShuyuanSourceConfig(source)) return const [];
+  final xiaoshuo = source.selectors!['xiaoshuo'] as Map<String, dynamic>;
+  final v = xiaoshuo['loginUi'];
+  if (v == null) return const [];
+  try {
+    final decoded = v is String
+        ? (v.trim().isEmpty ? null : jsonDecode(v))
+        : v;
+    if (decoded is List) {
+      return [
+        for (final e in decoded)
+          if (e is Map) Map<String, dynamic>.from(e.cast<String, dynamic>()),
+      ];
+    }
+  } catch (_) {}
+  return const [];
+}
+
+/// 书源登录入口：按 loginUrl 形态分派（WebView / 表单脚本）。
+Future<void> showShuyuanLogin(BuildContext context, PluginConfig source) async {
+  final loginUrl = shuyuanLoginUrl(source);
+  if (loginUrl == null) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('该源未声明登录方式（loginUrl）')),
+    );
+    return;
+  }
+  final isScript =
+      loginUrl.startsWith('@js:') || loginUrl.contains('<js>');
+  if (!isScript) {
+    // URL 形态：内嵌 WebView 登录，Cookie 由用户点击「获取 Cookie」回灌。
+    await Navigator.of(context).push(
+      AppPageRoute<bool>(
+        builder: (_) => WebViewLoginScreen(source: source, startUrl: loginUrl),
+      ),
+    );
+    return;
+  }
+  await _runFormLogin(context, source, loginUrl);
+}
+
+Future<void> _runFormLogin(
+  BuildContext context,
+  PluginConfig source,
+  String loginUrl,
+) async {
+  final l10n = AppLocalizations.of(context);
+  final xiaoshuo = source.selectors!['xiaoshuo'] as Map<String, dynamic>;
+  final loginUi = shuyuanLoginUi(source);
+
+  final ctx = await ShuyuanSourceContext.forSource(source.id);
+  final vcRaw = xiaoshuo['variableComment'];
+  final variableComment = vcRaw == null ? '' : '$vcRaw'.trim();
+  final fields = <(TextEditingController, String)>[]; // (controller, name)
+  for (final row in loginUi) {
+    final name = '${row['name'] ?? ''}'.trim();
+    if (name.isEmpty) continue;
+    final type = '${row['type'] ?? 'text'}'.toLowerCase();
+    if (type == 'button' || type == 'label') continue;
+    fields.add((
+      TextEditingController(
+          text: ctx.loginInfo[name] ?? '${row['default'] ?? ''}'),
+      name,
+    ));
+  }
+
+  if (!context.mounted) return;
+  final saved = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (dialogContext, setDialogState) => AlertDialog(
+        title: Text(l10n.bookSourceLogin),
+        content: SizedBox(
+          width: 400,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              if (variableComment.isNotEmpty) ...<Widget>[
+                Text(variableComment,
+                    style: Theme.of(context).textTheme.bodySmall),
+                const SizedBox(height: AppTokens.spaceSm),
+              ],
+              if (fields.isEmpty)
+                Text(l10n.bookSourceLoginNoForm,
+                    style: Theme.of(context).textTheme.bodySmall),
+              for (var i = 0; i < fields.length; i++)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: AppTokens.spaceSm),
+                  child: TextField(
+                    controller: fields[i].$1,
+                    obscureText: _isPassword(loginUi, fields[i].$2),
+                    decoration: InputDecoration(
+                      isDense: true,
+                      labelText: fields[i].$2,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(
+                MaterialLocalizations.of(dialogContext).cancelButtonLabel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(l10n.bookSourceLoginSubmit),
+          ),
+        ],
+      ),
+    ),
+  );
+  if (saved != true) return;
+
+  // 表单值写入 ctx.loginInfo（登录脚本经 source.getLoginInfoMap 读取）。
+  for (final (ctrl, name) in fields) {
+    ctx.loginInfo[name] = ctrl.text;
+  }
+
+  // 执行登录脚本（mini-settle：java.ajax 走确定性重放）。
+  final bookSource = ShuyuanSource.fromJson(
+    Map<String, dynamic>.from(
+        source.selectors!['xiaoshuo'] as Map<String, dynamic>),
+  ).toBookSource();
+  final js = loginUrl.startsWith('@js:')
+      ? loginUrl.substring(4)
+      : _extractJsBody(loginUrl);
+  final engine = JsEngine();
+  for (var pass = 0; pass < 3; pass++) {
+    ctx.ajaxPending.clear();
+    final out = engine.eval(js);
+    if (ctx.ajaxPending.isEmpty) {
+      if (pass > 0 || out.isNotEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(l10n.bookSourceLoginSubmitted)),
+          );
+        }
+      }
+      return;
+    }
+    await ShuyuanSourceContext.settleAjax(ctx, bookSource);
+  }
+}
+
+bool _isPassword(List<Map<String, dynamic>> loginUi, String name) {
+  for (final row in loginUi) {
+    if ('${row['name'] ?? ''}'.trim() == name) {
+      return '${row['type'] ?? ''}'.toLowerCase() == 'password';
+    }
+  }
+  return false;
+}
+
+String _extractJsBody(String s) {
+  final start = s.indexOf('<js>');
+  final end = s.lastIndexOf('</js>');
+  if (start >= 0 && end > start) return s.substring(start + 4, end);
+  return s;
+}

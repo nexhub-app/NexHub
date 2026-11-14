@@ -19820,6 +19820,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'This source has no explore page or categories. Use search instead.'**
   String get bookSourceNoExplore;
+
+  /// No description provided for @bookSourceLogin.
+  ///
+  /// In en, this message translates to:
+  /// **'Source Login'**
+  String get bookSourceLogin;
+
+  /// No description provided for @bookSourceLoginNoForm.
+  ///
+  /// In en, this message translates to:
+  /// **'This login script takes no form fields. Submit to run it.'**
+  String get bookSourceLoginNoForm;
+
+  /// No description provided for @bookSourceLoginSubmit.
+  ///
+  /// In en, this message translates to:
+  /// **'Login'**
+  String get bookSourceLoginSubmit;
+
+  /// No description provided for @bookSourceLoginSubmitted.
+  ///
+  /// In en, this message translates to:
+  /// **'Login script executed'**
+  String get bookSourceLoginSubmitted;
 }
 
 class _AppLocalizationsDelegate

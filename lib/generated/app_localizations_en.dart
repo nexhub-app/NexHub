@@ -10652,4 +10652,17 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get bookSourceNoExplore =>
       'This source has no explore page or categories. Use search instead.';
+
+  @override
+  String get bookSourceLogin => 'Source Login';
+
+  @override
+  String get bookSourceLoginNoForm =>
+      'This login script takes no form fields. Submit to run it.';
+
+  @override
+  String get bookSourceLoginSubmit => 'Login';
+
+  @override
+  String get bookSourceLoginSubmitted => 'Login script executed';
 }

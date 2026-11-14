@@ -6036,5 +6036,9 @@
   "bookSourceVarValue": "Value",
   "bookSourceVarSaved": "Variables saved",
   "bookSourceDeleteConfirm": "Delete this book source?",
-  "bookSourceNoExplore": "This source has no explore page or categories. Use search instead."
+  "bookSourceNoExplore": "This source has no explore page or categories. Use search instead.",
+  "bookSourceLogin": "Source Login",
+  "bookSourceLoginNoForm": "This login script takes no form fields. Submit to run it.",
+  "bookSourceLoginSubmit": "Login",
+  "bookSourceLoginSubmitted": "Login script executed"
 }

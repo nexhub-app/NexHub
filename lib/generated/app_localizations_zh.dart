@@ -10378,4 +10378,16 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get bookSourceNoExplore => '该源未提供分类/发现页，请使用搜索查找内容';
+
+  @override
+  String get bookSourceLogin => '书源登录';
+
+  @override
+  String get bookSourceLoginNoForm => '该源登录脚本无需表单输入，直接提交执行';
+
+  @override
+  String get bookSourceLoginSubmit => '登录';
+
+  @override
+  String get bookSourceLoginSubmitted => '登录脚本已执行';
 }

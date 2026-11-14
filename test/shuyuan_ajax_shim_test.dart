@@ -1,5 +1,8 @@
 /// java.ajax 网络族 shim 测试（P1-3）：记录 + 占位符 + 缓存重放。
+/// 含 loginCheck 协议（P2-1）：result 种子改写与透传。
 library;
+
+import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexhub/features/shuyuan/analyze/js_engine.dart';
@@ -53,6 +56,28 @@ void main() {
       expect(out, 'R1|__AJAX_1__');
       expect(ctx.ajaxPending, contains('https://x.com/2'));
     });
+  });
+
+  test('loginCheck 协议：result 种子可改写（code==500 判未登录）', () {
+    final e = JsEngine();
+    const status = 200;
+    const body = '请先登录后再操作';
+    final nl = String.fromCharCode(10);
+    final wrapped = 'var result = {code: $status, body: ${jsonEncode(body)}};$nl'
+        'JSON.stringify((function(){${nl}if (result.body.indexOf("登录") >= 0) '
+        '{ result.code = 500; }${nl}return result;})())';
+    final decoded = jsonDecode(e.eval(wrapped));
+    expect(decoded['code'], 500);
+  });
+
+  test('loginCheck 协议：未改写时透传原状态码', () {
+    final e = JsEngine();
+    const status = 200;
+    final nl = String.fromCharCode(10);
+    final wrapped = 'var result = {code: $status, body: "normal"};$nl'
+        'JSON.stringify((function(){${nl}return result;})())';
+    final decoded = jsonDecode(e.eval(wrapped));
+    expect(decoded['code'], 200);
   });
 
   test('post 记录组合键（url||POST||body）', () {

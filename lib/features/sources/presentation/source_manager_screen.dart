@@ -40,7 +40,11 @@ import 'source_login_screen.dart';
 import 'source_edit_screen.dart';
 import 'package:nexhub/core/navigation/app_page_route.dart';
 import 'package:nexhub/features/shuyuan/presentation/shuyuan_variable_dialog.dart'
-    show isShuyuanSourceConfig, showShuyuanVariableEditor;
+    show
+        isShuyuanSourceConfig,
+        showShuyuanVariableEditor;
+import 'package:nexhub/features/shuyuan/presentation/shuyuan_login_dialog.dart'
+    show shuyuanLoginUrl, showShuyuanLogin;
 import 'package:nexhub/core/widgets/app_alert_dialog.dart';
 import 'library_sources_screen.dart';
 import 'collect_api_import_screen.dart';
@@ -1072,7 +1076,9 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
       deleteTooltip: l10n.sourceDelete,
       migrateTooltip: l10n.sourceMigrate,
       networkOverrideTooltip: l10n.sourceNetworkOverride,
-      loginTooltip: l10n.sourceLogin,
+      loginTooltip: isShuyuanSourceConfig(s)
+          ? l10n.bookSourceLogin
+          : l10n.sourceLogin,
       // legado 书源：「编辑」菜单承载源变量键值编辑（书源管理已并入本页，
       // 不再有独立书源管理页）；其余源保持原编辑行为。
       editTooltip:
@@ -1110,11 +1116,13 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
           builder: (_) => SourceNetworkOverrideScreen(source: s),
         ),
       ),
-      onLogin: () => Navigator.of(context).push(
-        AppPageRoute<void>(
-          builder: (_) => SourceLoginScreen(source: s),
-        ),
-      ),
+      onLogin: isShuyuanSourceConfig(s) && shuyuanLoginUrl(s) != null
+          ? () => showShuyuanLogin(context, s)
+          : () => Navigator.of(context).push(
+                AppPageRoute<void>(
+                  builder: (_) => SourceLoginScreen(source: s),
+                ),
+              ),
       onHide: () =>
           context.read<SourceRepository>().setHidden(s.id, !s.isHidden),
       onEdit: isShuyuanSourceConfig(s)

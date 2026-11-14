@@ -30,7 +30,11 @@ import '../../../core/theme/app_tokens.dart';
 class WebViewLoginScreen extends StatefulWidget {
   final PluginConfig source;
 
-  const WebViewLoginScreen({super.key, required this.source});
+  const WebViewLoginScreen({super.key, required this.source, this.startUrl});
+
+  /// 登录起始 URL 覆盖（legado 书源 loginUrl 为独立 URL 时传入；
+  /// 缺省用媒体源 comments.login.url）。
+  final String? startUrl;
 
   @override
   State<WebViewLoginScreen> createState() => _WebViewLoginScreenState();
@@ -113,7 +117,7 @@ class _WebViewLoginScreenState extends State<WebViewLoginScreen> {
 
   CommentsLoginConfig? get _login => widget.source.comments?.login;
 
-  String get _loginUrl => _login?.url ?? '';
+  String get _loginUrl => widget.startUrl ?? _login?.url ?? '';
 
   /// 是否支持内嵌网页（移动端 + Windows；Windows 经引擎 B 的 WebView2
   /// --proxy-server 环境跟随打开，见 [WebviewSourceNetwork]）。桌面其余端/Web
