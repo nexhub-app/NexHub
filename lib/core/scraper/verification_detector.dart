@@ -16,12 +16,17 @@ class VerificationRequiredException implements Exception {
   /// 上层据此优先走 WebView 渲染回灌而非直连重试。
   final bool preferWebView;
 
+  /// 该请求的 URL 选项声明的 webJs（legado 语义：WebView 内执行的取值
+  /// 脚本，返回值即响应体）——捕获页加载后执行并以其结果为正文。
+  final String? webJs;
+
   const VerificationRequiredException({
     required this.url,
     this.headers,
     this.body,
     this.statusCode,
     this.preferWebView = false,
+    this.webJs,
   });
 
   @override

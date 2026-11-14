@@ -1184,6 +1184,31 @@ class _WebViewVerificationScreenState extends State<WebViewVerificationScreen> {
     });
     try {
       await _syncWebviewCookies();
+      // webJs（legado URL 选项）：页面内执行取值脚本，返回值即响应体
+      //（书源 URL 选项声明时由 resolver 经 WebViewHtmlRequest.js 传入）。
+      final webJs = widget.htmlRequest?.js;
+      if (webJs != null && webJs.trim().isNotEmpty) {
+        var text = (await controller.evaluateJavascript(source: webJs))
+            ?.toString()
+            .trim() ??
+            '';
+        // 兼容 evaluateJavascript 把字符串包成 JSON（带外层引号）的情况。
+        if (text.startsWith('"') && text.endsWith('"')) {
+          try {
+            final decoded = jsonDecode(text);
+            if (decoded is String) text = decoded;
+          } catch (_) {}
+        }
+        if (text.isNotEmpty && text != 'null' && mounted) {
+          Navigator.of(context).pop(
+            WebViewExtractionOutcome(
+              result: VerificationResult.done,
+              renderedHtml: text,
+            ),
+          );
+          return;
+        }
+      }
       final html = await controller.getHtml();
       // 守卫：当前仍是验证/挑战页时回灌只会让选择器解析出 0 条并被缓存成
       // 「正常内容」（MacCMS 系统安全验证页实测 5KB、结构完整）。此时不 pop，

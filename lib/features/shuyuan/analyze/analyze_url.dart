@@ -569,12 +569,25 @@ class AnalyzeUrl {
       // 解码后统一检测「验证/反爬挑战页」（覆盖 Cloudflare、以及 PTCMS 等站点
       // 自带的「系统安全验证」等）。命中则抛 [VerificationRequiredException]，
       // 交由既有 WebView 验证回灌流程过验证，而非静默返回空结果或抛普通异常被上层吞掉。
+      // webJs 选项（legado 语义）：页面内容需在 WebView 内执行取值脚本
+      // 才能得到正文——抛 WebView 渲染回灌请求（脚本经异常携带）。
+      if (webJs != null && webJs!.trim().isNotEmpty) {
+        throw VerificationRequiredException(
+          url: url,
+          body: body,
+          statusCode: response.statusCode,
+          preferWebView: true,
+          webJs: webJs,
+        );
+      }
+
       if (_looksLikeVerificationChallenge(body)) {
         throw VerificationRequiredException(
           url: url,
           body: body,
           statusCode: response.statusCode,
           preferWebView: useWebView,
+          webJs: webJs,
         );
       }
 

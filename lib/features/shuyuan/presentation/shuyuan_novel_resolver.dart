@@ -107,6 +107,7 @@ class ShuyuanNovelResolver
             sourceId: source.id,
             apiName: apiName,
             url: e.url,
+            js: e.webJs,
           );
         }
         rethrow;

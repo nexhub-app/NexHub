@@ -135,11 +135,16 @@ class WebViewHtmlRequest implements Exception {
   final String url;
   final Map<String, String>? headers;
 
+  /// legado webJs：页面加载后在 WebView 内执行的取值脚本，返回值即
+  /// 响应体（书源 URL 选项 webJs 声明时由 resolver 传入）。
+  final String? js;
+
   const WebViewHtmlRequest({
     required this.sourceId,
     required this.apiName,
     required this.url,
     this.headers,
+    this.js,
   });
 
   @override
