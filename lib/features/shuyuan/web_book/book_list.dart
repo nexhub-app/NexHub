@@ -7,6 +7,7 @@ import 'dart:collection';
 import 'package:html/parser.dart' as html_parser;
 
 import '../analyze/analyze_rule.dart';
+import '../analyze/source_context.dart';
 import '../model/book_source.dart';
 import '../model/search_book.dart';
 import '../model/xiaoshuo_book.dart';
@@ -155,6 +156,13 @@ class BookList {
         );
         if (book != null && book.name.isNotEmpty) {
           books.add(book);
+          // 暂存条目上下文：API 返回的 URL 字段含 {{\$.field}} 模板时，
+          // 详情/目录阶段 AnalyzeUrl 以此为求值根（ruleData 贯通）。
+          if (ShuyuanSourceContext.current != null &&
+              book.bookUrl.isNotEmpty) {
+            ShuyuanSourceContext.current!.bookItemContext[book.bookUrl] =
+                element;
+          }
         }
       }
 

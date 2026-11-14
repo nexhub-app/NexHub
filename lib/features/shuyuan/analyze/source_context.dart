@@ -50,6 +50,11 @@ class ShuyuanSourceContext {
   /// 响应体。settle 循环抓取后写入，重放时脚本内 ajax 直出真数据。
   final Map<String, String> ajaxCache = {};
 
+  /// 搜索条目上下文：bookUrl → 搜索响应条目（JSON Map）或 HTML 元素
+  /// （API 返回的 URL 字段含 {{\$.field}} 模板时，详情/目录阶段
+  /// AnalyzeUrl 求值的根）。
+  final Map<String, Object> bookItemContext = {};
+
   /// 本轮 eval 中脚本发起、尚未满足的 ajax 请求（settle 循环抓取队列）。
   final List<String> ajaxPending = <String>[];
 

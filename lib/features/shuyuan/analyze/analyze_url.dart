@@ -8,6 +8,8 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
+
+import 'concurrent_rate_limiter.dart';
 import 'package:dio/io.dart';
 import 'package:fast_gbk/fast_gbk.dart';
 import '../../../core/utils/app_log.dart';
@@ -25,6 +27,10 @@ class AnalyzeUrl {
   String? baseUrl;
   XiaoshuoBookSource? source;
   XiaoshuoBook? ruleData;
+
+  /// 搜索条目上下文（API 返回的 URL 字段含 {{\$.field}} 模板时，URL 级
+  /// 规则求值的根）。由 WebBook 从搜索阶段暂存、详情/目录阶段传入。
+  Object? itemContext;
   XiaoshuoBookChapter? chapter;
   int page;
   String? key;
@@ -60,6 +66,7 @@ class AnalyzeUrl {
     this.baseUrl,
     this.source,
     this.ruleData,
+    this.itemContext,
     this.chapter,
     this.page = 1,
     this.key,
@@ -126,6 +133,18 @@ class AnalyzeUrl {
           // [analyzeUrl] 之后按源声明的 charset 处理（GBK 站点按 GBK 编码，
           // 其余按 UTF-8），避免 GBK 站点收到 UTF-8 乱码而搜索无结果。
           return key ?? '';
+        }
+        final trimmed = expr.trim();
+        // 规则形态（$. / $[ / @ / // 开头）→ 规则引擎对 itemContext 求值
+        // （legado makeUpRule isRule 路由；API 返回的模板 URL 字段依赖此
+        // 通道解析 bid/sourceId 等条目字段）。
+        if (itemContext != null &&
+            (trimmed.startsWith(r'$.') ||
+                trimmed.startsWith(r'$[') ||
+                trimmed.startsWith('@') ||
+                trimmed.startsWith('//'))) {
+          final ar = AnalyzeRule()..setContent(itemContext);
+          return ar.getString(trimmed);
         }
         final jsResult = _evalJs(expr, url);
         return jsResult;
@@ -504,18 +523,34 @@ class AnalyzeUrl {
         validateStatus: (status) => status != null && status >= 200 && status < 300,
       );
 
-      final Response<List<int>> response;
-      if (method?.toUpperCase() == 'POST') {
-        response = await dio.post<List<int>>(
-          url,
-          data: this.body,
-          options: options,
-        );
-      } else {
-        response = await dio.get<List<int>>(
-          url,
-          options: options,
-        );
+      // concurrentRate 限速（legado ConcurrentRateLimiter 等效，书源侧
+      // 包装——按源计数，媒体源链路零影响）。
+      await ConcurrentRateLimiter.gate(
+          source?.concurrentRate, source?.bookSourceUrl ?? url);
+
+      Response<List<int>>? response;
+      var attempt = 0;
+      while (true) {
+        try {
+          if (method?.toUpperCase() == 'POST') {
+            response = await dio.post<List<int>>(
+              url,
+              data: this.body,
+              options: options,
+            );
+          } else {
+            response = await dio.get<List<int>>(
+              url,
+              options: options,
+            );
+          }
+          break;
+        } on DioException {
+          // retry：书源 URL 选项声明的重试次数（网络异常/连接失败重试；
+          // 验证挑战异常不在此层——由下方挑战检测分支处理）。
+          attempt += 1;
+          if (attempt > retry) rethrow;
+        }
       }
 
       final bytes = Uint8List.fromList(response.data ?? <int>[]);

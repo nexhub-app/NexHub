@@ -20,6 +20,7 @@ import 'book_chapter_list.dart';
 import 'book_content.dart';
 import 'book_info.dart';
 import 'book_list.dart';
+import '../analyze/source_context.dart';
 import 'web_book_types.dart';
 
 export 'web_book_types.dart';
@@ -110,6 +111,11 @@ class WebBook {
             ))
         .toList();
   }
+
+
+  /// 当前源上下文中 bookUrl 对应的搜索条目（{{\$.field}} 模板求值根）。
+  Object? _bookItemContext(String bookUrl) =>
+      ShuyuanSourceContext.current?.bookItemContext[bookUrl];
 
   /// 抓取发现页（按分类 URL 列表逐个请求并合并结果）。
   Future<List<XiaoshuoBook>> exploreBook({
@@ -202,6 +208,9 @@ class WebBook {
       url: bookUrl,
       baseUrl: source.bookSourceUrl,
       source: source,
+      // ruleData 贯通：API 返回的 URL 字段含 {{\$.field}} 模板时，
+      // 以搜索阶段暂存的条目为求值根。
+      itemContext: _bookItemContext(bookUrl),
     );
 
     final body = await analyzeUrl.getStrResponse();
@@ -274,6 +283,7 @@ class WebBook {
       url: tocUrl,
       baseUrl: source.bookSourceUrl,
       source: source,
+      itemContext: _bookItemContext(book.bookUrl),
     );
 
     final body = await analyzeUrl.getStrResponse();
