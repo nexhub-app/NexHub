@@ -1,5 +1,16 @@
 [
   {
+    "id": "v3.6.0-announce",
+    "date": "2026-11-14",
+    "title": "NexHub 3.6.0 正式版",
+    "titleEn": "NexHub 3.6.0 (stable release)",
+    "body": "NexHub 3.6.0 正式版来了！小说这次是大修：滚动读到章末自动接上下一章（可关）、朗读位置单独记住、章末续读默认开启，并修好了进度卡住/恒 0、高亮不跟随、暂停失效、句首丢音等一串问题（在线朗读丢音已根治）。播放器新增「跟随视频」自动横竖屏与竖屏页，横竖屏共用一套底栏，窄屏不再溢出。源库改成小说/媒体/漫画分页签，清单与源文件走三源阶梯兜底，拉不到自动换线路。另外补齐全局按 MD3 语义的震动反馈、Bangumi 状态筛选单排横滑、漫画动态效果的开发阶段风险提示。无破坏性数据变更，可直接覆盖安装。",
+    "bodyEn": "NexHub 3.6.0 (stable) is here! Novels get the biggest upgrade: scrolling now flows into the next chapter seamlessly (toggleable), read-aloud position is remembered separately, chapter-end auto-continue is on by default, and a whole chain of bugs is fixed — stuck or zeroed progress, highlight not following, broken pause, and clipped sentence starts (fully fixed for online TTS). The player adds video-driven auto orientation and a portrait layout, shares one control bar across orientations, and no longer overflows on narrow screens. The source library moves to category tabs and a three-CDN ladder so a blocked manifest or source file automatically falls back. Also added: MD3 haptic feedback throughout, single-row horizontal Bangumi status filters, and a clear development-stage warning for comic motion effects. No breaking data changes — overwrite-install directly.",
+    "url": "",
+    "urlText": "",
+    "urlTextEn": ""
+  },
+  {
     "id": "v3.5.0-announce",
     "date": "2026-11-08",
     "title": "NexHub 3.5.0 正式版",

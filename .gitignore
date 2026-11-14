@@ -212,3 +212,5 @@ ohos/.hvigor/
 
 # 鸿蒙专用依赖覆盖（生效文件；模板见 pubspec_overrides.ohos.yaml）
 pubspec_overrides.yaml
+# Widget Preview related
+.widget_preview/
