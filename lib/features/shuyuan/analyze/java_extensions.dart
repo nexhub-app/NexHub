@@ -230,6 +230,62 @@ const String sourceContextJsPrelude = r'''
   global.source = source;
   global.book = book;
   global.cache = cache;
+
+  // ── java.* 网络族（N 阶段确定性重放协议）——挂到 javaExtensions 预置的
+  // java 对象上（本预置库后注入，syOp/syCtx 在本 IIFE 作用域内可用）。
+  // 同步沙箱内无法真发请求：ajax 记录请求（op 'ajax' → 宿主 settle 循环
+  // 抓取）并返回占位符 __AJAX_N__；宿主抓取后写入 __shuyuanCtx.ajaxCache
+  // 并重放本阶段，重放时缓存命中直出真响应。URL 为完整 AnalyzeUrl 串
+  // （含 ,{options} 选项）时宿主按同口径解析执行。 ──
+  if (global.java) {
+    global.java.__ajaxReq = function (url) {
+      var ctx = syCtx();
+      var key = String(url == null ? '' : url);
+      if (ctx.ajaxCache && ctx.ajaxCache[key] != null) {
+        return ctx.ajaxCache[key];
+      }
+      syOp('ajax', key, '');
+      global.__ajaxN = (global.__ajaxN || 0) + 1;
+      return '__AJAX_' + global.__ajaxN + '__';
+    };
+    global.java.ajax = function (url, callTimeout) {
+      return global.java.__ajaxReq(url);
+    };
+    global.java.ajaxAll = function (urlList, skipRateLimit) {
+      var arr = urlList;
+      if (typeof urlList === 'string') arr = [urlList];
+      var mk = function (b) {
+        return { body: function () { return b; },
+          code: function () { return b ? 200 : 0; },
+          headers: function () { return {}; } };
+      };
+      var out = [];
+      for (var i = 0; arr && i < arr.length; i++) {
+        out.push(mk(global.java.__ajaxReq(arr[i])));
+      }
+      return out;
+    };
+    global.java.connect = function (urlStr, header, callTimeout) {
+      var body = global.java.__ajaxReq(urlStr);
+      return { body: function () { return body; },
+        code: function () { return body ? 200 : 0; },
+        headers: function () { return {}; },
+        bodyBytes: function () { return String(body || '').split('').map(function (c) { return c.charCodeAt(0) & 0xff; }) } };
+    };
+    global.java.get = function (urlStr, headers, timeout) {
+      return global.java.connect(urlStr);
+    };
+    // POST 记录组合键 url||POST||body（宿主 settle 拆分后组装选项串）。
+    global.java.post = function (urlStr, bodyStr, headers, timeout) {
+      return global.java.connect(urlStr + (bodyStr ? '||POST||' + bodyStr : ''));
+    };
+    global.java.head = function (urlStr, headers, timeout) {
+      return global.java.connect(urlStr);
+    };
+    global.java.getStrResponse = function (urlStr) {
+      return global.java.connect(urlStr);
+    };
+  }
 })(globalThis);
 ''';
 

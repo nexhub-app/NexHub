@@ -103,15 +103,15 @@ class JsEngine {
         }
       }
       final result = runtime.evaluate(jsStr);
+      // 排空必须先于一切早退（isError 也一样）：脚本中途抛错（ajax 占位符
+      // 下游解析失败）同样产生 ajax 记录，settle 循环依赖它暖缓存重试；
+      // 完成值 undefined/null 的纯写脚本同样产生写操作（2026-11-14 实测）。
+      if (jsStr.contains('java.') || ShuyuanSourceContext.current != null) {
+        _drainJavaBridge();
+      }
       if (result.isError) {
         AppLog.instance.w('[书源JS] 执行失败: ${_brief(jsStr)} → ${result.stringResult}');
         return '';
-      }
-      // 排空必须先于一切早退：完成值为 undefined/null 的脚本（如仅做
-      // putLoginInfo/putVariable 的写操作脚本）同样产生写操作，早退跳过
-      // 排空会整批丢失（2026-11-14 源变量/登录信息测试实测）。
-      if (jsStr.contains('java.') || ShuyuanSourceContext.current != null) {
-        _drainJavaBridge();
       }
       var s = result.stringResult;
       if (s == 'null' || s == 'undefined' || s.isEmpty) return '';
@@ -189,6 +189,13 @@ class JsEngine {
       });
       _lastJavaVars = cleanVars;
       if (syops.isNotEmpty) {
+        // 已消费的 __syop_* 条目必须从 JS 侧 __javaVars 对象中清除——
+        // 否则每轮排空重复投递旧操作（无 bindings 重播种的流程里
+        // __javaVars 对象跨 eval 持久）。
+        runtime.evaluate(
+            'if (globalThis.__javaVars) { for (var k in globalThis.__javaVars) '
+            '{ if (String(k).indexOf("__syop_") === 0) '
+            'delete globalThis.__javaVars[k]; } }');
         final ctx = ShuyuanSourceContext.current;
         if (ctx != null) {
           ctx.applyOps(syops);

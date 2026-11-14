@@ -42,6 +42,13 @@ class ShuyuanSourceContext {
   /// cache.get/put/delete（会话级内存）。
   final Map<String, String> cache = {};
 
+  /// java.ajax 确定性重放缓存：完整 ajax URL（含 AnalyzeUrl 选项串）→
+  /// 响应体。settle 循环抓取后写入，重放时脚本内 ajax 直出真数据。
+  final Map<String, String> ajaxCache = {};
+
+  /// 本轮 eval 中脚本发起、尚未满足的 ajax 请求（settle 循环抓取队列）。
+  final List<String> ajaxPending = <String>[];
+
   /// 排空时标记：本次 eval 是否有 cookie 写（需持久化）。
   bool cookiesDirty = false;
 
@@ -85,6 +92,7 @@ class ShuyuanSourceContext {
         'loginInfo': Map<String, String>.from(loginInfo),
         'loginHeader': Map<String, String>.from(loginHeader),
         'cache': Map<String, String>.from(cache),
+        'ajaxCache': Map<String, String>.from(ajaxCache),
       };
 
   // ── 排空：JS 写操作日志回放（ops 与 toasts 同款 splice 模式——显式操作
@@ -120,6 +128,9 @@ class ShuyuanSourceContext {
           cache[a] = b;
         case 'cacheDel':
           cache.remove(a);
+        case 'ajax':
+          // 脚本发起的网络请求记录（settle 循环抓取）。按 URL 去重。
+          if (!ajaxPending.contains(a)) ajaxPending.add(a);
         case 'loginInfo':
           try {
             final decoded = jsonDecode(a);

@@ -13,6 +13,8 @@
 /// - `content`：WebBook.getContent(chapterUrl=vars['url'])
 library;
 
+import 'dart:convert';
+
 import '../../../core/models/category_entry.dart';
 import '../../../core/models/episode.dart';
 import '../../../core/models/media_item.dart';
@@ -30,6 +32,7 @@ import '../model/book_source.dart';
 import '../model/search_book.dart';
 import '../model/xiaoshuo_book.dart';
 import '../model/xiaoshuo_book_chapter.dart';
+import '../analyze/analyze_url.dart';
 import '../analyze/source_context.dart';
 import '../shuyuan_adapter.dart';
 import '../web_book/web_book.dart';
@@ -68,46 +71,131 @@ class ShuyuanNovelResolver
 
     return ShuyuanSourceContext.run(ctx, () async {
       try {
-      switch (apiName) {
-        case 'search':
-          return await _handleSearch(source, bookSource, vars);
-        case 'explore':
-          return await _handleExplore(source, bookSource, vars);
-        case 'category':
-          // 动态筛选 Sheet 可能发 __route='category'（被 MediaApiService 剔除后
-          // 不影响源 URL）；本源 routes 不含 'category'，通常已被忽略并沿用原
-          // apiName。此处兜底，避免极端情况下抛 UnsupportedError。
-          return await _handleExplore(source, bookSource, vars);
-        case 'latest':
-          return await _handleLatest(source, bookSource, vars);
-        case 'detail':
-          return await _handleDetail(source, bookSource, vars);
-        case 'toc':
-        case 'chapters':
-          return await _handleChapterList(source, bookSource, vars, onProgress: onProgress);
-        case 'content':
-          return await _handleContent(source, bookSource, vars);
-        default:
-          throw UnsupportedError(
-            'ShuyuanNovelResolver does not support apiName: $apiName',
+        // N 阶段确定性重放 settle：脚本内 java.ajax 首轮返回占位符并记录
+        // 请求；占位符随结果传播，本循环抓取未满足请求写入缓存后重放阶段
+        // （重放时缓存命中直出真响应）。最多 4 轮；阶段内异常若伴随未满足
+        // 请求（占位符 URL 必然打不着）同样 warm 后重试。
+        dynamic out;
+        for (var pass = 0; pass < 4; pass++) {
+          ctx.ajaxPending.clear();
+          try {
+            out = await _dispatch(source, bookSource, apiName, vars,
+                onProgress: onProgress);
+          } on Object {
+            if (pass < 3 && ctx.ajaxPending.isNotEmpty) {
+              await _fetchAjaxPending(ctx, bookSource);
+              continue;
+            }
+            rethrow;
+          }
+          if (ctx.ajaxPending.isEmpty) return out;
+          await _fetchAjaxPending(ctx, bookSource);
+        }
+        return out;
+      } on VerificationRequiredException catch (e) {
+        // 反爬拦截（Cloudflare / 滑块 / 临时挑战）。声明 useWebview 的书源（如
+        // 笔趣阁）被站点的 TLS/指纹校验拦截——Dart HTTP 的客户端指纹被拒，手动
+        // Cookie 验证无效。改为抛 [WebViewHtmlRequest]，交由 UI 打开真浏览器
+        // 取回渲染后 HTML 再回灌源选择器解析；未声明 useWebview 的书源维持原
+        // 验证流程（仅影响已显式开启的书源，不影响其它书源）。
+        if (source.useWebview) {
+          throw WebViewHtmlRequest(
+            sourceId: source.id,
+            apiName: apiName,
+            url: e.url,
           );
-      }
-    } on VerificationRequiredException catch (e) {
-      // 反爬拦截（Cloudflare / 滑块 / 临时挑战）。声明 useWebview 的书源（如
-      // 笔趣阁）被站点的 TLS/指纹校验拦截——Dart HTTP 的客户端指纹被拒，手动
-      // Cookie 验证无效。改为抛 [WebViewHtmlRequest]，交由 UI 打开真浏览器
-      // 取回渲染后 HTML 再回灌源选择器解析；未声明 useWebview 的书源维持原
-      // 验证流程（仅影响已显式开启的书源，不影响其它书源）。
-      if (source.useWebview) {
-        throw WebViewHtmlRequest(
-          sourceId: source.id,
-          apiName: apiName,
-          url: e.url,
-        );
-      }
-      rethrow;
+        }
+        rethrow;
       }
     });
+  }
+
+  /// 分发到各阶段处理（settle 循环体）。
+  Future<dynamic> _dispatch(
+    PluginConfig source,
+    XiaoshuoBookSource bookSource,
+    String apiName,
+    Map<String, String> vars, {
+    void Function(List<dynamic>)? onProgress,
+  }) async {
+    switch (apiName) {
+      case 'search':
+        return await _handleSearch(source, bookSource, vars);
+      case 'explore':
+        return await _handleExplore(source, bookSource, vars);
+      case 'category':
+        // 动态筛选 Sheet 可能发 __route='category'（被 MediaApiService 剔除后
+        // 不影响源 URL）；本源 routes 不含 'category'，通常已被忽略并沿用原
+        // apiName。此处兜底，避免极端情况下抛 UnsupportedError。
+        return await _handleExplore(source, bookSource, vars);
+      case 'latest':
+        return await _handleLatest(source, bookSource, vars);
+      case 'detail':
+        return await _handleDetail(source, bookSource, vars);
+      case 'toc':
+      case 'chapters':
+        return await _handleChapterList(source, bookSource, vars,
+            onProgress: onProgress);
+      case 'content':
+        return await _handleContent(source, bookSource, vars);
+      default:
+        throw UnsupportedError(
+          'ShuyuanNovelResolver does not support apiName: $apiName',
+        );
+    }
+  }
+
+  /// 抓取脚本 ajax 记录的未满足请求，写入重放缓存。
+  /// POST 记录键为 `url||POST||body` 组合（shim 约定），此处拆分后组装
+  /// AnalyzeUrl 选项串发起真实请求。
+  Future<void> _fetchAjaxPending(
+    ShuyuanSourceContext ctx,
+    XiaoshuoBookSource bookSource,
+  ) async {
+    for (final key in List<String>.from(ctx.ajaxPending)) {
+      if (ctx.ajaxCache.containsKey(key)) continue;
+      var url = key;
+      String? postBody;
+      const marker = '||POST||';
+      final markerIdx = key.indexOf(marker);
+      if (markerIdx >= 0) {
+        url = key.substring(0, markerIdx);
+        postBody = key.substring(markerIdx + marker.length);
+      }
+      try {
+        // POST：body 组装为 AnalyzeUrl 选项串（若 URL 已带选项则并入已有块）。
+        var requestUrl = url;
+        if (postBody != null) {
+          final bodyOption = '{"method":"POST","body":${jsonEncode(postBody)}}';
+          final optIdx = url.indexOf(',{');
+          if (optIdx >= 0) {
+            final existing = url.substring(optIdx + 1);
+            try {
+              final merged = jsonDecode(existing) as Map<String, dynamic>;
+              merged['method'] = 'POST';
+              merged['body'] = postBody;
+              requestUrl = '${url.substring(0, optIdx)},${jsonEncode(merged)}';
+            } catch (_) {
+              requestUrl = '${url.substring(0, optIdx)},$bodyOption';
+            }
+          } else {
+            requestUrl = '$url,$bodyOption';
+          }
+        }
+        final analyzeUrl = AnalyzeUrl(
+          url: requestUrl,
+          baseUrl: bookSource.bookSourceUrl,
+          source: bookSource,
+        );
+        final resp = await analyzeUrl
+            .getStrResponse()
+            .timeout(const Duration(seconds: 45));
+        ctx.ajaxCache[key] = resp;
+      } catch (_) {
+        // 抓取失败缓存空串：避免 settle 无限重试同一失败请求。
+        ctx.ajaxCache[key] = '';
+      }
+    }
   }
 
   /// 渲染后 HTML 回灌：WebView 过验证后拿回的整页 HTML 直接走 WebBook 规则解析，
