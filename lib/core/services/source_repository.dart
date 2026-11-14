@@ -7,6 +7,8 @@ import '../models/plugin_config.dart';
 import 'config_loader.dart';
 import '../../features/shuyuan/shuyuan_adapter.dart';
 import '../../features/shuyuan/shuyuan_source_service.dart';
+import '../../features/shuyuan/analyze/js_engine.dart';
+import '../../features/shuyuan/analyze/source_context.dart';
 
 /// 已加载的源仓库（内存级，持久化到 SharedPreferences）。
 ///
@@ -471,6 +473,11 @@ class SourceRepository extends ChangeNotifier {
   bool removeSource(String id) {
     final had = _imported.any((c) => c.id == id);
     _imported.removeWhere((c) => c.id == id);
+    // 释放该源的 JS 运行时（池化引擎）与持久化的登录态/变量：源已删除，
+    // 不应继续占着原生 QuickJS 上下文或残留 cookie。
+    JsEngine.evict(id);
+    // fire-and-forget：删除是同步 API，持久化清理失败不影响主流程。
+    ShuyuanSourceContext.forget(id);
     // 移除的是内置源（无论是否已提升为导入源）→ 屏蔽它，使其彻底消失。
     if (_configs.any((c) => c.id == id)) {
       _suppressBuiltin(id);

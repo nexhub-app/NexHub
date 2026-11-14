@@ -13,8 +13,6 @@
 /// - `content`：WebBook.getContent(chapterUrl=vars['url'])
 library;
 
-import 'dart:convert';
-
 import '../../../core/models/category_entry.dart';
 import '../../../core/models/episode.dart';
 import '../../../core/models/media_item.dart';
@@ -35,7 +33,7 @@ import '../model/book_source.dart';
 import '../model/search_book.dart';
 import '../model/xiaoshuo_book.dart';
 import '../model/xiaoshuo_book_chapter.dart';
-import '../analyze/analyze_url.dart';
+import '../analyze/js_engine.dart';
 import '../analyze/source_context.dart';
 import '../shuyuan_adapter.dart';
 import '../web_book/web_book.dart';
@@ -55,6 +53,16 @@ class ShuyuanNovelResolver
       source.id,
     );
   }
+
+  /// 重放轮次上限（安全阀）：正常多跳脚本 3–6 轮即收敛。
+  static const int _maxReplayPasses = 16;
+
+  /// 单阶段重放总时长预算。
+  static const Duration _replayBudget = Duration(seconds: 120);
+
+  /// 是否还允许继续下一轮重放。
+  bool _replayAllowed(int pass, DateTime deadline) =>
+      pass + 1 < _maxReplayPasses && DateTime.now().isBefore(deadline);
 
   @override
   Future<dynamic> resolve(
@@ -76,25 +84,37 @@ class ShuyuanNovelResolver
 
     return ShuyuanSourceContext.run(ctx, () async {
       try {
-        // N 阶段确定性重放 settle：脚本内 java.ajax 首轮返回占位符并记录
-        // 请求；占位符随结果传播，本循环抓取未满足请求写入缓存后重放阶段
-        // （重放时缓存命中直出真响应）。最多 4 轮；阶段内异常若伴随未满足
-        // 请求（占位符 URL 必然打不着）同样 warm 后重试。
+        // 「确定性重放」：脚本内 java.ajax / java.webView 首轮返回占位符并
+        // 记录请求；占位符随结果传播，本循环抓取未满足请求写入缓存后重放。
+        //
+        // 轮次不设死 4 轮：多跳脚本（ajax→webview→ajax）需要与跳数同量级的
+        // 轮次。三个安全阀：最多 [_maxReplayPasses] 轮、总时长 [_replayBudget]、
+        // 以及「本轮没有任何新抓取就停」（防止 URL 带随机数的脚本无限重放）。
+        //
+        // 每个阶段重新开始重放：清空上一阶段/上一本书残留的瞬态缓存
+        // （页面响应 / ajax / webview / 待抓取队列 + JS 全局）。只在这里清一次
+        // ——循环内每一轮都依赖页面缓存，否则重放会把同一页真实重复抓多次。
+        ctx.clearStageCaches();
+        JsEngine.resetReplayCachesFor(source.id);
+        final deadline = DateTime.now().add(_replayBudget);
         dynamic out;
-        for (var pass = 0; pass < 4; pass++) {
+        for (var pass = 0; pass < _maxReplayPasses; pass++) {
           ctx.ajaxPending.clear();
+          ctx.webviewPending.clear();
           try {
             out = await _dispatch(source, bookSource, apiName, vars,
                 onProgress: onProgress);
           } on Object {
-            if (pass < 3 && ctx.ajaxPending.isNotEmpty) {
-              await _fetchAjaxPending(ctx, bookSource);
-              continue;
+            if (_hasPendingReplay(ctx) && _replayAllowed(pass, deadline)) {
+              final fetched = await _settleReplay(ctx, bookSource);
+              if (fetched > 0) continue;
             }
             rethrow;
           }
-          if (ctx.ajaxPending.isEmpty) return out;
-          await _fetchAjaxPending(ctx, bookSource);
+          if (!_hasPendingReplay(ctx)) return out;
+          if (!_replayAllowed(pass, deadline)) break;
+          final fetched = await _settleReplay(ctx, bookSource);
+          if (fetched == 0) break;
         }
         return out;
       } on VerificationRequiredException catch (e) {
@@ -156,57 +176,29 @@ class ShuyuanNovelResolver
     }
   }
 
-  /// 抓取脚本 ajax 记录的未满足请求，写入重放缓存。
-  /// POST 记录键为 `url||POST||body` 组合（shim 约定），此处拆分后组装
-  /// AnalyzeUrl 选项串发起真实请求。
-  Future<void> _fetchAjaxPending(
+  /// 抓取脚本 ajax 记录的未满足请求，写入重放缓存；返回真正发起的请求数。
+  ///
+  /// 实现统一收在 [ShuyuanSourceContext.settleAjax]：此前 resolver 与
+  /// source_context 各有一份（POST 选项合并的容错写法已经漂移），
+  /// 登录脚本与阶段流程走的是两条不同路径，容易改一处漏一处。
+  Future<int> _fetchAjaxPending(
+    ShuyuanSourceContext ctx,
+    XiaoshuoBookSource bookSource,
+  ) =>
+      ShuyuanSourceContext.settleAjax(ctx, bookSource);
+
+  /// 本轮是否还有等待宿主处理的请求（ajax 走 HTTP，webview 走无头渲染）。
+  bool _hasPendingReplay(ShuyuanSourceContext ctx) =>
+      ctx.ajaxPending.isNotEmpty || ctx.webviewPending.isNotEmpty;
+
+  /// 一次性补齐两类重放请求；返回本轮新抓取的条目数（0 = 无进展）。
+  Future<int> _settleReplay(
     ShuyuanSourceContext ctx,
     XiaoshuoBookSource bookSource,
   ) async {
-    for (final key in List<String>.from(ctx.ajaxPending)) {
-      if (ctx.ajaxCache.containsKey(key)) continue;
-      var url = key;
-      String? postBody;
-      const marker = '||POST||';
-      final markerIdx = key.indexOf(marker);
-      if (markerIdx >= 0) {
-        url = key.substring(0, markerIdx);
-        postBody = key.substring(markerIdx + marker.length);
-      }
-      try {
-        // POST：body 组装为 AnalyzeUrl 选项串（若 URL 已带选项则并入已有块）。
-        var requestUrl = url;
-        if (postBody != null) {
-          final bodyOption = '{"method":"POST","body":${jsonEncode(postBody)}}';
-          final optIdx = url.indexOf(',{');
-          if (optIdx >= 0) {
-            final existing = url.substring(optIdx + 1);
-            try {
-              final merged = jsonDecode(existing) as Map<String, dynamic>;
-              merged['method'] = 'POST';
-              merged['body'] = postBody;
-              requestUrl = '${url.substring(0, optIdx)},${jsonEncode(merged)}';
-            } catch (_) {
-              requestUrl = '${url.substring(0, optIdx)},$bodyOption';
-            }
-          } else {
-            requestUrl = '$url,$bodyOption';
-          }
-        }
-        final analyzeUrl = AnalyzeUrl(
-          url: requestUrl,
-          baseUrl: bookSource.bookSourceUrl,
-          source: bookSource,
-        );
-        final resp = await analyzeUrl
-            .getStrResponse()
-            .timeout(const Duration(seconds: 45));
-        ctx.ajaxCache[key] = resp;
-      } catch (_) {
-        // 抓取失败缓存空串：避免 settle 无限重试同一失败请求。
-        ctx.ajaxCache[key] = '';
-      }
-    }
+    var fetched = await _fetchAjaxPending(ctx, bookSource);
+    fetched += await ShuyuanSourceContext.settleWebview(ctx);
+    return fetched;
   }
 
   /// 渲染后 HTML 回灌：WebView 过验证后拿回的整页 HTML 直接走 WebBook 规则解析，
@@ -228,9 +220,14 @@ class ShuyuanNovelResolver
       );
     }
     final bookSource = shuyuanSource.toBookSource();
-    final ctx =
-        _contexts[source.id] ?? ShuyuanSourceContext(source.id);
+    // 与 resolve 同源：走 _contextFor 装载持久化 cookie / 源变量。
+    // 旧实现 `?? ShuyuanSourceContext(...)` 直接新建空上下文，
+    // WebView 回灌路径永远没有登录态。
+    final ctx = await _contextFor(source);
     ctx.jsLib = bookSource.jsLib ?? '';
+    // 渲染回灌同样从干净的重放缓存开始，避免命中上一阶段的旧响应。
+    ctx.clearStageCaches();
+    JsEngine.resetReplayCachesFor(source.id);
     return ShuyuanSourceContext.run(ctx, () async {
       switch (apiName) {
       case 'search':
@@ -317,6 +314,9 @@ class ShuyuanNovelResolver
     // 同步入口：已装载的上下文直接用；未装载则用轻量内存上下文
     // （源变量持久化装载走异步 resolve 链路）。
     final ctx = _contexts[source.id] ?? ShuyuanSourceContext(source.id);
+    // 分类解析也可能求值 exploreUrl 里的 @js：从干净缓存开始。
+    ctx.clearStageCaches();
+    JsEngine.resetReplayCachesFor(source.id);
     return ShuyuanSourceContext.run(ctx, () {
       return _webBook
           .getExploreCategories(bookSource)

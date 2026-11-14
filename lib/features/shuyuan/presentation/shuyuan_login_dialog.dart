@@ -167,22 +167,35 @@ Future<void> _runFormLogin(
   final js = loginUrl.startsWith('@js:')
       ? loginUrl.substring(4)
       : _extractJsBody(loginUrl);
-  final engine = JsEngine();
-  for (var pass = 0; pass < 3; pass++) {
-    ctx.ajaxPending.clear();
-    final out = engine.eval(js);
-    if (ctx.ajaxPending.isEmpty) {
-      if (pass > 0 || out.isNotEmpty) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(l10n.bookSourceLoginSubmitted)),
-          );
-        }
+  ctx.jsLib = bookSource.jsLib ?? '';
+  final engine = JsEngine.forSource(source.id);
+  // 每次登录都重新抓取：清掉上次尝试的 ajax 缓存（宿主表 + JS 全局），
+  // 否则重试会命中旧响应（典型是上次失败留下的登录页）。
+  ctx.clearStageCaches();
+  engine.resetReplayCaches();
+
+  // 必须包在上下文作用域里：登录脚本靠 source.getLoginInfoMap() 取表单值，
+  // syOp 的 ajax 记录也只有存在活动 ctx 时才回放进 ajaxPending。旧实现未包，
+  // 结果是「表单值读不到 + 永远不发请求 + 还弹成功」。
+  final ok = await ShuyuanSourceContext.run(ctx, () async {
+    for (var pass = 0; pass < 6; pass++) {
+      ctx.ajaxPending.clear();
+      ctx.webviewPending.clear();
+      final out = engine.eval(js);
+      if (ctx.ajaxPending.isEmpty && ctx.webviewPending.isEmpty) {
+        // 有输出，或本轮确实发过请求并重放过，才算执行成功。
+        return pass > 0 || out.isNotEmpty;
       }
-      return;
+      await ShuyuanSourceContext.settleAjax(ctx, bookSource);
+      await ShuyuanSourceContext.settleWebview(ctx);
     }
-    await ShuyuanSourceContext.settleAjax(ctx, bookSource);
-  }
+    return false;
+  });
+
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text(ok ? l10n.bookSourceLoginSubmitted : l10n.failed)),
+  );
 }
 
 bool _isPassword(List<Map<String, dynamic>> loginUi, String name) {
