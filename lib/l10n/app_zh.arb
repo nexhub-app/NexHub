@@ -5979,5 +5979,18 @@
   "novelPurgeRuleInvisible": "零宽与方向控制字符",
   "novelPurgeRuleTrailingSpace": "行尾多余空格",
   "novelPurgeRuleAuthorPlea": "求票与打赏",
-  "novelPurgeRuleChapterEnd": "本章完标记"
+  "novelPurgeRuleChapterEnd": "本章完标记",
+  "bookSourceManage": "书源管理",
+  "bookSourceTypeText": "文本",
+  "bookSourceTypeComic": "漫画",
+  "bookSourceTypeAudio": "音频",
+  "bookSourceTypeVideo": "视频",
+  "bookSourceTypeOther": "其他",
+  "bookSourceVarEdit": "源变量",
+  "bookSourceVarAdd": "添加变量",
+  "bookSourceVarKey": "变量名",
+  "bookSourceVarValue": "值",
+  "bookSourceVarSaved": "变量已保存",
+  "bookSourceDeleteConfirm": "删除该书源？",
+  "bookSourceNoExplore": "该源未提供分类/发现页，请使用搜索查找内容"
 }

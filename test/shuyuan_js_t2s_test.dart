@@ -3,6 +3,9 @@ import 'package:nexhub/core/novel/novel_chinese_converter.dart';
 import 'package:nexhub/features/shuyuan/analyze/js_engine.dart';
 
 void main() {
+  // flutter_js 创建运行时需经 rootBundle 异步加载扩展资产，测试须先初始化
+  // 绑定（此前引擎加载失败被降级守卫吞掉，从未真正触达该路径）。
+  TestWidgetsFlutterBinding.ensureInitialized();
   group('chineseConverterJsPrelude（ 书源 JS 繁简函数）', () {
     test('预置脚本包含全局函数定义与映射数据', () {
       expect(chineseConverterJsPrelude, contains('global.t2s'));

@@ -1358,6 +1358,13 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
     return views;
   }
 
+  /// 当前源是否完全没有发现页数据：无分类 Tab 且无 explore 路由。
+  /// 通用信号（适配层只在源声明了发现数据时才有 explore 路由），不耦合
+  /// 书源格式——书源/媒体源统一生效。此时首页的合成板块必然为空。
+  bool get _homeHasNoExploreData =>
+      _categories.isEmpty &&
+      (_source == null || !_source!.routes.containsKey('explore'));
+
   /// Tab 1: 首页（最新更新 + 热门推荐 + 分类入口）。
   /// Tab 1: 首页（按源声明的多板块竖向堆叠；缺省回退单块「最新更新」）。
   Widget _buildHomeTab(AppLocalizations l10n) {
@@ -1371,11 +1378,18 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
         retryLabel: l10n.retry,
       );
     }
-    if (_homeSections.isEmpty) {
+    if (_homeSections.isEmpty || _homeHasNoExploreData) {
+      // 该源没有发现页（无 exploreUrl/homeSections）时给出明确指引：
+      // 此前显示通用「暂无内容」，用户误读为兼容性故障（2026-11-14 实测反馈）。
+      // 注意不能只看 _homeSections.isEmpty——适配层会给纯搜索源合成
+      // latest 板块（必然为空），导致指引永不出现。
+      final bool noExplore = _homeHasNoExploreData;
       return _buildEmptyWithDiagnostics(
         l10n,
-        message: l10n.emptyContent,
+        message: noExplore ? l10n.bookSourceNoExplore : l10n.emptyContent,
         sourceId: _source?.id,
+        actionLabel: noExplore ? l10n.search : null,
+        onAction: noExplore ? widget.onSearch : null,
       );
     }
 
@@ -2096,10 +2110,13 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
 
   /// 带调试信息的空状态：当列表为空且属于脚本源时，显示解析诊断记录，
   /// 方便不懂技术的用户直接截图发给开发者（无需 adb/logcat）。
+  /// [actionLabel]/[onAction]：可选引导动作（如「该源无发现页 → 去搜索」）。
   Widget _buildEmptyWithDiagnostics(
     AppLocalizations l10n, {
     required String message,
     String? sourceId,
+    String? actionLabel,
+    VoidCallback? onAction,
   }) {
     final showDiag = sourceId != null &&
         ParseDiagnostics.lastSourceId == sourceId &&
@@ -2108,7 +2125,12 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
     return ListView(
       padding: context.pageInset(AppTokens.spaceLg),
       children: <Widget>[
-        AppEmptyState(icon: widget.emptyIcon, message: message),
+        AppEmptyState(
+          icon: widget.emptyIcon,
+          message: message,
+          actionLabel: actionLabel,
+          onAction: onAction,
+        ),
         if (showDiag) ...<Widget>[
           const SizedBox(height: AppTokens.spaceMd),
           Container(

@@ -344,14 +344,22 @@ class AnalyzeRule {
     try {
       _jsEngine ??= JsEngine();
       final bindings = <String, dynamic>{
-        'java': this,
+        // `java` 对象由 java_extensions 预置脚本提供（引擎侧跳过同名绑定）；
+        // 变量表经 __javaVars 种子注入（动态 java.get 可读），脚本内 java.put
+        // 的写入在 eval 后由 takeJavaVars 排空回写（对齐 legado java.put/get
+        // 跨规则段共享变量的语义；字面量参数仍走 _expandJavaBridge 宿主内联）。
         'result': result,
         'baseUrl': baseUrl ?? '',
         'src': content?.toString() ?? '',
         'title': chapter?.title ?? '',
+        if (_variables.isNotEmpty)
+          '__javaVars': Map<String, String>.from(_variables),
         if (extraBindings != null) ...extraBindings,
       };
-      return _jsEngine!.eval(_expandJavaBridge(jsStr), bindings: bindings);
+      final out = _jsEngine!.eval(_expandJavaBridge(jsStr), bindings: bindings);
+      final javaVars = _jsEngine!.takeJavaVars();
+      javaVars.forEach(put);
+      return out;
     } catch (e) {
       // JS 引擎调用本身抛异常（极少见）时记录到运行日志，便于真机排查
       // 「书源 JS 规则不生效」。失败返回空串维持既有行为。

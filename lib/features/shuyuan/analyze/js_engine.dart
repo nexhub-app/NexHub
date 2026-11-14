@@ -2,19 +2,27 @@
 ///
 /// 运行时按平台分派（lib/core/js/js_runtime_factory.dart）：安卓/桌面走
 /// flutter_js（QuickJS/JavaScriptCore），鸿蒙走随 HAP 打包的 QuickJS 原生桥。
+/// 全局 `java` 对象由 java_extensions.dart 预置（P0 第一梯队：纯计算族），
+/// toast/log/put 经排空协议回传宿主。
 library;
+
+import 'dart:convert';
 
 import '../../../core/js/js_runtime.dart';
 import '../../../core/js/js_runtime_factory.dart';
 
 import '../../../core/novel/novel_chinese_converter.dart';
 import '../../../core/utils/app_log.dart';
+import 'java_extensions.dart';
 
 class JsEngine {
   NexJsRuntime? _runtime;
 
-  /// 是否已注入全局预置脚本（繁简转换 t2s()/s2t()）。
+  /// 是否已注入全局预置脚本（繁简转换 t2s()/s2t() + java.* 第一梯队）。
   bool _preludeInjected = false;
+
+  /// 上一轮 eval 中 `java.put` 写入的变量（takeJavaVars 取走并清空）。
+  Map<String, String> _lastJavaVars = const {};
 
   NexJsRuntime get runtime {
     if (_runtime == null) {
@@ -24,8 +32,8 @@ class JsEngine {
     return _runtime!;
   }
 
-  /// 注入全局预置脚本：书源 JS 内可直接调用 `t2s(str)` / `s2t(str)`
-  /// 做繁简转换（短语级最长匹配 + 字符级回退，与阅读器正文转换同表同语义）。
+  /// 注入全局预置脚本：繁简转换（`t2s/s2t`）+ java.* 第一梯队桥
+  /// （[javaExtensionsJsPrelude]，定义全局 `java` 对象）。
   /// QuickJS 同一运行时的全局声明跨 eval 持久，注入一次即可。
   void _injectPrelude() {
     if (_preludeInjected) return;
@@ -39,6 +47,22 @@ class JsEngine {
     } catch (e) {
       AppLog.instance.w('[书源JS] 繁简转换预置脚本注入异常: $e');
     }
+    try {
+      final result = _runtime!.evaluate(javaExtensionsJsPrelude);
+      if (result.isError) {
+        AppLog.instance.w('[书源JS] java.* 桥预置脚本注入失败: ${result.stringResult}');
+      }
+    } catch (e) {
+      AppLog.instance.w('[书源JS] java.* 桥预置脚本注入异常: $e');
+    }
+  }
+
+  /// 取走上一轮 eval 中脚本经 `java.put` 写入的变量（取后清空）。
+  /// 仅变量表持有方（AnalyzeRule）需要调用；未调用即丢弃。
+  Map<String, String> takeJavaVars() {
+    final taken = _lastJavaVars;
+    _lastJavaVars = const {};
+    return taken;
   }
 
   /// 执行 [jsStr]，绑定 [bindings] 为 JS 全局变量。
@@ -55,6 +79,9 @@ class JsEngine {
     try {
       if (bindings != null) {
         for (final entry in bindings.entries) {
+          // `java` 由 java_extensions 预置对象提供（全局函数桥），
+          // 宿主传入的字符串占位绑定一律跳过，避免覆盖。
+          if (entry.key == 'java') continue;
           runtime.evaluate('var ${entry.key} = ${_toJsValue(entry.value)};');
         }
       }
@@ -69,10 +96,64 @@ class JsEngine {
       if (s.length > 2 && RegExp(r'^-?\d+\.0+$').hasMatch(s)) {
         s = s.substring(0, s.indexOf('.'));
       }
+      if (jsStr.contains('java.')) _drainJavaBridge();
       return s;
     } catch (e) {
       AppLog.instance.w('[书源JS] 执行异常: ${_brief(jsStr)} → $e');
       return '';
+    }
+  }
+
+  /// eval 成功后统一排空 java.* 桥的三类宿主交互：
+  /// toast/longToast → [JavaFeedback.onToast]（缺省运行日志）、
+  /// log/logType → 运行日志、put → [_lastJavaVars]（由变量表持有方取走）。
+  void _drainJavaBridge() {
+    Map<String, dynamic>? payload;
+    try {
+      final r = runtime.evaluate(javaDrainExpr);
+      if (!r.isError && r.stringResult.isNotEmpty) {
+        final decoded = jsonDecode(r.stringResult);
+        if (decoded is Map<String, dynamic>) payload = decoded;
+      }
+    } catch (_) {
+      return;
+    }
+    if (payload == null) return;
+    final toasts = payload['t'];
+    if (toasts is List) {
+      for (final t in toasts) {
+        if (t is Map) {
+          final msg = t['msg']?.toString() ?? '';
+          final long = t['long'] == true;
+          if (msg.isEmpty) continue;
+          final sink = JavaFeedback.onToast;
+          if (sink != null) {
+            sink(msg, long: long);
+          } else {
+            AppLog.instance.i('[书源toast] $msg');
+          }
+        }
+      }
+    }
+    final logs = payload['l'];
+    if (logs is List) {
+      for (final l in logs) {
+        final msg = l?.toString() ?? '';
+        if (msg.isEmpty) continue;
+        final sink = JavaFeedback.onLog;
+        if (sink != null) {
+          sink(msg);
+        } else {
+          AppLog.instance.d('[书源log] $msg');
+        }
+      }
+    }
+    final vars = payload['v'];
+    if (vars is Map) {
+      _lastJavaVars = {
+        for (final e in vars.entries)
+          if (e.value != null) e.key.toString(): e.value.toString(),
+      };
     }
   }
 

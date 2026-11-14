@@ -6023,5 +6023,18 @@
   "novelPurgeRuleInvisible": "Zero-width control chars",
   "novelPurgeRuleTrailingSpace": "Trailing spaces",
   "novelPurgeRuleAuthorPlea": "Vote / tip begging",
-  "novelPurgeRuleChapterEnd": "Chapter-end marker"
+  "novelPurgeRuleChapterEnd": "Chapter-end marker",
+  "bookSourceManage": "Book Sources",
+  "bookSourceTypeText": "Text",
+  "bookSourceTypeComic": "Comic",
+  "bookSourceTypeAudio": "Audio",
+  "bookSourceTypeVideo": "Video",
+  "bookSourceTypeOther": "Other",
+  "bookSourceVarEdit": "Variables",
+  "bookSourceVarAdd": "Add variable",
+  "bookSourceVarKey": "Key",
+  "bookSourceVarValue": "Value",
+  "bookSourceVarSaved": "Variables saved",
+  "bookSourceDeleteConfirm": "Delete this book source?",
+  "bookSourceNoExplore": "This source has no explore page or categories. Use search instead."
 }

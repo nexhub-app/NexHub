@@ -41,6 +41,30 @@ class ShuyuanSource {
   final Map<String, dynamic>? ruleToc;
   final Map<String, dynamic>? ruleContent;
   final Map<String, dynamic>? ruleExplore;
+
+  // ── legado 扩展字段（P0 导入保真）：此前导入链路只透传 15 个字段，jsLib/
+  // 登录三件套/并发限速/权重等在入库时全部丢失。类型容错见 [_asInt]/[_asJsString]。
+  final String? bookUrlPattern;
+  final int customOrder;
+  final bool? enabledExplore;
+  final String? jsLib;
+  final bool? enabledCookieJar;
+  final String? concurrentRate;
+  final String? loginUrl;
+  final String? loginUi;
+  final String? loginCheckJs;
+  final String? coverDecodeJs;
+  final String? variableComment;
+  final int lastUpdateTime;
+  final int respondTime;
+  final int weight;
+  final String? exploreScreen;
+
+  /// 原始书源 JSON 整图（导入保真的根本保证：任何 legado 字段——含本模型
+  /// 尚未建模的未知扩展——都随 selectors['xiaoshuo'] 持久化，运行期
+  /// [ShuyuanSource.fromJson] 可再次完整解析）。
+  final Map<String, dynamic>? raw;
+
   /// 动态筛选分组（共创式：源自行声明 `filters`，驱动发现页筛选按钮与
   /// PTCMS 分类 URL 拼装）。原样透传到 PluginConfig.filters。
   final Map<String, dynamic>? filters;
@@ -65,6 +89,22 @@ class ShuyuanSource {
     this.ruleToc,
     this.ruleContent,
     this.ruleExplore,
+    this.bookUrlPattern,
+    this.customOrder = 0,
+    this.enabledExplore,
+    this.jsLib,
+    this.enabledCookieJar,
+    this.concurrentRate,
+    this.loginUrl,
+    this.loginUi,
+    this.loginCheckJs,
+    this.coverDecodeJs,
+    this.variableComment,
+    this.lastUpdateTime = 0,
+    this.respondTime = 180000,
+    this.weight = 0,
+    this.exploreScreen,
+    this.raw,
     this.filters,
     this.homeSections,
   });
@@ -99,6 +139,22 @@ class ShuyuanSource {
           ruleContent != null ? ContentRule.fromJson(ruleContent!) : null,
       ruleExplore:
           ruleExplore != null ? ExploreRule.fromJson(ruleExplore!) : null,
+      // legado 扩展字段（P0 导入保真）：运行期引擎可用的前提。
+      bookUrlPattern: bookUrlPattern,
+      customOrder: customOrder,
+      enabledExplore: enabledExplore ?? enabled,
+      jsLib: jsLib,
+      enabledCookieJar: enabledCookieJar ?? true,
+      concurrentRate: concurrentRate,
+      loginUrl: loginUrl,
+      loginUi: loginUi,
+      loginCheckJs: loginCheckJs,
+      coverDecodeJs: coverDecodeJs,
+      variableComment: variableComment,
+      lastUpdateTime: lastUpdateTime,
+      respondTime: respondTime,
+      weight: weight,
+      exploreScreen: exploreScreen,
     );
   }
 
@@ -123,19 +179,38 @@ class ShuyuanSource {
     return ShuyuanSource(
       bookSourceName: json['bookSourceName'] as String? ?? '',
       bookSourceUrl: json['bookSourceUrl'] as String? ?? '',
-      bookSourceType: json['bookSourceType'] as int? ?? 0,
+      bookSourceType: _asInt(json['bookSourceType']) ?? 0,
       bookSourceGroup: json['bookSourceGroup'] as String?,
       bookSourceComment: json['bookSourceComment'] as String?,
       enabled: json['enabled'] as bool? ?? true,
       searchUrl: json['searchUrl'] as String?,
       exploreUrl: json['exploreUrl'] as String?,
-      header: json['header'] as String?,
+      // 部分社区源把 header 写成对象形态（{"Referer": ...}），统一转 JSON
+      // 字符串；此前 `as String?` 会抛 TypeError 导致整源被静默跳过。
+      header: _asJsString(json['header']),
       tocUrl: resolveTocUrl(),
       ruleSearch: _parseRuleDynamic(json['ruleSearch']),
       ruleBookInfo: _parseRuleDynamic(json['ruleBookInfo']),
       ruleToc: _parseRuleDynamic(json['ruleToc']),
       ruleContent: _parseRuleDynamic(json['ruleContent']),
       ruleExplore: _parseRuleDynamic(json['ruleExplore']),
+      bookUrlPattern: json['bookUrlPattern'] as String?,
+      customOrder: _asInt(json['customOrder']) ?? 0,
+      enabledExplore: json['enabledExplore'] as bool?,
+      jsLib: _asJsString(json['jsLib']),
+      enabledCookieJar: json['enabledCookieJar'] as bool?,
+      concurrentRate: _asJsString(json['concurrentRate']),
+      loginUrl: _asJsString(json['loginUrl']),
+      loginUi: _asJsString(json['loginUi']),
+      loginCheckJs: _asJsString(json['loginCheckJs']),
+      coverDecodeJs: _asJsString(json['coverDecodeJs']),
+      variableComment: _asJsString(json['variableComment']),
+      lastUpdateTime: _asInt(json['lastUpdateTime']) ?? 0,
+      respondTime: _asInt(json['respondTime']) ?? 180000,
+      weight: _asInt(json['weight']) ?? 0,
+      exploreScreen: _asJsString(json['exploreScreen']),
+      // 整图保留原始 JSON：导入不丢字段（含未知扩展）的根本保证。
+      raw: json,
       filters: _parseRuleDynamic(json['filters']),
       homeSections: _parseHomeSections(json['homeSections']),
     );
@@ -157,9 +232,48 @@ class ShuyuanSource {
         if (ruleToc != null) 'ruleToc': ruleToc,
         if (ruleContent != null) 'ruleContent': ruleContent,
         if (ruleExplore != null) 'ruleExplore': ruleExplore,
+        if (bookUrlPattern != null) 'bookUrlPattern': bookUrlPattern,
+        if (customOrder != 0) 'customOrder': customOrder,
+        if (enabledExplore != null) 'enabledExplore': enabledExplore,
+        if (jsLib != null) 'jsLib': jsLib,
+        if (enabledCookieJar != null) 'enabledCookieJar': enabledCookieJar,
+        if (concurrentRate != null) 'concurrentRate': concurrentRate,
+        if (loginUrl != null) 'loginUrl': loginUrl,
+        if (loginUi != null) 'loginUi': loginUi,
+        if (loginCheckJs != null) 'loginCheckJs': loginCheckJs,
+        if (coverDecodeJs != null) 'coverDecodeJs': coverDecodeJs,
+        if (variableComment != null) 'variableComment': variableComment,
+        if (lastUpdateTime != 0) 'lastUpdateTime': lastUpdateTime,
+        if (respondTime != 180000) 'respondTime': respondTime,
+        if (weight != 0) 'weight': weight,
+        if (exploreScreen != null) 'exploreScreen': exploreScreen,
         if (filters != null) 'filters': filters,
         if (homeSections != null) 'homeSections': homeSections,
       };
+}
+
+/// int 容错解析：legado JSON 里数值字段可能来成 num/double/字符串。
+int? _asInt(dynamic v) {
+  if (v is int) return v;
+  if (v is num) return v.toInt();
+  if (v is String) return int.tryParse(v.trim());
+  return null;
+}
+
+/// 结构体容错转字符串：legado 的 header/loginUi 等字段允许字符串或
+/// 对象/数组形态，运行期模型统一按 String 承载——结构体 jsonEncode 后
+/// 原样透传，避免 `as String?` 抛 TypeError 导致整源被静默跳过。
+String? _asJsString(dynamic v) {
+  if (v == null) return null;
+  if (v is String) return v.isEmpty ? null : v;
+  if (v is Map || v is List) {
+    try {
+      return json.encode(v);
+    } catch (_) {
+      return v.toString();
+    }
+  }
+  return v.toString();
 }
 
 List<Map<String, dynamic>>? _parseHomeSections(dynamic val) {

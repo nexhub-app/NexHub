@@ -10612,4 +10612,44 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get novelPurgeRuleChapterEnd => 'Chapter-end marker';
+
+  @override
+  String get bookSourceManage => 'Book Sources';
+
+  @override
+  String get bookSourceTypeText => 'Text';
+
+  @override
+  String get bookSourceTypeComic => 'Comic';
+
+  @override
+  String get bookSourceTypeAudio => 'Audio';
+
+  @override
+  String get bookSourceTypeVideo => 'Video';
+
+  @override
+  String get bookSourceTypeOther => 'Other';
+
+  @override
+  String get bookSourceVarEdit => 'Variables';
+
+  @override
+  String get bookSourceVarAdd => 'Add variable';
+
+  @override
+  String get bookSourceVarKey => 'Key';
+
+  @override
+  String get bookSourceVarValue => 'Value';
+
+  @override
+  String get bookSourceVarSaved => 'Variables saved';
+
+  @override
+  String get bookSourceDeleteConfirm => 'Delete this book source?';
+
+  @override
+  String get bookSourceNoExplore =>
+      'This source has no explore page or categories. Use search instead.';
 }

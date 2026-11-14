@@ -10339,4 +10339,43 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get novelPurgeRuleChapterEnd => '本章完标记';
+
+  @override
+  String get bookSourceManage => '书源管理';
+
+  @override
+  String get bookSourceTypeText => '文本';
+
+  @override
+  String get bookSourceTypeComic => '漫画';
+
+  @override
+  String get bookSourceTypeAudio => '音频';
+
+  @override
+  String get bookSourceTypeVideo => '视频';
+
+  @override
+  String get bookSourceTypeOther => '其他';
+
+  @override
+  String get bookSourceVarEdit => '源变量';
+
+  @override
+  String get bookSourceVarAdd => '添加变量';
+
+  @override
+  String get bookSourceVarKey => '变量名';
+
+  @override
+  String get bookSourceVarValue => '值';
+
+  @override
+  String get bookSourceVarSaved => '变量已保存';
+
+  @override
+  String get bookSourceDeleteConfirm => '删除该书源？';
+
+  @override
+  String get bookSourceNoExplore => '该源未提供分类/发现页，请使用搜索查找内容';
 }

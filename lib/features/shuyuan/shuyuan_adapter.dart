@@ -50,10 +50,25 @@ class ShuyuanAdapter {
       routes['latest'] = routes.values.first;
     }
 
-    // 选择器：保留完整书源规则在 'xiaoshuo' 键下，供 ShuyuanNovelResolver
-    // 反序列化为 XiaoshuoBookSource 直接驱动 WebBook。
-    final selectors = <String, dynamic>{
-      'xiaoshuo': {
+    // 选择器：优先整图保留原始书源 JSON（P0 导入保真——jsLib/登录三件套/
+    // concurrentRate/权重等全部字段随 selectors['xiaoshuo'] 持久化，运行期
+    // ShuyuanSource.fromJson 原样解析，未来 legado 新增字段也无需改本层）；
+    // 旧存量数据（无 raw）回退到显式字段映射，行为与历史版本一致。
+    final Map<String, dynamic> xiaoshuoSelectors;
+    final raw = source.raw;
+    if (raw != null) {
+      xiaoshuoSelectors = Map<String, dynamic>.from(raw);
+      // 归一化兜底：运行期链路依赖的关键键确保存在且与解析结果一致
+      // （tocUrl 是 fromJson 的合成解析值，原始 JSON 可能没有顶层 tocUrl）。
+      xiaoshuoSelectors['bookSourceName'] = source.bookSourceName;
+      xiaoshuoSelectors['bookSourceUrl'] = source.bookSourceUrl;
+      xiaoshuoSelectors['bookSourceType'] = source.bookSourceType;
+      xiaoshuoSelectors['enabled'] = source.enabled;
+      if (source.tocUrl != null && source.tocUrl!.isNotEmpty) {
+        xiaoshuoSelectors['tocUrl'] = source.tocUrl;
+      }
+    } else {
+      xiaoshuoSelectors = {
         'bookSourceName': source.bookSourceName,
         'bookSourceUrl': source.bookSourceUrl,
         'bookSourceType': source.bookSourceType,
@@ -69,7 +84,10 @@ class ShuyuanAdapter {
         'ruleToc': source.ruleToc,
         'ruleContent': source.ruleContent,
         'ruleExplore': source.ruleExplore,
-      },
+      };
+    }
+    final selectors = <String, dynamic>{
+      'xiaoshuo': xiaoshuoSelectors,
     };
 
     // 反盗链：用书源 baseUrl 作为默认 Referer（书源 header 字段也透传到
@@ -106,7 +124,9 @@ class ShuyuanAdapter {
       filters: filterConfig,
       homeSections: homeSections,
       enabled: source.enabled,
-      enabledExplore: source.enabled,
+      // legado 语义：发现页与搜索可独立开关（enabledExplore 缺省回退 enabled，
+      // 与历史行为一致）。
+      enabledExplore: source.enabledExplore ?? source.enabled,
     );
   }
 

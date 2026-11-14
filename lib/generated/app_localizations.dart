@@ -19742,6 +19742,84 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Chapter-end marker'**
   String get novelPurgeRuleChapterEnd;
+
+  /// No description provided for @bookSourceManage.
+  ///
+  /// In en, this message translates to:
+  /// **'Book Sources'**
+  String get bookSourceManage;
+
+  /// No description provided for @bookSourceTypeText.
+  ///
+  /// In en, this message translates to:
+  /// **'Text'**
+  String get bookSourceTypeText;
+
+  /// No description provided for @bookSourceTypeComic.
+  ///
+  /// In en, this message translates to:
+  /// **'Comic'**
+  String get bookSourceTypeComic;
+
+  /// No description provided for @bookSourceTypeAudio.
+  ///
+  /// In en, this message translates to:
+  /// **'Audio'**
+  String get bookSourceTypeAudio;
+
+  /// No description provided for @bookSourceTypeVideo.
+  ///
+  /// In en, this message translates to:
+  /// **'Video'**
+  String get bookSourceTypeVideo;
+
+  /// No description provided for @bookSourceTypeOther.
+  ///
+  /// In en, this message translates to:
+  /// **'Other'**
+  String get bookSourceTypeOther;
+
+  /// No description provided for @bookSourceVarEdit.
+  ///
+  /// In en, this message translates to:
+  /// **'Variables'**
+  String get bookSourceVarEdit;
+
+  /// No description provided for @bookSourceVarAdd.
+  ///
+  /// In en, this message translates to:
+  /// **'Add variable'**
+  String get bookSourceVarAdd;
+
+  /// No description provided for @bookSourceVarKey.
+  ///
+  /// In en, this message translates to:
+  /// **'Key'**
+  String get bookSourceVarKey;
+
+  /// No description provided for @bookSourceVarValue.
+  ///
+  /// In en, this message translates to:
+  /// **'Value'**
+  String get bookSourceVarValue;
+
+  /// No description provided for @bookSourceVarSaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Variables saved'**
+  String get bookSourceVarSaved;
+
+  /// No description provided for @bookSourceDeleteConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete this book source?'**
+  String get bookSourceDeleteConfirm;
+
+  /// No description provided for @bookSourceNoExplore.
+  ///
+  /// In en, this message translates to:
+  /// **'This source has no explore page or categories. Use search instead.'**
+  String get bookSourceNoExplore;
 }
 
 class _AppLocalizationsDelegate
