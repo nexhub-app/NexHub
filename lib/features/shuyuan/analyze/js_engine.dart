@@ -25,6 +25,9 @@ class JsEngine {
   /// 上一轮 eval 中 `java.put` 写入的变量（takeJavaVars 取走并清空）。
   Map<String, String> _lastJavaVars = const {};
 
+  /// 已预执行的 jsLib 内容（同引擎同内容去重）。
+  String? _jsLibApplied;
+
   NexJsRuntime get runtime {
     if (_runtime == null) {
       _runtime = createJsRuntime();
@@ -93,6 +96,15 @@ class JsEngine {
       if (activeCtx != null) {
         runtime.evaluate(
             'var __shuyuanCtx = ${_toJsValue(activeCtx.toSeed())};');
+        // jsLib 预执行（按源，同引擎同内容只执行一次）：书源自定义函数/
+        // 变量对所有后续脚本可见（legado SharedJsScope 等效）。
+        if (activeCtx.jsLib.isNotEmpty && _jsLibApplied != activeCtx.jsLib) {
+          _jsLibApplied = activeCtx.jsLib;
+          final r = runtime.evaluate(activeCtx.jsLib);
+          if (r.isError) {
+            AppLog.instance.w('[书源JS] jsLib 执行失败: ${r.stringResult}');
+          }
+        }
       }
       if (bindings != null) {
         for (final entry in bindings.entries) {

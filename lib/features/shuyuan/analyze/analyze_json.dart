@@ -83,8 +83,25 @@ class AnalyzeByJson {
       } else if (c == '[') {
         final end = _findBracketEnd(s, i);
         if (end < 0) break;
-        final inner = s.substring(i + 1, end).trim();
-        if (inner == '*' || inner.isEmpty) {
+        var inner = s.substring(i + 1, end).trim();
+        // 过滤器 [?(@.a==1)]：剥掉 ?( ) 外壳，保留表达式（求值期对当前
+        // 列表逐项判定）。
+        if (inner.startsWith('?')) {
+          inner = inner.substring(1).trim();
+          if (inner.startsWith('(') && inner.endsWith(')')) {
+            inner = inner.substring(1, inner.length - 1).trim();
+          }
+          tokens.add(_JsonPathToken(_JsonTokenType.filter, inner));
+        } else if (inner.endsWith('()') &&
+            _jsonPathFunctions.contains(inner.substring(0, inner.length - 2))) {
+          tokens.add(_JsonPathToken(
+              _JsonTokenType.function,
+              inner.substring(0, inner.length - 2)));
+        } else if (inner.contains(':') &&
+            RegExp(r'^-?\d*\s*:\s*-?\d*(\s*:\s*-?\d+)?$').hasMatch(inner)) {
+          // 切片 [start:end:step]，支持负数与省略。
+          tokens.add(_JsonPathToken(_JsonTokenType.slice, inner));
+        } else if (inner == '*' || inner.isEmpty) {
           tokens.add(const _JsonPathToken(_JsonTokenType.wildcard, ''));
         } else if ((inner.startsWith("'") && inner.endsWith("'")) ||
             (inner.startsWith('"') && inner.endsWith('"'))) {
@@ -107,7 +124,17 @@ class AnalyzeByJson {
         while (j < s.length && s[j] != '.' && s[j] != '[') {
           j += 1;
         }
-        tokens.add(_JsonPathToken(_JsonTokenType.key, s.substring(i, j)));
+        var name = s.substring(i, j);
+        // 点号函数形态 `$.a.length()` / `$.n.max()`：识别为函数 token
+        //（jayway 点号/括号两种写法等价，社区源两种都在用）。
+        if (name.endsWith('()') &&
+            _jsonPathFunctions
+                .contains(name.substring(0, name.length - 2))) {
+          tokens.add(_JsonPathToken(_JsonTokenType.function,
+              name.substring(0, name.length - 2)));
+        } else {
+          tokens.add(_JsonPathToken(_JsonTokenType.key, name));
+        }
         i = j;
       }
     }
@@ -155,6 +182,20 @@ class AnalyzeByJson {
             }
           case _JsonTokenType.deepScan:
             _collectAll(node, next);
+          case _JsonTokenType.slice:
+            if (node is List) _applySlice(node, token.name, next);
+          case _JsonTokenType.filter:
+            if (node is List) {
+              for (final item in node) {
+                if (_matchesFilter(item, token.name)) next.add(item);
+              }
+            } else if (node is Map) {
+              for (final item in node.values) {
+                if (_matchesFilter(item, token.name)) next.add(item);
+              }
+            }
+          case _JsonTokenType.function:
+            _applyFunction(node, token.name, next);
         }
       }
       current = next;
@@ -176,7 +217,138 @@ class AnalyzeByJson {
       final idx = int.tryParse(name);
       if (idx != null && idx >= 0 && idx < node.length) {
         out.add(node[idx]);
+      } else if (name == 'length' || name == 'size') {
+        // `$.data.length` 作用在数组上 → 数组长度（社区源高频写法）。
+        out.add(node.length);
       }
+    }
+  }
+
+  /// 切片：`[start:end:step]`，负数从尾部计，省略走默认（start=0、
+  /// end=长度、step=1）；step 为负时反向遍历。
+  static void _applySlice(List node, String spec, List<dynamic> out) {
+    final parts = spec.split(':');
+    int? parse(String s) {
+      final t = s.trim();
+      return t.isEmpty ? null : int.tryParse(t);
+    }
+
+    final n = node.length;
+    final rawStart = parse(parts[0]);
+    final rawEnd = parts.length > 1 ? parse(parts[1]) : null;
+    final rawStep = parts.length > 2 ? parse(parts[2]) : null;
+    final step = (rawStep ?? 1) == 0 ? 1 : (rawStep ?? 1);
+    int norm(int? v, int def) => (v ?? def) < 0 ? n + (v ?? def) : (v ?? def);
+    final start = norm(rawStart, step > 0 ? 0 : n - 1).clamp(0, n);
+    final end = norm(rawEnd, step > 0 ? n : -1).clamp(-1, n);
+    if (step > 0) {
+      for (var i = start; i < end; i += step) {
+        out.add(node[i]);
+      }
+    } else {
+      for (var i = start; i > end; i += step) {
+        if (i >= 0 && i < n) out.add(node[i]);
+      }
+    }
+  }
+
+  /// 过滤表达式求值：`@.a==1` / `@.a!='x'` / `@.a` / `@.length>2` 等。
+  bool _matchesFilter(dynamic item, String expr) {
+    // 操作符识别（先双字符后单字符，避免 >= 被 > 截胡）。
+    const ops = ['==', '!=', '>=', '<=', '>', '<'];
+    for (final op in ops) {
+      final idx = expr.indexOf(op);
+      if (idx <= 0) continue;
+      final leftPath = expr.substring(0, idx).trim();
+      final rightRaw = expr.substring(idx + op.length).trim();
+      final left = _resolveInner(item, leftPath);
+      return _compare(left, op, rightRaw);
+    }
+    // 无操作符：路径存在且非空即真（`[?(@.cover)]`）。
+    final v = _resolveInner(item, expr);
+    return v != null && '$v'.isNotEmpty;
+  }
+
+  /// 过滤路径求值：`@.a.b` / `@['a']` / `@.length` → 以 item 为根导航。
+  dynamic _resolveInner(dynamic item, String path) {
+    var p = path.trim();
+    if (p.startsWith('@')) p = p.substring(1);
+    if (p.isEmpty) return item;
+    return _navigate(item, _tokenize(p));
+  }
+
+  static bool _compare(dynamic left, String op, String rightRaw) {
+    final right = _parseLiteral(rightRaw);
+    final ln = num.tryParse('$left');
+    final rn = num.tryParse('$right');
+    if (ln != null && rn != null) {
+      return switch (op) {
+        '==' => ln == rn,
+        '!=' => ln != rn,
+        '>' => ln > rn,
+        '<' => ln < rn,
+        '>=' => ln >= rn,
+        '<=' => ln <= rn,
+        _ => false,
+      };
+    }
+    final ls = '$left';
+    final rs = right == null ? '' : '$right';
+    return switch (op) {
+      '==' => ls == rs,
+      '!=' => ls != rs,
+      '>' => ls.compareTo(rs) > 0,
+      '<' => ls.compareTo(rs) < 0,
+      '>=' => ls.compareTo(rs) >= 0,
+      '<=' => ls.compareTo(rs) <= 0,
+      _ => false,
+    };
+  }
+
+  /// 字面量解析：引号字符串 / 数字 / true / false / null。
+  static dynamic _parseLiteral(String raw) {
+    final t = raw.trim();
+    if ((t.startsWith("'") && t.endsWith("'") && t.length >= 2) ||
+        (t.startsWith('"') && t.endsWith('"') && t.length >= 2)) {
+      return t.substring(1, t.length - 1);
+    }
+    if (t == 'true') return true;
+    if (t == 'false') return false;
+    if (t == 'null') return null;
+    return num.tryParse(t) ?? t;
+  }
+
+  /// 内建函数：length/size（长度）、min/max/sum/avg（数值聚合）。
+  static void _applyFunction(dynamic node, String name, List<dynamic> out) {
+    if (node is List) {
+      switch (name) {
+        case 'length':
+        case 'size':
+          out.add(node.length);
+        case 'min':
+        case 'max':
+        case 'sum':
+        case 'avg':
+          final nums = node
+              .map((e) => num.tryParse('$e'))
+              .whereType<num>()
+              .toList();
+          if (nums.isEmpty) return;
+          switch (name) {
+            case 'min':
+              out.add(nums.reduce((a, b) => a < b ? a : b));
+            case 'max':
+              out.add(nums.reduce((a, b) => a > b ? a : b));
+            case 'sum':
+              out.add(nums.fold<num>(0, (a, b) => a + b));
+            case 'avg':
+              out.add(nums.fold<num>(0, (a, b) => a + b) / nums.length);
+          }
+      }
+    } else if (node is Map) {
+      if (name == 'length' || name == 'size') out.add(node.length);
+    } else if (node is String) {
+      if (name == 'length') out.add(node.length);
     }
   }
 
@@ -195,7 +367,10 @@ class AnalyzeByJson {
   }
 }
 
-enum _JsonTokenType { key, arrayIndex, wildcard, deepScan }
+enum _JsonTokenType { key, arrayIndex, wildcard, deepScan, slice, filter, function }
+
+/// jayway 风格内建函数名（`$.a.length()` 等）。
+const _jsonPathFunctions = {'length', 'size', 'min', 'max', 'sum', 'avg'};
 
 class _JsonPathToken {
   final _JsonTokenType type;

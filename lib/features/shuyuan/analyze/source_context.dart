@@ -42,6 +42,10 @@ class ShuyuanSourceContext {
   /// cache.get/put/delete（会话级内存）。
   final Map<String, String> cache = {};
 
+  /// jsLib 预执行内容（书源 source.jsLib）——每引擎实例首次 eval 前执行，
+  /// 定义的函数/变量对该源所有后续脚本可见（legado SharedJsScope 等效）。
+  String jsLib = '';
+
   /// java.ajax 确定性重放缓存：完整 ajax URL（含 AnalyzeUrl 选项串）→
   /// 响应体。settle 循环抓取后写入，重放时脚本内 ajax 直出真数据。
   final Map<String, String> ajaxCache = {};

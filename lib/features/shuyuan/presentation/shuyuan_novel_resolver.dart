@@ -68,6 +68,8 @@ class ShuyuanNovelResolver
     }
     final bookSource = shuyuanSource.toBookSource();
     final ctx = await _contextFor(source);
+    // jsLib 预执行内容随作用域下发（引擎首次 eval 前执行）。
+    ctx.jsLib = bookSource.jsLib ?? '';
 
     return ShuyuanSourceContext.run(ctx, () async {
       try {
@@ -219,6 +221,7 @@ class ShuyuanNovelResolver
     final bookSource = shuyuanSource.toBookSource();
     final ctx =
         _contexts[source.id] ?? ShuyuanSourceContext(source.id);
+    ctx.jsLib = bookSource.jsLib ?? '';
     return ShuyuanSourceContext.run(ctx, () async {
       switch (apiName) {
       case 'search':
