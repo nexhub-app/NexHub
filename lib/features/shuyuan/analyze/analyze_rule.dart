@@ -397,6 +397,13 @@ class AnalyzeRule {
         sourceRule.templateMode,
       );
     }
+    if (sourceRule.mode == Mode.js) {
+      // js 脚本体：仅展开内嵌表达式（{{$.x}}/@ 内嵌走规则引擎对当前上下文
+      // 求值，{{key}}/{{page}} 等走 JS），展开后的脚本体交回执行；不做 ##
+      // 分割（脚本体无正则替换后缀语义）、无模板模式（脚本必须执行）。
+      final replacedJs = _replaceInnerRules(sourceRule.rawRule, result);
+      return _RuleState(replacedJs, '', '', false, false);
+    }
     final replaced = _replaceInnerRules(sourceRule.rawRule, result);
     final parts = replaced.split('##');
     return _RuleState(

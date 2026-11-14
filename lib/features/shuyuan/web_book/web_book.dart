@@ -6,6 +6,8 @@
 /// 直接基于 XiaoshuoHttp/AnalyzeUrl + 静态分析方法实现，便于在新项目架构下复用。
 library;
 
+import 'dart:convert';
+
 import '../../../core/models/novel_block.dart';
 import '../../../core/novel/novel_chinese_converter.dart';
 import '../analyze/analyze_rule.dart';
@@ -100,21 +102,7 @@ class WebBook {
       return <ExploreCategory>[];
     }
 
-    // JSON 数组格式的 exploreUrl
-    if (exploreUrl.trim().startsWith('[')) {
-      final result = _parseRawJsonArray(exploreUrl);
-      if (result.isNotEmpty) {
-        final entries = parseMultiLevelUrls(result);
-        return entries
-            .map((e) => ExploreCategory(
-                  name: e.name.isNotEmpty ? e.name : e.url,
-                  url: e.url,
-                ))
-            .toList();
-      }
-    }
-
-    final urlEntries = parseMultiLevelUrls(exploreUrl);
+    final urlEntries = _parseExploreEntries(exploreUrl);
     return urlEntries
         .map((e) => ExploreCategory(
               name: e.name.isNotEmpty ? e.name : e.url,
@@ -133,16 +121,8 @@ class WebBook {
       throw Exception('书源未配置 exploreUrl');
     }
 
-    // 先尝试解析 JSON 数组格式的 exploreUrl
-    var resolvedExplore = exploreUrl;
-    if (exploreUrl.trim().startsWith('[')) {
-      final jsonResult = _parseRawJsonArray(exploreUrl);
-      if (jsonResult.isNotEmpty) {
-        resolvedExplore = jsonResult;
-      }
-    }
-
-    var urlEntries = parseMultiLevelUrls(resolvedExplore);
+    // 先解析 exploreUrl（JSON 数组 / @js: / 多行文本），失败回退整串单条目。
+    var urlEntries = _parseExploreEntries(exploreUrl);
     if (urlEntries.isEmpty) {
       final trimmed = exploreUrl.trim();
       if (trimmed.isNotEmpty) {
@@ -705,58 +685,66 @@ class WebBook {
     return null;
   }
 
-  /// 解析 JSON 数组形式的 exploreUrl：返回 `名称::URL` 多行字符串。
-  static String _parseRawJsonArray(String jsonStr) {
-    final entries = <String>[];
-    final seen = <String>{};
-
-    final objPattern = RegExp(
-        '\\{\\s*["\'](?:title|name)["\']\\s*:\\s*["\']([^"\']+)["\']\\s*,\\s*["\']url["\']\\s*:\\s*["\']([^"\']+)["\']');
-    for (final match in objPattern.allMatches(jsonStr)) {
-      final title = match.group(1) ?? '';
-      final url = match.group(2) ?? '';
-      if (title.isNotEmpty && url.isNotEmpty && !_isCodeKeyword(title)) {
-        final entry = '$title::$url';
-        if (!seen.contains(entry)) {
-          seen.add(entry);
-          entries.add(entry);
+  /// 解析 exploreUrl 为分类条目。支持三种形态（对齐 legado 语义）：
+  /// ① JSON 数组：条目 `{title|name, url, style?}`——url 可为 `@js:`/`<js>`
+  ///    脚本（抓取期由 AnalyzeUrl.analyzeJs 带 page 绑定执行出最终 URL），
+  ///    空 url 条目是分组标题行（legado 样式行）→ 跳过；
+  /// ② 整体 `@js:`/`<js>` 脚本：执行结果再按行解析；
+  /// ③ 多行 `名称::URL` 文本。
+  /// 此前 JSON 数组走正则抽字段，url 含多行 @js: 脚本时正则截断 → 一条源
+  /// 解析出 84 个垃圾分类（2026-11-14 全免小说实测），故改为结构化解码。
+  /// 修复「曾被二次转义」的 exploreUrl JSON：字符串值内出现裸换行/回车
+  /// （外层 JSON 解码后，url 字段里的多行 @js: 脚本带着真实换行），严格
+  /// JSON 解码必败。扫描字符串边界（处理 \" 转义），仅把字符串内的裸
+  /// 换行/回车转义为 \n / \r，其余原样保留。
+  static String _repairJsonRawNewlines(String s) {
+    // 注意：StringBuffer 构造参数是初始内容而非容量，传数字会把长度前缀
+    // 写进输出（曾致 "22788[..." → JSON 解析在字符 6 处失败）。
+    final out = StringBuffer();
+    var inString = false;
+    for (var i = 0; i < s.length; i++) {
+      final c = s[i];
+      if (c == '"') {
+        // 统计前缀反斜杠数：偶数为真实字符串边界，奇数为转义引号。
+        var bs = 0;
+        var j = i - 1;
+        while (j >= 0 && s[j] == '\\') {
+          bs++;
+          j--;
         }
+        if (bs.isEven) inString = !inString;
+        out.write(c);
+      } else if (inString && (c == '\n' || c == '\r')) {
+        out.write(c == '\n' ? r'\n' : r'\r');
+      } else {
+        out.write(c);
       }
     }
-
-    final objPatternReverse = RegExp(
-        '\\{\\s*["\']url["\']\\s*:\\s*["\']([^"\']+)["\']\\s*,\\s*["\'](?:title|name)["\']\\s*:\\s*["\']([^"\']+)["\']');
-    for (final match in objPatternReverse.allMatches(jsonStr)) {
-      final url = match.group(1) ?? '';
-      final title = match.group(2) ?? '';
-      if (title.isNotEmpty && url.isNotEmpty && !_isCodeKeyword(title)) {
-        final entry = '$title::$url';
-        if (!seen.contains(entry)) {
-          seen.add(entry);
-          entries.add(entry);
-        }
-      }
-    }
-
-    if (entries.isNotEmpty) {
-      return entries.join('\n');
-    }
-    return '';
+    return out.toString();
   }
 
-  static bool _isCodeKeyword(String s) {
-    const keywords = [
-      'function', 'var ', 'let ', 'const ', 'push', 'result',
-      'return', 'typeof', 'undefined', 'JSON', 'String',
-      'Number', 'Boolean', 'Array', 'Object', 'this', 'new',
-      'if', 'else', 'for', 'while', 'do', 'switch', 'case',
-      'try', 'catch', 'finally', 'throw', 'class', 'extends',
-      'import', 'export', 'default', 'async', 'await',
-    ];
-    final lower = s.toLowerCase();
-    for (final keyword in keywords) {
-      if (lower.contains(keyword.toLowerCase())) return true;
+  List<UrlEntry> _parseExploreEntries(String exploreUrl) {
+    final trimmed = exploreUrl.trim();
+    if (trimmed.startsWith('[')) {
+      try {
+        final decoded = jsonDecode(_repairJsonRawNewlines(trimmed));
+        if (decoded is List) {
+          final entries = <UrlEntry>[];
+          for (final e in decoded) {
+            if (e is! Map) continue;
+            final t = e['title'] ?? e['name'];
+            final title = t == null ? '' : t.toString().trim();
+            final u = e['url'];
+            final url = u == null ? '' : u.toString().trim();
+            if (title.isEmpty || url.isEmpty) continue;
+            entries.add(UrlEntry(name: title, url: url));
+          }
+          if (entries.isNotEmpty) return entries;
+        }
+      } catch (_) {
+        // 非法 JSON：回退到文本行解析。
+      }
     }
-    return false;
+    return parseMultiLevelUrls(exploreUrl);
   }
 }

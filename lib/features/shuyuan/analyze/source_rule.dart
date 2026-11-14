@@ -42,6 +42,16 @@ class SourceRule {
     if (mode == Mode.js || mode == Mode.regex) {
       rule = ruleStr;
       elementsRule = ruleStr;
+      // 对齐 legado makeUpRule 语义：@js: 脚本体里的 {{...}} / @get:{...}
+      // 内嵌表达式同样要在求值期先展开（{{$.bid}} 等以 $. / @ / // 开头的
+      // 内嵌路由规则引擎对当前上下文求值，其余按 JS 求值），然后再执行
+      // 脚本。此前 js 段在此提前返回、内嵌检测被跳过，脚本带着字面量
+      // {{$.bid}} 执行 → 签名/参数类 JSON 源全部失配（2026-11-14 实测）。
+      // js 段不做 ## 正则分割、无模板模式（脚本体非选择器语义）。
+      if (mode == Mode.js) {
+        rawRule = ruleStr;
+        hasInnerRule = _firstInnerRuleIndex(ruleStr) != null;
+      }
       return;
     }
 
