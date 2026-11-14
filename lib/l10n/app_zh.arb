@@ -5996,5 +5996,9 @@
   "bookSourceLogin": "书源登录",
   "bookSourceLoginNoForm": "该源登录脚本无需表单输入，直接提交执行",
   "bookSourceLoginSubmit": "登录",
-  "bookSourceLoginSubmitted": "登录脚本已执行"
+  "bookSourceLoginSubmitted": "登录脚本已执行",
+  "mediaChapterAudio": "音频章节",
+  "mediaChapterVideo": "视频章节",
+  "mediaChapterPlay": "播放",
+  "mediaChapterHint": "本章为书源提供的媒体流，点击播放开始收听/观看"
 }

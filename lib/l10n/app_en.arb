@@ -6040,5 +6040,9 @@
   "bookSourceLogin": "Source Login",
   "bookSourceLoginNoForm": "This login script takes no form fields. Submit to run it.",
   "bookSourceLoginSubmit": "Login",
-  "bookSourceLoginSubmitted": "Login script executed"
+  "bookSourceLoginSubmitted": "Login script executed",
+  "mediaChapterAudio": "Audio chapter",
+  "mediaChapterVideo": "Video chapter",
+  "mediaChapterPlay": "Play",
+  "mediaChapterHint": "This chapter is a media stream from the source. Tap play to start playback."
 }

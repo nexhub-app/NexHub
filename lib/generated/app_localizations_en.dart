@@ -10665,4 +10665,17 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get bookSourceLoginSubmitted => 'Login script executed';
+
+  @override
+  String get mediaChapterAudio => 'Audio chapter';
+
+  @override
+  String get mediaChapterVideo => 'Video chapter';
+
+  @override
+  String get mediaChapterPlay => 'Play';
+
+  @override
+  String get mediaChapterHint =>
+      'This chapter is a media stream from the source. Tap play to start playback.';
 }

@@ -19844,6 +19844,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Login script executed'**
   String get bookSourceLoginSubmitted;
+
+  /// No description provided for @mediaChapterAudio.
+  ///
+  /// In en, this message translates to:
+  /// **'Audio chapter'**
+  String get mediaChapterAudio;
+
+  /// No description provided for @mediaChapterVideo.
+  ///
+  /// In en, this message translates to:
+  /// **'Video chapter'**
+  String get mediaChapterVideo;
+
+  /// No description provided for @mediaChapterPlay.
+  ///
+  /// In en, this message translates to:
+  /// **'Play'**
+  String get mediaChapterPlay;
+
+  /// No description provided for @mediaChapterHint.
+  ///
+  /// In en, this message translates to:
+  /// **'This chapter is a media stream from the source. Tap play to start playback.'**
+  String get mediaChapterHint;
 }
 
 class _AppLocalizationsDelegate

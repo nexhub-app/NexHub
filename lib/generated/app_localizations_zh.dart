@@ -10390,4 +10390,16 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get bookSourceLoginSubmitted => '登录脚本已执行';
+
+  @override
+  String get mediaChapterAudio => '音频章节';
+
+  @override
+  String get mediaChapterVideo => '视频章节';
+
+  @override
+  String get mediaChapterPlay => '播放';
+
+  @override
+  String get mediaChapterHint => '本章为书源提供的媒体流，点击播放开始收听/观看';
 }
