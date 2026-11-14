@@ -151,6 +151,8 @@ void main() {
     test('put 写入经 takeJavaVars 排空，get 动态读取', () {
       final e = engine();
       final out = e.eval("java.put('k1','v1'); java.put('k2','v2'); java.get('k1')");
+      // ignore: avoid_print
+      print('[诊断] vars=${e.eval('JSON.stringify(globalThis.__javaVars || {})')}');
       expect(out, 'v1');
       expect(e.takeJavaVars(), {'k1': 'v1', 'k2': 'v2'});
       // 排空后清空。

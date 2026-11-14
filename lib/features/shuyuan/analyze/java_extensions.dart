@@ -272,8 +272,16 @@ const String sourceContextJsPrelude = r'''
         headers: function () { return {}; },
         bodyBytes: function () { return String(body || '').split('').map(function (c) { return c.charCodeAt(0) & 0xff; }) } };
     };
-    global.java.get = function (urlStr, headers, timeout) {
-      return global.java.connect(urlStr);
+    // get 双重语义分派（legado 事实约定）：URL 形态参数 → HTTP GET；
+    // 变量名形态 → 变量读取（AnalyzeRule.java.get 口径）。此前整体覆盖
+    // 变量 get，java.get('k1') 被当 URL 发请求（put 测试实测污染）。
+    global.java.get = function (a, b, c) {
+      var s = String(a == null ? '' : a);
+      if (/^https?:\/\//i.test(s)) {
+        return global.java.connect(s);
+      }
+      var v = global.__javaVars;
+      return v && v[s] != null ? String(v[s]) : '';
     };
     // POST 记录组合键 url||POST||body（宿主 settle 拆分后组装选项串）。
     global.java.post = function (urlStr, bodyStr, headers, timeout) {
