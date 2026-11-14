@@ -4,6 +4,8 @@ library;
 
 import 'package:html/parser.dart' as html_parser;
 
+import 'package:meta/meta.dart';
+
 import '../../../core/models/novel_block.dart';
 import '../../../core/utils/app_log.dart';
 import '../analyze/analyze_rule.dart';
@@ -203,21 +205,9 @@ class BookContent {
     }
 
     if (contentRule.replaceRegex != null && contentRule.replaceRegex!.isNotEmpty) {
-      // 逐行 trim 后直接应用正则替换规则
+      // 逐行 trim 后应用替换规则（对齐 legado：逐行 trim）
       content = content.split('\n').map((line) => line.trim()).join('\n');
-      final replaceRegex = contentRule.replaceRegex!;
-      final parts = replaceRegex.split('##');
-      final pattern = parts[0];
-      final replacement = parts.length >= 2 ? parts.sublist(1).join('##') : '';
-      // 防御：空 pattern（如 replaceRegex 误以 '##' 开头 → split 后首段为空）
-      // 会让 RegExp('') 在正文每个字符间插入 replacement，把正文撑成乱码。
-      // 空 pattern 对任何替换都无意义，直接跳过，避免静默损毁内容。
-      if (pattern.isNotEmpty) {
-        try {
-          // multiLine: true 让 ^...$ 锚点支持每行边界匹配，而非仅整个字符串首尾
-          content = content.replaceAll(RegExp(pattern, multiLine: true), replacement);
-        } catch (_) {}
-      }
+      content = applyReplaceRules(content, contentRule.replaceRegex!);
     }
 
     if (contentRule.title != null && contentRule.title!.isNotEmpty) {
@@ -717,5 +707,33 @@ class BookContent {
       }
     }
     return cleanedLines.join('\n');
+  }
+
+  /// 替换规则应用（legado replaceRegex 常见形态）：
+  /// - `@js:`/`<js>` 净化脚本 → 规则引擎求值（result=正文）；
+  /// - 多行多规则：每行一条 `pattern##replacement`（replacement 可含 ##），
+  ///   依序应用；空 pattern 行跳过（防 RegExp('') 撑爆正文）。
+  /// multiLine: true 让 ^...$ 锚点支持每行边界匹配。
+  @visibleForTesting
+  static String applyReplaceRules(String content, String replaceRegex) {
+    final rr = replaceRegex.trim();
+    if (rr.startsWith('@js:') || rr.contains('<js>')) {
+      final ar = AnalyzeRule()..setContent(content);
+      final out = ar.getString(rr, mContent: content);
+      return out.isEmpty ? content : out;
+    }
+    var out = content;
+    for (final line in rr.split('\n')) {
+      final rule = line.trim();
+      if (rule.isEmpty) continue;
+      final parts = rule.split('##');
+      final pattern = parts[0];
+      final replacement = parts.length >= 2 ? parts.sublist(1).join('##') : '';
+      if (pattern.isEmpty) continue;
+      try {
+        out = out.replaceAll(RegExp(pattern, multiLine: true), replacement);
+      } catch (_) {}
+    }
+    return out;
   }
 }

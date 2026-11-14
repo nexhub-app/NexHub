@@ -14,6 +14,9 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'analyze_url.dart';
+import '../model/book_source.dart';
+
 class ShuyuanSourceContext {
   ShuyuanSourceContext(this.sourceId);
 
@@ -264,6 +267,59 @@ class ShuyuanSourceContext {
       }
     } catch (_) {}
     return out;
+  }
+
+  /// settle：抓取 ajaxPending 中未满足的请求写入 ajaxCache（登录脚本等
+  /// 非阶段流程复用；resolver 阶段循环委托本方法）。
+  /// POST 记录键为 `url||POST||body` 组合（shim 约定），拆分后组装
+  /// AnalyzeUrl 选项串发起真实请求。
+  static Future<void> settleAjax(
+    ShuyuanSourceContext ctx,
+    XiaoshuoBookSource source,
+  ) async {
+    for (final key in List<String>.from(ctx.ajaxPending)) {
+      if (ctx.ajaxCache.containsKey(key)) continue;
+      var url = key;
+      String? postBody;
+      const marker = '||POST||';
+      final markerIdx = key.indexOf(marker);
+      if (markerIdx >= 0) {
+        url = key.substring(0, markerIdx);
+        postBody = key.substring(markerIdx + marker.length);
+      }
+      try {
+        var requestUrl = url;
+        if (postBody != null) {
+          final bodyOption = '{"method":"POST","body":${jsonEncode(postBody)}}';
+          final optIdx = url.indexOf(',{');
+          if (optIdx >= 0) {
+            try {
+              final existing =
+                  jsonDecode(url.substring(optIdx + 1)) as Map<String, dynamic>;
+              existing['method'] = 'POST';
+              existing['body'] = postBody;
+              requestUrl = '${url.substring(0, optIdx)},${jsonEncode(existing)}';
+            } catch (_) {
+              requestUrl = '${url.substring(0, optIdx)},$bodyOption';
+            }
+          } else {
+            requestUrl = '$url,$bodyOption';
+          }
+        }
+        final analyzeUrl = AnalyzeUrl(
+          url: requestUrl,
+          baseUrl: source.bookSourceUrl,
+          source: source,
+        );
+        final resp = await analyzeUrl
+            .getStrResponse()
+            .timeout(const Duration(seconds: 45));
+        ctx.ajaxCache[key] = resp;
+      } catch (_) {
+        ctx.ajaxCache[key] = '';
+      }
+    }
+    ctx.ajaxPending.clear();
   }
 
   /// 测试隔离。

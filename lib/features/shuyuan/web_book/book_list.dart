@@ -11,6 +11,7 @@ import '../analyze/source_context.dart';
 import '../model/book_source.dart';
 import '../model/search_book.dart';
 import '../model/xiaoshuo_book.dart';
+import 'book_info.dart';
 
 class BookList {
   static String _currentCategoryName = '';
@@ -130,7 +131,26 @@ class BookList {
     try {
       final elements = analyzeRule.getElements(listRule);
 
+      // legado 语义（isSearch）：baseUrl 命中 bookUrlPattern → 整页按详情
+      // 页解析（搜索直达详情页的源）。
+      if (isSearch) {
+        final pattern = bookSource.bookUrlPattern;
+        if (pattern != null && pattern.isNotEmpty) {
+          try {
+            if (RegExp(pattern).hasMatch(baseUrl)) {
+              return [_detailPageAsSearchBook(bookSource, body, baseUrl)];
+            }
+          } catch (_) {}
+        }
+      }
+
       if (elements.isEmpty) {
+        // legado 行为：列表为空且未声明 bookUrlPattern → 整页按详情解析
+        //（声明了 ruleBookInfo.name 时字段更全）；否则通用解析兜底。
+        final infoName = bookSource.ruleBookInfo?.name;
+        if (infoName != null && infoName.isNotEmpty) {
+          return [_detailPageAsSearchBook(bookSource, body, baseUrl)];
+        }
         return _parseGenericBookList(body, bookSource, baseUrl);
       }
 
@@ -735,5 +755,32 @@ class BookList {
     } catch (_) {
       return url;
     }
+  }
+
+  /// 整页按详情页解析为单本 SearchBook（legado getInfoItem 的整页形态：
+  /// 搜索直达详情页 / 列表为空且未声明 bookUrlPattern 的回退）。
+  static SearchBook _detailPageAsSearchBook(
+    XiaoshuoBookSource bookSource,
+    String body,
+    String baseUrl,
+  ) {
+    final book = XiaoshuoBook(bookUrl: baseUrl, name: '');
+    BookInfo.analyzeBookInfo(
+      bookSource: bookSource,
+      book: book,
+      baseUrl: baseUrl,
+      redirectUrl: baseUrl,
+      body: body,
+    );
+    return SearchBook(
+      bookUrl: book.bookUrl.isNotEmpty ? book.bookUrl : baseUrl,
+      name: book.name,
+      author: book.author,
+      coverUrl: book.coverUrl,
+      kind: book.kind,
+      lastChapter: book.lastChapter,
+      bookSourceUrl: bookSource.bookSourceUrl,
+      bookSourceName: bookSource.bookSourceName,
+    );
   }
 }
