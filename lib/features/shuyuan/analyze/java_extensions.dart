@@ -25,10 +25,212 @@ abstract final class JavaFeedback {
 }
 
 /// JsEngine.eval 结束后执行的排空表达式：一次取走本轮 toast/日志队列
-/// 与变量快照（避免每次规则求值残留）。须用 globalThis——本表达式在
-/// 顶层求值，IIFE 内的 `global` 参数不可见。
+/// 与变量快照（避免每次规则求值残留），并带出注入对象上下文（cookie/
+/// source/book/cache 的写回）。须用 globalThis——本表达式在顶层求值，
+/// IIFE 内的 `global` 参数不可见。
 const String javaDrainExpr = r'''
 JSON.stringify({t:(globalThis.__javaToasts||[]).splice(0),l:(globalThis.__javaLogs||[]).splice(0),v:globalThis.__javaVars||{}})
+''';
+
+/// 注入对象预置脚本（P1-2）：cookie / source / book / cache 四对象，
+/// 读写全部经 `__shuyuanCtx`（宿主经 ShuyuanSourceContext 种子注入、
+/// eval 后排空回写），语义对齐 legado BookSourceCookieStore / BaseSource /
+/// CacheManager。
+const String sourceContextJsPrelude = r'''
+(function (global) {
+  'use strict';
+
+  function syCtx() {
+    if (!global.__shuyuanCtx || typeof global.__shuyuanCtx !== 'object') {
+      global.__shuyuanCtx = { sourceId: '', sourceVars: {}, bookVars: {},
+        bookInfo: {}, cookies: {}, loginInfo: {}, loginHeader: {}, cache: {} };
+    }
+    return global.__shuyuanCtx;
+  }
+
+  function syHost(u) {
+    var s = String(u || '');
+    var m = s.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/([^\/?#]+)/);
+    var host = m ? m[1] : (s.indexOf('/') >= 0 ? s.substring(0, s.indexOf('/')) : s);
+    host = String(host).split('@').pop().split(':')[0].toLowerCase();
+    return host;
+  }
+
+  function syHostMatch(a, b) {
+    a = String(a || ''); b = String(b || '');
+    if (!a || !b) return true;
+    return a === b || a.endsWith('.' + b) || b.endsWith('.' + a) ||
+        a.endsWith(b) || b.endsWith(a);
+  }
+
+  // ── 写操作日志：所有注入对象的可变操作显式记 op（宿主排空回放），
+  // 本地同步改一份工作副本供同轮 eval 内读取。
+  // 通道注意：ops 必须走 __javaVars（var 绑定种子通道，宿主排空已验证
+  // 可靠）；__shuyuanOps 直挂 globalThis 的方案在排空求值里读不到
+  // （排空视野无裸 global 别名、且 global.X 赋值属性不可见——实测）。 ──
+  var __syopN = 0;
+  function syOp(op, a, b) {
+    var v = global.__javaVars;
+    if (!v || typeof v !== 'object') {
+      v = {};
+      global.__javaVars = v;
+    }
+    __syopN++;
+    v['__syop_' + __syopN] = JSON.stringify({ op: op, a: a == null ? '' : a, b: b == null ? '' : b });
+  }
+
+  var cookie = {
+    // getKey(tag, key)：取 tag（URL/书源 key）下名为 key 的 cookie 值。
+    getKey: function (url, key) {
+      var ctx = syCtx(); var host = syHost(url); var found = '';
+      for (var name in ctx.cookies) {
+        var meta = ctx.cookies[name];
+        if (!meta) continue;
+        if (String(name) === String(key) &&
+            syHostMatch(syHost(meta.host), host)) {
+          found = meta.value || '';
+        }
+      }
+      return found;
+    },
+    getCookie: function (url, key) {
+      var ctx = syCtx(); var host = syHost(url);
+      var parts = [];
+      for (var name in ctx.cookies) {
+        var meta = ctx.cookies[name];
+        if (!meta) continue;
+        if (syHostMatch(syHost(meta.host), host)) {
+          parts.push(name + '=' + (meta.value || ''));
+        }
+      }
+      var header = parts.join('; ');
+      if (key != null && key !== '') {
+        var esc = String(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        var m = header.match(new RegExp('(?:^|;\\s*)' + esc + '=([^;]*)'));
+        return m ? m[1] : '';
+      }
+      return header;
+    },
+    setCookie: function (url, cookieStr) {
+      var ctx = syCtx(); var host = syHost(url);
+      String(cookieStr == null ? '' : cookieStr).split(/;\s*/).forEach(function (p) {
+        var i = p.indexOf('=');
+        if (i <= 0) return;
+        var name = p.substring(0, i).trim();
+        var value = p.substring(i + 1).trim();
+        if (name) {
+          ctx.cookies[name] = { value: value, host: host };
+          syOp('setCookie', url, name + '=' + value);
+        }
+      });
+      return null;
+    },
+    removeCookie: function (url) {
+      var ctx = syCtx(); var host = syHost(url);
+      for (var name in ctx.cookies) {
+        var meta = ctx.cookies[name];
+        if (!meta) continue;
+        if (syHostMatch(syHost(meta.host), host)) {
+          delete ctx.cookies[name];
+        }
+      }
+      syOp('removeCookie', url, '');
+      return null;
+    },
+  };
+
+  var source = {
+    getKey: function () { return syCtx().sourceId; },
+    getVariable: function (k) {
+      var c = syCtx();
+      if (k == null || k === '') return c.sourceVars['__variable'] || '';
+      return c.sourceVars[String(k)] || '';
+    },
+    putVariable: function (k, v) {
+      if (k == null) return v;
+      syCtx().sourceVars[String(k)] = String(v == null ? '' : v);
+      syOp('sourceVar', k, v);
+      return v;
+    },
+    setVariable: function (v) {
+      return source.putVariable('__variable', v);
+    },
+    getLoginInfoMap: function () { return syCtx().loginInfo; },
+    putLoginInfo: function (m) {
+      syOp('loginInfo', JSON.stringify(m || {}), '');
+      return null;
+    },
+    removeLoginInfo: function (k) {
+      syOp('loginInfoDel', String(k), '');
+      return null;
+    },
+    getLoginHeaderMap: function () { return syCtx().loginHeader; },
+    getLoginHeader: function () {
+      var parts = [];
+      for (var k in syCtx().loginHeader) {
+        parts.push(k + ': ' + syCtx().loginHeader[k]);
+      }
+      return parts.join('\n');
+    },
+    putLoginHeader: function (m) {
+      syOp('loginHeader', JSON.stringify(m || {}), '');
+      return null;
+    },
+    removeLoginHeader: function (k) {
+      syOp('loginHeaderDel', String(k), '');
+      return null;
+    },
+    refreshExplore: function () { return true; },
+    refreshJSLib: function () { return true; },
+    refreshBookUrl: function () { return true; },
+  };
+
+  var book = {
+    getVariable: function (k) { return syCtx().bookVars[String(k)] || ''; },
+    putVariable: function (k, v) {
+      syCtx().bookVars[String(k)] = String(v == null ? '' : v);
+      syOp('bookVar', k, v);
+      return v;
+    },
+    setVariable: function (v) { return book.putVariable('__variable', v); },
+  };
+  ['name', 'author', 'bookUrl', 'intro', 'kind', 'coverUrl', 'lastChapter']
+      .forEach(function (f) {
+        Object.defineProperty(book, f, {
+          get: function () { return syCtx().bookInfo[f] || ''; },
+          set: function (v) {
+            syCtx().bookInfo[f] = String(v == null ? '' : v);
+          },
+        });
+      });
+
+  var cache = {
+    put: function (k, v, saveTime) {
+      syCtx().cache[String(k)] = String(v == null ? '' : v);
+      syOp('cachePut', k, v);
+      return null;
+    },
+    get: function (k) {
+      var v = syCtx().cache[String(k)];
+      return v == null ? '' : v;
+    },
+    delete: function (k) {
+      delete syCtx().cache[String(k)];
+      syOp('cacheDel', k, '');
+      return null;
+    },
+    putMemory: function (k, v) { return cache.put(k, v); },
+    getMemory: function (k) { return cache.get(k); },
+    deleteMemory: function (k) { return cache.delete(k); },
+    putFile: function (k, v) { return cache.put(k, v); },
+    getFile: function (k) { return cache.get(k); },
+  };
+
+  global.cookie = cookie;
+  global.source = source;
+  global.book = book;
+  global.cache = cache;
+})(globalThis);
 ''';
 
 /// java.* 第一梯队预置脚本。纯 ES 实现（QuickJS 无 TextEncoder/btoa），

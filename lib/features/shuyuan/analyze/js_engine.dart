@@ -14,6 +14,7 @@ import '../../../core/js/js_runtime_factory.dart';
 import '../../../core/novel/novel_chinese_converter.dart';
 import '../../../core/utils/app_log.dart';
 import 'java_extensions.dart';
+import 'source_context.dart';
 
 class JsEngine {
   NexJsRuntime? _runtime;
@@ -55,6 +56,15 @@ class JsEngine {
     } catch (e) {
       AppLog.instance.w('[书源JS] java.* 桥预置脚本注入异常: $e');
     }
+    try {
+      final result = _runtime!.evaluate(sourceContextJsPrelude);
+      if (result.isError) {
+        AppLog.instance.w(
+            '[书源JS] 注入对象预置脚本注入失败: ${result.stringResult}');
+      }
+    } catch (e) {
+      AppLog.instance.w('[书源JS] 注入对象预置脚本注入异常: $e');
+    }
   }
 
   /// 取走上一轮 eval 中脚本经 `java.put` 写入的变量（取后清空）。
@@ -77,6 +87,13 @@ class JsEngine {
   /// 「书源 JS 规则不生效」类问题（脚本摘要 + 错误信息）。
   String eval(String jsStr, {Map<String, dynamic>? bindings}) {
     try {
+      // 注入对象上下文种子（cookie/source/book/cache）：活动作用域存在时
+      // 每轮 eval 注入快照，写回经排空协议（__shuyuanCtx.c）落回宿主。
+      final activeCtx = ShuyuanSourceContext.current;
+      if (activeCtx != null) {
+        runtime.evaluate(
+            'var __shuyuanCtx = ${_toJsValue(activeCtx.toSeed())};');
+      }
       if (bindings != null) {
         for (final entry in bindings.entries) {
           // `java` 由 java_extensions 预置对象提供（全局函数桥），
@@ -90,13 +107,18 @@ class JsEngine {
         AppLog.instance.w('[书源JS] 执行失败: ${_brief(jsStr)} → ${result.stringResult}');
         return '';
       }
+      // 排空必须先于一切早退：完成值为 undefined/null 的脚本（如仅做
+      // putLoginInfo/putVariable 的写操作脚本）同样产生写操作，早退跳过
+      // 排空会整批丢失（2026-11-14 源变量/登录信息测试实测）。
+      if (jsStr.contains('java.') || ShuyuanSourceContext.current != null) {
+        _drainJavaBridge();
+      }
       var s = result.stringResult;
       if (s == 'null' || s == 'undefined' || s.isEmpty) return '';
       // 整数结果带 .0（QuickJS 按 double 返回）时规整，避免 URL 拼接出错。
       if (s.length > 2 && RegExp(r'^-?\d+\.0+$').hasMatch(s)) {
         s = s.substring(0, s.indexOf('.'));
       }
-      if (jsStr.contains('java.')) _drainJavaBridge();
       return s;
     } catch (e) {
       AppLog.instance.w('[书源JS] 执行异常: ${_brief(jsStr)} → $e');
@@ -150,10 +172,30 @@ class JsEngine {
     }
     final vars = payload['v'];
     if (vars is Map) {
-      _lastJavaVars = {
-        for (final e in vars.entries)
-          if (e.value != null) e.key.toString(): e.value.toString(),
-      };
+      // 注入对象写操作（__syop_* 前缀，JSON 序列化的 op 记录）先行剥离，
+      // 回放到活动上下文；其余进入 _lastJavaVars 供变量表持有方取走。
+      final syops = <Map<String, dynamic>>[];
+      final cleanVars = <String, String>{};
+      vars.forEach((k, v) {
+        final key = k.toString();
+        if (key.startsWith('__syop_')) {
+          try {
+            final decoded = jsonDecode(v?.toString() ?? '');
+            if (decoded is Map<String, dynamic>) syops.add(decoded);
+          } catch (_) {}
+          return;
+        }
+        if (v != null) cleanVars[key] = v.toString();
+      });
+      _lastJavaVars = cleanVars;
+      if (syops.isNotEmpty) {
+        final ctx = ShuyuanSourceContext.current;
+        if (ctx != null) {
+          ctx.applyOps(syops);
+          // cookie 覆盖层持久化（fire-and-forget：下一轮种子取内存镜像）。
+          ctx.persistIfNeeded();
+        }
+      }
     }
   }
 

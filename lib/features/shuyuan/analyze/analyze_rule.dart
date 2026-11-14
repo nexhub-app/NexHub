@@ -12,6 +12,7 @@ import 'analyze_xpath.dart';
 import 'analyze_json.dart';
 import 'analyze_regex.dart';
 import 'js_engine.dart';
+import 'source_context.dart';
 import '../model/xiaoshuo_book.dart';
 import '../model/xiaoshuo_book_chapter.dart';
 
@@ -359,6 +360,17 @@ class AnalyzeRule {
       final out = _jsEngine!.eval(_expandJavaBridge(jsStr), bindings: bindings);
       final javaVars = _jsEngine!.takeJavaVars();
       javaVars.forEach(put);
+      // 注入对象 book 变量回写：JS 里 book.putVariable 的写入镜像到当前书
+      // （variableMap），规则层 @get/{book.getVariable} 即可读到。
+      final activeCtx = ShuyuanSourceContext.current;
+      if (activeCtx != null &&
+          activeCtx.bookVars.isNotEmpty &&
+          book != null) {
+        activeCtx.bookVars.forEach((k, v) {
+          if (k == '__variable') return;
+          book?.putVariable(k, v);
+        });
+      }
       return out;
     } catch (e) {
       // JS 引擎调用本身抛异常（极少见）时记录到运行日志，便于真机排查

@@ -30,6 +30,7 @@ import '../model/book_source.dart';
 import '../model/search_book.dart';
 import '../model/xiaoshuo_book.dart';
 import '../model/xiaoshuo_book_chapter.dart';
+import '../analyze/source_context.dart';
 import '../shuyuan_adapter.dart';
 import '../web_book/web_book.dart';
 
@@ -38,6 +39,16 @@ class ShuyuanNovelResolver
   ShuyuanNovelResolver();
 
   final WebBook _webBook = WebBook();
+
+  /// 每源运行时上下文（cookie 覆盖层/源变量/登录信息/缓存），注入对象
+  /// （cookie/source/book/cache）的宿主侧。按源 id 缓存。
+  final Map<String, ShuyuanSourceContext> _contexts = {};
+
+  Future<ShuyuanSourceContext> _contextFor(PluginConfig source) async {
+    return _contexts[source.id] ??= await ShuyuanSourceContext.forSource(
+      source.id,
+    );
+  }
 
   @override
   Future<dynamic> resolve(
@@ -53,8 +64,10 @@ class ShuyuanNovelResolver
       );
     }
     final bookSource = shuyuanSource.toBookSource();
+    final ctx = await _contextFor(source);
 
-    try {
+    return ShuyuanSourceContext.run(ctx, () async {
+      try {
       switch (apiName) {
         case 'search':
           return await _handleSearch(source, bookSource, vars);
@@ -93,7 +106,8 @@ class ShuyuanNovelResolver
         );
       }
       rethrow;
-    }
+      }
+    });
   }
 
   /// 渲染后 HTML 回灌：WebView 过验证后拿回的整页 HTML 直接走 WebBook 规则解析，
@@ -115,7 +129,10 @@ class ShuyuanNovelResolver
       );
     }
     final bookSource = shuyuanSource.toBookSource();
-    switch (apiName) {
+    final ctx =
+        _contexts[source.id] ?? ShuyuanSourceContext(source.id);
+    return ShuyuanSourceContext.run(ctx, () async {
+      switch (apiName) {
       case 'search':
       case 'explore':
       case 'category':
@@ -184,7 +201,8 @@ class ShuyuanNovelResolver
         return blocks;
       default:
         return resolve(source, apiName, vars: vars);
-    }
+      }
+    });
   }
 
   // ── 发现分类解析 ──
@@ -196,13 +214,18 @@ class ShuyuanNovelResolver
     final shuyuanSource = ShuyuanAdapter.fromPluginConfig(source);
     if (shuyuanSource == null) return const <CategoryEntry>[];
     final bookSource = shuyuanSource.toBookSource();
-    return _webBook
-        .getExploreCategories(bookSource)
-        .map((e) => CategoryEntry(
-              id: e.url,
-              title: e.name.isNotEmpty ? e.name : e.url,
-            ))
-        .toList();
+    // 同步入口：已装载的上下文直接用；未装载则用轻量内存上下文
+    // （源变量持久化装载走异步 resolve 链路）。
+    final ctx = _contexts[source.id] ?? ShuyuanSourceContext(source.id);
+    return ShuyuanSourceContext.run(ctx, () {
+      return _webBook
+          .getExploreCategories(bookSource)
+          .map((e) => CategoryEntry(
+                id: e.url,
+                title: e.name.isNotEmpty ? e.name : e.url,
+              ))
+          .toList();
+    });
   }
 
   // ── 搜索 ──

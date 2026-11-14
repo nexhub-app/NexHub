@@ -18,6 +18,7 @@ import '../../../core/scraper/http_fetcher.dart';
 import '../model/xiaoshuo_book.dart';
 import '../model/xiaoshuo_book_chapter.dart';
 import '../model/book_source.dart';
+import 'source_context.dart';
 
 class AnalyzeUrl {
   String url;
@@ -454,6 +455,26 @@ class AnalyzeUrl {
       requestHeaders['Cookie'] = (existing != null && existing.isNotEmpty)
           ? '$existing; $sharedCookie'
           : sharedCookie;
+    }
+
+    // 注入对象上下文（P1-2）：登录头合并（source.putLoginHeader 语义）+
+    // per-source cookie 覆盖层按 host 合并（书源命名空间隔离——三通道设计，
+    // 只读合并进本次请求，不写全局罐）。
+    final activeCtx = ShuyuanSourceContext.current;
+    if (activeCtx != null) {
+      activeCtx.loginHeader.forEach((k, v) {
+        if (k.isNotEmpty && v.isNotEmpty) requestHeaders[k] = v;
+      });
+      final reqHost = Uri.tryParse(url)?.host ?? '';
+      final overlay = activeCtx.cookiesForHost(reqHost);
+      if (overlay.isNotEmpty) {
+        final overlayStr =
+            overlay.entries.map((e) => '${e.key}=${e.value}').join('; ');
+        final existing = requestHeaders['Cookie'];
+        requestHeaders['Cookie'] = (existing != null && existing.isNotEmpty)
+            ? '$existing; $overlayStr'
+            : overlayStr;
+      }
     }
 
     String body;
