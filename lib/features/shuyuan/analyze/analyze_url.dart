@@ -15,6 +15,7 @@ import 'package:fast_gbk/fast_gbk.dart';
 import '../../../core/utils/app_log.dart';
 import 'analyze_rule.dart';
 import 'js_engine.dart';
+import 'webview_fetcher.dart';
 import '../../../core/scraper/browser_faithful_adapter.dart';
 import '../../../core/scraper/verification_detector.dart';
 import '../../../core/scraper/http_fetcher.dart';
@@ -50,6 +51,11 @@ class AnalyzeUrl {
   String? dnsIp;
   String? requestType;
   int webViewDelayTime = 0;
+
+  /// URL 内 JS 的求值器（同一 AnalyzeUrl 内复用，连同其 JS 引擎）。
+  /// 一个 URL 模板常有多个 `{{...}}`，旧实现每个都 new AnalyzeRule →
+  /// new QuickJS 运行时且从不释放。
+  AnalyzeRule? _urlRule;
 
   // 静态 Dio 实例提升性能
   static final Dio _dio = Dio()
@@ -200,7 +206,9 @@ class AnalyzeUrl {
           }
           charset = option['charset']?.toString();
           retry = option['retry'] ?? 0;
-          useWebView = option['useWebView'] ?? false;
+          // legado URL 选项键是 `webView`；`useWebView` 是历史兼容写法。
+          final wvRaw = option['webView'] ?? option['useWebView'];
+          useWebView = wvRaw == true || '$wvRaw' == 'true';
           webJs = option['webJs']?.toString();
           bodyJs = option['bodyJs']?.toString();
           dnsIp = option['dnsIp']?.toString();
@@ -379,8 +387,8 @@ class AnalyzeUrl {
 
   String _evalJs(String jsCode, String currentResult) {
     try {
-      final analyzeRule = AnalyzeRule(book: ruleData, chapter: chapter)
-        ..setBaseUrl(baseUrl);
+      final analyzeRule = _urlRule ??= (AnalyzeRule(book: ruleData, chapter: chapter)
+        ..setBaseUrl(baseUrl));
       // URL 内 JS 的宿主绑定（对齐 legado AnalyzeUrl.evalJS）：
       // 分页偏移（`page-1`）、关键词处理等表达式依赖 page/key。
       return analyzeRule.evalJs(jsCode, currentResult, extraBindings: {
@@ -412,6 +420,75 @@ class AnalyzeUrl {
   }) async {
     if (!_isValidHttpUrl) {
       throw Exception('Invalid URL: $url');
+    }
+
+    // 阶段级页面缓存：settle 重放会整段重跑，命中则直接返回上一次的响应
+    // （含 jsStr/sourceRegex 后处理结果，故 key 里带上这两项）。
+    // 无活动上下文（离线调用/测试）时不缓存。
+    final activeCtx = ShuyuanSourceContext.current;
+    final cacheKey =
+        activeCtx == null ? null : _pageCacheKey(jsStr, sourceRegex);
+    if (activeCtx != null && cacheKey != null) {
+      final hit = activeCtx.pageCache[cacheKey];
+      if (hit != null) {
+        AppLog.instance.d('[书源HTTP] 阶段缓存命中 $url');
+        return hit;
+      }
+    }
+
+    // legado URL 选项 `webView:true`：页面必须经 WebView 渲染——直连拿到的
+    // 多半是 JS 壳。渲染成功直接用渲染 HTML；失败/命中挑战页 → 抛 WebView
+    // 异常走可见浏览器回灌（与源级 useWebview 同一条用户路径）。
+    // 无头取源失败且平台不支持时也走同一回灌，不会静默返回壳页。
+    if (useWebView) {
+      final rendered =
+          await ShuyuanWebviewFetcher.fetch(url: url, js: webJs);
+      if (rendered == null || rendered.isEmpty) {
+        throw VerificationRequiredException(
+          url: url,
+          body: '',
+          statusCode: null,
+          preferWebView: true,
+          webJs: webJs,
+        );
+      }
+      if (_looksLikeVerificationChallenge(rendered)) {
+        throw VerificationRequiredException(
+          url: url,
+          body: rendered,
+          statusCode: null,
+          preferWebView: true,
+          webJs: webJs,
+        );
+      }
+      final checkJs = source?.loginCheckJs;
+      if (checkJs != null && checkJs.trim().isNotEmpty) {
+        final code = _runLoginCheck(checkJs, 200, rendered);
+        if (code == 500) {
+          throw ShuyuanLoginRequiredException(
+              url: url, sourceName: source?.bookSourceName ?? '');
+        }
+      }
+      var out = rendered;
+      if (jsStr != null && jsStr.isNotEmpty) {
+        try {
+          final ar = AnalyzeRule(book: ruleData, chapter: chapter)
+            ..setContent(out, url)
+            ..setBaseUrl(url);
+          out = ar.getString(jsStr);
+        } catch (_) {}
+      }
+      if (sourceRegex != null && sourceRegex.isNotEmpty) {
+        try {
+          final regex = RegExp(sourceRegex, dotAll: true);
+          final m = regex.firstMatch(out);
+          if (m != null) out = m.groupCount > 0 ? (m.group(1) ?? out) : out;
+        } catch (_) {}
+      }
+      if (activeCtx != null && cacheKey != null) {
+        activeCtx.pageCachePut(cacheKey, out);
+      }
+      return out;
     }
 
     // 全应用统一 UA（中心真源）：过验证的 UA 与后续 HttpFetcher 重试的 UA 必须一致，
@@ -479,8 +556,7 @@ class AnalyzeUrl {
 
     // 注入对象上下文（P1-2）：登录头合并（source.putLoginHeader 语义）+
     // per-source cookie 覆盖层按 host 合并（书源命名空间隔离——三通道设计，
-    // 只读合并进本次请求，不写全局罐）。
-    final activeCtx = ShuyuanSourceContext.current;
+    // 只读合并进本次请求，不写全局罐）。activeCtx 已在函数入口取过。
     if (activeCtx != null) {
       activeCtx.loginHeader.forEach((k, v) {
         if (k.isNotEmpty && v.isNotEmpty) requestHeaders[k] = v;
@@ -672,7 +748,16 @@ class AnalyzeUrl {
       } catch (_) {}
     }
 
+    if (activeCtx != null && cacheKey != null) {
+      activeCtx.pageCachePut(cacheKey, body);
+    }
     return body;
+  }
+
+  /// 阶段缓存键：同 URL 但 method/body/后处理不同时不能复用。
+  String _pageCacheKey(String? jsStr, String? sourceRegex) {
+    final m = method?.toUpperCase() ?? 'GET';
+    return '$m\n$url\n${body ?? ''}\n${jsStr ?? ''}\n${sourceRegex ?? ''}';
   }
 
   Map<String, String> _parseHeader(String headerStr) {
@@ -855,27 +940,42 @@ class AnalyzeUrl {
     return lowerBody.substring(gt + 1, end).trim();
   }
 
-  /// loginCheckJs 求值：种子 result={code,body}，脚本可改写后返回；
-  /// 最终 code==500 即未登录（legado 语义）。局部引擎：loginCheck 仅
-  /// 声明了该脚本的源才会走到这里。
+  /// loginCheckJs 求值：`result` 是可当字符串用的包装对象（保留
+  /// `indexOf/trim/length` 等），同时带 `code`（当前状态码）与 `body`
+  /// （原始响应）。脚本可以：
+  /// - 赋值 `result.code = 500`；
+  /// - 直接 `return 500` / `return '500'`；
+  /// - 重新赋值 `result = '500'`。
+  /// 返回合法 HTTP 状态码（100..599）才采信，否则维持原状态码——避免把
+  /// 正文里出现的数字误判成登录状态。
   int _runLoginCheck(String js, int statusCode, String body) {
     try {
-      final engine = JsEngine();
-      final activeCtx = ShuyuanSourceContext.current;
-      if (activeCtx != null) {
-        engine.runtime
-            .evaluate('var __shuyuanCtx = ${jsonEncode(activeCtx.toSeed())};');
-      }
-      final wrapped = 'var result = {code: $statusCode, body: ${jsonEncode(body)}};\n'
-          'JSON.stringify((function(){\n${js.trim()}\nreturn result;})())';
+      // 复用 per-source 引擎：loginCheckJs 每次请求都会求值，不能每次新建
+      // QuickJS 运行时（旧实现还从不 dispose）。上下文种子由 JsEngine.eval
+      // 统一注入，这里不再手动 evaluate，避免重复注入。
+      final engine = JsEngine.forSource(ShuyuanSourceContext.current?.sourceId);
+      final wrapped = 'var __lcBody = ${jsonEncode(body)};\n'
+          'var result = new String(__lcBody);\n'
+          'result.body = __lcBody;\n'
+          'result.code = $statusCode;\n'
+          'var __lcOut = (function(){\n${js.trim()}\nreturn result;})();\n'
+          'JSON.stringify({o: (__lcOut !== null && typeof __lcOut === "object") '
+          '? __lcOut.code : __lcOut})';
       final r = engine.eval(wrapped);
       if (r.isEmpty) return statusCode;
       final decoded = jsonDecode(r);
-      if (decoded is Map) {
-        final code = decoded['code'];
-        return code is int ? code : int.tryParse('$code') ?? statusCode;
+      if (decoded is! Map) return statusCode;
+      final raw = decoded['o'];
+      int? code;
+      if (raw is int) {
+        code = raw;
+      } else if (raw is num) {
+        code = raw.toInt();
+      } else if (raw is String) {
+        code = int.tryParse(raw.trim());
       }
-      return statusCode;
+      if (code == null || code < 100 || code > 599) return statusCode;
+      return code;
     } catch (_) {
       return statusCode;
     }

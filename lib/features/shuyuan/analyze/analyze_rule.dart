@@ -11,6 +11,7 @@ import 'analyze_jsoup.dart';
 import 'analyze_xpath.dart';
 import 'analyze_json.dart';
 import 'analyze_regex.dart';
+import 'regex_compat.dart';
 import 'js_engine.dart';
 import 'source_context.dart';
 import '../model/xiaoshuo_book.dart';
@@ -343,7 +344,11 @@ class AnalyzeRule {
 
   String _evalJs(String jsStr, dynamic result, {Map<String, dynamic>? extraBindings}) {
     try {
-      _jsEngine ??= JsEngine();
+      // 按源复用引擎：同一书源的列表/详情/目录/正文共用一套运行时与
+      // jsLib 全局，避免逐章重建 QuickJS。无活动上下文（如离线单测）
+      // 时退化为独立实例。
+      _jsEngine ??= JsEngine.forSource(
+          ShuyuanSourceContext.current?.sourceId);
       final bindings = <String, dynamic>{
         // `java` 对象由 java_extensions 预置脚本提供（引擎侧跳过同名绑定）；
         // 变量表经 __javaVars 种子注入（动态 java.get 可读），脚本内 java.put
@@ -353,22 +358,52 @@ class AnalyzeRule {
         'baseUrl': baseUrl ?? '',
         'src': content?.toString() ?? '',
         'title': chapter?.title ?? '',
-        if (_variables.isNotEmpty)
-          '__javaVars': Map<String, String>.from(_variables),
+        // 每轮都重置变量快照（不能因为当前为空就跳过）：引擎已按源池化，
+        // 会跨书/跨章存活；若沿用上一轮的 __javaVars，`java.get` 会读到
+        // 别的书的变量。put 的写回仍经 takeJavaVars → put 进 _variables。
+        '__javaVars': Map<String, String>.from(_variables),
         if (extraBindings != null) ...extraBindings,
       };
+      final activeCtx = ShuyuanSourceContext.current;
+      final target = book;
+      // book 字段 → JS 种子：脚本里 `book.name/author/…` 读到的是当前书。
+      if (activeCtx != null && target != null) {
+        activeCtx.bookInfo
+          ..['name'] = target.name
+          ..['author'] = target.author
+          ..['bookUrl'] = target.bookUrl
+          ..['intro'] = target.intro ?? ''
+          ..['kind'] = target.kind ?? ''
+          ..['coverUrl'] = target.coverUrl ?? ''
+          ..['lastChapter'] = target.lastChapter ?? '';
+      }
       final out = _jsEngine!.eval(_expandJavaBridge(jsStr), bindings: bindings);
       final javaVars = _jsEngine!.takeJavaVars();
       javaVars.forEach(put);
+      // JS 里 `book.name = '…'` 等字段写入回写当前书（空值不覆盖——
+      // 正文解析阶段 book 是空壳，避免把详情阶段已解析的字段抹掉）。
+      if (activeCtx != null && target != null) {
+        void apply(String key, void Function(String value) setter) {
+          final value = activeCtx.bookInfo[key];
+          if (value != null && value.isNotEmpty) setter(value);
+        }
+
+        apply('name', (v) => target.name = v);
+        apply('author', (v) => target.author = v);
+        apply('bookUrl', (v) => target.bookUrl = v);
+        apply('intro', (v) => target.intro = v);
+        apply('kind', (v) => target.kind = v);
+        apply('coverUrl', (v) => target.coverUrl = v);
+        apply('lastChapter', (v) => target.lastChapter = v);
+      }
       // 注入对象 book 变量回写：JS 里 book.putVariable 的写入镜像到当前书
       // （variableMap），规则层 @get/{book.getVariable} 即可读到。
-      final activeCtx = ShuyuanSourceContext.current;
       if (activeCtx != null &&
           activeCtx.bookVars.isNotEmpty &&
-          book != null) {
+          target != null) {
         activeCtx.bookVars.forEach((k, v) {
           if (k == '__variable') return;
-          book?.putVariable(k, v);
+          target.putVariable(k, v);
         });
       }
       return out;
@@ -470,32 +505,100 @@ class AnalyzeRule {
       RegExp(r"java\.getString\(\s*'([^']*)'\s*\)");
   static final RegExp _javaGetStringDouble =
       RegExp(r'java\.getString\(\s*"([^"]*)"\s*\)');
-  static final RegExp _javaGetSingle =
-      RegExp(r"java\.get\(\s*'([^']*)'\s*\)");
-  static final RegExp _javaGetDouble =
-      RegExp(r'java\.get\(\s*"([^"]*)"\s*\)');
+  static final RegExp _javaGetStringListSingle =
+      RegExp(r"java\.getStringList\(\s*'([^']*)'\s*\)");
+  static final RegExp _javaGetStringListDouble =
+      RegExp(r'java\.getStringList\(\s*"([^"]*)"\s*\)');
+  static final RegExp _javaGetElementsSingle =
+      RegExp(r"java\.getElements\(\s*'([^']*)'\s*\)");
+  static final RegExp _javaGetElementsDouble =
+      RegExp(r'java\.getElements\(\s*"([^"]*)"\s*\)');
+  static final RegExp _javaGetElementSingle =
+      RegExp(r"java\.getElement\(\s*'([^']*)'\s*\)");
+  static final RegExp _javaGetElementDouble =
+      RegExp(r'java\.getElement\(\s*"([^"]*)"\s*\)');
 
-  /// 宿主桥接调用展开：JS 沙箱无法直接暴露宿主对象，通用书源常见的
-  /// `java.getString('规则')` / `java.get('变量')` 调用在求值前由宿主
-  /// 内联为求值结果（JSON 字符串字面量，转义兼容 JS 语法）。
+  /// 节点 → JS 字面量：`{t:文本, h:内部HTML, ot:自身文本, a:属性表}`。
+  /// 由预置脚本的 `__javaElements` 包装成 jsoup 风格对象（size/get/text/
+  /// html/attr）；JSON 模式的元素额外带 `j`（原始对象）供字段直读。
+  String _elementsJsLiteral(List<dynamic> elements) {
+    final out = <Map<String, dynamic>>[];
+    for (final e in elements) {
+      if (e is Element) {
+        out.add(<String, dynamic>{
+          't': e.text.trim(),
+          'h': e.innerHtml,
+          'ot': e.nodes
+              .whereType<Text>()
+              .map((n) => n.text.trim())
+              .where((s) => s.isNotEmpty)
+              .join(' '),
+          'a': <String, String>{
+            for (final entry in e.attributes.entries)
+              entry.key.toString(): entry.value,
+          },
+        });
+      } else if (e is Map) {
+        out.add(<String, dynamic>{'t': e.toString(), 'j': e});
+      } else {
+        out.add(<String, dynamic>{'t': e?.toString() ?? ''});
+      }
+    }
+    return jsonEncode(out);
+  }
+
+  /// 宿主桥接调用展开：`java.getString/getStringList/getElements/getElement`
+  /// 需要「按规则求值」，JS 沙箱内无法同步回调宿主，故在求值前内联为结果。
+  ///
+  /// 注意：**不要**在此内联 `java.get(...)`。运行时已提供 `java.get`
+  /// （变量读取 + 单参 URL GET + 双参 HTTP 重载），宿主内联只会抢在它前面
+  /// 把 `java.get('https://…')` 替换成空串（旧实现即因此让 API 源的
+  /// `java.get(url).body()` 全部返回空）。
+  ///
+  /// 仅支持**字面量**规则（单/双引号无转义）；动态规则（变量拼出来的串）
+  /// 仍会落到运行时缺失函数 → TypeError → 该段返回空（可被日志定位）。
   String _expandJavaBridge(String jsExpr) {
     if (!jsExpr.contains('java.')) return jsExpr;
     var out = jsExpr;
+    // 长名优先：getStringList / getElements / getElement 先于 getString 处理，
+    // 避免前缀被短规则截断（当前正则带 `\(`，其实不会误匹配，仍保持顺序）。
+    out = out.replaceAllMapped(
+        _javaGetStringListSingle, (m) => jsonEncode(getStringList(m.group(1) ?? '')));
+    out = out.replaceAllMapped(
+        _javaGetStringListDouble, (m) => jsonEncode(getStringList(m.group(1) ?? '')));
+    out = out.replaceAllMapped(
+        _javaGetElementsSingle,
+        (m) => '__javaElements(${_elementsJsLiteral(getElements(m.group(1) ?? ''))})');
+    out = out.replaceAllMapped(
+        _javaGetElementsDouble,
+        (m) => '__javaElements(${_elementsJsLiteral(getElements(m.group(1) ?? ''))})');
+    out = out.replaceAllMapped(
+        _javaGetElementSingle,
+        (m) =>
+            '(__javaElements(${_elementsJsLiteral(getElements(m.group(1) ?? ''))})[0] || null)');
+    out = out.replaceAllMapped(
+        _javaGetElementDouble,
+        (m) =>
+            '(__javaElements(${_elementsJsLiteral(getElements(m.group(1) ?? ''))})[0] || null)');
     out = out.replaceAllMapped(
         _javaGetStringSingle, (m) => jsonEncode(getString(m.group(1) ?? '')));
     out = out.replaceAllMapped(
         _javaGetStringDouble, (m) => jsonEncode(getString(m.group(1) ?? '')));
-    out = out.replaceAllMapped(
-        _javaGetSingle, (m) => jsonEncode(get(m.group(1) ?? '')));
-    out = out.replaceAllMapped(
-        _javaGetDouble, (m) => jsonEncode(get(m.group(1) ?? '')));
     return out;
   }
 
   String _replaceRegex(String result, _RuleState st) {
     if (st.replaceRegex.isEmpty) return result;
     try {
-      final regex = RegExp(st.replaceRegex);
+      // Java→Dart 正则兼容：`(?i)` 内联标志、\Q..\E、占有量词、\p{In…} 等。
+      // 翻译不了的（如反向引用）保持原样，求值失败仍走既有 catch。
+      final compat = RegexCompat.translate(st.replaceRegex);
+      final regex = RegExp(
+        compat.pattern,
+        caseSensitive: compat.caseSensitive,
+        dotAll: compat.dotAll,
+        multiLine: compat.multiLine,
+      );
       String expand(Match m) => _expandReplacement(m, st.replacement);
       if (st.replaceFirst) {
         return result.replaceFirstMapped(regex, expand);

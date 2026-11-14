@@ -1,11 +1,27 @@
 /// 正则规则解析器：从内容中按正则提取字符串/元素列表。
+///
+/// 规则写的是 Java 正则（legado allInOne 语法），经 [RegexCompat.translate]
+/// 转成 Dart RegExp：内联标志 / \Q..\E / 占有量词 / \p{In…} 就地翻译；
+/// 默认**不开** dotAll（与 legado 一致，需要跨行用 `(?s)`）。
 library;
 
+import 'regex_compat.dart';
+
 class AnalyzeByRegex {
+  static RegExp _compile(String rule) {
+    final compat = RegexCompat.translate(rule);
+    return RegExp(
+      compat.pattern,
+      caseSensitive: compat.caseSensitive,
+      dotAll: compat.dotAll,
+      multiLine: compat.multiLine,
+    );
+  }
+
   static String getString(String content, String rule) {
     if (rule.isEmpty || content.isEmpty) return '';
     try {
-      final regex = RegExp(rule, dotAll: true);
+      final regex = _compile(rule);
       final match = regex.firstMatch(content);
       if (match != null) {
         if (match.groupCount > 0) {
@@ -21,7 +37,7 @@ class AnalyzeByRegex {
     if (rule.isEmpty || content.isEmpty) return [];
     final results = <String>[];
     try {
-      final regex = RegExp(rule, dotAll: true);
+      final regex = _compile(rule);
       for (final match in regex.allMatches(content)) {
         if (match.groupCount > 0) {
           final group = match.group(1);
@@ -54,7 +70,7 @@ class AnalyzeByRegex {
     final resultList = <String>[];
     for (final r in rules) {
       try {
-        final regex = RegExp(r, dotAll: true);
+        final regex = _compile(r);
         for (final match in regex.allMatches(content)) {
           for (int i = 0; i <= match.groupCount; i++) {
             final group = match.group(i);

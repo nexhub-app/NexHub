@@ -10,6 +10,7 @@ import '../../../core/models/novel_block.dart';
 import '../../../core/utils/app_log.dart';
 import '../analyze/analyze_rule.dart';
 import '../analyze/js_engine.dart';
+import '../analyze/regex_compat.dart';
 import '../model/book_source.dart';
 import '../model/xiaoshuo_book.dart';
 import '../model/xiaoshuo_book_chapter.dart';
@@ -731,7 +732,16 @@ class BookContent {
       final replacement = parts.length >= 2 ? parts.sublist(1).join('##') : '';
       if (pattern.isEmpty) continue;
       try {
-        out = out.replaceAll(RegExp(pattern, multiLine: true), replacement);
+        // Java→Dart 正则兼容：(?i) 等内联标志原先会直接抛错被吞掉。
+        final compat = RegexCompat.translate(pattern);
+        out = out.replaceAll(
+            RegExp(
+              compat.pattern,
+              multiLine: true,
+              caseSensitive: compat.caseSensitive,
+              dotAll: compat.dotAll,
+            ),
+            replacement);
       } catch (_) {}
     }
     return out;

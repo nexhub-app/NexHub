@@ -128,12 +128,15 @@ class SourceRule {
   }
 
   String _splitPutRule(String ruleStr) {
-    final putPattern = RegExp(r'@put:\((\{[^}]+?\})\)', caseSensitive: false);
+    // legado 标准写法是 `@put:{k:"rule"}`（无括号）；历史实现与部分源
+    // 写成 `@put:({k:"rule"})`。两种都要认，否则标准写法整条变量链失效。
+    final putPattern = RegExp(r'@put:(?:\((\{[^}]+?\})\)|(\{[^}]+?\}))',
+        caseSensitive: false);
     var vRuleStr = ruleStr;
     var match = putPattern.firstMatch(vRuleStr);
     while (match != null) {
       vRuleStr = vRuleStr.replaceFirst(match.group(0)!, '');
-      final jsonStr = match.group(1)!;
+      final jsonStr = match.group(1) ?? match.group(2) ?? '';
       try {
         final decoded = _parseJsonMap(jsonStr);
         putMap.addAll(decoded);
