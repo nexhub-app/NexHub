@@ -668,6 +668,23 @@ jobs:
           fi
           echo "== linux/ 结构 =="
           ls -la linux
+
+      - name: 关闭第三方插件上的 -Werror（新版 clang 兼容）
+        # flutter create 生成的 CMakeLists 在 APPLY_STANDARD_SETTINGS 里给所有目标
+        # （含 pub 插件）加 -Wall -Werror。新版 clang 会把旧版 nlohmann/json.hpp
+        # 的 `operator "" _json` 判为 -Wdeprecated-literal-operator 并直接终止编译
+        # （flutter_secure_storage_linux 自带该头文件）。发布构建不该被第三方
+        # 插件的历史写法卡死，这里只去掉 -Werror，保留 -Wall 输出警告。
+        run: |
+          set -e
+          for F in linux/CMakeLists.txt linux/runner/CMakeLists.txt; do
+            if [ -f "$F" ] && grep -q -- '-Werror' "$F"; then
+              sed -i 's/ -Werror//g' "$F"
+              echo "patched $F"
+              grep -n -- '-Wall' "$F" | head -3 || true
+            fi
+          done
+
       - name: 重新生成启动图标 (flutter_launcher_icons)
         # 覆盖 flutter create 生成的默认 Logo（仓库里 linux/ 被简化、没有 runner/，
         # flutter create 会放 Flutter 默认 Logo 当应用图标；这里用 NexHub 自定义图标覆盖）。

@@ -52,7 +52,7 @@
 - **全局 · 触感**：页签 / 开关 / 滑块 / 长按菜单 / 拖拽排序 / 收藏·书签·点赞·已读按 MD3 haptic 语义映射 tick / toggle / thunk / light；鸿蒙声明 `ohos.permission.VIBRATE` 且整体降一档。
 - **UI · 其它**：Bangumi 收藏状态五 chip 由 `Wrap` 改 `DesktopHorizontalScroll + Row`（条目类型保持 Wrap）；漫画动态效果开关新增常驻 `_DevStageBanner`（`AppStatusColors.warn`，三处共用组件一次生效），`motionEffectDevWarning` 中英 l10n。
 - **文档**：补齐加密通道引擎行为、脚本异步约定、预取响应头边界、Cookie 合并规则、媒体域名改写作用域，仓库开发文档与官网教程中英同步。
-- **内部**：阅读器偏好 schema 迁移；本地化文案补齐中英两套；`dart analyze lib` 0 error；无破坏性依赖变更。
+- **内部**：阅读器偏好 schema 迁移；本地化文案补齐中英两套；Linux 发布构建关闭生成工程对 pub 插件施加的 `-Werror`（新版 clang 会把旧版 JSON 头文件的字面量运算符判为错误），保留 `-Wall` 警告输出；`dart analyze lib` 0 error；无破坏性依赖变更。
 
 ### 📝 更新日志（v3.4.0 → v3.5.0）
 
