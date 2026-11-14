@@ -542,13 +542,17 @@ class AnalyzeByJsoup {
         }
         break;
       case 'textnodes':
+        // legado 语义：每个文本节点各占一条结果（非按元素 join 成单串）。
+        // getString 输出一致（同为 \n 连接）；差异在 getStringList 粒度与
+        // ## 替换的逐条应用（按节点过滤章节号等场景）。
         for (final el in elements) {
           final nodes = el.nodes
               .whereType<Text>()
               .map((n) => (n).text.trim())
-              .where((s) => s.isNotEmpty)
-              .toList();
-          if (nodes.isNotEmpty) result.add(nodes.join('\n'));
+              .where((s) => s.isNotEmpty);
+          for (final t in nodes) {
+            result.add(t);
+          }
         }
         break;
       case 'owntext':
