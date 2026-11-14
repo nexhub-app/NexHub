@@ -558,7 +558,11 @@ class ShuyuanNovelResolver
     // 音频/视频源（legado bookSourceType=1/4）：正文规则提取的媒体直链
     // 包装为媒体块（阅读器渲染播放卡片拉起播放器）；legado 对音/视频
     // 不做 htmlFormat，直链即正文。
-    final srcType = source.bookSourceType;
+    final srcTypeRaw =
+        (source.selectors?['xiaoshuo'] as Map<String, dynamic>?)
+            ?['bookSourceType'];
+    final srcType =
+        srcTypeRaw is int ? srcTypeRaw : int.tryParse('$srcTypeRaw') ?? 0;
     if (srcType == 1 || srcType == 4) {
       String? mediaUrl;
       for (final b in result.blocks) {
