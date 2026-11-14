@@ -8,8 +8,12 @@
 ///   `__javaToasts` 队列、`java.log/logType` 推入 `__javaLogs` 队列、
 ///   `java.put` 写入 `__javaVars`，由 JsEngine.eval 结束后统一收取
 ///   （见 [JavaFeedback] 与 `JsEngine.takeJavaVars`）；
-/// - 网络族（ajax/connect/get/post）、WebView 族、文件族等 P1 再接入，
-///   当前未定义 → 调用抛 TypeError → 既有 `[书源JS]` 日志兜底，行为安全。
+/// - 网络族（ajax/connect/get/post/head）与 WebView 走「确定性重放」：
+///   首轮返回占位符并记录请求，宿主 settle 后写入增量缓存再重放；
+/// - 纯计算族（md5/base64/hex/AES/TTF 解析与字体还原）全部在 JS 内同步实现；
+/// - 文件族支持 `cacheFile(url)` + `readTxtFile(path)`（脚本注入常用组合，
+///   内容走 ajax 重放、按虚拟路径存取）；readFile/unzipFile 等二进制文件族
+///   尚未接入 → 调用抛 TypeError → 既有 `[书源JS]` 日志兜底，行为安全。
 ///
 /// 语义对齐 legado JsExtensions.kt / JsEncodeUtils.kt（UTF-8 恒定；
 /// encodeURI 为 Java URLEncoder 口径：空格→`+`）。
@@ -56,11 +60,24 @@ const String sourceContextJsPrelude = r'''
     return host;
   }
 
-  function syHostMatch(a, b) {
-    a = String(a || ''); b = String(b || '');
-    if (!a || !b) return true;
-    return a === b || a.endsWith('.' + b) || b.endsWith('.' + a) ||
-        a.endsWith(b) || b.endsWith(a);
+  // syHostMatch(cookieHost, requestHost)：cookie 是否应随该请求下发。
+  // 与宿主 ShuyuanSourceContext.hostMatches 同口径——请求 host 等于
+  // cookie host 或是其子域才命中；两端都 endsWith 的旧写法会让
+  // `evil-example.com` 收走 `example.com` 的登录 cookie。
+  function syHostMatch(cookieHost, requestHost) {
+    var ch = String(cookieHost || '').toLowerCase();
+    var h = String(requestHost || '').toLowerCase();
+    if (!ch || !h) return true;
+    return h === ch || h.endsWith('.' + ch);
+  }
+
+  /// djb2 变体：把可能很长的 html/js 压成短键（webView 的重放缓存键）。
+  function syHash(s) {
+    var h = 5381;
+    for (var i = 0; i < s.length; i++) {
+      h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+    }
+    return h.toString(16);
   }
 
   // ── 写操作日志：所有注入对象的可变操作显式记 op（宿主排空回放），
@@ -234,15 +251,19 @@ const String sourceContextJsPrelude = r'''
   // ── java.* 网络族（N 阶段确定性重放协议）——挂到 javaExtensions 预置的
   // java 对象上（本预置库后注入，syOp/syCtx 在本 IIFE 作用域内可用）。
   // 同步沙箱内无法真发请求：ajax 记录请求（op 'ajax' → 宿主 settle 循环
-  // 抓取）并返回占位符 __AJAX_N__；宿主抓取后写入 __shuyuanCtx.ajaxCache
-  // 并重放本阶段，重放时缓存命中直出真响应。URL 为完整 AnalyzeUrl 串
-  // （含 ,{options} 选项）时宿主按同口径解析执行。 ──
+  // 抓取）并返回占位符 __AJAX_N__；宿主抓取后由 JsEngine 增量推送进
+  // 全局 __ajaxCache，重放时缓存命中直出真响应。URL 为完整 AnalyzeUrl 串
+  // （含 ,{options} 选项）时宿主按同口径解析执行。
+  // 注意：缓存故意挂在 __shuyuanCtx 之外——ctx 每轮 eval 都重建，若缓存
+  // 随 ctx 走，只能整表重灌（长目录 O(n²)）。
+  global.__ajaxCache = global.__ajaxCache || Object.create(null);
+  global.__webviewCache = global.__webviewCache || Object.create(null);
   if (global.java) {
     global.java.__ajaxReq = function (url) {
-      var ctx = syCtx();
       var key = String(url == null ? '' : url);
-      if (ctx.ajaxCache && ctx.ajaxCache[key] != null) {
-        return ctx.ajaxCache[key];
+      var c = global.__ajaxCache;
+      if (c && c[key] != null) {
+        return c[key];
       }
       syOp('ajax', key, '');
       global.__ajaxN = (global.__ajaxN || 0) + 1;
@@ -272,16 +293,20 @@ const String sourceContextJsPrelude = r'''
         headers: function () { return {}; },
         bodyBytes: function () { return String(body || '').split('').map(function (c) { return c.charCodeAt(0) & 0xff; }) } };
     };
-    // get 双重语义分派（legado 事实约定）：URL 形态参数 → HTTP GET；
-    // 变量名形态 → 变量读取（AnalyzeRule.java.get 口径）。此前整体覆盖
-    // 变量 get，java.get('k1') 被当 URL 发请求（put 测试实测污染）。
+    // get 分派（legado 两个重载）：
+    // - 2 参及以上 → HTTP GET（JsExtensions.get(url, headers)）；
+    // - 1 参 → **变量优先**，取不到且形如 URL 才发请求。
+    // 变量优先很关键：`java.get('bookUrl')` 的值本身就是 URL，按「看起来
+    // 像 URL 就发请求」会把它误当接口（旧逻辑即如此）。
     global.java.get = function (a, b, c) {
-      var s = String(a == null ? '' : a);
-      if (/^https?:\/\//i.test(s)) {
-        return global.java.connect(s);
+      if (arguments.length >= 2) {
+        return global.java.connect(a);
       }
+      var s = String(a == null ? '' : a);
       var v = global.__javaVars;
-      return v && v[s] != null ? String(v[s]) : '';
+      if (v && v[s] != null) return String(v[s]);
+      if (/^https?:\/\//i.test(s)) return global.java.connect(s);
+      return '';
     };
     // POST 记录组合键 url||POST||body（宿主 settle 拆分后组装选项串）。
     global.java.post = function (urlStr, bodyStr, headers, timeout) {
@@ -292,6 +317,47 @@ const String sourceContextJsPrelude = r'''
     };
     global.java.getStrResponse = function (urlStr) {
       return global.java.connect(urlStr);
+    };
+    // java.webView(html, url, js)：无头 WebView 加载页面 / 注入 html、执行 js
+    // 后返回整页 HTML。同步沙箱内不能真开 WebView，故与 ajax 同款重放：
+    // 首轮记录 op 返回占位符，宿主 settle 抓取后写入 __webviewCache，重放命中。
+    global.java.webView = function (html, url, js) {
+      var h = html == null ? '' : String(html);
+      var u = url == null ? '' : String(url);
+      var j = js == null ? '' : String(js);
+      if (!h && !u) return '';
+      // 键用内容哈希：html/js 可能很长，不能直接当键存放/传输。
+      var key = 'wv:' + syHash(h + '\u0001' + u + '\u0001' + j) + ':' +
+          (h.length + u.length + j.length);
+      var c = global.__webviewCache;
+      if (c && c[key] != null) return c[key];
+      syOp('webview', key, JSON.stringify([h, u, j]));
+      global.__wvN = (global.__wvN || 0) + 1;
+      return '__WEBVIEW_' + global.__wvN + '__';
+    };
+    // cacheFile(url) + readTxtFile(path)：脚本注入的常用组合
+    // （`eval(java.cacheFile('https://x/sign.js'))`）。
+    // 内容走 __ajaxReq 的确定性重放；按「虚拟路径」存取——真实文件族
+    // （readFile/unzipFile）未实现，这里不给磁盘路径，避免误导调用方。
+    global.__cacheFiles = global.__cacheFiles || Object.create(null);
+    global.java.cacheFile = function (url, saveTime) {
+      var u = String(url == null ? '' : url);
+      if (!u) return '';
+      // 先把 url 喂给 __ajaxReq：命中缓存返回真内容，未命中记录请求返回占位。
+      var content = global.java.__ajaxReq(u);
+      var path = 'shuyuan_cache:' + syHash(u) + ':' + u.length;
+      global.__cacheFiles[path] = content;
+      return path;
+    };
+    global.java.readTxtFile = function (path, charsetName) {
+      var p = String(path == null ? '' : path);
+      var files = global.__cacheFiles;
+      if (files && files[p] != null) return files[p];
+      // 传入的是 URL 而非路径时按内容抓取处理（legado 同样接受 URL）。
+      if (/^https?:\/\//i.test(p)) {
+        return global.java.readTxtFile(global.java.cacheFile(p));
+      }
+      return '';
     };
   }
 })(globalThis);
@@ -464,11 +530,31 @@ const String javaExtensionsJsPrelude = r'''
   // ── 时间 ──
   function pad2(n) { return n < 10 ? '0' + n : '' + n; }
 
+  // legado timeFormat：`yyyy/MM/dd HH:mm`（无秒、斜杠分隔）。
+  // 两个重载都支持：毫秒时间戳（num / 纯数字串）与时间字符串
+  // （"2024-01-02 03:04:05" / "2024/01/02"）。解析失败时原样返回，
+  // 避免把源里的占位文本吃掉。
   function timeFormat(t) {
-    var d = new Date(Number(t));
-    if (isNaN(d.getTime())) return t == null ? '' : String(t);
-    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
-        ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+    var ms;
+    if (typeof t === 'number') {
+      ms = t;
+    } else if (typeof t === 'string') {
+      var s = t.trim();
+      if (s === '') return '';
+      if (/^\d+$/.test(s)) {
+        ms = Number(s);
+      } else {
+        var parsed = new Date(s.replace(/-/g, '/'));
+        if (isNaN(parsed.getTime())) return s;
+        ms = parsed.getTime();
+      }
+    } else {
+      return t == null ? '' : String(t);
+    }
+    var d = new Date(ms);
+    if (isNaN(d.getTime())) return String(t);
+    return d.getFullYear() + '/' + pad2(d.getMonth() + 1) + '/' + pad2(d.getDate()) +
+        ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
   }
 
   // legado 语义：UTC 时间 + sh（时区偏移秒）后按 format 取 UTC 分量。
@@ -588,6 +674,497 @@ const String javaExtensionsJsPrelude = r'''
     global.__javaLogs.push(String(msg == null ? '' : msg));
   }
 
+  // ── 元素包装（java.getElements / getElement 的返回值） ──
+  // 宿主按规则把节点序列化成 {t:text, h:html, ot:ownText, a:attrs, j:json}
+  // 由本函数包装成 jsoup 风格的轻量对象：脚本里常见的
+  // `list.size() / list.get(i) / el.text() / el.html() / el.attr('href')`
+  // 都能工作；属性同时挂成直读字段（el.href）。`.select()` 需要同步回调
+  // 宿主按选择器再查，沙箱内做不到，故不提供（调用会抛错，走脚本兜底）。
+  function __wrapEl(o) {
+    var el = {
+      text: function () { return o.t || ''; },
+      html: function () { return o.h || ''; },
+      ownText: function () { return o.ot || ''; },
+      attr: function (k) { return (o.a && o.a[k]) || ''; },
+      toString: function () { return o.t || ''; },
+      json: o.j
+    };
+    var a = o.a || {};
+    for (var k in a) {
+      if (el[k] === undefined) el[k] = a[k];
+    }
+    if (o.j && typeof o.j === 'object') {
+      for (var jk in o.j) {
+        if (el[jk] === undefined) el[jk] = o.j[jk];
+      }
+    }
+    return el;
+  }
+
+  function __javaElements(arr) {
+    var list = [];
+    var src = arr || [];
+    for (var i = 0; i < src.length; i++) list.push(__wrapEl(src[i]));
+    list.size = function () { return list.length; };
+    list.get = function (i) { return list[i]; };
+    list.first = function () { return list[0]; };
+    list.last = function () { return list[list.length - 1]; };
+    list.text = function () {
+      var out = [];
+      for (var i = 0; i < list.length; i++) out.push(list[i].text());
+      return out.join('\n');
+    };
+    return list;
+  }
+
+  global.__javaElements = __javaElements;
+
+  // ── AES（ECB / CBC；PKCS5/7 或 NoPadding） ──
+  // 纯 JS 实现：同步沙箱内无法回调宿主做加解密，且 QuickJS 没有 WebCrypto。
+  // S-box 由 GF(2^8) 逆元 + 仿射变换程序生成（比手抄 256 项可靠），
+  // 算法按 FIPS-197 实现，测试用 NIST SP 800-38A / FIPS-197 向量锁定。
+  var AES_SBOX = [];
+  var AES_INV_SBOX = [];
+  (function () {
+    function rot8(x, n) { return ((x << n) | (x >>> (8 - n))) & 0xff; }
+    var p = 1, q = 1;
+    do {
+      // p *= 3（GF(2^8)），按 uint8 截断
+      p = (p ^ (p << 1) ^ ((p & 0x80) ? 0x1b : 0)) & 0xff;
+      // q /= 3（等价乘 0xf6）：中间步骤不能提前截断
+      q ^= q << 1;
+      q ^= q << 2;
+      q ^= q << 4;
+      q &= 0xff;
+      if (q & 0x80) q ^= 0x09;
+      var x = (q ^ rot8(q, 1) ^ rot8(q, 2) ^ rot8(q, 3) ^ rot8(q, 4)) & 0xff;
+      AES_SBOX[p] = (x ^ 0x63) & 0xff;
+    } while (p !== 1);
+    AES_SBOX[0] = 0x63;
+    for (var i = 0; i < 256; i++) AES_INV_SBOX[AES_SBOX[i]] = i;
+  })();
+
+  function gmul(a, b) {
+    var r = 0;
+    for (var i = 0; i < 8; i++) {
+      if (b & 1) r ^= a;
+      var hi = a & 0x80;
+      a = (a << 1) & 0xff;
+      if (hi) a ^= 0x1b;
+      b >>= 1;
+    }
+    return r & 0xff;
+  }
+
+  function aesKeyExpand(key) {
+    var nk = key.length >> 2;
+    if (key.length !== 16 && key.length !== 24 && key.length !== 32) return null;
+    var nr = nk + 6;
+    var w = new Array(4 * (nr + 1));
+    var i;
+    for (i = 0; i < nk; i++) {
+      w[i] = ((key[4 * i] << 24) | (key[4 * i + 1] << 16) |
+          (key[4 * i + 2] << 8) | key[4 * i + 3]) >>> 0;
+    }
+    var rcon = 1;
+    for (i = nk; i < 4 * (nr + 1); i++) {
+      var t = w[i - 1];
+      if (i % nk === 0) {
+        t = ((t << 8) | (t >>> 24)) >>> 0;
+        t = ((AES_SBOX[(t >>> 24) & 0xff] << 24) |
+            (AES_SBOX[(t >>> 16) & 0xff] << 16) |
+            (AES_SBOX[(t >>> 8) & 0xff] << 8) |
+            AES_SBOX[t & 0xff]) >>> 0;
+        t = (t ^ (rcon << 24)) >>> 0;
+        rcon = ((rcon << 1) ^ ((rcon & 0x80) ? 0x1b : 0)) & 0xff;
+      } else if (nk > 6 && i % nk === 4) {
+        t = ((AES_SBOX[(t >>> 24) & 0xff] << 24) |
+            (AES_SBOX[(t >>> 16) & 0xff] << 16) |
+            (AES_SBOX[(t >>> 8) & 0xff] << 8) |
+            AES_SBOX[t & 0xff]) >>> 0;
+      }
+      w[i] = (w[i - nk] ^ t) >>> 0;
+    }
+    return { w: w, nr: nr };
+  }
+
+  function aesAddRoundKey(s, w, round) {
+    for (var c = 0; c < 4; c++) {
+      var word = w[round * 4 + c];
+      s[4 * c] ^= (word >>> 24) & 0xff;
+      s[4 * c + 1] ^= (word >>> 16) & 0xff;
+      s[4 * c + 2] ^= (word >>> 8) & 0xff;
+      s[4 * c + 3] ^= word & 0xff;
+    }
+  }
+
+  function aesShiftRows(s, inv) {
+    var t = s.slice();
+    for (var r = 1; r < 4; r++) {
+      for (var c = 0; c < 4; c++) {
+        var src = inv ? (c - r + 4) % 4 : (c + r) % 4;
+        s[r + 4 * c] = t[r + 4 * src];
+      }
+    }
+  }
+
+  function aesMixColumns(s, inv) {
+    for (var c = 0; c < 4; c++) {
+      var a0 = s[4 * c], a1 = s[4 * c + 1], a2 = s[4 * c + 2], a3 = s[4 * c + 3];
+      if (inv) {
+        s[4 * c] = gmul(a0, 14) ^ gmul(a1, 11) ^ gmul(a2, 13) ^ gmul(a3, 9);
+        s[4 * c + 1] = gmul(a0, 9) ^ gmul(a1, 14) ^ gmul(a2, 11) ^ gmul(a3, 13);
+        s[4 * c + 2] = gmul(a0, 13) ^ gmul(a1, 9) ^ gmul(a2, 14) ^ gmul(a3, 11);
+        s[4 * c + 3] = gmul(a0, 11) ^ gmul(a1, 13) ^ gmul(a2, 9) ^ gmul(a3, 14);
+      } else {
+        s[4 * c] = gmul(a0, 2) ^ gmul(a1, 3) ^ a2 ^ a3;
+        s[4 * c + 1] = a0 ^ gmul(a1, 2) ^ gmul(a2, 3) ^ a3;
+        s[4 * c + 2] = a0 ^ a1 ^ gmul(a2, 2) ^ gmul(a3, 3);
+        s[4 * c + 3] = gmul(a0, 3) ^ a1 ^ a2 ^ gmul(a3, 2);
+      }
+    }
+  }
+
+  function aesCryptBlock(input, w, nr, encrypt) {
+    var s = input.slice();
+    aesAddRoundKey(s, w, encrypt ? 0 : nr);
+    for (var r = 1; r < nr; r++) {
+      if (encrypt) {
+        for (var i = 0; i < 16; i++) s[i] = AES_SBOX[s[i]];
+        aesShiftRows(s, false);
+        aesMixColumns(s, false);
+        aesAddRoundKey(s, w, r);
+      } else {
+        aesShiftRows(s, true);
+        for (var j = 0; j < 16; j++) s[j] = AES_INV_SBOX[s[j]];
+        aesAddRoundKey(s, w, nr - r);
+        aesMixColumns(s, true);
+      }
+    }
+    if (encrypt) {
+      for (var k = 0; k < 16; k++) s[k] = AES_SBOX[s[k]];
+      aesShiftRows(s, false);
+      aesAddRoundKey(s, w, nr);
+    } else {
+      aesShiftRows(s, true);
+      for (var m = 0; m < 16; m++) s[m] = AES_INV_SBOX[s[m]];
+      aesAddRoundKey(s, w, 0);
+    }
+    return s;
+  }
+
+  /// AES 主流程：返回字节数组（有符号口径），参数非法返回 null。
+  function aesRun(encrypt, data, key, mode, pad, iv) {
+    var ks = aesKeyExpand(key);
+    if (!ks) return null;
+    var out = [];
+    var i;
+    if (encrypt) {
+      var buf = data.slice();
+      if (pad) {
+        var n = 16 - (buf.length % 16);
+        for (i = 0; i < n; i++) buf.push(n);
+      } else if (buf.length % 16 !== 0) {
+        return null;
+      }
+      var prev = mode === 'CBC' ? iv : null;
+      if (mode === 'CBC' && (!prev || prev.length !== 16)) return null;
+      for (i = 0; i < buf.length; i += 16) {
+        var blk = buf.slice(i, i + 16);
+        if (prev) for (var j = 0; j < 16; j++) blk[j] ^= prev[j];
+        var enc = aesCryptBlock(blk, ks.w, ks.nr, true);
+        for (var k = 0; k < 16; k++) out.push(enc[k]);
+        prev = enc;
+      }
+      return out.map(signedByte);
+    }
+    if (data.length % 16 !== 0) return null;
+    var prevC = mode === 'CBC' ? iv : null;
+    if (mode === 'CBC' && (!prevC || prevC.length !== 16)) return null;
+    var plain = [];
+    for (i = 0; i < data.length; i += 16) {
+      var cb = data.slice(i, i + 16);
+      var dec = aesCryptBlock(cb, ks.w, ks.nr, false);
+      for (var q = 0; q < 16; q++) plain.push(dec[q] ^ (prevC ? prevC[q] : 0));
+      if (prevC) prevC = cb;
+    }
+    if (pad) {
+      var padLen = plain[plain.length - 1];
+      if (padLen < 1 || padLen > 16) return null;
+      for (i = 0; i < padLen; i++) {
+        if (plain[plain.length - 1 - i] !== padLen) return null;
+      }
+      plain = plain.slice(0, plain.length - padLen);
+    }
+    return plain.map(signedByte);
+  }
+
+  /// transformation 解析：不支持的模式（CTR/GCM/CFB/OFB）返回 null。
+  function aesParseTf(transformation, hasIv) {
+    var t = String(transformation || '').toUpperCase();
+    if (t.indexOf('/CTR') >= 0 || t.indexOf('/GCM') >= 0 ||
+        t.indexOf('/CFB') >= 0 || t.indexOf('/OFB') >= 0) {
+      return null;
+    }
+    var mode = t.indexOf('/ECB') >= 0 ? 'ECB'
+        : (t.indexOf('/CBC') >= 0 ? 'CBC' : (hasIv ? 'CBC' : 'ECB'));
+    var pad = t.indexOf('NOPADDING') < 0;
+    return { mode: mode, pad: pad };
+  }
+
+  function aesDecodeInput(str) {
+    var s = String(str == null ? '' : str).trim();
+    // 十六进制形态（长度是 32 的整数倍 = 16 字节的整数倍）按 hex 解析，
+    // 其余按 base64。条件收紧到 32 的倍数，避免把恰好全为 hex 字符的
+    // base64 串误判（如 32 位纯十六进制的密文很常见，但 base64 很少）。
+    var isHex = s.length > 0 && s.length % 32 === 0 && /^[0-9a-fA-F]+$/.test(s);
+    var bytes = isHex ? hexToBytes(s) : bytesFromB64(s);
+    var norm = bytes.map(function (b) { return b & 0xff; });
+    if (norm.length % 16 !== 0 && isHex) {
+      norm = bytesFromB64(s).map(function (b) { return b & 0xff; });
+    }
+    return norm;
+  }
+
+  function aesCall(encrypt, str, key, transformation, ivStr) {
+    var keyBytes = utf8Encode(String(key == null ? '' : key));
+    var ivBytes = ivStr == null || ivStr === ''
+        ? null : utf8Encode(String(ivStr));
+    var tf = aesParseTf(transformation, ivBytes != null);
+    if (!tf) return null;
+    if (tf.mode === 'CBC' && (ivBytes == null || ivBytes.length !== 16)) {
+      return null;
+    }
+    var data = encrypt
+        ? utf8Encode(String(str == null ? '' : str))
+        : aesDecodeInput(str);
+    if (!encrypt && data.length === 0) return null;
+    return aesRun(encrypt, data, keyBytes, tf.mode, tf.pad, ivBytes);
+  }
+
+  // 测试用：十六进制入出，ivHex 为空串表示 ECB。
+  global.__aesHexTest = function (keyHex, ivHex, dataHex, encrypt) {
+    var key = hexToBytes(keyHex).map(function (b) { return b & 0xff; });
+    var data = hexToBytes(dataHex).map(function (b) { return b & 0xff; });
+    var iv = ivHex ? hexToBytes(ivHex).map(function (b) { return b & 0xff; }) : null;
+    var out = aesRun(!!encrypt, data, key, iv ? 'CBC' : 'ECB', false, iv);
+    return out == null ? '' : bytesToHex(out);
+  };
+
+  // ── TTF（字体反爬：queryTTF / replaceFont） ──
+  // 纯 JS 解析 sfnt 表（head/maxp/cmap[format 4|12]/loca/glyf），按「字形轮廓
+  // 字节」做字符映射——与 legado QueryTTF 的 glyf 比较口径一致。
+  // 输入仅支持 base64 / 字节数组；URL 需要二进制抓取（重放协议），暂不支持
+  // （返回 null → replaceFont 原样返回，不产出乱码）。
+  var __ttfCache = {};
+
+  function b64ToU8(s) {
+    var v = bytesFromB64(s);
+    var u = new Uint8Array(v.length);
+    for (var i = 0; i < v.length; i++) u[i] = v[i] & 0xff;
+    return u;
+  }
+
+  function ttfBytes(data) {
+    if (data == null) return null;
+    if (typeof data === 'string') {
+      var s = String(data);
+      var comma = s.indexOf('base64,');
+      if (comma >= 0) s = s.substring(comma + 7);
+      s = s.replace(/[\s\r\n]/g, '');
+      if (s.length < 16) return null;
+      return b64ToU8(s);
+    }
+    if (typeof data === 'object' && typeof data.length === 'number') {
+      var u = new Uint8Array(data.length);
+      for (var i = 0; i < data.length; i++) u[i] = data[i] & 0xff;
+      return u;
+    }
+    return null;
+  }
+
+  function ttfU8(b, o) { return b[o] & 0xff; }
+  function ttfU16(b, o) { return (ttfU8(b, o) << 8) | ttfU8(b, o + 1); }
+  function ttfI16(b, o) {
+    var v = ttfU16(b, o);
+    return (v & 0x8000) ? v - 0x10000 : v;
+  }
+  function ttfU32(b, o) {
+    return (((ttfU8(b, o) << 24) | (ttfU8(b, o + 1) << 16) |
+        (ttfU8(b, o + 2) << 8) | ttfU8(b, o + 3)) >>> 0);
+  }
+  function ttfTag(b, o) {
+    return String.fromCharCode(ttfU8(b, o), ttfU8(b, o + 1),
+        ttfU8(b, o + 2), ttfU8(b, o + 3));
+  }
+  function ttfHash(bytes) {
+    var h = 2166136261;
+    for (var i = 0; i < bytes.length; i++) {
+      h ^= bytes[i];
+      h = (h * 16777619) >>> 0;
+    }
+    return bytes.length + ':' + h.toString(16);
+  }
+
+  function ttfParse(bytes) {
+    if (!bytes || bytes.length < 12) return null;
+    var numTables = ttfU16(bytes, 4);
+    if (numTables <= 0 || numTables > 64) return null;
+    var tables = {};
+    for (var i = 0; i < numTables; i++) {
+      var o = 12 + i * 16;
+      if (o + 16 > bytes.length) break;
+      tables[ttfTag(bytes, o)] = {
+        offset: ttfU32(bytes, o + 8),
+        length: ttfU32(bytes, o + 12),
+      };
+    }
+    var head = tables['head'], maxp = tables['maxp'];
+    var cmap = tables['cmap'], loca = tables['loca'], glyf = tables['glyf'];
+    if (!head || !maxp || !cmap || !loca || !glyf) return null;
+
+    var numGlyphs = ttfU16(bytes, maxp.offset + 4);
+    if (numGlyphs <= 0) return null;
+    var locFormat = ttfI16(bytes, head.offset + 50);
+
+    // cmap：优先 format 12（含增补平面），否则 format 4（BMP）
+    var map = {};
+    var count = 0;
+    var nSub = ttfU16(bytes, cmap.offset + 2);
+    var best = -1, bestFmt = 0;
+    for (var s = 0; s < nSub; s++) {
+      var rec = cmap.offset + 4 + s * 8;
+      if (rec + 8 > bytes.length) break;
+      var sub = cmap.offset + ttfU32(bytes, rec + 4);
+      if (sub + 2 > bytes.length) continue;
+      var fmt = ttfU16(bytes, sub);
+      if (fmt === 12 && bestFmt < 12) { best = sub; bestFmt = 12; }
+      else if (fmt === 4 && bestFmt < 4) { best = sub; bestFmt = 4; }
+    }
+    if (best < 0) return null;
+
+    if (bestFmt === 12) {
+      var nGroups = ttfU32(bytes, best + 12);
+      for (var g = 0; g < nGroups && count < 0x20000; g++) {
+        var go = best + 16 + g * 12;
+        if (go + 12 > bytes.length) break;
+        var sc = ttfU32(bytes, go);
+        var ec = ttfU32(bytes, go + 4);
+        var sg = ttfU32(bytes, go + 8);
+        if (ec < sc || ec - sc > 0x10000) continue;
+        for (var c = sc; c <= ec; c++) {
+          map[c] = sg + (c - sc);
+          count++;
+        }
+      }
+    } else {
+      var segX2 = ttfU16(bytes, best + 6);
+      var segs = segX2 >> 1;
+      var endO = best + 14;
+      var startO = endO + segX2 + 2;
+      var deltaO = startO + segX2;
+      var rangeO = deltaO + segX2;
+      for (var k = 0; k < segs && count < 0x20000; k++) {
+        var endC = ttfU16(bytes, endO + k * 2);
+        var startC = ttfU16(bytes, startO + k * 2);
+        var delta = ttfU16(bytes, deltaO + k * 2);
+        var ro = ttfU16(bytes, rangeO + k * 2);
+        if (startC > endC) continue;
+        for (var cc = startC; cc <= endC; cc++) {
+          if (cc === 0xffff) break;
+          var gid;
+          if (ro === 0) {
+            gid = (cc + delta) & 0xffff;
+          } else {
+            var gi = rangeO + k * 2 + ro + (cc - startC) * 2;
+            if (gi + 2 > bytes.length) continue;
+            gid = ttfU16(bytes, gi);
+            if (gid !== 0) gid = (gid + delta) & 0xffff;
+          }
+          if (gid) {
+            map[cc] = gid;
+            count++;
+          }
+        }
+      }
+    }
+    if (count === 0) return null;
+
+    function locaAt(idx) {
+      var off = loca.offset + (locFormat === 0 ? idx * 2 : idx * 4);
+      if (off + (locFormat === 0 ? 2 : 4) > bytes.length) return -1;
+      return locFormat === 0 ? ttfU16(bytes, off) * 2 : ttfU32(bytes, off);
+    }
+
+    function glyfOf(gid) {
+      if (!gid || gid >= numGlyphs) return null;
+      var s = locaAt(gid);
+      var e = locaAt(gid + 1);
+      if (s < 0 || e <= s) return null;
+      var start = glyf.offset + s;
+      var end = glyf.offset + e;
+      if (start < 0 || end > bytes.length) return null;
+      return bytes.subarray(start, end);
+    }
+
+    var reverse = null;
+
+    return {
+      numGlyphs: numGlyphs,
+      getGlyphId: function (cp) { return map[cp] || 0; },
+      getGlyfByUnicode: function (cp) { return glyfOf(map[cp]); },
+      hashOf: function (g) { return ttfHash(g); },
+      getUnicodeByGlyf: function (g) {
+        if (!g || !g.length) return -1;
+        if (!reverse) {
+          reverse = {};
+          for (var code in map) {
+            var gg = glyfOf(map[code]);
+            if (gg && gg.length) {
+              var hh = ttfHash(gg);
+              if (reverse[hh] === undefined) reverse[hh] = Number(code);
+            }
+          }
+        }
+        var h2 = ttfHash(g);
+        return reverse[h2] === undefined ? -1 : reverse[h2];
+      },
+    };
+  }
+
+  function ttfFromCodePoint(cp) {
+    if (cp <= 0xffff) return String.fromCharCode(cp);
+    cp -= 0x10000;
+    return String.fromCharCode(0xd800 + (cp >> 10), 0xdc00 + (cp & 0x3ff));
+  }
+
+  function ttfReplaceFont(text, errFont, okFont, filter) {
+    var s = String(text == null ? '' : text);
+    if (!errFont || !okFont || !s) return s;
+    var out = '';
+    var i = 0;
+    while (i < s.length) {
+      var cp = s.charCodeAt(i);
+      var step = 1;
+      if (cp >= 0xd800 && cp <= 0xdbff && i + 1 < s.length) {
+        var lo = s.charCodeAt(i + 1);
+        if (lo >= 0xdc00 && lo <= 0xdfff) {
+          cp = 0x10000 + ((cp - 0xd800) << 10) + (lo - 0xdc00);
+          step = 2;
+        }
+      }
+      var g = errFont.getGlyfByUnicode(cp);
+      var u = (g && g.length) ? okFont.getUnicodeByGlyf(g) : -1;
+      if (u >= 0) {
+        out += ttfFromCodePoint(u);
+      } else if (!filter) {
+        out += ttfFromCodePoint(cp);
+      }
+      i += step;
+    }
+    return out;
+  }
+
   var java = {
     // 加密/编码
     md5Encode: function (s) { return bytesToHex(md5Bytes(utf8Encode(String(s == null ? '' : s)))); },
@@ -598,6 +1175,49 @@ const String javaExtensionsJsPrelude = r'''
     hexEncodeToString: function (v) { return bytesToHex(anyToBytes(v)); },
     hexDecodeToString: function (s) { return utf8Decode(hexToBytes(s)); },
     hexDecodeToByteArray: function (s) { return hexToBytes(s); },
+    // AES：encode 输出 base64；decode 系列接受 base64 或 hex，输出字符串/字节数组。
+    // transformation 形如 "AES/CBC/PKCS5Padding"、"AES/ECB/NoPadding"；
+    // CTR/GCM/CFB/OFB 未实现（返回空，避免给出错误结果）。
+    aesEncode: function (str, key, transformation, iv) {
+      var out = aesCall(true, str, key, transformation, iv);
+      return out == null ? ''
+          : b64FromBytes(out.map(function (b) { return b & 0xff; }));
+    },
+    aesDecode: function (str, key, transformation, iv) {
+      var out = aesCall(false, str, key, transformation, iv);
+      return out == null ? [] : out;
+    },
+    aesDecodeToString: function (str, key, transformation, iv) {
+      var out = aesCall(false, str, key, transformation, iv);
+      return out == null ? '' : utf8Decode(out);
+    },
+    aesBase64DecodeToString: function (str, key, transformation, iv) {
+      var out = aesCall(false, str, key, transformation, iv);
+      return out == null ? '' : utf8Decode(out);
+    },
+    // 字体反爬：解析 TTF（base64 / 字节数组），返回可查询字形轮廓的字体对象。
+    queryTTF: function (data, useCache) {
+      try {
+        var bytes = ttfBytes(data);
+        if (!bytes || bytes.length < 12) return null;
+        var key = ttfHash(bytes);
+        if (useCache !== false && __ttfCache[key]) return __ttfCache[key];
+        var font = ttfParse(bytes);
+        if (font && useCache !== false) __ttfCache[key] = font;
+        return font;
+      } catch (e) {
+        return null;
+      }
+    },
+    // 按字形轮廓把「错误字体渲染的文本」还原为「正确字体对应的字符」。
+    // filter=true 时删除错误字体里不存在的字符（legado 同口径）。
+    replaceFont: function (text, errFont, okFont, filter) {
+      try {
+        return ttfReplaceFont(text, errFont, okFont, !!filter);
+      } catch (e) {
+        return String(text == null ? '' : text);
+      }
+    },
     // 字符串/URL/HTML
     encodeURI: function (s, enc) { return encoderEncode(s); },
     htmlFormat: function (s) { return htmlFormat(s); },
