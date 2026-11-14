@@ -38,6 +38,27 @@ class NovelTextBlock extends NovelBlock {
   int get hashCode => Object.hash(text, isHeading);
 }
 
+/// 媒体块（legado bookSourceType=1 音频 / 4 视频源）：章节正文即媒体直链。
+///
+/// 渲染层显示播放卡片；点击拉起播放器（directUrl 直链模式）。
+class NovelMediaBlock extends NovelBlock {
+  final String url;
+
+  /// 'audio' | 'video'（legado bookSourceType 1/4）。
+  final String kind;
+
+  const NovelMediaBlock(this.url, {required this.kind});
+
+  bool get isValid => url.startsWith('http://') || url.startsWith('https://');
+
+  @override
+  bool operator ==(Object other) =>
+      other is NovelMediaBlock && other.url == url && other.kind == kind;
+
+  @override
+  int get hashCode => Object.hash(url, kind);
+}
+
 /// 插图块：章节正文中的一张图片。
 ///
 /// [url] 已是解析层拼好的绝对地址（含 baseUrl 归一化）。

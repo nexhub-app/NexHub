@@ -38,6 +38,8 @@ import '../../../core/history/history_manager.dart';
 import '../../../core/history/media_watched_manager.dart';
 import '../../../core/models/episode.dart';
 import '../../../core/models/media_item.dart';
+import '../../../features/player/presentation/video_player_screen.dart';
+import '../../../core/navigation/app_page_route.dart';
 import '../../../core/models/novel_block.dart';
 import '../../../core/utils/app_log.dart';
 import '../../../core/utils/volume_key_listener.dart';
@@ -427,6 +429,11 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
 
   /// 当前书籍的净化规则（全局一套，惰性加载，在 [_loadChapter] 中填充）。
   NovelReplaceRuleSet? _replaceRuleSet;
+
+  /// 媒体章节（legado bookSourceType=1/4）：正文即媒体直链，渲染播放卡片。
+  bool _isMediaChapter = false;
+  String? _mediaUrl;
+  String? _mediaKind;
 
   /// 本书是否启用净化（阅读器内可单独关闭，默认开启）。
   bool _replaceBookEnabled = true;
@@ -3057,11 +3064,18 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       setState(() {
         _rawParagraphs = effective;
         _paragraphs = _applyConvert(effective);
+        // 媒体章节检测（legado type=1/4）：正文为媒体直链块时切播放卡片，
+        // 跳过分页控制器（无文本可分页）。
+        final mediaBlock = _paragraphs.whereType<NovelMediaBlock>().firstOrNull;
+        _mediaUrl = mediaBlock?.url.trim();
+        _mediaKind = mediaBlock?.kind;
+        _isMediaChapter = (_mediaUrl?.isNotEmpty ?? false);
         _loading = false;
         _error = null;
         _verificationError = null;
         _contentVersion++;
       });
+      if (_isMediaChapter) return;
       _setupControllers(restorePage: restorePage);
       // 章节加载完成、分页就绪后检查一次预下载（单页章 / 直达章末场景，
       // 不依赖用户翻页也能触发；postFrame 等 LayoutBuilder 算出分页）。
@@ -5529,12 +5543,77 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
 
   // ─────────────────────── 构建 ───────────────────────
 
+  /// 媒体章节脚手架（legado type=1/4）：标题 + 播放卡片，点击拉起
+  /// 播放器 directUrl 直链模式（音频/视频同屏，mpv 解码自适应）。
+  Widget _buildMediaChapterScaffold(BuildContext context, AppLocalizations l10n) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bg = _prefs.resolveBackgroundColor(isDark);
+    final chapters = widget.chapters;
+    final title = chapters.isNotEmpty
+        ? chapters[_chapterIndex.clamp(0, chapters.length - 1)].title
+        : '';
+    final isAudio = _mediaKind == 'audio';
+    return Scaffold(
+      backgroundColor: bg,
+      appBar: AppBar(
+        title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      ),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: <Widget>[
+            Icon(
+              isAudio ? Icons.headphones_rounded : Icons.movie_rounded,
+              size: 72,
+              color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.6),
+            ),
+            const SizedBox(height: AppTokens.spaceLg),
+            Text(
+              isAudio ? l10n.mediaChapterAudio : l10n.mediaChapterVideo,
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: AppTokens.spaceXl),
+            FilledButton.icon(
+              onPressed: _mediaUrl == null || _mediaUrl!.isEmpty
+                  ? null
+                  : () => Navigator.of(context).push(
+                        AppPageRoute<void>(
+                          builder: (_) => VideoPlayerScreen(
+                            title: title,
+                            episode: Episode(id: title, title: title, url: _mediaUrl ?? ''),
+                            sourceId: widget.sourceId,
+                            itemId: widget.novelId,
+                            directUrl: _mediaUrl,
+                          ),
+                        ),
+                      ),
+              icon: const Icon(Icons.play_arrow_rounded),
+              label: Text(l10n.mediaChapterPlay),
+            ),
+            const SizedBox(height: AppTokens.spaceMd),
+            Text(
+              l10n.mediaChapterHint,
+              style: Theme.of(context).textTheme.bodySmall,
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final bg = _prefs.resolveBackgroundColor(isDark);
     final textColor = _prefs.resolveTextColor(bg);
     final l10n = AppLocalizations.of(context);
+
+    // 媒体章节（legado bookSourceType=1/4）：正文即媒体直链，渲染播放
+    // 卡片而非分页阅读（点击拉起播放器 directUrl 模式）。
+    if (_isMediaChapter) {
+      return _buildMediaChapterScaffold(context, l10n);
+    }
 
     // TTS 状态变化时重建 Stack：TTS 激活时底部栏内嵌朗读控件（避免重叠）。
     return Scaffold(

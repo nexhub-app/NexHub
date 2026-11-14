@@ -19,7 +19,7 @@ import '../../../core/models/category_entry.dart';
 import '../../../core/models/episode.dart';
 import '../../../core/models/media_item.dart';
 import '../../../core/models/novel_block.dart'
-    show NovelBlock, NovelImageBlock, NovelTextBlock;
+    show NovelBlock, NovelImageBlock, NovelMediaBlock, NovelTextBlock;
 import 'package:meta/meta.dart';
 
 import '../../../core/models/plugin_config.dart';
@@ -554,6 +554,30 @@ class ShuyuanNovelResolver
         apiName: 'content',
         message: result.error ?? 'resolve error',
       );
+    }
+    // 音频/视频源（legado bookSourceType=1/4）：正文规则提取的媒体直链
+    // 包装为媒体块（阅读器渲染播放卡片拉起播放器）；legado 对音/视频
+    // 不做 htmlFormat，直链即正文。
+    final srcType = source.bookSourceType;
+    if (srcType == 1 || srcType == 4) {
+      String? mediaUrl;
+      for (final b in result.blocks) {
+        if (b is NovelTextBlock) {
+          final nl = String.fromCharCode(10);
+          for (final line in b.text.split(nl)) {
+            final t = line.trim();
+            if (t.startsWith('http://') || t.startsWith('https://')) {
+              mediaUrl = t;
+              break;
+            }
+          }
+          if (mediaUrl != null) break;
+        }
+      }
+      final kind = srcType == 1 ? 'audio' : 'video';
+      return <NovelBlock>[
+        NovelMediaBlock(mediaUrl ?? '', kind: kind),
+      ];
     }
     // 图文块列表（文本段 + 插图），保留解析层给出的原始顺序，
     // 供阅读器图文混排显示。
