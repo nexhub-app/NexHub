@@ -28,6 +28,53 @@ class JsEngine {
   /// 已预执行的 jsLib 内容（同引擎同内容去重）。
   String? _jsLibApplied;
 
+  /// 已推送进 JS 全局的重放缓存键（增量同步用，避免整表重灌）。
+  final Set<String> _syncedAjaxKeys = <String>{};
+  final Set<String> _syncedWebviewKeys = <String>{};
+
+  // ── 按源复用 ──
+  //
+  // 书源解析是「一源多阶段、一阶段多规则」的密集调用：搜索列表逐条目、
+  // 目录逐页、正文逐章都会求值规则。旧实现每个 AnalyzeRule 新建一个
+  // JsEngine → 重建 QuickJS 运行时 + 重跑三段预置脚本（~40KB），且从不
+  // dispose（原生句柄泄漏）。这里按 sourceId 池化，上限 [_poolLimit]，
+  // 超限淘汰最早创建的实例（先摘出池再 dispose，避免自引用死循环）。
+  static const int _poolLimit = 8;
+  static final Map<String, JsEngine> _pool = <String, JsEngine>{};
+
+  /// 取（或创建）某书源专属引擎；[sourceId] 为空时返回独立实例（不池化）。
+  static JsEngine forSource(String? sourceId) {
+    if (sourceId == null || sourceId.isEmpty) return JsEngine();
+    final exist = _pool[sourceId];
+    if (exist != null) return exist;
+    if (_pool.length >= _poolLimit) {
+      final oldest = _pool.keys.first;
+      _pool.remove(oldest)?.dispose();
+    }
+    final engine = JsEngine();
+    _pool[sourceId] = engine;
+    return engine;
+  }
+
+  /// 清空某源 JS 侧重放缓存；该源还没有池化引擎时为空操作（不新建）。
+  static void resetReplayCachesFor(String sourceId) {
+    _pool[sourceId]?.resetReplayCaches();
+  }
+
+  /// 丢弃某源引擎（源删除/重载时调用）。
+  static void evict(String sourceId) {
+    _pool.remove(sourceId)?.dispose();
+  }
+
+  /// 测试隔离：释放全部池化引擎。
+  static void resetPoolForTest() {
+    final engines = List<JsEngine>.from(_pool.values);
+    _pool.clear();
+    for (final engine in engines) {
+      engine.dispose();
+    }
+  }
+
   NexJsRuntime get runtime {
     if (_runtime == null) {
       _runtime = createJsRuntime();
@@ -78,6 +125,55 @@ class JsEngine {
     return taken;
   }
 
+  /// 把宿主已抓取、JS 侧还没有的 ajax 响应增量推给全局 `__ajaxCache`。
+  ///
+  /// 只推新增键：一轮 settle 通常只填 1–N 个请求，避免把整表重新序列化
+  /// 进 JS 源码（旧实现把 ajaxCache 放进每轮 ctx 种子，长目录 O(n²)）。
+  void _pushAjaxDeltas(Map<String, String> cache) {
+    _pushDeltas('__ajaxCache', cache, _syncedAjaxKeys);
+  }
+
+  /// `java.webView` 的重放结果（整页 HTML）同样增量推送。
+  void _pushWebviewDeltas(Map<String, String> cache) {
+    _pushDeltas('__webviewCache', cache, _syncedWebviewKeys);
+  }
+
+  void _pushDeltas(
+    String globalName,
+    Map<String, String> cache,
+    Set<String> synced,
+  ) {
+    if (cache.isEmpty) return;
+    final delta = <String, String>{};
+    for (final entry in cache.entries) {
+      if (synced.add(entry.key)) delta[entry.key] = entry.value;
+    }
+    if (delta.isEmpty) return;
+    try {
+      runtime.evaluate(
+          'Object.assign(globalThis.$globalName || '
+          '(globalThis.$globalName = Object.create(null)), ${jsonEncode(delta)});');
+    } catch (_) {
+      // 推送失败：撤销标记，下一轮重试。
+      for (final key in delta.keys) {
+        synced.remove(key);
+      }
+    }
+  }
+
+  /// 清空 JS 侧重放缓存（ajax + webview）。每个解析阶段开始时调用，
+  /// 配合宿主 `ctx.clearStageCaches()`，防止缓存跨阶段无限增长。
+  void resetReplayCaches() {
+    _syncedAjaxKeys.clear();
+    _syncedWebviewKeys.clear();
+    if (_runtime == null) return;
+    try {
+      _runtime!.evaluate(
+          'globalThis.__ajaxCache = Object.create(null);'
+          'globalThis.__webviewCache = Object.create(null);');
+    } catch (_) {}
+  }
+
   /// 执行 [jsStr]，绑定 [bindings] 为 JS 全局变量。
   ///
   /// 返回值规整（对齐书源脚本语义）：
@@ -96,6 +192,9 @@ class JsEngine {
       if (activeCtx != null) {
         runtime.evaluate(
             'var __shuyuanCtx = ${_toJsValue(activeCtx.toSeed())};');
+        // ajax / webview 重放缓存增量推送（不进 ctx 种子，避免每轮整表序列化）。
+        _pushAjaxDeltas(activeCtx.ajaxCache);
+        _pushWebviewDeltas(activeCtx.webviewCache);
         // jsLib 预执行（按源，同引擎同内容只执行一次）：书源自定义函数/
         // 变量对所有后续脚本可见（legado SharedJsScope 等效）。
         if (activeCtx.jsLib.isNotEmpty && _jsLibApplied != activeCtx.jsLib) {
@@ -188,9 +287,11 @@ class JsEngine {
       // 回放到活动上下文；其余进入 _lastJavaVars 供变量表持有方取走。
       final syops = <Map<String, dynamic>>[];
       final cleanVars = <String, String>{};
+      var hadSyop = false;
       vars.forEach((k, v) {
         final key = k.toString();
         if (key.startsWith('__syop_')) {
+          hadSyop = true;
           try {
             final decoded = jsonDecode(v?.toString() ?? '');
             if (decoded is Map<String, dynamic>) syops.add(decoded);
@@ -200,20 +301,21 @@ class JsEngine {
         if (v != null) cleanVars[key] = v.toString();
       });
       _lastJavaVars = cleanVars;
-      if (syops.isNotEmpty) {
-        // 已消费的 __syop_* 条目必须从 JS 侧 __javaVars 对象中清除——
-        // 否则每轮排空重复投递旧操作（无 bindings 重播种的流程里
-        // __javaVars 对象跨 eval 持久）。
+      if (hadSyop) {
+        // 已读即删：即使本轮没有活动上下文（op 只能丢弃），也必须从 JS 侧
+        // __javaVars 清掉。旧实现只在 syops 非空时清理，ctx 为空时 op 残留
+        // 在全局对象里，会在「下一次恰好有 ctx」的排空里被迟到重放
+        // （表现为 cookie / 源变量莫名晚一步写入）。
         runtime.evaluate(
             'if (globalThis.__javaVars) { for (var k in globalThis.__javaVars) '
             '{ if (String(k).indexOf("__syop_") === 0) '
             'delete globalThis.__javaVars[k]; } }');
-        final ctx = ShuyuanSourceContext.current;
-        if (ctx != null) {
-          ctx.applyOps(syops);
-          // cookie 覆盖层持久化（fire-and-forget：下一轮种子取内存镜像）。
-          ctx.persistIfNeeded();
-        }
+      }
+      final ctx = ShuyuanSourceContext.current;
+      if (ctx != null && syops.isNotEmpty) {
+        ctx.applyOps(syops);
+        // 持久化（fire-and-forget：下一轮种子取内存镜像）。
+        ctx.persistIfNeeded();
       }
     }
   }
@@ -258,9 +360,14 @@ class JsEngine {
   }
 
   void dispose() {
+    // 若本实例仍挂在按源池里，一并摘除，避免池中留下已释放的引擎。
+    _pool.removeWhere((_, engine) => identical(engine, this));
     _runtime?.dispose();
     _runtime = null;
     // 运行时重建后需重新注入预置脚本。
     _preludeInjected = false;
+    _jsLibApplied = null;
+    _syncedAjaxKeys.clear();
+    _syncedWebviewKeys.clear();
   }
 }

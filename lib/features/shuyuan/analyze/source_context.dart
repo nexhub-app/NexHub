@@ -10,12 +10,16 @@
 /// - `cache`：CacheManager 等效物，会话级（进程内存），get/put/delete。
 library;
 
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:meta/meta.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'analyze_url.dart';
+import 'webview_fetcher.dart';
 import '../model/book_source.dart';
+import '../shuyuan_variable_store.dart';
 
 class ShuyuanSourceContext {
   ShuyuanSourceContext(this.sourceId);
@@ -61,33 +65,92 @@ class ShuyuanSourceContext {
   /// 本轮 eval 中脚本发起、尚未满足的 ajax 请求（settle 循环抓取队列）。
   final List<String> ajaxPending = <String>[];
 
+  /// 阶段级页面响应缓存：settle 重放会整段重跑 `_dispatch`，若不缓存，
+  /// 同一页会被真实重复抓取 2–4 次（长目录尤其明显）。
+  /// key = method|url|body|js|regex；每个解析阶段开始时 [clearStageCaches]。
+  final Map<String, String> pageCache = <String, String>{};
+
+  /// 缓存容量按字符数封顶（UTF-16 下约 8MB），超限按插入序淘汰最旧，
+  /// 避免长目录（200 页 × 每页几十 KB）把内存顶穿。
+  static const int _pageCacheMaxChars = 4 * 1024 * 1024;
+  int _pageCacheChars = 0;
+
+  /// 写入页面缓存（单页过大不缓存；超容量淘汰最旧）。
+  void pageCachePut(String key, String body) {
+    if (body.length > _pageCacheMaxChars) return;
+    final prev = pageCache.remove(key);
+    if (prev != null) _pageCacheChars -= prev.length;
+    pageCache[key] = body;
+    _pageCacheChars += body.length;
+    while (_pageCacheChars > _pageCacheMaxChars && pageCache.isNotEmpty) {
+      final oldest = pageCache.keys.first;
+      _pageCacheChars -= pageCache[oldest]!.length;
+      pageCache.remove(oldest);
+    }
+  }
+
+  /// 阶段开始：清空重放相关的全部瞬态缓存（页面 / ajax / webview / 待抓取队列）。
+  void clearStageCaches() {
+    pageCache.clear();
+    _pageCacheChars = 0;
+    ajaxCache.clear();
+    ajaxPending.clear();
+    webviewCache.clear();
+    webviewPending.clear();
+    webviewArgs.clear();
+  }
+
+  // ── java.webView 的确定性重放（与 java.ajax 同款，只是宿主换成无头 WebView）──
+
+  /// 待取源队列：key → [html, url, js]。
+  final Map<String, List<String>> webviewArgs = <String, List<String>>{};
+  final List<String> webviewPending = <String>[];
+  final Map<String, String> webviewCache = <String, String>{};
+
+  /// 抓取 webviewPending 中的页面，写入 [webviewCache]；失败缓存空串避免重试。
+  /// 返回本次真正执行的取源次数（缓存命中不算）。
+  static Future<int> settleWebview(ShuyuanSourceContext ctx) async {
+    var fetched = 0;
+    for (final key in List<String>.from(ctx.webviewPending)) {
+      if (ctx.webviewCache.containsKey(key)) continue;
+      fetched++;
+      final args = ctx.webviewArgs[key] ?? const <String>['', '', ''];
+      try {
+        final html = await ShuyuanWebviewFetcher.fetch(
+          html: args.isNotEmpty ? args[0] : null,
+          url: args.length > 1 ? args[1] : null,
+          js: args.length > 2 ? args[2] : null,
+        ).timeout(const Duration(seconds: 45));
+        ctx.webviewCache[key] = html ?? '';
+      } catch (_) {
+        ctx.webviewCache[key] = '';
+      }
+    }
+    ctx.webviewPending.clear();
+    return fetched;
+  }
+
   /// 排空时标记：本次 eval 是否有 cookie 写（需持久化）。
   bool cookiesDirty = false;
 
   /// 排空时标记：源变量有写（需持久化）。
   bool sourceVarsDirty = false;
 
-  // ── 作用域栈：WebBook 流程内 push/pop，JS 种子/排空读 current ──
-  static final List<ShuyuanSourceContext> _stack = <ShuyuanSourceContext>[];
+  // ── 作用域：Zone 传递（异步安全 / 并发隔离） ──
+  //
+  // 旧实现用静态 List 当栈：`run(ctx, () async {...})` 在 body 返回 Future
+  // 的瞬间就 finally pop，第一个 await 之后 current 恒为 null —— JS 种子、
+  // 排空回写、cookie 覆盖层、登录头、bookItemContext 全部静默失效；且静态
+  // 栈在多源并发时会串上下文。Zone 随异步续体自动传播，两个问题一起解决。
+  static const Object _zoneKey = #shuyuanSourceContext;
 
   static ShuyuanSourceContext? get current =>
-      _stack.isEmpty ? null : _stack.last;
-
-  static void push(ShuyuanSourceContext context) => _stack.add(context);
-
-  static void pop() {
-    if (_stack.isNotEmpty) _stack.removeLast();
-  }
+      Zone.current[_zoneKey] as ShuyuanSourceContext?;
 
   /// 在上下文作用域内执行（空上下文直接执行，零开销）。
   static R run<R>(ShuyuanSourceContext? context, R Function() body) {
     if (context == null) return body();
-    push(context);
-    try {
-      return body();
-    } finally {
-      pop();
-    }
+    return runZoned(body, zoneValues: <Object, Object>{_zoneKey: context});
   }
 
   // ── 种子：注入 JS 的快照（必须深拷贝——若传活引用，JS 直改原表，
@@ -104,7 +167,9 @@ class ShuyuanSourceContext {
         'loginInfo': Map<String, String>.from(loginInfo),
         'loginHeader': Map<String, String>.from(loginHeader),
         'cache': Map<String, String>.from(cache),
-        'ajaxCache': Map<String, String>.from(ajaxCache),
+        // ajaxCache 不进种子：它随 settle 轮次单调增长，若每轮都序列化整个
+        // 缓存进 JS 源码，长目录会退化成 O(n²)（几十页正文 = 每次 eval
+        // 重建数 MB 字符串）。改由 JsEngine 增量推送进 JS 全局 __ajaxCache。
       };
 
   // ── 排空：JS 写操作日志回放（ops 与 toasts 同款 splice 模式——显式操作
@@ -143,6 +208,20 @@ class ShuyuanSourceContext {
         case 'ajax':
           // 脚本发起的网络请求记录（settle 循环抓取）。按 URL 去重。
           if (!ajaxPending.contains(a)) ajaxPending.add(a);
+        case 'webview':
+          // 脚本发起的无头 WebView 取源（settle 循环执行）。参数为
+          // [html, url, js] 的 JSON 数组，b 里带着。
+          if (!webviewPending.contains(a)) {
+            webviewPending.add(a);
+            try {
+              final decoded = jsonDecode(b);
+              if (decoded is List) {
+                webviewArgs[a] = <String>[
+                  for (final e in decoded) e?.toString() ?? '',
+                ];
+              }
+            } catch (_) {}
+          }
         case 'loginInfo':
           try {
             final decoded = jsonDecode(a);
@@ -176,14 +255,21 @@ class ShuyuanSourceContext {
     return host;
   }
 
-  static bool _hostMatch(String a, String b) {
-    if (a.isEmpty || b.isEmpty) return true;
-    return a == b ||
-        a.endsWith('.$b') ||
-        b.endsWith('.$a') ||
-        a.endsWith(b) ||
-        b.endsWith(a);
+  /// host 匹配：cookie 只向「同域或子域」下发（RFC 6265 domain-match）。
+  ///
+  /// 旧实现用无点边界的 `endsWith`，`evil-example.com` 会被判为命中
+  /// `example.com`（把登录 cookie 送给仿冒域），且允许反向匹配把子域
+  /// cookie 发给父域。
+  @visibleForTesting
+  static bool hostMatches(String cookieHost, String requestHost) {
+    final ch = cookieHost.toLowerCase().trim();
+    final h = requestHost.toLowerCase().trim();
+    if (ch.isEmpty || h.isEmpty) return true; // 未记录 host：视为全局
+    return h == ch || h.endsWith('.$ch');
   }
+
+  static bool _hostMatch(String cookieHost, String requestHost) =>
+      hostMatches(cookieHost, requestHost);
 
   /// 取 host 匹配的 cookie 覆盖层（后缀匹配：cookie host 或请求 host 任一
   /// 为对方后缀即命中，兼容登录域与站点域不同的情况）。
@@ -192,13 +278,7 @@ class ShuyuanSourceContext {
     if (h.isEmpty || cookies.isEmpty) return const {};
     final out = <String, String>{};
     cookies.forEach((name, meta) {
-      final ch = (meta['host'] ?? '').toLowerCase().trim();
-      if (ch.isEmpty ||
-          h == ch ||
-          h.endsWith('.$ch') ||
-          ch.endsWith('.$h') ||
-          h.endsWith(ch) ||
-          ch.endsWith(h)) {
+      if (hostMatches(meta['host'] ?? '', h)) {
         out[name] = meta['value'] ?? '';
       }
     });
@@ -208,14 +288,13 @@ class ShuyuanSourceContext {
   // ── cookie 覆盖层持久化（per sourceId） ──
   static const String _cookieStoreKey = 'shuyuan_source_cookies_v1';
   static Map<String, Map<String, Map<String, String>>>? _cookieCache;
-  static final Set<String> _loadedSources = <String>{};
 
-  /// 创建（或取缓存的）上下文；cookie 覆盖层从持久化装载一次。
+  /// 创建上下文并装载持久化状态（cookie 覆盖层 + 源变量）。
+  ///
+  /// 旧实现在 `_loadedSources` 命中时直接返回**空上下文**（无 cookie、
+  /// 无变量）——resolver 实例重建后登录态即丢失。SharedPreferences 实例
+  /// 自身有缓存，重复读取开销可忽略，这里每次都如实装载。
   static Future<ShuyuanSourceContext> forSource(String sourceId) async {
-    if (_loadedSources.contains(sourceId)) {
-      // 已装载过：从既有静态缓存找（resolver 持有实例时通常不走这里）。
-      return ShuyuanSourceContext(sourceId);
-    }
     final ctx = ShuyuanSourceContext(sourceId);
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -226,12 +305,26 @@ class ShuyuanSourceContext {
         if (mine != null) ctx.cookies.addAll(mine);
       }
     } catch (_) {}
-    _loadedSources.add(sourceId);
+    // 源变量（源管理里维护的「源变量」）：脚本 source.getVariable 的初值。
+    try {
+      final vars = await ShuyuanVariableStore.load(sourceId);
+      if (vars.isNotEmpty) ctx.sourceVars.addAll(vars);
+    } catch (_) {}
     return ctx;
   }
 
-  /// 排空后持久化 cookie 覆盖层（仅 dirty 时）。
+  /// 排空后持久化（仅 dirty 时）：源变量 + cookie 覆盖层。
+  ///
+  /// 旧实现只落 cookie，`sourceVarsDirty` 写了没人读 —— 脚本里
+  /// `source.putVariable` 的写入重启即丢。
   Future<void> persistIfNeeded() async {
+    if (sourceVarsDirty) {
+      sourceVarsDirty = false;
+      try {
+        await ShuyuanVariableStore.save(
+            sourceId, Map<String, String>.from(sourceVars));
+      } catch (_) {}
+    }
     if (!cookiesDirty) return;
     cookiesDirty = false;
     try {
@@ -242,6 +335,22 @@ class ShuyuanSourceContext {
           e.key: {'value': e.value['value'] ?? '', 'host': e.value['host'] ?? ''}
       };
       await prefs.setString(_cookieStoreKey, jsonEncode(_cookieCache));
+    } catch (_) {}
+  }
+
+  /// 删除源：清除其持久化的 cookie 覆盖层与源变量（源已不存在，
+  /// 登录态不应继续留在本地）。
+  static Future<void> forget(String sourceId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_cookieStoreKey);
+      if (raw != null && raw.isNotEmpty) {
+        _cookieCache = _decodeCookieStore(raw)..remove(sourceId);
+        await prefs.setString(_cookieStoreKey, jsonEncode(_cookieCache));
+      }
+    } catch (_) {}
+    try {
+      await ShuyuanVariableStore.save(sourceId, const <String, String>{});
     } catch (_) {}
   }
 
@@ -273,12 +382,17 @@ class ShuyuanSourceContext {
   /// 非阶段流程复用；resolver 阶段循环委托本方法）。
   /// POST 记录键为 `url||POST||body` 组合（shim 约定），拆分后组装
   /// AnalyzeUrl 选项串发起真实请求。
-  static Future<void> settleAjax(
+  ///
+  /// 返回**本次真正发起**的请求数（缓存命中不算）：调用方据此判断这一轮
+  /// 是否有进展，避免「URL 带随机数」的脚本无限重放。
+  static Future<int> settleAjax(
     ShuyuanSourceContext ctx,
     XiaoshuoBookSource source,
   ) async {
+    var fetched = 0;
     for (final key in List<String>.from(ctx.ajaxPending)) {
       if (ctx.ajaxCache.containsKey(key)) continue;
+      fetched++;
       var url = key;
       String? postBody;
       const marker = '||POST||';
@@ -320,12 +434,11 @@ class ShuyuanSourceContext {
       }
     }
     ctx.ajaxPending.clear();
+    return fetched;
   }
 
   /// 测试隔离。
   static void resetForTest() {
-    _stack.clear();
     _cookieCache = null;
-    _loadedSources.clear();
   }
 }
