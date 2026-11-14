@@ -18,7 +18,10 @@ import 'dart:convert';
 import '../../../core/models/category_entry.dart';
 import '../../../core/models/episode.dart';
 import '../../../core/models/media_item.dart';
-import '../../../core/models/novel_block.dart';
+import '../../../core/models/novel_block.dart'
+    show NovelBlock, NovelImageBlock, NovelTextBlock;
+import 'package:meta/meta.dart';
+
 import '../../../core/models/plugin_config.dart';
 import '../../../core/resolver/source_resolver.dart';
 import '../../../core/resolver/resolver_registry.dart';
@@ -143,6 +146,9 @@ class ShuyuanNovelResolver
             onProgress: onProgress);
       case 'content':
         return await _handleContent(source, bookSource, vars);
+      case 'images':
+        // 漫画模块的正文路由：书源正文（img 标签/URL 列表）→ 图片 URL 列表。
+        return await _handleComicImages(source, bookSource, vars);
       default:
         throw UnsupportedError(
           'ShuyuanNovelResolver does not support apiName: $apiName',
@@ -472,13 +478,60 @@ class ShuyuanNovelResolver
             .toList());
       },
     );
+    final isComic = source.type == SourceType.mangaSource;
     return chapters
         .map((c) => Episode(
-              id: '${c.index}',
+              // 漫画模块：阅读器以 chapterId=Episode.id 回传 fetchImages，
+              // id 须存章节 URL（小说模块 id 为序号、URL 走 url 字段）。
+              id: isComic ? c.url : '${c.index}',
               title: c.title,
               url: c.url,
             ))
         .toList();
+  }
+
+  /// 漫画 'images' 适配：复用小说正文管线（img 内容 → 插图块），收集
+  /// 图片 URL；纯 URL 文本行兜底（URL 列表形态的漫画源）。
+  Future<List<String>> _handleComicImages(
+    PluginConfig source,
+    XiaoshuoBookSource bookSource,
+    Map<String, String> vars,
+  ) async {
+    final chapterUrl = vars['chapterId'] ??
+        vars['url'] ??
+        vars['chapter'] ??
+        vars['cid'] ??
+        '';
+    if (chapterUrl.isEmpty) return <String>[];
+    final result = await _webBook.getContent(
+      source: bookSource,
+      chapterUrl: chapterUrl,
+    );
+    return imageUrlsFromBlocks(result.blocks);
+  }
+
+  /// 从图文块收集图片 URL：插图块直取；纯 URL 文本行兜底。
+  @visibleForTesting
+  static List<String> imageUrlsFromBlocks(List<NovelBlock> blocks) {
+    final urls = <String>[];
+    for (final b in blocks) {
+      if (b is NovelImageBlock && b.url.trim().isNotEmpty) {
+        urls.add(b.url.trim());
+      }
+    }
+    if (urls.isNotEmpty) return urls;
+    for (final b in blocks) {
+      if (b is NovelTextBlock) {
+        final newline = String.fromCharCode(10);
+        for (final line in b.text.split(newline)) {
+          final t = line.trim();
+          if (t.startsWith('http://') || t.startsWith('https://')) {
+            urls.add(t);
+          }
+        }
+      }
+    }
+    return urls;
   }
 
   // ── 正文 ──
