@@ -83,8 +83,10 @@ class SourceRule {
       mode = Mode.xpath;
       rule = ruleStr;
     } else {
+      // 对齐 legado：默认模式统一走 ElementsSingle（含 `.N` 下标、`tag./class./
+      // id./text./children` 前缀、CSS 回退），只有显式 `@css:`/`@@` 才是纯 CSS。
+      // 旧启发式把 `a.0` 判成 CSS，导致 593/735 部源的关键规则整条失效。
       rule = ruleStr;
-      isCss = _looksLikeCss(ruleStr);
     }
 
     rule = _splitPutRule(rule);
@@ -114,17 +116,6 @@ class SourceRule {
       min = jsMatch.start;
     }
     return min;
-  }
-
-  bool _looksLikeCss(String rule) {
-    final trimmed = rule.trim();
-    if (trimmed.isEmpty) return false;
-    if (trimmed.contains('@')) return false;
-    if (trimmed.startsWith('.') || trimmed.startsWith('#') || trimmed.startsWith('[')) return true;
-    if (trimmed.contains(':') && !trimmed.startsWith('@')) return true;
-    if (RegExp(r'[a-zA-Z][.#]').hasMatch(trimmed)) return true;
-    if (RegExp(r'[a-zA-Z]\[').hasMatch(trimmed)) return true;
-    return false;
   }
 
   String _splitPutRule(String ruleStr) {

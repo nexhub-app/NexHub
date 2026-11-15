@@ -314,6 +314,14 @@ class AnalyzeByJsoup {
     final rules = rule.splitRule(['@']);
     final last = rules.length - 1;
 
+    // 无 `@` 取值方法：整条规则就是选择器，取匹配元素的 text（旧 CSS 启发式
+    // 的等价行为）。legado 的 getResultList 此时会把规则当属性名返回空，
+    // 但社区源存在大量无 `@text` 的纯选择器规则，取 text 才符合预期。
+    if (last == 0) {
+      final selected = _getElementsSingle(_element, rules[0]);
+      return _getResultLast(selected, 'text');
+    }
+
     for (int i = 0; i < last; i++) {
       final r = rules[i].trim();
       final indexMatch = RegExp(r'^(-?\d+)$').firstMatch(r);
@@ -340,193 +348,9 @@ class AnalyzeByJsoup {
     return _getResultLast(elements, rules[last]);
   }
 
-  /// 按单步规则获取元素，支持 tag./class./id./text. 前缀及索引过滤。
+  /// 按单步规则获取元素：对齐 legado `ElementsSingle`（下标 + 前缀 + CSS 回退）。
   List<Element> _getElementsSingle(Element temp, String rule) {
-    final trimmed = rule.trim();
-    if (trimmed.isEmpty) return [];
-
-    // 纯索引选择器（如 "0"、"-1"）
-    final indexMatch = RegExp(r'^(-?\d+)$').firstMatch(trimmed);
-    if (indexMatch != null) {
-      final index = int.parse(trimmed);
-      final children = temp.children;
-      if (index >= 0 && index < children.length) {
-        return [children[index]];
-      } else if (index < 0 && children.length >= -index) {
-        return [children[children.length + index]];
-      }
-      return [];
-    }
-
-    // 带索引的特殊选择器（如 "tag.div.0"、"class.name.-1"）
-    // 语法：'':' 分隔索引，'.' 表示选择，'!' 表示排除
-    for (final prefix in ['children', 'tag.', 'class.', 'id.', 'text.']) {
-      if (trimmed.startsWith(prefix)) {
-        List<Element> elements;
-        String remaining = '';
-
-        if (prefix == 'children') {
-          elements = temp.children;
-          remaining = trimmed.substring(8).trim(); // "children" 之后
-        } else {
-          final afterPrefix = trimmed.substring(prefix.length);
-          final sepMatch = RegExp(r'[.!:]').firstMatch(afterPrefix);
-          if (sepMatch != null) {
-            final sepIndex = sepMatch.start;
-            final value = afterPrefix.substring(0, sepIndex);
-            remaining = afterPrefix.substring(sepIndex);
-
-            switch (prefix) {
-              case 'tag.':
-                elements = temp.getElementsByTagName(value);
-                break;
-              case 'class.':
-                elements = temp.getElementsByClassName(value);
-                break;
-              case 'id.':
-                final found = temp.querySelector('#$value');
-                elements = found != null ? [found] : [];
-                break;
-              case 'text.':
-                elements = temp.children.where((e) => e.text.contains(value)).toList();
-                break;
-              default:
-                elements = [];
-            }
-          } else {
-            final value = afterPrefix;
-            switch (prefix) {
-              case 'tag.':
-                elements = temp.getElementsByTagName(value);
-                break;
-              case 'class.':
-                elements = temp.getElementsByClassName(value);
-                break;
-              case 'id.':
-                final found = temp.querySelector('#$value');
-                elements = found != null ? [found] : [];
-                break;
-              case 'text.':
-                elements = temp.children.where((e) => e.text.contains(value)).toList();
-                break;
-              default:
-                elements = [];
-            }
-            remaining = '';
-          }
-        }
-
-        if (remaining.isNotEmpty && elements.isNotEmpty) {
-          elements = _applyIndexFilter(elements, remaining);
-        }
-        return elements;
-      }
-    }
-
-    // 默认按 CSS 选择器处理（透明支持 :contains(...) 伪选择器）
-    return _safeQuery(temp, trimmed);
-  }
-
-  /// 索引过滤：支持 .0、.-1、.0:5、.0:5:2、!0、[0,1,2]、[-1,0:2]
-  List<Element> _applyIndexFilter(List<Element> elements, String indexStr) {
-    final trimmed = indexStr.trim();
-    if (trimmed.isEmpty || elements.isEmpty) return elements;
-
-    bool exclude = false;
-    String parseStr = trimmed;
-
-    if (parseStr.startsWith('!')) {
-      exclude = true;
-      parseStr = parseStr.substring(1).trim();
-    }
-
-    if (parseStr.startsWith('[') && parseStr.endsWith(']')) {
-      parseStr = parseStr.substring(1, parseStr.length - 1);
-    } else if (parseStr.startsWith('.')) {
-      parseStr = parseStr.substring(1);
-    } else if (parseStr.startsWith(':')) {
-      parseStr = parseStr.substring(1);
-    }
-
-    if (parseStr.isEmpty) return elements;
-
-    final indices = <int>{};
-    bool hasValidIndex = false;
-    final parts = parseStr.split(',');
-
-    for (final part in parts) {
-      final p = part.trim();
-      if (p.isEmpty) continue;
-
-      // 区间（start:end 或 start:end:step）
-      if (p.contains(':')) {
-        final rangeParts = p.split(':');
-        int? start;
-        int? end;
-        var step = 1;
-
-        if (rangeParts.isNotEmpty && rangeParts[0].isNotEmpty) {
-          start = int.tryParse(rangeParts[0]);
-        }
-        if (rangeParts.length > 1 && rangeParts[1].isNotEmpty) {
-          end = int.tryParse(rangeParts[1]);
-        }
-        if (rangeParts.length > 2 && rangeParts[2].isNotEmpty) {
-          step = int.tryParse(rangeParts[2]) ?? 1;
-        }
-
-        final len = elements.length;
-        start = start ?? 0;
-        end = end ?? (len - 1);
-
-        if (start < 0) start += len;
-        if (end < 0) end += len;
-        start = start.clamp(0, len - 1);
-        end = end.clamp(0, len - 1);
-
-        if (step == 0) step = 1;
-
-        if (end > start) {
-          for (int i = start; i <= end; i += step) {
-            indices.add(i);
-            hasValidIndex = true;
-          }
-        } else {
-          for (int i = start; i >= end; i -= step) {
-            indices.add(i);
-            hasValidIndex = true;
-          }
-        }
-      } else {
-        final idx = int.tryParse(p);
-        if (idx != null) {
-          final len = elements.length;
-          if (idx >= 0 && idx < len) {
-            indices.add(idx);
-            hasValidIndex = true;
-          } else if (idx < 0 && len >= -idx) {
-            indices.add(idx + len);
-            hasValidIndex = true;
-          }
-        }
-      }
-    }
-
-    // 未解析到有效索引时返回原列表（可能是格式无效）
-    if (!hasValidIndex) return elements;
-
-    if (exclude) {
-      final result = <Element>[];
-      for (int i = 0; i < elements.length; i++) {
-        if (!indices.contains(i)) {
-          result.add(elements[i]);
-        }
-      }
-      return result;
-    } else {
-      final sortedIndices = indices.toList()..sort();
-      return sortedIndices.map((i) => elements[i]).toList();
-    }
+    return _ElementsSingle(rule).select(temp);
   }
 
   /// 按最后一步方法获取结果（text/html/owntext/属性名 等）。
@@ -713,3 +537,269 @@ class AnalyzeByJsoup {
     }
   }
 }
+
+/// legado `AnalyzeByJSoup.ElementsSingle` 的 Dart 移植：
+/// - 旧式索引：`a.0` / `tag.li!0` / `tag.div.-1:10:2`（`:` 分隔多个索引）
+/// - 新式索引：`tag.div[-1, 3:-2:-10, 2]`、`[8:]`、`[!0]`、`[-1:0]`（反向）
+/// - 前缀：`children` / `class.X` / `tag.X` / `id.X` / `text.X`，其余按 CSS
+/// 解析顺序、负索引、区间 interval/step、排除 `!` 均按 legado 原语义。
+class _ElementsSingle {
+  /// 对齐 legado：默认 `.`（选择），无索引的普通规则由 [_findIndexSet]
+  /// 末尾显式改写为 `' '`（返回全部元素）。
+  String split = '.';
+  String beforeRule = '';
+  final List<int> indexDefault = <int>[];
+  final List<Object> indexes = <Object>[];
+
+  _ElementsSingle(String rule) {
+    _findIndexSet(rule);
+  }
+
+  List<Element> select(Element temp) {
+    List<Element> elements;
+    if (beforeRule.isEmpty) {
+      elements = temp.children;
+    } else {
+      final rules = beforeRule.split('.');
+      switch (rules[0]) {
+        case 'children':
+          elements = temp.children;
+          break;
+        case 'class':
+          elements = rules.length > 1
+              ? temp.getElementsByClassName(rules[1])
+              : const <Element>[];
+          break;
+        case 'tag':
+          elements = rules.length > 1
+              ? temp.getElementsByTagName(rules[1])
+              : const <Element>[];
+          break;
+        case 'id':
+          elements = _collectById(temp, rules.length > 1 ? rules[1] : '');
+          break;
+        case 'text':
+          elements = _collectContainingOwnText(
+              temp, rules.length > 1 ? rules[1] : '');
+          break;
+        default:
+          elements = AnalyzeByJsoup._safeQuery(temp, beforeRule);
+      }
+    }
+
+    final len = elements.length;
+    final lastIndexes = indexDefault.isNotEmpty
+        ? indexDefault.length - 1
+        : indexes.length - 1;
+    final indexSet = <int>{};
+
+    if (indexes.isEmpty) {
+      for (var ix = lastIndexes; ix >= 0; ix--) {
+        final it = indexDefault[ix];
+        if (it >= 0 && it < len) {
+          indexSet.add(it);
+        } else if (it < 0 && len >= -it) {
+          indexSet.add(it + len);
+        }
+      }
+    } else {
+      for (var ix = lastIndexes; ix >= 0; ix--) {
+        final item = indexes[ix];
+        if (item is _IndexRange) {
+          var start = item.start ?? 0;
+          if (start < 0) start += len;
+          var end = item.end ?? (len - 1);
+          if (end < 0) end += len;
+          if ((start < 0 && end < 0) || (start >= len && end >= len)) {
+            continue;
+          }
+          if (start >= len) {
+            start = len - 1;
+          } else if (start < 0) {
+            start = 0;
+          }
+          if (end >= len) {
+            end = len - 1;
+          } else if (end < 0) {
+            end = 0;
+          }
+          if (start == end || item.step >= len) {
+            indexSet.add(start);
+            continue;
+          }
+          final step = item.step > 0
+              ? item.step
+              : (-item.step < len ? item.step + len : 1);
+          if (end > start) {
+            for (var i = start; i <= end; i += step) {
+              indexSet.add(i);
+            }
+          } else {
+            for (var i = start; i >= end; i -= step) {
+              indexSet.add(i);
+            }
+          }
+        } else {
+          final it = item as int;
+          if (it >= 0 && it < len) {
+            indexSet.add(it);
+          } else if (it < 0 && len >= -it) {
+            indexSet.add(it + len);
+          }
+        }
+      }
+    }
+
+    if (split == '!') {
+      final result = <Element>[];
+      for (var i = 0; i < len; i++) {
+        if (!indexSet.contains(i)) result.add(elements[i]);
+      }
+      return result;
+    }
+    if (split == '.') {
+      final result = <Element>[];
+      for (final i in indexSet) {
+        if (i >= 0 && i < len) result.add(elements[i]);
+      }
+      return result;
+    }
+    return elements;
+  }
+
+  static List<Element> _collectById(Element root, String id) {
+    final result = <Element>[];
+    void walk(Element el) {
+      if (el.attributes['id'] == id) result.add(el);
+      for (final child in el.children) {
+        walk(child);
+      }
+    }
+
+    walk(root);
+    return result;
+  }
+
+  static String _ownText(Element el) => el.nodes
+      .whereType<Text>()
+      .map((n) => n.text)
+      .join()
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+
+  static List<Element> _collectContainingOwnText(Element root, String text) {
+    final needle = text.toLowerCase();
+    final result = <Element>[];
+    void walk(Element el) {
+      if (_ownText(el).toLowerCase().contains(needle)) result.add(el);
+      for (final child in el.children) {
+        walk(child);
+      }
+    }
+
+    walk(root);
+    return result;
+  }
+
+  /// 解析规则尾部的索引写法，结果写入 [split]/[beforeRule]/[indexDefault]/
+  /// [indexes]。逐字符逆向扫描（与 legado 完全一致），遇到非索引用法时
+  /// 视为整条 CSS 规则。
+  void _findIndexSet(String rule) {
+    final rus = rule.trim();
+    if (rus.isEmpty) return;
+
+    var len = rus.length;
+    int? curInt;
+    var curMinus = false;
+    final curList = <int?>[];
+    var l = '';
+    final head = rus[len - 1] == ']';
+
+    if (head) {
+      len--;
+      while (len-- >= 0) {
+        final rl = rus[len];
+        if (rl == ' ') continue;
+        if (_isDigit(rl)) {
+          l = rl + l;
+        } else if (rl == '-') {
+          curMinus = true;
+        } else {
+          curInt = l.isEmpty ? null : (curMinus ? -int.parse(l) : int.parse(l));
+          if (rl == ':') {
+            curList.add(curInt);
+          } else {
+            if (curList.isEmpty) {
+              if (curInt == null) break;
+              indexes.add(curInt);
+            } else {
+              indexes.add(_IndexRange(
+                curInt,
+                curList.last,
+                curList.length == 2 ? (curList.first ?? 1) : 1,
+              ));
+              curList.clear();
+            }
+            var sep = rl;
+            if (sep == '!') {
+              split = '!';
+              do {
+                sep = rus[--len];
+              } while (len > 0 && sep == ' ');
+            }
+            if (sep == '[') {
+              beforeRule = rus.substring(0, len);
+              return;
+            }
+            if (sep != ',') break;
+          }
+          l = '';
+          curMinus = false;
+        }
+      }
+    } else {
+      while (len-- >= 0) {
+        final rl = rus[len];
+        if (rl == ' ') continue;
+        if (_isDigit(rl)) {
+          l = rl + l;
+        } else if (rl == '-') {
+          curMinus = true;
+        } else {
+          if (rl == '!' || rl == '.' || rl == ':') {
+            if (l.isNotEmpty) {
+              indexDefault.add(curMinus ? -int.parse(l) : int.parse(l));
+            }
+            if (rl != ':') {
+              split = rl;
+              beforeRule = rus.substring(0, len);
+              return;
+            }
+          } else {
+            break;
+          }
+          l = '';
+          curMinus = false;
+        }
+      }
+    }
+
+    // 无有效索引或解析中断：整条规则按 CSS/前缀规则处理。
+    split = ' ';
+    beforeRule = rus;
+  }
+
+  static bool _isDigit(String c) {
+    final code = c.codeUnitAt(0);
+    return code >= 48 && code <= 57;
+  }
+}
+
+class _IndexRange {
+  const _IndexRange(this.start, this.end, this.step);
+
+  final int? start;
+  final int? end;
+  final int step;
+}
+

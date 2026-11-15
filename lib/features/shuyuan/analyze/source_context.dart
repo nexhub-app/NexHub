@@ -26,6 +26,10 @@ class ShuyuanSourceContext {
 
   final String sourceId;
 
+  /// 书源地址（legado `source.key` / `BookSource.getKey`）。
+  /// `sourceId` 是本应用的内部主键，脚本里 `source.key` 需要的是书源 URL。
+  String bookSourceUrl = '';
+
   /// per-source cookie 覆盖层：cookieName → {value, host}。
   /// setCookie/removeCookie 写这里；AnalyzeUrl 按 host 后缀匹配合并进
   /// Cookie 请求头（读合并不写回全局罐——三通道隔离红线）。
@@ -157,6 +161,7 @@ class ShuyuanSourceContext {
   // 排空 diff 恒为零差异，dirty/持久化标志永不触发） ──
   Map<String, dynamic> toSeed() => <String, dynamic>{
         'sourceId': sourceId,
+        'sourceKey': bookSourceUrl.isNotEmpty ? bookSourceUrl : sourceId,
         'sourceVars': Map<String, String>.from(sourceVars),
         'bookVars': Map<String, String>.from(bookVars),
         'bookInfo': Map<String, String>.from(bookInfo),

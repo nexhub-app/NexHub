@@ -157,7 +157,7 @@ const String sourceContextJsPrelude = r'''
   };
 
   var source = {
-    getKey: function () { return syCtx().sourceId; },
+    getKey: function () { return syCtx().sourceKey || syCtx().sourceId; },
     getVariable: function (k) {
       var c = syCtx();
       if (k == null || k === '') return c.sourceVars['__variable'] || '';
@@ -242,6 +242,11 @@ const String sourceContextJsPrelude = r'''
     putFile: function (k, v) { return cache.put(k, v); },
     getFile: function (k) { return cache.get(k); },
   };
+
+  // legado `source.key` 属性 = 书源 URL（脚本大量使用，只读）。
+  Object.defineProperty(source, 'key', {
+    get: function () { return syCtx().sourceKey || syCtx().sourceId; },
+  });
 
   global.cookie = cookie;
   global.source = source;
