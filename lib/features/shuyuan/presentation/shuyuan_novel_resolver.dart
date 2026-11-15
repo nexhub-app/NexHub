@@ -37,6 +37,8 @@ import '../model/search_book.dart';
 import '../model/xiaoshuo_book.dart';
 import '../model/xiaoshuo_book_chapter.dart';
 import '../analyze/js_engine.dart';
+import '../analyze/analyze_rule.dart';
+import '../analyze/analyze_url.dart';
 import '../analyze/source_context.dart';
 import '../shuyuan_adapter.dart';
 import '../shuyuan_explore_info_store.dart';
@@ -55,6 +57,71 @@ class ShuyuanNovelResolver
   /// 每源运行时上下文（cookie 覆盖层/源变量/登录信息/缓存），注入对象
   /// （cookie/source/book/cache）的宿主侧。按源 id 缓存。
   final Map<String, ShuyuanSourceContext> _contexts = {};
+
+  /// 详情阶段解析出的书籍对象（含 ruleBookInfo.tocUrl），供随后打开的目录
+  /// 阶段复用——legado 的书对象在详情/加入书架时就已持有 tocUrl，目录请求
+  /// 从不回落到详情页 URL。NexHub 各阶段独立调用且只回传 id，若不缓存，
+  /// API 型源（宜搜/百度等，目录是独立接口）会把详情接口当目录接口请求，
+  /// 章节恒为空。数量很小（只在用户浏览过的书之间滚动）。
+  final Map<String, XiaoshuoBook> _bookInfoCache = {};
+  static const int _bookInfoCacheLimit = 32;
+
+  void _rememberBookInfo(XiaoshuoBook book) {
+    if (book.bookUrl.isEmpty) return;
+    _bookInfoCache.remove(book.bookUrl);
+    _bookInfoCache[book.bookUrl] = book;
+    if (_bookInfoCache.length > _bookInfoCacheLimit) {
+      _bookInfoCache.remove(_bookInfoCache.keys.first);
+    }
+  }
+
+  /// 搜索/发现阶段解析出的书条目，按 bookUrl 暂存，作为详情阶段的解析
+  /// 种子：legado 的 Book 对象在搜索→详情链路中持续携带书名字段，详情
+  /// 规则解析为空时不会清掉已有值。NexHub 各阶段只回传 id，不暂存时
+  /// 详情页会丢失搜索阶段已有的书名/作者/封面（如宜搜 API：搜索有封面，
+  /// 详情封面规则缺省 → 详情页无封面）。
+  final Map<String, XiaoshuoBook> _searchSeedCache = {};
+  static const int _searchSeedCacheLimit = 64;
+
+  void _rememberSearchSeed(XiaoshuoBook book) {
+    if (book.bookUrl.isEmpty) return;
+    _searchSeedCache.remove(book.bookUrl);
+    _searchSeedCache[book.bookUrl] = book;
+    if (_searchSeedCache.length > _searchSeedCacheLimit) {
+      _searchSeedCache.remove(_searchSeedCache.keys.first);
+    }
+  }
+
+  XiaoshuoBook? _seedFor(String bookUrl) => _searchSeedCache[bookUrl];
+
+  XiaoshuoBook _seedFromSearchBook(SearchBook sb) {
+    return XiaoshuoBook(
+      bookUrl: sb.bookUrl,
+      name: sb.name,
+      author: sb.author,
+      coverUrl: sb.coverUrl,
+      kind: sb.kind,
+      lastChapter: sb.lastChapter,
+      type: sb.type,
+    );
+  }
+
+  /// 发现/搜索列表 → MediaItem，同时暂存解析种子供详情阶段复用。
+  List<MediaItem> _mapAndSeedSearchBooks(
+      List<SearchBook> books, PluginConfig source) {
+    for (final sb in books) {
+      _rememberSearchSeed(_seedFromSearchBook(sb));
+    }
+    return books.map((sb) => _searchBookToMediaItem(sb, source)).toList();
+  }
+
+  List<MediaItem> _mapAndSeedBooks(
+      List<XiaoshuoBook> books, PluginConfig source) {
+    for (final b in books) {
+      _rememberSearchSeed(b);
+    }
+    return books.map((b) => _xiaoshuoBookToMediaItem(b, source)).toList();
+  }
 
   Future<ShuyuanSourceContext> _contextFor(PluginConfig source) async {
     return _contexts[source.id] ??= await ShuyuanSourceContext.forSource(
@@ -90,9 +157,8 @@ class ShuyuanNovelResolver
     }
     final bookSource = shuyuanSource.toBookSource();
     final ctx = await _contextFor(source);
-    ctx.bookSourceUrl = bookSource.bookSourceUrl;
-    // jsLib 预执行内容随作用域下发（引擎首次 eval 前执行）。
-    ctx.jsLib = bookSource.jsLib ?? '';
+    // 源 URL / jsLib（引擎首次 eval 前预执行）/ `source.<field>` 快照。
+    ctx.bindSource(bookSource);
 
     return ShuyuanSourceContext.run(ctx, () async {
       try {
@@ -239,8 +305,7 @@ class ShuyuanNovelResolver
     // 旧实现 `?? ShuyuanSourceContext(...)` 直接新建空上下文，
     // WebView 回灌路径永远没有登录态。
     final ctx = await _contextFor(source);
-    ctx.bookSourceUrl = bookSource.bookSourceUrl;
-    ctx.jsLib = bookSource.jsLib ?? '';
+    ctx.bindSource(bookSource);
     // 渲染回灌同样从干净的重放缓存开始，避免命中上一阶段的旧响应。
     ctx.clearStageCaches();
     JsEngine.resetReplayCachesFor(source.id);
@@ -258,13 +323,12 @@ class ShuyuanNovelResolver
           isSearch: isSearch,
           searchKey: isSearch ? (vars['keyword'] ?? vars['key'] ?? '') : null,
         );
-        return books
-            .map((sb) => _searchBookToMediaItem(sb, source))
-            .toList();
+        return _mapAndSeedSearchBooks(books, source);
       case 'detail':
         // 详情页：用 [BookInfo] 解析渲染后 HTML（与 [WebBook.getBookInfo] 同口径）。
+        // 复用搜索/发现阶段的种子书，详情规则为空时保留列表阶段字段。
         final id = vars['id'] ?? vars['detailUrl'] ?? '';
-        final book = XiaoshuoBook(bookUrl: id, name: '');
+        final book = _seedFor(id) ?? XiaoshuoBook(bookUrl: id, name: '');
         BookInfo.analyzeBookInfo(
           bookSource: bookSource,
           book: book,
@@ -304,6 +368,8 @@ class ShuyuanNovelResolver
           baseUrl: chapterUrl,
           redirectUrl: chapterUrl,
           body: html,
+          mediaSource: bookSource.bookSourceType == 1 ||
+              bookSource.bookSourceType == 4,
         );
         if (blocks.isEmpty) {
           throw SourceResolveException(
@@ -324,8 +390,16 @@ class ShuyuanNovelResolver
           baseUrl: videoChapterUrl,
           redirectUrl: videoChapterUrl,
           body: html,
+          mediaSource: true,
         );
-        final renderedUrl = _extractMediaUrl(videoBlocks);
+        final renderedUrl = _normalizeMediaUrl(
+          _firstMediaLine(videoBlocks
+                  .whereType<NovelTextBlock>()
+                  .map((b) => b.text)
+                  .join('\n')) ??
+              _extractMediaUrl(videoBlocks),
+          videoChapterUrl,
+        );
         if (renderedUrl == null || renderedUrl.isEmpty) {
           throw SourceResolveException(
             sourceId: source.id,
@@ -333,7 +407,15 @@ class ShuyuanNovelResolver
             message: '渲染后正文未解析到媒体直链',
           );
         }
-        return VideoResult(url: renderedUrl);
+        final renderedAnalyze = AnalyzeUrl(
+          url: renderedUrl,
+          baseUrl: bookSource.bookSourceUrl,
+          source: bookSource,
+        );
+        return VideoResult(
+          url: renderedAnalyze.url,
+          headers: renderedAnalyze.resolveRequestHeaders(),
+        );
       default:
         return resolve(source, apiName, vars: vars);
       }
@@ -369,8 +451,7 @@ class ShuyuanNovelResolver
           _webBook.getExploreCategories(bookSource, infoMap: infoMap));
     }
     final ctx = await _contextFor(source);
-    ctx.bookSourceUrl = bookSource.bookSourceUrl;
-    ctx.jsLib = bookSource.jsLib ?? '';
+    ctx.bindSource(bookSource);
     return ShuyuanSourceContext.run(ctx, () async {
       ctx.clearStageCaches();
       JsEngine.resetReplayCachesFor(source.id);
@@ -413,8 +494,7 @@ class ShuyuanNovelResolver
     final infoKey = _exploreInfoKey(source, bookSource);
     final infoMap = await ShuyuanExploreInfoStore.load(infoKey);
     final ctx = await _contextFor(source);
-    ctx.bookSourceUrl = bookSource.bookSourceUrl;
-    ctx.jsLib = bookSource.jsLib ?? '';
+    ctx.bindSource(bookSource);
     try {
       return await ShuyuanSourceContext.run(ctx, () async {
         ctx.clearStageCaches();
@@ -561,8 +641,7 @@ class ShuyuanNovelResolver
     final infoKey = _exploreInfoKey(source, bookSource);
     final infoMap = await ShuyuanExploreInfoStore.load(infoKey);
     final ctx = await _contextFor(source);
-    ctx.bookSourceUrl = bookSource.bookSourceUrl;
-    ctx.jsLib = bookSource.jsLib ?? '';
+    ctx.bindSource(bookSource);
     final engine = JsEngine.forSource(source.id);
     try {
       return await ShuyuanSourceContext.run(ctx, () async {
@@ -690,7 +769,7 @@ class ShuyuanNovelResolver
       key: keyword,
       page: page,
     );
-    return results.map((sb) => _searchBookToMediaItem(sb, source)).toList();
+    return _mapAndSeedSearchBooks(results, source);
   }
 
   // ── 发现：按分类 URL 抓取 ──
@@ -730,7 +809,7 @@ class ShuyuanNovelResolver
         categoryUrl: buf.toString(),
         page: page,
       );
-      return books.map((b) => _xiaoshuoBookToMediaItem(b, source)).toList();
+      return _mapAndSeedBooks(books, source);
     }
 
     final categoryUrl = vars['category'];
@@ -741,7 +820,7 @@ class ShuyuanNovelResolver
         categoryUrl: categoryUrl,
         page: page,
       );
-      return books.map((b) => _xiaoshuoBookToMediaItem(b, source)).toList();
+      return _mapAndSeedBooks(books, source);
     }
 
     // 没指定分类时，走全量发现页。书源未配置 exploreUrl（纯搜索源，无发现页）
@@ -761,7 +840,7 @@ class ShuyuanNovelResolver
       categoryUrl: categories.first.url,
       page: page,
     );
-    return books.map((b) => _xiaoshuoBookToMediaItem(b, source)).toList();
+    return _mapAndSeedBooks(books, source);
   }
 
   /// PTCMS 筛选段取值：
@@ -794,7 +873,12 @@ class ShuyuanNovelResolver
     if (id.isEmpty) {
       throw ArgumentError('detail requires vars["id"]');
     }
-    final book = await _webBook.getBookInfo(source: bookSource, bookUrl: id);
+    final book = await _webBook.getBookInfo(
+      source: bookSource,
+      bookUrl: id,
+      seedBook: _seedFor(id),
+    );
+    _rememberBookInfo(book);
     return _xiaoshuoBookToMediaItem(book, source);
   }
 
@@ -809,14 +893,35 @@ class ShuyuanNovelResolver
     if (id.isEmpty) {
       throw ArgumentError('chapters requires vars["id"]');
     }
-    // WebBook.getChapterList 需要 XiaoshuoBook 来获取 tocUrl；用 bookUrl=id 构造。
-    final book = XiaoshuoBook(bookUrl: id, name: '');
+    // getChapterList 依赖 XiaoshuoBook.tocUrl 定位目录（legado 书对象在详情/
+    // 加入书架时即已持有）。详情阶段缓存命中则直接用；未命中且源声明了
+    // ruleBookInfo.tocUrl（目录是独立接口，如宜搜/百度）时先解析一次详情，
+    // 否则目录请求会落到详情页 URL，章节恒为空。tocUrl 为空/详情失败时退回
+    // 仅 bookUrl（getChapterList 内部按 bookUrl 解析目录，历史行为）。
+    var book = _bookInfoCache[id];
+    if (book == null &&
+        (bookSource.ruleBookInfo?.tocUrl ?? '').trim().isNotEmpty) {
+      try {
+        book = await _webBook.getBookInfo(
+          source: bookSource,
+          bookUrl: id,
+          seedBook: _seedFor(id),
+        );
+        _rememberBookInfo(book);
+      } on Object {
+        book = null;
+      }
+    }
+    book ??= _seedFor(id) ?? XiaoshuoBook(bookUrl: id, name: '');
     final chapters = await _webBook.getChapterList(
       source: bookSource,
       book: book,
       // 渐进批次：逐页把章节转为 Episode 后回传上层（首屏快显 + 后台续抓）。
+      // 卷条目（isVolume）没有可读 URL（仅占位符），列表层无卷分隔形态，
+      // 作为 Episode 会变成点不开的「章节」并挤占首章，故整体跳过。
       onBatch: (batch) {
-        onProgress?.call(batch
+        final playable = batch.where((c) => !c.isVolume);
+        onProgress?.call(playable
             .map((c) => Episode(
                   id: '${c.index}',
                   title: c.title,
@@ -827,6 +932,7 @@ class ShuyuanNovelResolver
     );
     final isComic = source.type == SourceType.mangaSource;
     return chapters
+        .where((c) => !c.isVolume)
         .map((c) => Episode(
               // 漫画模块：阅读器以 chapterId=Episode.id 回传 fetchImages，
               // id 须存章节 URL（小说模块 id 为序号、URL 走 url 字段）。
@@ -912,8 +1018,13 @@ class ShuyuanNovelResolver
         srcTypeRaw is int ? srcTypeRaw : int.tryParse('$srcTypeRaw') ?? 0;
     if (srcType == 1 || srcType == 4) {
       final kind = srcType == 1 ? 'audio' : 'video';
+      final mediaUrl = _normalizeMediaUrl(
+        _firstMediaLine(result.content.trim()) ??
+            _extractMediaUrl(result.blocks),
+        chapterUrl,
+      );
       return <NovelBlock>[
-        NovelMediaBlock(_extractMediaUrl(result.blocks) ?? '', kind: kind),
+        NovelMediaBlock(mediaUrl ?? '', kind: kind),
       ];
     }
     // 图文块列表（文本段 + 插图），保留解析层给出的原始顺序，
@@ -939,12 +1050,40 @@ class ShuyuanNovelResolver
     return null;
   }
 
+  /// 正文中的第一条非空行（legado 视频链路把整段正文 trim 后当媒体地址）。
+  static String? _firstMediaLine(String text) {
+    for (final line in text.split('\n')) {
+      final t = line.trim();
+      if (t.isNotEmpty) return t;
+    }
+    return null;
+  }
+
+  /// 媒体地址归一：`//host/path` 补章节页协议；相对路径按章节页绝对化
+  /// （对齐 legado VideoContentRepository → AnalyzeUrl 之前的处理）。
+  static String? _normalizeMediaUrl(String? raw, String chapterUrl) {
+    final t = raw?.trim() ?? '';
+    if (t.isEmpty) return null;
+    if (t.startsWith('http://') || t.startsWith('https://')) return t;
+    if (t.startsWith('//')) {
+      final scheme = Uri.tryParse(chapterUrl)?.scheme ?? 'https';
+      return '$scheme:$t';
+    }
+    final abs = AnalyzeRule.absoluteUrl(chapterUrl, t);
+    return abs.isEmpty ? null : abs;
+  }
+
   /// 视频/音频源（legado bookSourceType=1/4）的播放直链解析。
   ///
   /// 媒体管线（VideoPlayerScreen → MediaApiService.fetchVideoUrl）按 `video`
   /// 路由调用：抓章节页 → 正文规则 → 直链（[VideoResult]）。书源播放页常挂
   /// Cloudflare，验证拦截由上层 verificationHandler 走 WebView 后回灌渲染
   /// HTML（见 [resolveRenderedHtml] 的同名分支）。
+  ///
+  /// 对照 legado VideoContentRepository.loadMedia：正文 trim 后整段即媒体
+  /// 地址（不做 HTML 格式化），再经 AnalyzeUrl 解析 URL 选项（headers/
+  /// method 等），把声明型请求头一并带回播放器——拉 m3u8/分片必须带同一
+  /// 套 Referer/UA/Cookie，否则 CDN 403 全程黑屏。
   Future<VideoResult> _handleVideo(
     PluginConfig source,
     XiaoshuoBookSource bookSource,
@@ -958,15 +1097,34 @@ class ShuyuanNovelResolver
       source: bookSource,
       chapterUrl: chapterUrl,
     );
-    final url = _extractMediaUrl(result.blocks);
-    if (url == null || url.isEmpty) {
+    final rawText = result.content.trim();
+    if (rawText.startsWith('<')) {
+      throw SourceResolveException(
+        sourceId: source.id,
+        apiName: 'video',
+        message: '正文为 DASH/MPD 清单文本，当前播放器不支持该形态',
+      );
+    }
+    final mediaUrl = _normalizeMediaUrl(
+      _firstMediaLine(rawText) ?? _extractMediaUrl(result.blocks),
+      chapterUrl,
+    );
+    if (mediaUrl == null || mediaUrl.isEmpty) {
       throw SourceResolveException(
         sourceId: source.id,
         apiName: 'video',
         message: result.error ?? '正文未解析到媒体直链',
       );
     }
-    return VideoResult(url: url);
+    final analyzeUrl = AnalyzeUrl(
+      url: mediaUrl,
+      baseUrl: bookSource.bookSourceUrl,
+      source: bookSource,
+    );
+    return VideoResult(
+      url: analyzeUrl.url,
+      headers: analyzeUrl.resolveRequestHeaders(),
+    );
   }
 
   // ── 模型转换 ──

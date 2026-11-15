@@ -138,7 +138,8 @@ class BookList {
         if (pattern != null && pattern.isNotEmpty) {
           try {
             if (RegExp(pattern).hasMatch(baseUrl)) {
-              return [_detailPageAsSearchBook(bookSource, body, baseUrl)];
+              final detail = _detailPageAsSearchBook(bookSource, body, baseUrl);
+              return detail == null ? const <SearchBook>[] : [detail];
             }
           } catch (_) {}
         }
@@ -149,7 +150,11 @@ class BookList {
         //（声明了 ruleBookInfo.name 时字段更全）；否则通用解析兜底。
         final infoName = bookSource.ruleBookInfo?.name;
         if (infoName != null && infoName.isNotEmpty) {
-          return [_detailPageAsSearchBook(bookSource, body, baseUrl)];
+          // 页级书名提取不到（如 API 返回空数组）时不产出条目：
+          // 否则空名条目会带 baseUrl 作为 bookUrl 混入结果（legado
+          // getInfoItem 同样以 name 非空为产出前提）。
+          final detail = _detailPageAsSearchBook(bookSource, body, baseUrl);
+          return detail == null ? const <SearchBook>[] : [detail];
         }
         return _parseGenericBookList(body, bookSource, baseUrl);
       }
@@ -275,7 +280,21 @@ class BookList {
 
     try {
       if (ruleBookUrl.isNotEmpty) {
-        bookUrl = analyzeRule.getStringFromRules(ruleBookUrl, isUrl: true);
+        // legado getSearchItem：先 setRuleData(searchBook) 再求 bookUrl，
+        // 使 URL 模板里的 `{{book.kind}}` 等读到当前条目已解析字段
+        // （企鹅浏览 resourceId={{book.kind}}；无此绑定时模板展开为空）。
+        final itemBook = XiaoshuoBook(bookUrl: '', name: name)
+          ..author = author
+          ..kind = kind
+          ..coverUrl = coverUrl
+          ..lastChapter = lastChapter;
+        final prevBook = analyzeRule.book;
+        analyzeRule.book = itemBook;
+        try {
+          bookUrl = analyzeRule.getStringFromRules(ruleBookUrl, isUrl: true);
+        } finally {
+          analyzeRule.book = prevBook;
+        }
       }
     } catch (_) {}
 
@@ -283,6 +302,15 @@ class BookList {
       bookUrl = baseUrl;
     } else if (!bookUrl.startsWith('http')) {
       bookUrl = _getAbsoluteUrl(bookUrl, baseUrl);
+    }
+
+    // 变量贯通：把本条 @put/java.put 写入的变量按书暂存，详情/目录/正文
+    // 阶段注入 variableMap 后 @get/java.get 可读（legado 书对象随书携带
+    // variableMap；本应用阶段间只传 bookUrl）。
+    final ctx = ShuyuanSourceContext.current;
+    if (ctx != null && bookUrl.isNotEmpty && analyzeRule.variables.isNotEmpty) {
+      ctx.bookItemVars[bookUrl] =
+          Map<String, String>.from(analyzeRule.variables);
     }
 
     return SearchBook(
@@ -759,7 +787,7 @@ class BookList {
 
   /// 整页按详情页解析为单本 SearchBook（legado getInfoItem 的整页形态：
   /// 搜索直达详情页 / 列表为空且未声明 bookUrlPattern 的回退）。
-  static SearchBook _detailPageAsSearchBook(
+  static SearchBook? _detailPageAsSearchBook(
     XiaoshuoBookSource bookSource,
     String body,
     String baseUrl,
@@ -772,6 +800,7 @@ class BookList {
       redirectUrl: baseUrl,
       body: body,
     );
+    if (book.name.isEmpty) return null;
     return SearchBook(
       bookUrl: book.bookUrl.isNotEmpty ? book.bookUrl : baseUrl,
       name: book.name,

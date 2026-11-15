@@ -216,9 +216,14 @@ class WebBook {
   }
 
   /// 获取书籍详情：抓取 `bookUrl` 并通过 `ruleBookInfo` 解析。
+  ///
+  /// [seedBook] 为搜索/发现阶段解析出的同书条目：legado 的 Book 对象跨
+  /// 阶段持续存在，详情规则只覆盖非空字段；本实现各阶段只回传 id，传入
+  /// 种子可避免详情页丢失搜索阶段已有的书名/作者/封面（详情规则缺省时）。
   Future<XiaoshuoBook> getBookInfo({
     required XiaoshuoBookSource source,
     required String bookUrl,
+    XiaoshuoBook? seedBook,
   }) async {
     final analyzeUrl = AnalyzeUrl(
       url: bookUrl,
@@ -231,7 +236,9 @@ class WebBook {
 
     final body = await analyzeUrl.getStrResponse();
 
-    final book = XiaoshuoBook(bookUrl: bookUrl, name: '');
+    final book = (seedBook != null && seedBook.bookUrl == bookUrl)
+        ? seedBook
+        : XiaoshuoBook(bookUrl: bookUrl, name: '');
     BookInfo.analyzeBookInfo(
       bookSource: source,
       book: book,
@@ -261,6 +268,12 @@ class WebBook {
     required XiaoshuoBook book,
     void Function(List<XiaoshuoBookChapter>)? onBatch,
   }) async {
+    // 变量贯通：注入搜索/发现阶段暂存的本书变量（书可能来自详情缓存或
+    // 上层裸建，统一按 bookUrl 兜底补齐，供 @get/java.get 求值）。
+    final stagedVars = ShuyuanSourceContext.current?.bookItemVars[book.bookUrl];
+    if (stagedVars != null && stagedVars.isNotEmpty) {
+      stagedVars.forEach((k, v) => book.variableMap.putIfAbsent(k, () => v));
+    }
     final tocRule = source.getTocRule();
     var tocUrl = (book.tocUrl != null && book.tocUrl!.isNotEmpty)
         ? book.tocUrl!
@@ -276,6 +289,7 @@ class WebBook {
         final detailBook = await getBookInfo(
           source: source,
           bookUrl: book.bookUrl,
+          seedBook: book,
         );
         if (detailBook.tocUrl != null && detailBook.tocUrl!.isNotEmpty) {
           tocUrl = detailBook.tocUrl!;
@@ -289,27 +303,44 @@ class WebBook {
         if (book.coverUrl == null || book.coverUrl!.isEmpty) {
           book.coverUrl = detailBook.coverUrl;
         }
+        // 详情阶段 @put/java.put 的变量随书回填（@get 跨阶段依赖）。
+        if (detailBook.variableMap.isNotEmpty) {
+          book.variableMap.addAll(detailBook.variableMap);
+        }
       } catch (_) {
         // 详情页解析失败时维持原行为（用 bookUrl 当 tocUrl），
         // 不因兜底失败阻断目录请求。
       }
     }
 
-    final analyzeUrl = AnalyzeUrl(
-      url: tocUrl,
-      baseUrl: source.bookSourceUrl,
-      source: source,
-      itemContext: _bookItemContext(book.bookUrl),
-    );
-
-    final body = await analyzeUrl.getStrResponse();
+    // 对照 legado WebBook.getChapterListAwait：详情阶段目录地址回落到
+    // 详情页自身时，详情响应体已缓存进 tocHtml，直接解析，不再重发请求。
+    final String tocBaseUrl;
+    final String body;
+    final cachedTocHtml = book.tocHtml;
+    if (cachedTocHtml != null &&
+        cachedTocHtml.isNotEmpty &&
+        (tocUrl == book.tocUrl || tocUrl == book.bookUrl)) {
+      tocBaseUrl = tocUrl;
+      body = cachedTocHtml;
+    } else {
+      final analyzeUrl = AnalyzeUrl(
+        url: tocUrl,
+        baseUrl: source.bookSourceUrl,
+        source: source,
+        ruleData: book,
+        itemContext: _bookItemContext(book.bookUrl),
+      );
+      body = await analyzeUrl.getStrResponse();
+      tocBaseUrl = analyzeUrl.url;
+    }
     if (body.isEmpty) return <XiaoshuoBookChapter>[];
 
     final allChapters = BookChapterList.analyzeChapterList(
       bookSource: source,
       book: book,
-      baseUrl: analyzeUrl.url,
-      redirectUrl: analyzeUrl.url,
+      baseUrl: tocBaseUrl,
+      redirectUrl: tocBaseUrl,
       body: body,
     );
 
@@ -324,8 +355,8 @@ class WebBook {
     // 目录分页跟随：若声明了 nextTocUrl 且当前页有"下一页"链接，继续抓取。
     final nextTocRule = tocRule.nextTocUrl;
     if (nextTocRule != null && nextTocRule.isNotEmpty && allChapters.isNotEmpty) {
-      final visited = <String>{analyzeUrl.url};
-      var currentUrl = analyzeUrl.url;
+      final visited = <String>{tocBaseUrl};
+      var currentUrl = tocBaseUrl;
       var currentBody = body;
       // 目录分页上限：部分超长书（如诡秘之主 1416 章）目录可达 70+ 页。
       // 已有 visited 去重防死循环，上限仅作安全阀。原 20 对长书严重不足（只能
@@ -333,7 +364,8 @@ class WebBook {
       const maxTocPages = 200;
 
       for (var i = 0; i < maxTocPages; i++) {
-        final nextUrl = _extractNextTocUrl(currentBody, currentUrl, nextTocRule);
+        final nextUrl =
+            _extractNextTocUrl(book, currentBody, currentUrl, nextTocRule);
         if (nextUrl.isEmpty || visited.contains(nextUrl)) break;
         visited.add(nextUrl);
 
@@ -346,6 +378,7 @@ class WebBook {
             url: nextUrl,
             baseUrl: source.bookSourceUrl,
             source: source,
+            ruleData: book,
           );
           pageBody = await pageAnalyze.getStrResponse();
         } catch (_) {
@@ -403,28 +436,60 @@ class WebBook {
   }) async {
     final contentRule = source.getContentRule();
     final book = originalBook ?? XiaoshuoBook(bookUrl: '', name: '');
+    // 本章对象贯穿 URL 求值与正文规则：JS 里可读 `chapter.*`（legado
+    // AnalyzeUrl/AnalyzeRule 都绑定同一 BookChapter）。
+    final chapter = XiaoshuoBookChapter(bookUrl: book.bookUrl, url: chapterUrl);
 
-    final firstAnalyze = AnalyzeUrl(
-      url: chapterUrl,
-      baseUrl: source.bookSourceUrl,
-      source: source,
-    );
+    // 对照 legado WebBook.getContentAwait：正文规则为空时直接以章节链接
+    // 作为正文（音频/视频源播放页章节即靠此返回直链；旧实现直接报
+    // 「正文为空」，视频源整条链路在第一步就断掉）。
+    if (contentRule.content == null || contentRule.content!.trim().isEmpty) {
+      return BookContentResult(
+        content: chapterUrl,
+        blocks: <NovelBlock>[NovelTextBlock(chapterUrl)],
+      );
+    }
 
-    // ruleContent.sourceRegex：响应体预过滤（legado 语义，命中组为正文源）。
-    final firstBody =
-        await firstAnalyze.getStrResponse(sourceRegex: contentRule.sourceRegex);
+    // 对照 legado WebBook.getContentAwait：章节地址与书籍详情页相同时
+    // （整本一页/详情即正文源），详情响应体已缓存进 tocHtml，直接解析。
+    final cachedTocHtml = book.tocHtml;
+    final String firstBody;
+    final String firstBaseUrl;
+    if (chapterUrl == book.bookUrl &&
+        cachedTocHtml != null &&
+        cachedTocHtml.isNotEmpty) {
+      firstBody = cachedTocHtml;
+      firstBaseUrl = chapterUrl;
+    } else {
+      final analyzeUrl = AnalyzeUrl(
+        url: chapterUrl,
+        baseUrl: source.bookSourceUrl,
+        source: source,
+        ruleData: book,
+        chapter: chapter,
+      );
+      // ruleContent.sourceRegex：响应体预过滤（legado 语义，命中组为正文源）。
+      firstBody =
+          await analyzeUrl.getStrResponse(sourceRegex: contentRule.sourceRegex);
+      firstBaseUrl = analyzeUrl.url;
+    }
     if (firstBody.isEmpty) {
       return BookContentResult(content: '', error: '正文为空');
     }
+
+    // 音频(1)/视频(4)源正文即媒体直链，跳过 HTML 格式化（legado 同款）。
+    final mediaSource =
+        source.bookSourceType == 1 || source.bookSourceType == 4;
 
     final List<NovelBlock> blocks = <NovelBlock>[];
     final firstContent = BookContent.analyzeContent(
       bookSource: source,
       book: book,
-      bookChapter: XiaoshuoBookChapter(bookUrl: '', url: chapterUrl),
-      baseUrl: firstAnalyze.url,
-      redirectUrl: firstAnalyze.url,
+      bookChapter: chapter,
+      baseUrl: firstBaseUrl,
+      redirectUrl: firstBaseUrl,
       body: firstBody,
+      mediaSource: mediaSource,
     );
     blocks.addAll(firstContent);
 
@@ -432,18 +497,18 @@ class WebBook {
     if (nextRule != null && nextRule.isNotEmpty) {
       // 章节根：起始 chapterUrl 即为本章第 1 页，同章后续页必为
       // `<根>_<数字>` / `<根>-<数字>` / `<根>/<数字>` 形式（见 _isNextPageOfChapter）。
-      final chapterRoot = _chapterRootOf(firstAnalyze.url);
-      final visited = <String>{chapterUrl, firstAnalyze.url};
+      final chapterRoot = _chapterRootOf(firstBaseUrl);
+      final visited = <String>{chapterUrl, firstBaseUrl};
       const maxPages = 30;
 
       // 多页并发模式：规则一次命中多个"下一页"链接（如分页条全量
       // 选择器返回整组页码链接）时，按声明顺序并发抓取（≤4 并发）并保序
       // 拼接。任一子页失败/为空即停止追加（只保留连续前缀，避免正文中段
       // 缺页）；并发子页不再继续提取下页，与串行循环互斥。
-      final batchUrls = _extractNextContentUrls(firstBody, firstAnalyze.url, nextRule)
+      final batchUrls = _extractNextContentUrls(firstBody, firstBaseUrl, nextRule)
           .where((u) =>
               !visited.contains(u) &&
-              _isNextPageOfChapter(chapterRoot, u, firstAnalyze.url))
+              _isNextPageOfChapter(chapterRoot, u, firstBaseUrl))
           .take(maxPages - 1)
           .toList(growable: false);
       if (batchUrls.length > 1) {
@@ -460,16 +525,19 @@ class WebBook {
               url: url,
               baseUrl: source.bookSourceUrl,
               source: source,
+              ruleData: book,
+              chapter: chapter,
             );
             final body = await analyze.getStrResponse();
             if (body.isEmpty) return const <NovelBlock>[];
             return BookContent.analyzeContent(
               bookSource: source,
               book: book,
-              bookChapter: XiaoshuoBookChapter(bookUrl: '', url: analyze.url),
+              bookChapter: chapter,
               baseUrl: analyze.url,
               redirectUrl: analyze.url,
               body: body,
+              mediaSource: mediaSource,
             );
           },
         );
@@ -480,7 +548,7 @@ class WebBook {
         }
       } else {
         // 串行跟随模式：逐页提取单个"下一页"并抓取，直到没有下一页为止。
-        var currentUrl = firstAnalyze.url;
+        var currentUrl = firstBaseUrl;
         var currentBody = firstBody;
         for (var i = 0; i < maxPages; i++) {
           final nextUrl =
@@ -493,6 +561,8 @@ class WebBook {
             url: nextUrl,
             baseUrl: source.bookSourceUrl,
             source: source,
+            ruleData: book,
+            chapter: chapter,
           );
           final pageBody = await pageAnalyze.getStrResponse();
           if (pageBody.isEmpty) break;
@@ -500,10 +570,11 @@ class WebBook {
           final pageContent = BookContent.analyzeContent(
             bookSource: source,
             book: book,
-            bookChapter: XiaoshuoBookChapter(bookUrl: '', url: nextUrl),
+            bookChapter: chapter,
             baseUrl: pageAnalyze.url,
             redirectUrl: pageAnalyze.url,
             body: pageBody,
+            mediaSource: mediaSource,
           );
           if (pageContent.isEmpty) break;
 
@@ -602,9 +673,12 @@ class WebBook {
   /// 从当前目录页中提取"下一页"绝对 URL；无下一页时返回空串。
   ///
   /// 逻辑与 [_extractNextContentUrl] 一致，但语义上用于目录分页跟随。
-  String _extractNextTocUrl(String body, String baseUrl, String rule) {
+  /// 携带 [book] 求值：nextTocUrl 规则里可读书变量（legado 同一
+  /// AnalyzeRule 实例贯穿目录解析）。
+  String _extractNextTocUrl(
+      XiaoshuoBook book, String body, String baseUrl, String rule) {
     try {
-      final analyzeRule = AnalyzeRule()
+      final analyzeRule = AnalyzeRule(book: book)
         ..setContent(body, baseUrl)
         ..setBaseUrl(baseUrl)
         ..setRedirectUrl(baseUrl);

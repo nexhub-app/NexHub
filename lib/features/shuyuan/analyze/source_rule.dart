@@ -73,8 +73,9 @@ class SourceRule {
       mode = Mode.js;
       rule = ruleStr.substring(4);
     } else if (ruleStr.startsWith('@@')) {
+      // legado AnalyzeRule.SourceRule：`@@` 仅剥前缀，仍是默认模式
+      // （ElementsSingle 语义）。只有显式 `@css:` 才是纯 CSS。
       mode = Mode.defaultMode;
-      isCss = true;
       rule = ruleStr.substring(2);
     } else if (isJson || ruleStr.startsWith('\$.') || ruleStr.startsWith('\$[')) {
       mode = Mode.json;

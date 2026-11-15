@@ -49,6 +49,34 @@ void main() {
               .getList(r'$.books[?(@.price>=25)].title'),
           ['B', 'C']);
     });
+    test('过滤器 && / || / 取反', () {
+      const d = '{"list":['
+          '{"t":"A","p":1,"hot":true},'
+          '{"t":"B","p":9},'
+          '{"t":"C","p":5}]}';
+      expect(AnalyzeByJson(d).getList(r'$.list[?(@.p>2 && @.p<9)].t'), ['C']);
+      expect(
+          AnalyzeByJson(d).getList(r'$.list[?(@.p<2 || @.p>8)].t'), ['A', 'B']);
+      expect(AnalyzeByJson(d).getList(r'$.list[?(!(@.hot))].t'), ['B', 'C']);
+    });
+  });
+
+  group('JSONPath 复合规则与负索引', () {
+    const doc = '{"a":{"title":"A"},"b":{"title":"B"}}';
+    test('&& 换行拼接、|| 短路', () {
+      final a = AnalyzeByJson(doc);
+      expect(a.getString(r'$.a.title && $.b.title'), 'A\nB');
+      expect(a.getString(r'$.missing || $.b.title'), 'B');
+      expect(a.getStringList(r'$.a.title && $.b.title'), ['A', 'B']);
+    });
+    test('%% 交错合并', () {
+      const d = '{"x":["1","2"],"y":["a","b"]}';
+      expect(AnalyzeByJson(d).getStringList(r'$.x[*] %% $.y[*]'),
+          ['1', 'a', '2', 'b']);
+    });
+    test('负索引 [-1] 从尾部取值', () {
+      expect(AnalyzeByJson('{"l":["a","b","c"]}').getString(r'$.l[-1]'), 'c');
+    });
   });
 
   group('JSONPath 函数与 length', () {

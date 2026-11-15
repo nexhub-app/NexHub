@@ -5,6 +5,8 @@ library;
 
 import 'dart:convert';
 
+import 'rule_analyzer.dart';
+
 class AnalyzeByJson {
   dynamic content;
 
@@ -23,7 +25,27 @@ class AnalyzeByJson {
 
   String getString(String rule) {
     if (rule.isEmpty) return '';
-    final result = _resolvePath(rule);
+    // legado AnalyzeByJSonPath：先用平衡切分处理 `&&`/`||`（`||` 短路、
+    // `&&` 换行合并），再对单段做 `{$.rule}` 内嵌替换或 JsonPath 取值。
+    final ra = RuleAnalyzer(rule);
+    final rules = ra.splitRule(const <String>['&&', '||']);
+    if (rules.length > 1) {
+      final parts = <String>[];
+      for (final rl in rules) {
+        final temp = getString(rl);
+        if (temp.isNotEmpty) {
+          parts.add(temp);
+          if (ra.elementsType == '||') break;
+        }
+      }
+      return parts.join('\n');
+    }
+    final single = rules.isEmpty ? rule : rules[0];
+    // legado AnalyzeByJSonPath 的 `{$.` innerRule：URL/字段模板里的单花
+    // 括号占位符（`{$.book_id}`）按当前 JSON 求值，替换后整串即结果。
+    final inner = _replaceInnerRules(single);
+    if (inner != null && inner.isNotEmpty) return inner;
+    final result = _resolvePath(single);
     if (result == null) return '';
     if (result is List) {
       return result.map((e) => e.toString()).join('\n');
@@ -33,7 +55,37 @@ class AnalyzeByJson {
 
   List<String> getStringList(String rule) {
     if (rule.isEmpty) return [];
-    final result = _resolvePath(rule);
+    final ra = RuleAnalyzer(rule);
+    final rules = ra.splitRule(const <String>['&&', '||', '%%']);
+    if (rules.length > 1) {
+      final results = <List<String>>[];
+      for (final rl in rules) {
+        final temp = getStringList(rl);
+        if (temp.isNotEmpty) {
+          results.add(temp);
+          if (ra.elementsType == '||') break;
+        }
+      }
+      final result = <String>[];
+      if (results.isNotEmpty) {
+        if (ra.elementsType == '%%') {
+          for (var i = 0; i < results[0].length; i++) {
+            for (final temp in results) {
+              if (i < temp.length) result.add(temp[i]);
+            }
+          }
+        } else {
+          for (final temp in results) {
+            result.addAll(temp);
+          }
+        }
+      }
+      return result;
+    }
+    final single = rules.isEmpty ? rule : rules[0];
+    final inner = _replaceInnerRules(single);
+    if (inner != null && inner.isNotEmpty) return [inner];
+    final result = _resolvePath(single);
     if (result == null) return [];
     if (result is List) {
       return result.map((e) => e.toString()).toList();
@@ -41,9 +93,52 @@ class AnalyzeByJson {
     return [result.toString()];
   }
 
+  /// 单花括号占位符（`{$.field}`）替换；无占位符时返回 null。
+  /// `{{$.field}}` 由规则层内嵌表达式先行处理，这里跳过前置 `{` 的形态。
+  String? _replaceInnerRules(String rule) {
+    if (!rule.contains(r'{$.')) return null;
+    var replaced = false;
+    final out = rule.replaceAllMapped(
+        RegExp(r'(?<!\{)\{(\$\.[^{}]*)\}'), (m) {
+      replaced = true;
+      final v = _resolvePath(m.group(1)!);
+      if (v == null) return '';
+      if (v is List) return v.map((e) => e.toString()).join('\n');
+      return v.toString();
+    });
+    return replaced ? out : null;
+  }
+
   List<dynamic> getList(String rule) {
     if (rule.isEmpty) return [];
-    final result = _resolvePath(rule);
+    final ra = RuleAnalyzer(rule);
+    final rules = ra.splitRule(const <String>['&&', '||', '%%']);
+    if (rules.length > 1) {
+      final results = <List<dynamic>>[];
+      for (final rl in rules) {
+        final temp = getList(rl);
+        if (temp.isNotEmpty) {
+          results.add(temp);
+          if (ra.elementsType == '||') break;
+        }
+      }
+      final result = <dynamic>[];
+      if (results.isNotEmpty) {
+        if (ra.elementsType == '%%') {
+          for (var i = 0; i < results[0].length; i++) {
+            for (final temp in results) {
+              if (i < temp.length) result.add(temp[i]);
+            }
+          }
+        } else {
+          for (final temp in results) {
+            result.addAll(temp);
+          }
+        }
+      }
+      return result;
+    }
+    final result = _resolvePath(rules.isEmpty ? rule : rules[0]);
     if (result == null) return [];
     if (result is List) return result;
     return [result];
@@ -125,6 +220,13 @@ class AnalyzeByJson {
           j += 1;
         }
         var name = s.substring(i, j);
+        // 点号通配 `$.items.*` / `$..items.*`：jayway 里 `.*` 是通配符，
+        // 此前被当成字面 key "*" → 恒无命中（API 型源目录规则高频写法）。
+        if (name == '*') {
+          tokens.add(const _JsonPathToken(_JsonTokenType.wildcard, ''));
+          i = j;
+          continue;
+        }
         // 点号函数形态 `$.a.length()` / `$.n.max()`：识别为函数 token
         //（jayway 点号/括号两种写法等价，社区源两种都在用）。
         if (name.endsWith('()') &&
@@ -171,8 +273,12 @@ class AnalyzeByJson {
             _applyKey(node, token.name, next);
           case _JsonTokenType.arrayIndex:
             if (node is List) {
-              final idx = int.tryParse(token.name) ?? -1;
-              if (idx >= 0 && idx < node.length) next.add(node[idx]);
+              final raw = int.tryParse(token.name);
+              if (raw != null) {
+                // jayway 负索引从尾部取（`[-1]` = 最后一项）。
+                final idx = raw < 0 ? node.length + raw : raw;
+                if (idx >= 0 && idx < node.length) next.add(node[idx]);
+              }
             }
           case _JsonTokenType.wildcard:
             if (node is List) {
@@ -253,19 +359,79 @@ class AnalyzeByJson {
   }
 
   /// 过滤表达式求值：`@.a==1` / `@.a!='x'` / `@.a` / `@.length>2` 等。
+  /// 支持 `&&`/`||` 组合（jayway 过滤器布尔语义）与前置 `!` 取反。
   bool _matchesFilter(dynamic item, String expr) {
+    final orGroups = _splitFilterExpr(expr, '||');
+    for (final group in orGroups) {
+      final conj = _splitFilterExpr(group, '&&');
+      var all = true;
+      for (final term in conj) {
+        if (!_matchesFilterSingle(item, term)) {
+          all = false;
+          break;
+        }
+      }
+      if (all) return true;
+    }
+    return false;
+  }
+
+  /// 按顶层分隔符切分过滤器表达式（引号/括号内不切）。
+  static List<String> _splitFilterExpr(String expr, String sep) {
+    final parts = <String>[];
+    var depth = 0;
+    var quote = '';
+    var start = 0;
+    for (var i = 0; i < expr.length; i++) {
+      final c = expr[i];
+      if (quote.isNotEmpty) {
+        if (c == '\\') {
+          i++;
+        } else if (c == quote) {
+          quote = '';
+        }
+        continue;
+      }
+      if (c == "'" || c == '"') {
+        quote = c;
+      } else if (c == '(' || c == '[') {
+        depth++;
+      } else if (c == ')' || c == ']') {
+        depth--;
+      } else if (depth == 0 && expr.startsWith(sep, i)) {
+        parts.add(expr.substring(start, i).trim());
+        i += sep.length - 1;
+        start = i + 1;
+      }
+    }
+    if (start == 0) return [expr.trim()];
+    parts.add(expr.substring(start).trim());
+    return parts;
+  }
+
+  bool _matchesFilterSingle(dynamic item, String expr) {
+    var e = expr.trim();
+    if (e.isEmpty) return false;
+    // 前置取反：`!(@.a==1)` / `!@.done`。
+    if (e.startsWith('!')) {
+      e = e.substring(1).trim();
+      if (e.startsWith('(') && e.endsWith(')')) {
+        e = e.substring(1, e.length - 1).trim();
+      }
+      return !_matchesFilterSingle(item, e);
+    }
     // 操作符识别（先双字符后单字符，避免 >= 被 > 截胡）。
     const ops = ['==', '!=', '>=', '<=', '>', '<'];
     for (final op in ops) {
-      final idx = expr.indexOf(op);
+      final idx = e.indexOf(op);
       if (idx <= 0) continue;
-      final leftPath = expr.substring(0, idx).trim();
-      final rightRaw = expr.substring(idx + op.length).trim();
+      final leftPath = e.substring(0, idx).trim();
+      final rightRaw = e.substring(idx + op.length).trim();
       final left = _resolveInner(item, leftPath);
       return _compare(left, op, rightRaw);
     }
     // 无操作符：路径存在且非空即真（`[?(@.cover)]`）。
-    final v = _resolveInner(item, expr);
+    final v = _resolveInner(item, e);
     return v != null && '$v'.isNotEmpty;
   }
 

@@ -8,6 +8,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:nexhub/features/shuyuan/analyze/java_extensions.dart';
 import 'package:nexhub/features/shuyuan/analyze/js_engine.dart';
+import 'package:nexhub/features/shuyuan/analyze/source_context.dart';
+import 'package:nexhub/features/shuyuan/model/book_source.dart';
 
 void main() {
   // flutter_js 创建运行时需经 rootBundle 加载扩展资产（fetch polyfill），
@@ -17,6 +19,40 @@ void main() {
 
   // QuickJS 预置脚本在引擎创建时注入；每个用例独立引擎隔离全局状态。
   JsEngine engine() => JsEngine();
+
+  group('source.* 属性快照', () {
+    test('bindSource 后脚本可读源配置字段（legado BookSource 属性）', () {
+      final ctx = ShuyuanSourceContext('src-meta')
+        ..bindSource(XiaoshuoBookSource(
+          bookSourceUrl: 'https://a.com',
+          bookSourceName: '测试源',
+          bookSourceComment: 'url = "x";',
+          header: '{"UA":"t"}',
+          loginUrl: '@js:login()',
+        ));
+      final e = engine();
+      final out = ShuyuanSourceContext.run(
+        ctx,
+        () => e.eval('source.bookSourceComment + "|" + source.bookSourceName '
+            '+ "|" + source.bookSourceUrl + "|" + source.bookSourceType'),
+      );
+      expect(out, 'url = "x";|测试源|https://a.com|0');
+    });
+
+    test('未装填时属性返回空串 / 0，不抛错', () {
+      final ctx = ShuyuanSourceContext('src-empty');
+      final e = engine();
+      expect(
+        ShuyuanSourceContext.run(ctx, () => e.eval('source.bookSourceComment')),
+        '',
+      );
+      expect(
+        ShuyuanSourceContext.run(
+            ctx, () => e.eval('String(source.bookSourceType)')),
+        '0',
+      );
+    });
+  });
 
   group('java.* 加密/编码族', () {
     test('md5Encode 标准 RFC 1321 向量', () {

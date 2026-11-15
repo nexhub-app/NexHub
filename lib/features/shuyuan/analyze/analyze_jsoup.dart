@@ -63,6 +63,21 @@ class AnalyzeByJsoup {
     }
   }
 
+  /// 元素自身是否命中 CSS 选择器（jsoup `Element.select` 含自身，
+  /// package:html `querySelectorAll` 不含）。借父节点查询后按身份比对，
+  /// 无父节点（解析根）时无从判断，按不命中处理。
+  static bool _matchesSelf(Element el, String selector) {
+    final s = selector.trim();
+    if (s.isEmpty) return false;
+    final parent = el.parent;
+    if (parent == null) return false;
+    try {
+      return parent.querySelectorAll(s).any((e) => identical(e, el));
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// 给选择器中「无引号属性值」补引号：
   /// `[color*=008800]` → `[color*="008800"]`、`[type=text]` → `[type="text"]`。
   /// 已带引号的值（`[href*="soft"]`）不匹配、原样保留；选择器不含属性段时
@@ -314,11 +329,24 @@ class AnalyzeByJsoup {
     final rules = rule.splitRule(['@']);
     final last = rules.length - 1;
 
-    // 无 `@` 取值方法：整条规则就是选择器，取匹配元素的 text（旧 CSS 启发式
-    // 的等价行为）。legado 的 getResultList 此时会把规则当属性名返回空，
-    // 但社区源存在大量无 `@text` 的纯选择器规则，取 text 才符合预期。
+    // 无 `@` 的末段规则：legado 语义是「对当前元素取该属性名」
+    // （getResultLast 默认 element.attr(lastRule)），`chapterUrl: "href"`、
+    // `coverUrl: "src"`、`content` 等社区源常见写法全靠这条生效。
+    // 当前元素没有该属性时才回退为纯选择器取 text（兼容 `.bookname` 这类
+    // 无 `@text` 的旧式规则）。
     if (last == 0) {
-      final selected = _getElementsSingle(_element, rules[0]);
+      final r = rules[0].trim();
+      final lowerR = r.toLowerCase();
+      if (lowerR == 'text' ||
+          lowerR == 'textnodes' ||
+          lowerR == 'owntext' ||
+          lowerR == 'html' ||
+          lowerR == 'all') {
+        return _getResultLast([_element], r);
+      }
+      final attr = _element.attributes[r] ?? _element.attributes[lowerR];
+      if (attr != null && attr.isNotEmpty) return [attr];
+      final selected = _getElementsSingle(_element, r);
       return _getResultLast(selected, 'text');
     }
 
@@ -565,14 +593,19 @@ class _ElementsSingle {
         case 'children':
           elements = temp.children;
           break;
+        // legado 用 jsoup Collector 取 class/tag，**包含元素自身**：
+        // `class.onefourbox@tag.a` 选中 <a> 后，书源再写 `tag.a@href`
+        // 即取该 <a> 自身的 href。package:html 的 getElementsByClassName/
+        // getElementsByTagName 只查后代，缺自身会导致整类「列表项即目标
+        // 标签」的源取不到 URL（2026-11-15 蚂蚁阅读实测）。
         case 'class':
           elements = rules.length > 1
-              ? temp.getElementsByClassName(rules[1])
+              ? _withSelfByClass(temp, rules[1])
               : const <Element>[];
           break;
         case 'tag':
           elements = rules.length > 1
-              ? temp.getElementsByTagName(rules[1])
+              ? _withSelfByTag(temp, rules[1])
               : const <Element>[];
           break;
         case 'id':
@@ -584,6 +617,9 @@ class _ElementsSingle {
           break;
         default:
           elements = AnalyzeByJsoup._safeQuery(temp, beforeRule);
+          if (AnalyzeByJsoup._matchesSelf(temp, beforeRule)) {
+            elements = <Element>[temp, ...elements];
+          }
       }
     }
 
@@ -665,6 +701,31 @@ class _ElementsSingle {
       return result;
     }
     return elements;
+  }
+
+  /// `class.X[ Y]` 命中自身时置于结果首位（jsoup 含自身的语义）。
+  /// 多个类名以空格分隔时为 AND 关系（对齐 jsoup hasClass 的多类支持）。
+  static List<Element> _withSelfByClass(Element temp, String classNames) {
+    final descendants = temp.getElementsByClassName(classNames);
+    final tokens = classNames
+        .trim()
+        .split(RegExp(r'\s+'))
+        .where((e) => e.isNotEmpty)
+        .toList();
+    final classes = temp.classes;
+    if (tokens.isNotEmpty && tokens.every(classes.contains)) {
+      return <Element>[temp, ...descendants];
+    }
+    return descendants;
+  }
+
+  /// `tag.X` 命中自身时置于结果首位（jsoup 含自身的语义）。
+  static List<Element> _withSelfByTag(Element temp, String tag) {
+    final descendants = temp.getElementsByTagName(tag);
+    if ((temp.localName ?? '').toLowerCase() == tag.trim().toLowerCase()) {
+      return <Element>[temp, ...descendants];
+    }
+    return descendants;
   }
 
   static List<Element> _collectById(Element root, String id) {

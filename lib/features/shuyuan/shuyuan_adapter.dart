@@ -10,6 +10,7 @@
 library;
 
 import '../../core/models/plugin_config.dart';
+import 'analyze/analyze_url.dart';
 import 'shuyuan_source_service.dart';
 
 class ShuyuanAdapter {
@@ -90,9 +91,38 @@ class ShuyuanAdapter {
       'xiaoshuo': xiaoshuoSelectors,
     };
 
-    // 反盗链：用书源 baseUrl 作为默认 Referer（书源 header 字段也透传到
-    // AnalyzeUrl 中由 getStrResponse 处理）。
-    final antiHotlinking = AntiHotlinkingConfig(referer: baseUrl);
+    // 书源 header → SiteConfig / AntiHotlinking：legado 对页面与图片/播放
+    // 请求使用同一套 header（BaseSource.getHeaderMap 贯穿 AnalyzeUrl 全链路）。
+    // 页面请求由 AnalyzeUrl 读原始 header；图片（SourceImage）与播放器读
+    // PluginConfig.site / antiHotlinking。不映射会出现「页面 200、封面 403」
+    // 的请求指纹割裂（UA 声明丢失被站点 WAF 拦），是在线浏览封面大面积
+    // 缺失的主因之一。`@js:`/`<js>` 形式 script header 留到请求期由
+    // AnalyzeUrl 求值（此处无活动源上下文，加载全部源时执行脚本会拖慢启动）。
+    final declaredHeader = _parseDeclaredHeader(source.header);
+    String? headerOf(String name) {
+      for (final entry in declaredHeader.entries) {
+        if (entry.key.toLowerCase() == name) return entry.value;
+      }
+      return null;
+    }
+
+    final declaredUa = headerOf('user-agent');
+    final declaredCookie = headerOf('cookie');
+    final declaredReferer = headerOf('referer') ?? headerOf('referrer');
+    // UA/Cookie/Referer 由 SiteConfig / AntiHotlinking 的显式字段承载
+    // （SourceImage.buildHeaders 会统一覆盖），此处剔除避免同名重复请求头。
+    final siteHeaders = <String, String>{
+      for (final entry in declaredHeader.entries)
+        if (!const <String>{'user-agent', 'cookie', 'referer', 'referrer'}
+            .contains(entry.key.toLowerCase()))
+          entry.key: entry.value,
+    };
+
+    // 反盗链：优先使用书源声明的 Referer，缺省用 baseUrl（既有行为）。
+    final antiHotlinking = AntiHotlinkingConfig(
+      referer: declaredReferer ?? baseUrl,
+      userAgent: declaredUa,
+    );
 
     // 动态筛选：源声明的 `filters` 原样转为 PluginConfig.filters，
     // MediaApiService.resolveFilterGroups 据此显示发现页筛选按钮。
@@ -124,6 +154,9 @@ class ShuyuanAdapter {
       site: SiteConfig(
         domain: Uri.tryParse(baseUrl)?.host ?? baseUrl,
         baseUrl: baseUrl,
+        userAgent: declaredUa,
+        cookies: declaredCookie,
+        headers: siteHeaders.isEmpty ? null : siteHeaders,
       ),
       parser: const ParserConfig(type: 'builtin'),
       routes: routes,
@@ -148,6 +181,26 @@ class ShuyuanAdapter {
   /// 判断 PluginConfig 是否为书源（ShuyuanNovelResolver 应处理）。
   static bool isShuyuanSource(PluginConfig config) {
     return config.selectors?['xiaoshuo'] is Map<String, dynamic>;
+  }
+
+  /// 解析书源声明的 header（legado 的 JSON 字符串，宽松接受单引号/裸键）。
+  /// 脚本式 header（`@js:` / `<js>`）与非 JSON 文本返回空表（请求期由
+  /// AnalyzeUrl 处理，行为与映射前一致）。
+  static Map<String, String> _parseDeclaredHeader(String? raw) {
+    final text = raw?.trim() ?? '';
+    if (text.isEmpty) return const <String, String>{};
+    final lower = text.toLowerCase();
+    if (lower.startsWith('@js:') || lower.startsWith('<js>')) {
+      return const <String, String>{};
+    }
+    final parsed = AnalyzeUrl.parseJsonLenient(text);
+    if (parsed == null) return const <String, String>{};
+    final out = <String, String>{};
+    parsed.forEach((key, value) {
+      if (value == null) return;
+      out[key.toString()] = value.toString();
+    });
+    return out;
   }
 
   static String _urlToId(String url) {

@@ -167,7 +167,7 @@ Future<void> _runFormLogin(
   final js = loginUrl.startsWith('@js:')
       ? loginUrl.substring(4)
       : _extractJsBody(loginUrl);
-  ctx.jsLib = bookSource.jsLib ?? '';
+  ctx.bindSource(bookSource);
   final engine = JsEngine.forSource(source.id);
   // 每次登录都重新抓取：清掉上次尝试的 ajax 缓存（宿主表 + JS 全局），
   // 否则重试会命中旧响应（典型是上次失败留下的登录页）。

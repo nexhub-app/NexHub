@@ -46,8 +46,9 @@ const String sourceContextJsPrelude = r'''
 
   function syCtx() {
     if (!global.__shuyuanCtx || typeof global.__shuyuanCtx !== 'object') {
-      global.__shuyuanCtx = { sourceId: '', sourceVars: {}, bookVars: {},
-        bookInfo: {}, cookies: {}, loginInfo: {}, loginHeader: {}, cache: {} };
+      global.__shuyuanCtx = { sourceId: '', sourceVars: {}, sourceMeta: {},
+        bookVars: {}, bookInfo: {}, cookies: {}, loginInfo: {}, loginHeader: {},
+        cache: {} };
     }
     return global.__shuyuanCtx;
   }
@@ -219,7 +220,11 @@ const String sourceContextJsPrelude = r'''
         Object.defineProperty(book, f, {
           get: function () { return syCtx().bookInfo[f] || ''; },
           set: function (v) {
-            syCtx().bookInfo[f] = String(v == null ? '' : v);
+            var s = String(v == null ? '' : v);
+            syCtx().bookInfo[f] = s;
+            // 书字段写入须走排空 op 才能到达宿主书对象（AnalyzeRule 在
+            // eval 后按 bookInfo 回写）；JS 侧 syCtx 只是种子副本。
+            syOp('bookField', f, s);
           },
         });
       });
@@ -250,6 +255,30 @@ const String sourceContextJsPrelude = r'''
   Object.defineProperty(source, 'key', {
     get: function () { return syCtx().sourceKey || syCtx().sourceId; },
   });
+  // legado `source.<field>` 只读属性（脚本直接读源配置：书源备注里的共享
+  // 签名代码、登录脚本源码、请求头等）。
+  Object.defineProperty(source, 'bookSourceUrl', {
+    get: function () { return syCtx().sourceKey || syCtx().sourceId; },
+  });
+  ['bookSourceName', 'bookSourceGroup', 'bookSourceComment', 'header',
+   'loginUrl', 'jsLib'].forEach(function (f) {
+    Object.defineProperty(source, f, {
+      get: function () {
+        var m = syCtx().sourceMeta || {};
+        return m[f] == null ? '' : String(m[f]);
+      },
+    });
+  });
+  ['bookSourceType', 'customOrder', 'lastUpdateTime', 'weight']
+      .forEach(function (f) {
+    Object.defineProperty(source, f, {
+      get: function () {
+        var m = syCtx().sourceMeta || {};
+        var v = m[f];
+        return v == null ? 0 : v;
+      },
+    });
+  });
 
   global.cookie = cookie;
   global.source = source;
@@ -265,6 +294,26 @@ const String sourceContextJsPrelude = r'''
   // 注意：缓存故意挂在 __shuyuanCtx 之外——ctx 每轮 eval 都重建，若缓存
   // 随 ctx 走，只能整表重灌（长目录 O(n²)）。
   global.__ajaxCache = global.__ajaxCache || Object.create(null);
+  global.__ajaxBytesCache = global.__ajaxBytesCache || Object.create(null);
+  // base64 → 字节数组（有符号口径，与 java.base64DecodeToByteArray 一致）。
+  var __syB64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  var __syB64Rev = Object.create(null);
+  for (var __sbi = 0; __sbi < 64; __sbi++) __syB64Rev[__syB64.charAt(__sbi)] = __sbi;
+  function syB64ToBytes(s) {
+    var clean = String(s == null ? '' : s).replace(/[^A-Za-z0-9+/]/g, '');
+    var out = [];
+    var buf = 0, bits = 0;
+    for (var i = 0; i < clean.length; i++) {
+      buf = ((buf << 6) | __syB64Rev[clean.charAt(i)]) & 0xffffff;
+      bits += 6;
+      if (bits >= 8) {
+        bits -= 8;
+        var b = (buf >> bits) & 0xff;
+        out.push(b > 127 ? b - 256 : b);
+      }
+    }
+    return out;
+  }
   global.__webviewCache = global.__webviewCache || Object.create(null);
   if (global.java) {
     global.java.__ajaxReq = function (url) {
@@ -325,6 +374,96 @@ const String sourceContextJsPrelude = r'''
     };
     global.java.getStrResponse = function (urlStr) {
       return global.java.connect(urlStr);
+    };
+    // ── org.jsoup.Jsoup（legado 脚本直接调 Java 库的高频写法） ──
+    // 只实现书源里实际用到的 connect 链：ignoreContentType/ignoreHttpErrors/
+    // timeout/header(s)/cookie/userAgent/referrer/method/data 全部返回自身，
+    // execute() 经 __ajaxReq 走与 java.ajax 相同的确定性重放（POST 用
+    // `url||POST||body` 组合键，settle 拆分后发起真实表单请求）。
+    // bodyAsBytes() 走二进制重放 __ajaxBytesCache（base64），避免密文被
+    // 文本解码破坏；首轮返回空数组并记录待抓取。
+    global.org = {
+      jsoup: {
+        Jsoup: {
+          connect: function (url) {
+            var u = String(url == null ? '' : url);
+            var req = {
+              _headers: Object.create(null),
+              _data: [],
+              _method: '',
+              _url: u,
+              ignoreContentType: function () { return req; },
+              ignoreHttpErrors: function () { return req; },
+              validateTLSCertificates: function () { return req; },
+              followRedirects: function () { return req; },
+              maxBodySize: function () { return req; },
+              timeout: function () { return req; },
+              postDataCharset: function () { return req; },
+              parser: function () { return req; },
+              header: function (k, v) { req._headers[String(k)] = String(v); return req; },
+              headers: function (m) {
+                if (m && typeof m === 'object') {
+                  for (var k in m) req._headers[String(k)] = String(m[k]);
+                }
+                return req;
+              },
+              cookie: function (k, v) {
+                var prev = req._headers['Cookie'];
+                req._headers['Cookie'] = (prev ? prev + '; ' : '') + k + '=' + v;
+                return req;
+              },
+              userAgent: function (v) { req._headers['User-Agent'] = String(v); return req; },
+              referrer: function (v) { req._headers['Referer'] = String(v); return req; },
+              method: function (m) { req._method = String(m || '').toUpperCase(); return req; },
+              data: function (a, b) {
+                if (a && typeof a === 'object') {
+                  for (var k in a) req._data.push(k + '=' + a[k]);
+                } else {
+                  req._data.push(String(a) + '=' + String(b));
+                }
+                return req;
+              },
+              execute: function () {
+                var opts = Object.create(null);
+                var hasHeaders = false;
+                for (var hk in req._headers) { hasHeaders = true; break; }
+                if (hasHeaders) opts.headers = req._headers;
+                var isPost = req._method === 'POST' || req._data.length > 0;
+                var form = req._data.join('&');
+                if (isPost && !form) opts.method = 'POST';
+                var finalUrl = req._url;
+                if (req._url.indexOf(',{') < 0 && Object.keys(opts).length > 0) {
+                  finalUrl = req._url + ',' + JSON.stringify(opts);
+                }
+                var key = isPost && form
+                    ? finalUrl + '||POST||' + form
+                    : finalUrl;
+                var bodyText = global.java.__ajaxReq(key);
+                var code = bodyText ? 200 : 0;
+                return {
+                  body: function () { return bodyText; },
+                  bodyAsBytes: function () {
+                    var c = global.__ajaxBytesCache;
+                    var b64 = c && c[key];
+                    if (b64 == null) {
+                      syOp('ajaxBytes', key, '');
+                      return [];
+                    }
+                    return syB64ToBytes(b64);
+                  },
+                  code: function () { return code; },
+                  statusCode: function () { return code; },
+                  statusMessage: function () { return code === 200 ? 'OK' : ''; },
+                  headers: function () { return {}; },
+                  contentType: function () { return ''; },
+                  charset: function () { return 'UTF-8'; },
+                };
+              },
+            };
+            return req;
+          },
+        },
+      },
     };
     // java.webView(html, url, js)：无头 WebView 加载页面 / 注入 html、执行 js
     // 后返回整页 HTML。同步沙箱内不能真开 WebView，故与 ajax 同款重放：
@@ -580,7 +719,13 @@ const String javaExtensionsJsPrelude = r'''
       if (/^\d+$/.test(s)) {
         ms = Number(s);
       } else {
-        var parsed = new Date(s.replace(/-/g, '/'));
+        // QuickJS 的 Date.parse 只保证 ISO 格式，"2024-01-02 03:04:05"
+        // 这类 legado 常见入参会得到 NaN，需自行拆分后再构造 Date。
+        var m = s.match(
+            /^(\d{4})[-\/年](\d{1,2})[-\/月](\d{1,2})日?(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
+        if (!m) return s;
+        var parsed = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]),
+            Number(m[4] || 0), Number(m[5] || 0), Number(m[6] || 0));
         if (isNaN(parsed.getTime())) return s;
         ms = parsed.getTime();
       }
@@ -978,6 +1123,26 @@ const String javaExtensionsJsPrelude = r'''
     return aesRun(encrypt, data, keyBytes, tf.mode, tf.pad, ivBytes);
   }
 
+  // key/iv 以 base64 传入的 AES 变体（legado aesDecodeArgsBase64Str /
+  // aesEncodeArgsBase64Str）：transformation 由 mode+padding 拼成。
+  function aesArgsBase64(encrypt, data, keyB64, mode, padding, ivB64) {
+    var key = bytesFromB64(String(keyB64 == null ? '' : keyB64))
+        .map(function (b) { return b & 0xff; });
+    var iv = bytesFromB64(String(ivB64 == null ? '' : ivB64))
+        .map(function (b) { return b & 0xff; });
+    var m = String(mode == null ? '' : mode).toUpperCase() === 'ECB'
+        ? 'ECB' : 'CBC';
+    var pad = String(padding == null ? '' : padding).toUpperCase()
+        .indexOf('NOPADDING') < 0;
+    if (m === 'CBC' && iv.length !== 16) return '';
+    var input = encrypt ? utf8Encode(String(data == null ? '' : data))
+        : aesDecodeInput(data);
+    var out = aesRun(encrypt, input, key, m, pad, m === 'CBC' ? iv : null);
+    if (out == null) return '';
+    return encrypt ? b64FromBytes(out.map(function (b) { return b & 0xff; }))
+        : utf8Decode(out);
+  }
+
   // 测试用：十六进制入出，ivHex 为空串表示 ECB。
   global.__aesHexTest = function (keyHex, ivHex, dataHex, encrypt) {
     var key = hexToBytes(keyHex).map(function (b) { return b & 0xff; });
@@ -1201,6 +1366,61 @@ const String javaExtensionsJsPrelude = r'''
     return out;
   }
 
+  // ── SymmetricCrypto（legado java.createSymmetricCrypto） ──
+  // transformation 形如 "AES/CBC/PKCS5Padding"；key/iv/data 支持字符串或
+  // 字节数组（legado ByteArray 有符号口径）。不支持的算法/模式（DES、
+  // AES/CTR 等）返回空结果，避免给出错误明文。
+  function makeSymmetricCrypto(transformation, key, iv) {
+    var empty = {
+      decrypt: function () { return []; },
+      decryptStr: function () { return ''; },
+      encrypt: function () { return []; },
+      encryptBase64: function () { return ''; },
+      encryptHex: function () { return ''; },
+    };
+    var keyBytes = anyToBytes(key);
+    var ivBytes = (iv == null || iv === '') ? null : anyToBytes(iv);
+    var tf = aesParseTf(transformation, ivBytes != null);
+    if (!tf) return empty;
+    if (tf.mode === 'CBC' && (ivBytes == null || ivBytes.length !== 16)) {
+      return empty;
+    }
+    function run(encrypt, bytes) {
+      return aesRun(encrypt, bytes, keyBytes, tf.mode, tf.pad, ivBytes);
+    }
+    return {
+      decrypt: function (data) {
+        var bytes = (data && typeof data === 'object' &&
+            typeof data.length === 'number')
+            ? anyToBytes(data)
+            : aesDecodeInput(data);
+        var out = run(false, bytes);
+        return out == null ? [] : out;
+      },
+      decryptStr: function (data) {
+        var bytes = (data && typeof data === 'object' &&
+            typeof data.length === 'number')
+            ? anyToBytes(data)
+            : aesDecodeInput(data);
+        var out = run(false, bytes);
+        return out == null ? '' : utf8Decode(out);
+      },
+      encrypt: function (str) {
+        var out = run(true, utf8Encode(String(str == null ? '' : str)));
+        return out == null ? [] : out;
+      },
+      encryptBase64: function (str) {
+        var out = run(true, utf8Encode(String(str == null ? '' : str)));
+        return out == null ? ''
+            : b64FromBytes(out.map(function (b) { return b & 0xff; }));
+      },
+      encryptHex: function (str) {
+        var out = run(true, utf8Encode(String(str == null ? '' : str)));
+        return out == null ? '' : bytesToHex(out);
+      },
+    };
+  }
+
   var java = {
     // 加密/编码
     md5Encode: function (s) { return bytesToHex(md5Bytes(utf8Encode(String(s == null ? '' : s)))); },
@@ -1231,6 +1451,39 @@ const String javaExtensionsJsPrelude = r'''
       var out = aesCall(false, str, key, transformation, iv);
       return out == null ? '' : utf8Decode(out);
     },
+    // legado 旧版 AES 别名（JsEncodeUtils 系列）：encode 系输出 base64 字符串
+    // 或字节数组，decode 系与 aesDecode 同口径（base64/hex 自适应）。
+    aesEncodeToString: function (str, key, transformation, iv) {
+      return java.aesEncode(str, key, transformation, iv);
+    },
+    aesEncodeToBase64String: function (str, key, transformation, iv) {
+      return java.aesEncode(str, key, transformation, iv);
+    },
+    aesEncodeToByteArray: function (str, key, transformation, iv) {
+      var out = aesCall(true, str, key, transformation, iv);
+      return out == null ? [] : out;
+    },
+    aesEncodeToBase64ByteArray: function (str, key, transformation, iv) {
+      return utf8Encode(java.aesEncode(str, key, transformation, iv))
+          .map(signedByte);
+    },
+    aesDecodeToByteArray: function (str, key, transformation, iv) {
+      var out = aesCall(false, str, key, transformation, iv);
+      return out == null ? [] : out;
+    },
+    aesBase64DecodeToByteArray: function (str, key, transformation, iv) {
+      var out = aesCall(false, str, key, transformation, iv);
+      return out == null ? [] : out;
+    },
+    // key/iv 为 base64 编码的变体（aesDecodeArgsBase64Str 等）。
+    aesDecodeArgsBase64Str: function (data, keyB64, mode, padding, ivB64) {
+      return aesArgsBase64(false, data, keyB64, mode, padding, ivB64);
+    },
+    aesEncodeArgsBase64Str: function (data, keyB64, mode, padding, ivB64) {
+      return aesArgsBase64(true, data, keyB64, mode, padding, ivB64);
+    },
+    // legado SymmetricCrypto 对象形态（百度小说等用链式 decryptStr）。
+    createSymmetricCrypto: makeSymmetricCrypto,
     // 字体反爬：解析 TTF（base64 / 字节数组），返回可查询字形轮廓的字体对象。
     queryTTF: function (data, useCache) {
       try {

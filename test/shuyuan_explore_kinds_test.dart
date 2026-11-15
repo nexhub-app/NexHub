@@ -4,6 +4,7 @@ library;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexhub/core/models/explore_kind.dart';
 import 'package:nexhub/features/shuyuan/web_book/web_book_types.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 ExploreKindItem item({
   String title = 'x',
@@ -26,6 +27,66 @@ ExploreKindItem item({
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  SharedPreferences.setMockInitialValues({});
+
+  group('Rhino 宽松箭头解构（[@js:] 需要引擎执行）', () {
+    test('裸数组解构参数 [...]=> 补括号后正常执行', () {
+      const js = '''
+sort=[];
+push=(title,url,grow)=>sort.push({title:title,url:url,style:{layout_flexGrow:grow}});
+[["男频",["都市","玄幻"]],["女频",["言情"]]].map([group,list]=>{
+  push(group,"https://x.com/g?name="+group,1);
+  list.map((title,i)=>{
+    push(title,"https://x.com/l?name="+title+"&i="+i,0.25);
+  });
+});
+JSON.stringify(sort);
+''';
+      final kinds = parseExploreKinds('@js:\n$js');
+      expect(kinds.map((k) => k.title).toList(),
+          ['男频', '都市', '玄幻', '女频', '言情']);
+      // URL 按脚本拼接结果输出（正则兜底拿不到动态值）。
+      expect(kinds[1].url, 'https://x.com/l?name=都市&i=0');
+      expect(kinds[0].style.layoutFlexGrow, 1);
+      expect(kinds[1].style.layoutFlexGrow, 0.25);
+    });
+
+    test('箭头赋值块 } 后换行接 [ 按 Rhino 语义断句', () {
+      const js = '''
+sort=[];
+push=(t,u)=>sort.push({title:t,url:u});
+fn = (a)=>{
+  return a;
+}
+
+[["A","https://e.com/a"],["B","https://e.com/b"]].map([t,u]=>{
+  push(t,u);
+});
+JSON.stringify(sort);
+''';
+      final kinds = parseExploreKinds('@js:\n$js');
+      expect(kinds.map((k) => k.title).toList(), ['A', 'B']);
+      expect(kinds[1].url, 'https://e.com/b');
+    });
+
+    test('字符串 / 模板文本里的 ]=> 不被改写', () {
+      const js = r'''
+sort=[];
+push=(title,url)=>sort.push({title:title,url:url});
+t = "a[b]=>c";
+u = `x ${"p[0]=>q"} y`;
+push(t,"https://e.com/1");
+push(u,"https://e.com/2");
+JSON.stringify(sort);
+''';
+      final kinds = parseExploreKinds('@js:\n$js');
+      expect(kinds.length, 2);
+      expect(kinds[0].title, 'a[b]=>c');
+      expect(kinds[1].title, 'x p[0]=>q y');
+    });
+  });
+
   group('parseExploreKinds', () {
     test('JSON 保留 type/action/chars/default/viewName/style', () {
       const json = '''

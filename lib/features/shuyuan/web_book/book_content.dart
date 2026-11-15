@@ -146,6 +146,7 @@ class BookContent {
     required String? redirectUrl,
     required String body,
     String? nextChapterUrl,
+    bool mediaSource = false,
   }) {
     final contentRule = bookSource.getContentRule();
     final analyzeRule = AnalyzeRule(book: book, chapter: bookChapter)
@@ -179,6 +180,21 @@ class BookContent {
     } else {
       AppLog.instance.d('[书源正文] 规则命中: 源=${bookSource.bookSourceName} '
           '${content.length}字符 url=$redirectUrl');
+    }
+
+    // 音/视频源（legado bookSourceType=1/4，BookContent.analyzeContent 同款
+    // 分支）：正文即媒体直链或 DASH/MPD 清单文本，不做 fallback 选择器、
+    // HTML 剥离与分块（MPD 的 XML 会被当标签删光 → 播放器拿不到地址）。
+    if (mediaSource) {
+      if (contentRule.replaceRegex != null &&
+          contentRule.replaceRegex!.isNotEmpty) {
+        content = content.split('\n').map((line) => line.trim()).join('\n');
+        content = applyReplaceRules(content, contentRule.replaceRegex!);
+      }
+      final mediaText = content.trim();
+      return mediaText.isEmpty
+          ? const <NovelBlock>[]
+          : <NovelBlock>[NovelTextBlock(mediaText)];
     }
 
     // 如果 primary selector 未命中或结果为空，尝试 fallback selector 列表

@@ -12,7 +12,6 @@ library;
 
 import 'package:html/dom.dart';
 import 'package:html/parser.dart' as html_parser;
-import 'package:xpath_selector/xpath_selector.dart';
 import 'package:xpath_selector_html_parser/xpath_selector_html_parser.dart';
 
 import 'rule_analyzer.dart';
@@ -105,10 +104,7 @@ class AnalyzeByXPath {
     final analyzer = RuleAnalyzer(rule);
     final rules = analyzer.splitRule(['&&', '||', '%%']);
     if (rules.length <= 1) {
-      return _queryNodes(rules.isEmpty ? rule : rules.first)
-          .nodes
-          .map((n) => n.node)
-          .toList();
+      return _queryNodes(rules.isEmpty ? rule : rules.first);
     }
 
     final results = <List<dynamic>>[];
@@ -146,7 +142,8 @@ class AnalyzeByXPath {
     }
     expr = _normalizeExpr(expr);
     final attrOnly = _isAttrOnly(expr);
-    final result = HtmlXPath.node(_root).query(expr);
+    final result = _query(expr);
+    if (result == null) return <String>[];
     final valueOnly = _isValueOnly(expr);
     final values = <String>[];
     for (var i = 0; i < result.nodes.length; i++) {
@@ -169,11 +166,259 @@ class AnalyzeByXPath {
     return values;
   }
 
-  XPathResult<Node> _queryNodes(String xpath) {
+  List<dynamic> _queryNodes(String xpath) {
     var expr = xpath.trim();
     final w = _matchFunctionWrapper(expr);
     if (w != null) expr = w.$2.trim();
-    return HtmlXPath.node(_root).query(_normalizeExpr(expr));
+    final result = _query(_normalizeExpr(expr));
+    return result?.nodes ?? const <Node>[];
+  }
+
+  /// 查询执行：xpath_selector 对部分谓词（`[@attr]`、`[not(@attr)]`、
+  /// `[tag]`、`and @attr` 组合）直接抛 UnsupportedError。这里先原样执行；
+  /// 失败时把「末级步骤」上的不支持谓词从表达式移除，再对结果节点做等价
+  /// 后置过滤（中间步骤谓词无法后置过滤，仅移除避免整条规则归零）。
+  ({List<Node> nodes, List<dynamic> attrs})? _query(String expr) {
+    try {
+      final r = HtmlXPath.node(_root).query(expr);
+      return (
+        nodes: r.nodes.map((n) => n.node).toList(),
+        attrs: r.attrs,
+      );
+    } catch (_) {}
+    final translated = _translatePredicates(expr);
+    if (translated != null) {
+      try {
+        final r = HtmlXPath.node(_root).query(translated.expr);
+        var nodes = r.nodes.map((n) => n.node).toList();
+        var attrs = r.attrs;
+        if (translated.filters.isNotEmpty) {
+          final keep = <int>[];
+          for (var i = 0; i < nodes.length; i++) {
+            if (translated.filters.every((f) => f(nodes[i]))) keep.add(i);
+          }
+          nodes = [for (final i in keep) nodes[i]];
+          attrs = attrs.length == r.nodes.length
+              ? [for (final i in keep) attrs[i]]
+              : attrs;
+        }
+        return (nodes: nodes, attrs: attrs);
+      } catch (_) {}
+    }
+    // 最后兜底：去掉全部谓词，至少返回路径命中的节点。
+    final stripped = _stripAllPredicates(expr);
+    if (stripped != expr) {
+      try {
+        final r = HtmlXPath.node(_root).query(stripped);
+        return (
+          nodes: r.nodes.map((n) => n.node).toList(),
+          attrs: r.attrs,
+        );
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  /// 谓词翻译：保留 xpath_selector 支持的谓词，移除不支持的谓词；若该
+  /// 谓词位于末级步骤，则生成后置过滤器（对原始谓词文本求值）。
+  ({String expr, List<bool Function(Node)> filters})? _translatePredicates(
+      String expr) {
+    final out = StringBuffer();
+    final filters = <bool Function(Node)>[];
+    var i = 0;
+    var changed = false;
+    while (i < expr.length) {
+      final c = expr[i];
+      if (c != '[') {
+        out.write(c);
+        i++;
+        continue;
+      }
+      final end = _predicateEnd(expr, i);
+      if (end < 0) return null;
+      final pred = expr.substring(i + 1, end);
+      if (_predicateSupported(pred)) {
+        out.write(expr.substring(i, end + 1));
+      } else {
+        changed = true;
+        if (_isLastStep(expr, end + 1)) {
+          final p = pred.trim();
+          filters.add((node) => _predMatches(node, p));
+        }
+      }
+      i = end + 1;
+    }
+    if (!changed) return null;
+    return (expr: out.toString(), filters: filters);
+  }
+
+  /// 谓词右边界（方括号平衡、忽略引号内括号）。
+  static int _predicateEnd(String s, int open) {
+    var depth = 0;
+    var quote = '';
+    for (var i = open; i < s.length; i++) {
+      final c = s[i];
+      if (quote.isNotEmpty) {
+        if (c == '\\') {
+          i++;
+        } else if (c == quote) {
+          quote = '';
+        }
+        continue;
+      }
+      if (c == "'" || c == '"') {
+        quote = c;
+      } else if (c == '[') {
+        depth++;
+      } else if (c == ']') {
+        depth--;
+        if (depth == 0) return i;
+      }
+    }
+    return -1;
+  }
+
+  /// 谓词之后是否还有路径步骤（`]/a`、`]//*` 等）；尾部 `/text()`、
+  /// `/@attr` 不算新步骤。
+  static bool _isLastStep(String s, int afterClose) {
+    var rest = s.substring(afterClose).trim();
+    rest = rest.replaceFirst(RegExp(r'^/(text\(\)|@[\w-]+)\s*$'), '');
+    return !rest.contains('/');
+  }
+
+  /// xpath_selector 已验证支持的谓词形态（临时探针
+  /// test/_tmp_xpath_probe_test.dart，2026-11-15）：
+  /// `[n]`、`[last()]`、`[@a="v"]`、`[contains(...)]`、`[starts-with(...)]`、
+  /// 多谓词串联、`and`/`or` 连接的受支持子表达式、`not(...)`。
+  static bool _predicateSupported(String pred) {
+    var p = pred.trim();
+    if (p.isEmpty) return true;
+    if (RegExp(r'^\d+$').hasMatch(p)) return true;
+    if (p == 'last()') return true;
+    // 顶层 and/or 拆分：全部子句支持才算支持。
+    final orParts = _splitTopLevel(p, ' or ');
+    if (orParts.length > 1) {
+      return orParts.every(_predicateSupported);
+    }
+    final andParts = _splitTopLevel(p, ' and ');
+    if (andParts.length > 1) {
+      return andParts.every(_predicateSupported);
+    }
+    if (p.startsWith('!(') && p.endsWith(')')) {
+      return _predicateSupported(p.substring(2, p.length - 1));
+    }
+    if (RegExp(r'^not\(').hasMatch(p) && p.endsWith(')')) {
+      return _predicateSupported(p.substring(4, p.length - 1));
+    }
+    if (RegExp(r'^(contains|starts-with|ends-with|text)\(').hasMatch(p)) {
+      return true;
+    }
+    // `@a="v"` / `@a!="v"` / 数值比较。
+    if (RegExp(r'''^@[\w-]+\s*(=|!=|>=|<=|>|<)\s*("[^"]*"|'[^']*'|-?\d+(\.\d+)?)$''')
+        .hasMatch(p)) {
+      return true;
+    }
+    return false;
+  }
+
+  static List<String> _splitTopLevel(String s, String sep) {
+    final parts = <String>[];
+    var depth = 0;
+    var quote = '';
+    var start = 0;
+    for (var i = 0; i < s.length; i++) {
+      final c = s[i];
+      if (quote.isNotEmpty) {
+        if (c == '\\') {
+          i++;
+        } else if (c == quote) {
+          quote = '';
+        }
+        continue;
+      }
+      if (c == "'" || c == '"') {
+        quote = c;
+      } else if (c == '(' || c == '[') {
+        depth++;
+      } else if (c == ')' || c == ']') {
+        depth--;
+      } else if (depth == 0 && s.startsWith(sep, i)) {
+        parts.add(s.substring(start, i).trim());
+        i += sep.length - 1;
+        start = i + 1;
+      }
+    }
+    if (start == 0) return [s.trim()];
+    parts.add(s.substring(start).trim());
+    return parts;
+  }
+
+  /// 后置过滤：对节点求值 XPath 1.0 常用谓词子集。
+  static bool _predMatches(Node node, String pred) {
+    var p = pred.trim();
+    if (p.isEmpty) return true;
+    final orParts = _splitTopLevel(p, ' or ');
+    if (orParts.length > 1) {
+      return orParts.any((e) => _predMatches(node, e));
+    }
+    final andParts = _splitTopLevel(p, ' and ');
+    if (andParts.length > 1) {
+      return andParts.every((e) => _predMatches(node, e));
+    }
+    if (RegExp(r'^not\([\s\S]*\)$').hasMatch(p)) {
+      return !_predMatches(node, p.substring(4, p.length - 1));
+    }
+    final attrOnly = RegExp(r'^@([\w-]+)$').firstMatch(p);
+    if (attrOnly != null && node is Element) {
+      return node.attributes.containsKey(attrOnly.group(1));
+    }
+    if (node is! Element) return false;
+    final eq = RegExp(
+            r'''^@([\w-]+)\s*(=|!=)\s*("[^"]*"|'[^']*')$''')
+        .firstMatch(p);
+    if (eq != null) {
+      final v = node.attributes[eq.group(1)!] ?? '';
+      final lit = eq.group(3)!.substring(1, eq.group(3)!.length - 1);
+      return eq.group(2) == '=' ? v == lit : v != lit;
+    }
+    final fn = RegExp(
+            r'''^(contains|starts-with|ends-with)\(\s*@([\w-]+)\s*,\s*("[^"]*"|'[^']*')\s*\)$''')
+        .firstMatch(p);
+    if (fn != null) {
+      final v = node.attributes[fn.group(2)!];
+      if (v == null) return false;
+      final lit = fn.group(3)!.substring(1, fn.group(3)!.length - 1);
+      return switch (fn.group(1)) {
+        'contains' => v.contains(lit),
+        'starts-with' => v.startsWith(lit),
+        _ => v.endsWith(lit),
+      };
+    }
+    final tag = RegExp(r'^([\w-]+)$').firstMatch(p);
+    if (tag != null) {
+      return node.children.any((e) => e.localName == tag.group(1));
+    }
+    // 无法求值的形态：放行（宁可多取，不因谓词整条归零）。
+    return true;
+  }
+
+  static String _stripAllPredicates(String expr) {
+    final out = StringBuffer();
+    var i = 0;
+    while (i < expr.length) {
+      if (expr[i] == '[') {
+        final end = _predicateEnd(expr, i);
+        if (end < 0) {
+          out.write(expr.substring(i));
+          break;
+        }
+        i = end + 1;
+        continue;
+      }
+      out.write(expr[i]);
+      i++;
+    }
+    return out.toString();
   }
 
   /// 语法糖归一：`[position()=N]` → `[N]`（xpath_selector 不支持等值

@@ -34,7 +34,20 @@ class AnalyzeRule {
   final Map<String, String> _variables = {};
   final Map<String, List<SourceRule>> _stringRuleCache = {};
 
-  AnalyzeRule({this.book, this.chapter});
+  AnalyzeRule({this.book, this.chapter}) {
+    // legado 的规则变量表就是书对象的 variableMap（跨搜索/详情/目录/正文
+    // 阶段共享）：以传入书为种子初始化，搜索阶段 `@put:{gid:...}` /
+    // java.put 写入的变量，后续阶段 `@get:{gid}` / java.get 才读得到
+    // （API 型源把 gid/nid 等签名参数写在搜索阶段，目录/正文 URL 依赖）。
+    final bookVars = book?.variableMap;
+    if (bookVars != null && bookVars.isNotEmpty) {
+      _variables.addAll(bookVars);
+    }
+  }
+
+  /// 本规则实例当前的变量表快照（`@put` / JS java.put 的写入）。
+  /// 供各解析阶段结束后把变量回写暂存（跨阶段贯通）。
+  Map<String, String> get variables => _variables;
 
   AnalyzeRule setContent(dynamic newContent, [String? newBaseUrl]) {
     content = newContent;
@@ -174,8 +187,27 @@ class AnalyzeRule {
             ruleList.add(SourceRule(tmp, mMode, isJson));
           }
         }
-        final jsContent = match.group(2) ?? match.group(1) ?? '';
-        ruleList.add(SourceRule(jsContent, Mode.js, isJson));
+        final rawJs = match.group(2) ?? match.group(1) ?? '';
+        // `@js:代码##match##replace###`：`##` 起是 legado 的正则替换尾，
+        // 不能吞进脚本体。紧贴 `@js:`（空脚本）表示「对前段结果直接做正则
+        // 替换」；若整段交给 JS 求值会 SyntaxError → 规则恒为空（社区源
+        // 合成封面 URL 的高频写法）。
+        var jsContent = rawJs;
+        var tail = '';
+        if (match.group(2) != null) {
+          final idx = rawJs.indexOf('##');
+          if (idx >= 0) {
+            tail = rawJs.substring(idx);
+            jsContent = rawJs.substring(0, idx);
+          }
+        }
+        // 空脚本体不产出 JS 段（避免把上一段结果求值成空串），仅保留替换尾。
+        if (jsContent.trim().isNotEmpty || tail.isEmpty) {
+          ruleList.add(SourceRule(jsContent, Mode.js, isJson));
+        }
+        if (tail.isNotEmpty) {
+          ruleList.add(SourceRule(tail, mMode, isJson));
+        }
         segStart = match.end;
       }
       if (trimmed.length > segStart) {
@@ -249,13 +281,24 @@ class AnalyzeRule {
       }
     }
     if (result == null) return [];
+    List<String> out;
     if (result is String) {
-      return result.split('\n').where((s) => s.isNotEmpty).toList();
+      out = result.split('\n').where((s) => s.isNotEmpty).toList();
+    } else if (result is List) {
+      out = result.map((e) => e.toString()).toList();
+    } else {
+      out = [result.toString()];
     }
-    if (result is List) {
-      return result.map((e) => e.toString()).toList();
+    if (isUrl) {
+      // legado AnalyzeRule.getStringList(isUrl)：逐项绝对化并按出现顺序去重
+      // （nextTocUrl 多选器/并集规则常重复命中同一页）。
+      final seen = <String>{};
+      out = [
+        for (final u in out)
+          if (u.trim().isNotEmpty) _getAbsoluteUrl(u)
+      ].where(seen.add).toList();
     }
-    return [result.toString()];
+    return out;
   }
 
   List<dynamic> _getElementsFromRules(List<SourceRule> ruleList) {
@@ -276,6 +319,8 @@ class AnalyzeRule {
   dynamic _executeRule(dynamic result, Mode mode, String rule, {bool isUrl = false}) {
     switch (mode) {
       case Mode.js:
+        // legado 空脚本（如 `规则@js:`）等价于不转换，直接透传上游结果。
+        if (rule.trim().isEmpty) return result;
         return _evalJs(rule, result);
       case Mode.regex:
         return rule;
@@ -300,7 +345,11 @@ class AnalyzeRule {
 
     switch (sourceRule.mode) {
       case Mode.js:
-        final jsResult = _evalJs(rule, result);
+        // 空脚本体透传（`规则@js:` 等），非空才做结构化求值。
+        if (rule.trim().isEmpty) return result;
+        // 目录/列表类 JS 规则常返回对象数组（如按卷组装 {name,url,volume}）。
+        // 字符串结果无法还原对象，须走结构化求值（JSON 回传）。
+        final jsResult = _evalJs(rule, result, structured: true);
         if (jsResult is List) return jsResult;
         return [];
       case Mode.regex:
@@ -342,7 +391,8 @@ class AnalyzeRule {
     return _analyzeByJson!;
   }
 
-  String _evalJs(String jsStr, dynamic result, {Map<String, dynamic>? extraBindings}) {
+  dynamic _evalJs(String jsStr, dynamic result,
+      {Map<String, dynamic>? extraBindings, bool structured = false}) {
     try {
       // 按源复用引擎：同一书源的列表/详情/目录/正文共用一套运行时与
       // jsLib 全局，避免逐章重建 QuickJS。无活动上下文（如离线单测）
@@ -358,6 +408,10 @@ class AnalyzeRule {
         'baseUrl': baseUrl ?? '',
         'src': content?.toString() ?? '',
         'title': chapter?.title ?? '',
+        // 对照 legado AnalyzeRule JS bindings：脚本可直接读 chapter.* /
+        // nextChapterUrl（目录规则按章求值、正文规则拼下一章地址均依赖）。
+        'chapter': _chapterSeed(chapter),
+        'nextChapterUrl': nextChapterUrl ?? '',
         // 每轮都重置变量快照（不能因为当前为空就跳过）：引擎已按源池化，
         // 会跨书/跨章存活；若沿用上一轮的 __javaVars，`java.get` 会读到
         // 别的书的变量。put 的写回仍经 takeJavaVars → put 进 _variables。
@@ -377,7 +431,10 @@ class AnalyzeRule {
           ..['coverUrl'] = target.coverUrl ?? ''
           ..['lastChapter'] = target.lastChapter ?? '';
       }
-      final out = _jsEngine!.eval(_expandJavaBridge(jsStr), bindings: bindings);
+      final out = structured
+          ? _jsEngine!
+              .evalStructured(_expandJavaBridge(jsStr), bindings: bindings)
+          : _jsEngine!.eval(_expandJavaBridge(jsStr), bindings: bindings);
       final javaVars = _jsEngine!.takeJavaVars();
       javaVars.forEach(put);
       // JS 里 `book.name = '…'` 等字段写入回写当前书（空值不覆盖——
@@ -419,6 +476,24 @@ class AnalyzeRule {
 
   String evalJs(String jsStr, dynamic result, {Map<String, dynamic>? extraBindings}) {
     return _evalJs(jsStr, result, extraBindings: extraBindings);
+  }
+
+  /// JS 绑定的 chapter 快照（legado 直接绑定 BookChapter 对象，脚本按
+  /// `chapter.title/url/isVip…` 读取当前章节；这里按同名字段镜像）。
+  Map<String, dynamic>? _chapterSeed(XiaoshuoBookChapter? ch) {
+    if (ch == null) return null;
+    return <String, dynamic>{
+      'title': ch.title,
+      'url': ch.url,
+      'bookUrl': ch.bookUrl,
+      'baseUrl': redirectUrl ?? baseUrl ?? '',
+      'index': ch.index,
+      'tag': ch.tag ?? '',
+      'isVolume': ch.isVolume,
+      'isVip': ch.isVip,
+      'isPay': ch.isPay,
+      'variableMap': Map<String, String>.from(ch.variableMap),
+    };
   }
 
   // ── 内嵌表达式（{{...}} / @get:{...}）求值期替换 ──
@@ -601,19 +676,20 @@ class AnalyzeRule {
       );
       String expand(Match m) => _expandReplacement(m, st.replacement);
       if (st.replaceFirst) {
-        return result.replaceFirstMapped(regex, expand);
+        // legado `##match##replace###`：只保留「首个匹配子串替换后」的结果，
+        // 匹配之外的前后缀全部丢弃；无匹配则整条为空。此前按全串
+        // replaceFirst 处理，合成封面/URL 规则会残留尾部（如 `...s.jpghtml`）。
+        final m = regex.firstMatch(result);
+        if (m == null) return '';
+        return expand(m);
       }
       return result.replaceAllMapped(regex, expand);
     } catch (_) {
       try {
         if (st.replaceFirst) {
+          // 与 legado 一致：正则编译失败时直接返回替换模板本身。
           final index = result.indexOf(st.replaceRegex);
-          if (index >= 0) {
-            return result.substring(0, index) +
-                st.replacement +
-                result.substring(index + st.replaceRegex.length);
-          }
-          return '';
+          return index >= 0 ? st.replacement : '';
         }
         return result.replaceAll(st.replaceRegex, st.replacement);
       } catch (_) {
@@ -635,14 +711,37 @@ class AnalyzeRule {
   }
 
   String _getAbsoluteUrl(String url) {
-    if (url.isEmpty) return baseUrl ?? '';
-    if (url.startsWith('http')) return url;
-    if (baseUrl == null || baseUrl!.isEmpty) return url;
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return baseUrl ?? '';
+    return absoluteUrl(baseUrl, trimmed);
+  }
+
+  /// 对照 legado `NetworkUtils.getAbsoluteURL(baseURL, relativePath)`：
+  /// 绝对 URL / `data:` 原样返回、`javascript:` 归空，相对路径按 [base]
+  /// 解析；[base] 为空时原样返回。
+  ///
+  /// URL 选项后缀 `,{...}`（method/body/headers 等）须原样保留：
+  /// Uri.resolve 会把 `{`/`"` 百分号转义成 `%7B`/`%22`，AnalyzeUrl 识别不出
+  /// 选项 → POST 退化为 GET → 空响应（百度小说等把目录/正文 POST 描述符
+  /// 拼在 URL 里的 API 源，目录/正文恒为空）。
+  static String absoluteUrl(String? base, String url) {
+    final trimmed = url.trim();
+    if (trimmed.startsWith('data:')) return trimmed;
+    if (trimmed.startsWith('javascript')) return '';
+    if (trimmed.startsWith('http')) return trimmed;
+    if (base == null || base.isEmpty) return trimmed;
+    var pathPart = trimmed;
+    var optionPart = '';
+    final optionMatch = RegExp(r',\s*\{').firstMatch(trimmed);
+    if (optionMatch != null) {
+      pathPart = trimmed.substring(0, optionMatch.start);
+      optionPart = trimmed.substring(optionMatch.start);
+    }
     try {
-      final base = Uri.parse(baseUrl!);
-      return base.resolve(url).toString();
+      final parsedBase = Uri.parse(base);
+      return '${parsedBase.resolve(pathPart)}$optionPart';
     } catch (_) {
-      return url;
+      return trimmed;
     }
   }
 

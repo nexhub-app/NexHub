@@ -12,6 +12,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:meta/meta.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -29,6 +30,32 @@ class ShuyuanSourceContext {
   /// 书源地址（legado `source.key` / `BookSource.getKey`）。
   /// `sourceId` 是本应用的内部主键，脚本里 `source.key` 需要的是书源 URL。
   String bookSourceUrl = '';
+
+  /// legado `source.<field>` 只读属性快照（bookSourceName/Comment/Type/
+  /// header/loginUrl 等）。脚本里 `source.bookSourceComment`（共享签名代
+  /// 码）、`source.loginUrl` 等用法直接读配置字段。
+  final Map<String, dynamic> sourceMeta = {};
+
+  /// 装填源上下文：源 URL + jsLib + `source.<field>` 属性快照。
+  void bindSource(XiaoshuoBookSource bs) {
+    bookSourceUrl = bs.bookSourceUrl;
+    jsLib = bs.jsLib ?? '';
+    sourceMeta
+      ..clear()
+      ..addAll(<String, dynamic>{
+        'bookSourceUrl': bs.bookSourceUrl,
+        'bookSourceName': bs.bookSourceName,
+        'bookSourceGroup': bs.bookSourceGroup ?? '',
+        'bookSourceType': bs.bookSourceType,
+        'bookSourceComment': bs.bookSourceComment ?? '',
+        'header': bs.header ?? '',
+        'loginUrl': bs.loginUrl ?? '',
+        'jsLib': bs.jsLib ?? '',
+        'customOrder': bs.customOrder,
+        'lastUpdateTime': bs.lastUpdateTime,
+        'weight': bs.weight,
+      });
+  }
 
   /// per-source cookie 覆盖层：cookieName → {value, host}。
   /// setCookie/removeCookie 写这里；AnalyzeUrl 按 host 后缀匹配合并进
@@ -66,8 +93,20 @@ class ShuyuanSourceContext {
   /// AnalyzeUrl 求值的根）。
   final Map<String, Object> bookItemContext = {};
 
+  /// 搜索/发现阶段 `@put:{k:rule}`、java.put 写入的变量：bookUrl → {k: v}。
+  /// legado 这些变量存在书对象的 variableMap 上随书走；NexHub 各阶段只传
+  /// bookUrl，故按书暂存，详情/目录/正文阶段注入书的 variableMap 后
+  /// `@get:{k}` / java.get 才能取到（如宜搜的 gid/nid 签名参数）。
+  final Map<String, Map<String, String>> bookItemVars = {};
+
   /// 本轮 eval 中脚本发起、尚未满足的 ajax 请求（settle 循环抓取队列）。
   final List<String> ajaxPending = <String>[];
+
+  /// `org.jsoup.Jsoup.connect(...).execute().bodyAsBytes()` 的重放缓存：
+  /// 完整请求键 → 原始响应的 base64（不按文本解码，保留二进制密文）。
+  /// 与 [ajaxCache] 同款增量推送（不进种子，防长目录 O(n²)）。
+  final Map<String, String> ajaxBytesCache = <String, String>{};
+  final List<String> ajaxBytesPending = <String>[];
 
   /// 发现页选项 action 请求宿主打开浏览器（java.startBrowser/openUrl）。
   final List<Map<String, String>> kindBrowserOpens = <Map<String, String>>[];
@@ -108,6 +147,8 @@ class ShuyuanSourceContext {
     _pageCacheChars = 0;
     ajaxCache.clear();
     ajaxPending.clear();
+    ajaxBytesCache.clear();
+    ajaxBytesPending.clear();
     webviewCache.clear();
     webviewPending.clear();
     webviewArgs.clear();
@@ -172,6 +213,7 @@ class ShuyuanSourceContext {
         'sourceId': sourceId,
         'sourceKey': bookSourceUrl.isNotEmpty ? bookSourceUrl : sourceId,
         'sourceVars': Map<String, String>.from(sourceVars),
+        'sourceMeta': Map<String, dynamic>.from(sourceMeta),
         'bookVars': Map<String, String>.from(bookVars),
         'bookInfo': Map<String, String>.from(bookInfo),
         'cookies': {
@@ -215,6 +257,8 @@ class ShuyuanSourceContext {
           }
         case 'bookVar':
           bookVars[a] = b;
+        case 'bookField':
+          bookInfo[a] = b;
         case 'cachePut':
           cache[a] = b;
         case 'cacheDel':
@@ -222,6 +266,10 @@ class ShuyuanSourceContext {
         case 'ajax':
           // 脚本发起的网络请求记录（settle 循环抓取）。按 URL 去重。
           if (!ajaxPending.contains(a)) ajaxPending.add(a);
+        case 'ajaxBytes':
+          // bodyAsBytes 的二进制重放请求（同一 URL 可能同时被记录为
+          // 'ajax'，settle 按并集抓取一次、双缓存填充）。
+          if (!ajaxBytesPending.contains(a)) ajaxBytesPending.add(a);
         case 'browserOpen':
           if (a.isNotEmpty) {
             kindBrowserOpens.add(<String, String>{'url': a, 'title': b});
@@ -412,8 +460,18 @@ class ShuyuanSourceContext {
     XiaoshuoBookSource source,
   ) async {
     var fetched = 0;
-    for (final key in List<String>.from(ctx.ajaxPending)) {
-      if (ctx.ajaxCache.containsKey(key)) continue;
+    // bodyAsBytes 与 java.ajax 可能记录同一 URL：按并集各抓一次，
+    // 依各自的待办标志分别填充文本/二进制缓存。
+    final keys = <String>[
+      ...ctx.ajaxPending,
+      for (final k in ctx.ajaxBytesPending)
+        if (!ctx.ajaxPending.contains(k)) k,
+    ];
+    for (final key in keys) {
+      final wantBody = ctx.ajaxPending.contains(key);
+      final wantBytes = ctx.ajaxBytesPending.contains(key);
+      if (wantBody && ctx.ajaxCache.containsKey(key)) continue;
+      if (wantBytes && ctx.ajaxBytesCache.containsKey(key)) continue;
       fetched++;
       var url = key;
       String? postBody;
@@ -450,12 +508,19 @@ class ShuyuanSourceContext {
         final resp = await analyzeUrl
             .getStrResponse()
             .timeout(const Duration(seconds: 45));
-        ctx.ajaxCache[key] = resp;
+        if (wantBody) ctx.ajaxCache[key] = resp;
+        if (wantBytes) {
+          final bytes = analyzeUrl.lastResponseBytes ??
+              Uint8List.fromList(utf8.encode(resp));
+          ctx.ajaxBytesCache[key] = base64Encode(bytes);
+        }
       } catch (_) {
-        ctx.ajaxCache[key] = '';
+        if (wantBody) ctx.ajaxCache[key] = '';
+        if (wantBytes) ctx.ajaxBytesCache[key] = '';
       }
     }
     ctx.ajaxPending.clear();
+    ctx.ajaxBytesPending.clear();
     return fetched;
   }
 

@@ -1085,10 +1085,9 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
       loginTooltip: isShuyuanSourceConfig(s)
           ? l10n.bookSourceLogin
           : l10n.sourceLogin,
-      // legado 书源：「编辑」菜单承载源变量键值编辑（书源管理已并入本页，
-      // 不再有独立书源管理页）；其余源保持原编辑行为。
-      editTooltip:
-          isShuyuanSourceConfig(s) ? l10n.bookSourceVarEdit : l10n.sourceEdit,
+      // legado 书源同样复用全字段编辑页；其变量键值编辑独立为「源变量」项。
+      editTooltip: l10n.sourceEdit,
+      varsTooltip: l10n.bookSourceVarEdit,
       // 源管理页：操作收进「更多」菜单，更清爽
       useMoreMenu: true,
       moreMenuTooltip: l10n.moreActions,
@@ -1131,9 +1130,10 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
               ),
       onHide: () =>
           context.read<SourceRepository>().setHidden(s.id, !s.isHidden),
-      onEdit: isShuyuanSourceConfig(s)
+      onEdit: () => _showEditDialog(s),
+      onVars: isShuyuanSourceConfig(s)
           ? () => showShuyuanVariableEditor(context, s)
-          : () => _showEditDialog(s),
+          : null,
       onDelete: () => _showDeleteConfirm(s),
       onMigrate:
           s.migrationMessage != null ? () => _showMigrateDialog(s) : null,

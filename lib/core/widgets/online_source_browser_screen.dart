@@ -116,6 +116,7 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
           final bool last = idx == sources.length - 1;
           final bool expandable = _hasExplore(source);
           final bool expanded = expandable && _expandedId == source.id;
+          final Widget? statusChip = _buildStatusChip(source, scheme, l10n);
           return Material(
             color: AppTheme.cardContainer(scheme),
             shape: RoundedRectangleBorder(
@@ -158,42 +159,34 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
                       size: 22,
                     ),
                   ),
-                  title: Text(
-                    source.name,
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w500,
-                        ),
-                  ),
-                  subtitle: Padding(
-                    padding: const EdgeInsets.only(top: AppTokens.spaceXs),
-                    child: Row(
-                      children: <Widget>[
-                        _buildStatusChip(source, scheme, l10n),
-                        const SizedBox(width: AppTokens.spaceXs),
-                        _buildAgeChip(source, scheme, l10n),
-                      ],
-                    ),
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
+                  title: Row(
                     children: <Widget>[
-                      IconButton(
-                        icon: const Icon(Icons.open_in_new_rounded),
-                        tooltip: l10n.openSourceWebsite,
-                        onPressed: () => openInAppBrowser(
-                            context, source.site.baseUrl,
-                            source: source),
-                      ),
-                      if (expandable)
-                        IconButton(
-                          icon: Icon(expanded
-                              ? Icons.expand_less_rounded
-                              : Icons.expand_more_rounded),
-                          tooltip:
-                              expanded ? l10n.collapse : l10n.expand,
-                          onPressed: () => _openSource(context, source),
+                      _buildAgeDot(source, scheme, l10n),
+                      const SizedBox(width: AppTokens.spaceSm),
+                      Expanded(
+                        child: Text(
+                          source.name,
+                          style:
+                              Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    fontWeight: FontWeight.w500,
+                                  ),
                         ),
+                      ),
                     ],
+                  ),
+                  subtitle: statusChip == null
+                      ? null
+                      : Padding(
+                          padding:
+                              const EdgeInsets.only(top: AppTokens.spaceXs),
+                          child: statusChip,
+                        ),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.open_in_new_rounded),
+                    tooltip: l10n.openSourceWebsite,
+                    onPressed: () =>
+                        openInAppBrowser(context, source.site.baseUrl,
+                            source: source),
                   ),
                 ),
                 if (expanded)
@@ -324,9 +317,10 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
     }
   }
 
-  Widget _buildStatusChip(
+  /// 仅失效源显示徽章；健康源不再占位（状态由名称前的分级色点表达）。
+  Widget? _buildStatusChip(
       PluginConfig source, ColorScheme scheme, AppLocalizations l10n) {
-    if (!source.isEnabled) {
+    if (!source.isEnabled || source.isDeprecated) {
       return Chip(
         label: Text(l10n.deprecated,
             style: TextStyle(fontSize: 11, color: scheme.error)),
@@ -335,54 +329,24 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
         padding: EdgeInsets.zero,
       );
     }
-    if (source.isDeprecated) {
-      return Chip(
-        label: Text(l10n.deprecated,
-            style: TextStyle(fontSize: 11, color: scheme.error)),
-        visualDensity: VisualDensity.compact,
-        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        padding: EdgeInsets.zero,
-      );
-    }
-    final Color healthy = AppStatusColors.ok(scheme);
-    return Chip(
-      label: Text(l10n.sourceHealthy,
-          style: TextStyle(fontSize: 11, color: healthy)),
-      backgroundColor: AppStatusColors.containerOf(healthy),
-      visualDensity: VisualDensity.compact,
-      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      padding: EdgeInsets.zero,
-    );
+    return null;
   }
 
-  /// 年龄分级徽章（item 10）：general=中性灰 / teen=琥珀 / mature=红，与设置页一致。
-  Widget _buildAgeChip(
+  /// 年龄分级色点（替代原分级徽章）：general=中性灰 / teen=琥珀 / mature=红。
+  Widget _buildAgeDot(
       PluginConfig source, ColorScheme scheme, AppLocalizations l10n) {
-    final (Color bg, Color fg, String label) = switch (source.ageRating) {
-      SourceAgeRating.general => (
-          scheme.surfaceContainerHighest,
-          scheme.onSurfaceVariant,
-          l10n.ageRatingGeneral,
-        ),
-      SourceAgeRating.teen => (
-          scheme.tertiaryContainer,
-          scheme.onTertiaryContainer,
-          l10n.ageRatingTeen,
-        ),
-      SourceAgeRating.mature => (
-          scheme.errorContainer,
-          scheme.onErrorContainer,
-          l10n.ageRatingMature,
-        ),
+    final (Color color, String label) = switch (source.ageRating) {
+      SourceAgeRating.general => (scheme.outline, l10n.ageRatingGeneral),
+      SourceAgeRating.teen => (scheme.tertiary, l10n.ageRatingTeen),
+      SourceAgeRating.mature => (scheme.error, l10n.ageRatingMature),
     };
-    return Chip(
-      label: Text(label, style: const TextStyle(fontSize: 11)),
-      backgroundColor: bg,
-      labelStyle: TextStyle(color: fg, fontSize: 11),
-      visualDensity: VisualDensity.compact,
-      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      side: BorderSide.none,
-      padding: EdgeInsets.zero,
+    return Semantics(
+      label: label,
+      child: Container(
+        width: 8,
+        height: 8,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      ),
     );
   }
 

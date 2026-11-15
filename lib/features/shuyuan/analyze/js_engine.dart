@@ -30,6 +30,7 @@ class JsEngine {
 
   /// 已推送进 JS 全局的重放缓存键（增量同步用，避免整表重灌）。
   final Set<String> _syncedAjaxKeys = <String>{};
+  final Set<String> _syncedAjaxBytesKeys = <String>{};
   final Set<String> _syncedWebviewKeys = <String>{};
 
   // ── 按源复用 ──
@@ -133,6 +134,11 @@ class JsEngine {
     _pushDeltas('__ajaxCache', cache, _syncedAjaxKeys);
   }
 
+  /// `bodyAsBytes` 的二进制重放（base64）同样增量推送。
+  void _pushAjaxBytesDeltas(Map<String, String> cache) {
+    _pushDeltas('__ajaxBytesCache', cache, _syncedAjaxBytesKeys);
+  }
+
   /// `java.webView` 的重放结果（整页 HTML）同样增量推送。
   void _pushWebviewDeltas(Map<String, String> cache) {
     _pushDeltas('__webviewCache', cache, _syncedWebviewKeys);
@@ -165,11 +171,13 @@ class JsEngine {
   /// 配合宿主 `ctx.clearStageCaches()`，防止缓存跨阶段无限增长。
   void resetReplayCaches() {
     _syncedAjaxKeys.clear();
+    _syncedAjaxBytesKeys.clear();
     _syncedWebviewKeys.clear();
     if (_runtime == null) return;
     try {
       _runtime!.evaluate(
           'globalThis.__ajaxCache = Object.create(null);'
+          'globalThis.__ajaxBytesCache = Object.create(null);'
           'globalThis.__webviewCache = Object.create(null);');
     } catch (_) {}
   }
@@ -186,40 +194,7 @@ class JsEngine {
   /// 「书源 JS 规则不生效」类问题（脚本摘要 + 错误信息）。
   String eval(String jsStr, {Map<String, dynamic>? bindings}) {
     try {
-      // 注入对象上下文种子（cookie/source/book/cache）：活动作用域存在时
-      // 每轮 eval 注入快照，写回经排空协议（__shuyuanCtx.c）落回宿主。
-      final activeCtx = ShuyuanSourceContext.current;
-      if (activeCtx != null) {
-        runtime.evaluate(
-            'var __shuyuanCtx = ${_toJsValue(activeCtx.toSeed())};');
-        // ajax / webview 重放缓存增量推送（不进 ctx 种子，避免每轮整表序列化）。
-        _pushAjaxDeltas(activeCtx.ajaxCache);
-        _pushWebviewDeltas(activeCtx.webviewCache);
-        // jsLib 预执行（按源，同引擎同内容只执行一次）：书源自定义函数/
-        // 变量对所有后续脚本可见（legado SharedJsScope 等效）。
-        if (activeCtx.jsLib.isNotEmpty && _jsLibApplied != activeCtx.jsLib) {
-          _jsLibApplied = activeCtx.jsLib;
-          final r = runtime.evaluate(activeCtx.jsLib);
-          if (r.isError) {
-            AppLog.instance.w('[书源JS] jsLib 执行失败: ${r.stringResult}');
-          }
-        }
-      }
-      if (bindings != null) {
-        for (final entry in bindings.entries) {
-          // `java` 由 java_extensions 预置对象提供（全局函数桥），
-          // 宿主传入的字符串占位绑定一律跳过，避免覆盖。
-          if (entry.key == 'java') continue;
-          runtime.evaluate('var ${entry.key} = ${_toJsValue(entry.value)};');
-        }
-      }
-      final result = runtime.evaluate(jsStr);
-      // 排空必须先于一切早退（isError 也一样）：脚本中途抛错（ajax 占位符
-      // 下游解析失败）同样产生 ajax 记录，settle 循环依赖它暖缓存重试；
-      // 完成值 undefined/null 的纯写脚本同样产生写操作（2026-11-14 实测）。
-      if (jsStr.contains('java.') || ShuyuanSourceContext.current != null) {
-        _drainJavaBridge();
-      }
+      final result = _evaluatePrepared(jsStr, bindings);
       if (result.isError) {
         AppLog.instance.w('[书源JS] 执行失败: ${_brief(jsStr)} → ${result.stringResult}');
         return '';
@@ -235,6 +210,112 @@ class JsEngine {
       AppLog.instance.w('[书源JS] 执行异常: ${_brief(jsStr)} → $e');
       return '';
     }
+  }
+
+  /// 元素提取专用求值：返回 JS 完成值的 **结构化** 形态（List/Map/String）。
+  ///
+  /// [eval] 只回传 `stringResult`，对象数组会被字符串化成
+  /// `[object Object],...`，规则层拿不到数组（JS 目录/列表规则全失效）。
+  /// 这里用 `JSON.stringify(eval(...))` 取回 JSON；脚本含顶层 `return`
+  /// （eval 不接受）或结果无法序列化时，退回 [eval] 的字符串结果。
+  dynamic evalStructured(String jsStr, {Map<String, dynamic>? bindings}) {
+    try {
+      final wrapped = 'JSON.stringify(eval("${_escapeJs(jsStr)}"))';
+      final result = _evaluatePrepared(wrapped, bindings);
+      if (result.isError) return eval(jsStr, bindings: bindings);
+      final s = result.stringResult;
+      if (s.isEmpty || s == 'null' || s == 'undefined') return null;
+      try {
+        return jsonDecode(s);
+      } on FormatException {
+        return eval(jsStr, bindings: bindings);
+      }
+    } catch (e) {
+      AppLog.instance.w('[书源JS] 结构化求值异常: ${_brief(jsStr)} → $e');
+      return null;
+    }
+  }
+
+  /// 注入上下文/绑定后执行脚本并排空 java 桥（[eval]/[evalStructured] 共用）。
+  NexJsEvalResult _evaluatePrepared(
+      String jsStr, Map<String, dynamic>? bindings) {
+    // 注入对象上下文种子（cookie/source/book/cache）：活动作用域存在时
+    // 每轮 eval 注入快照，写回经排空协议（__shuyuanCtx.c）落回宿主。
+    final activeCtx = ShuyuanSourceContext.current;
+    if (activeCtx != null) {
+      runtime.evaluate(
+          'var __shuyuanCtx = ${_toJsValue(activeCtx.toSeed())};');
+      // ajax / webview 重放缓存增量推送（不进 ctx 种子，避免每轮整表序列化）。
+      _pushAjaxDeltas(activeCtx.ajaxCache);
+      _pushAjaxBytesDeltas(activeCtx.ajaxBytesCache);
+      _pushWebviewDeltas(activeCtx.webviewCache);
+      // jsLib 预执行（按源，同引擎同内容只执行一次）：书源自定义函数/
+      // 变量对所有后续脚本可见（legado SharedJsScope 等效）。
+      // jsLib 为 JSON 对象时（`{"name":"https://.../lib.js"}`）按 legado
+      // SharedJsScope：逐个下载绝对 URL 的脚本后依序执行；下载走确定性
+      // 重放（本轮登记 ajaxPending 返回占位，settle 抓取后下轮真正执行）。
+      if (activeCtx.jsLib.isNotEmpty && _jsLibApplied != activeCtx.jsLib) {
+        if (activeCtx.jsLib.trimLeft().startsWith('{')) {
+          final urls = _jsLibUrls(activeCtx.jsLib);
+          if (urls != null) {
+            var allReady = true;
+            for (final u in urls) {
+              if (!activeCtx.ajaxCache.containsKey(u)) {
+                allReady = false;
+                if (!activeCtx.ajaxPending.contains(u)) {
+                  activeCtx.ajaxPending.add(u);
+                }
+              }
+            }
+            if (allReady) {
+              for (final u in urls) {
+                final code = activeCtx.ajaxCache[u] ?? '';
+                if (code.isEmpty) continue;
+                final r = runtime.evaluate(code);
+                if (r.isError) {
+                  AppLog.instance.w('[书源JS] jsLib 下载脚本执行失败 $u: ${r.stringResult}');
+                }
+              }
+              _jsLibApplied = activeCtx.jsLib;
+            }
+          } else {
+            _jsLibApplied = activeCtx.jsLib;
+            final r = runtime.evaluate(activeCtx.jsLib);
+            if (r.isError) {
+              AppLog.instance.w('[书源JS] jsLib 执行失败: ${r.stringResult}');
+            }
+          }
+        } else {
+          _jsLibApplied = activeCtx.jsLib;
+          final r = runtime.evaluate(activeCtx.jsLib);
+          if (r.isError) {
+            AppLog.instance.w('[书源JS] jsLib 执行失败: ${r.stringResult}');
+          }
+        }
+      }
+    }
+    if (bindings != null) {
+      for (final entry in bindings.entries) {
+        // `java` 由 java_extensions 预置对象提供（全局函数桥），
+        // 宿主传入的字符串占位绑定一律跳过，避免覆盖。
+        if (entry.key == 'java') continue;
+        runtime.evaluate('var ${entry.key} = ${_toJsValue(entry.value)};');
+      }
+    }
+    // 经直接 eval 求值：每次调用获得独立词法环境，顶层 `let/const/class`
+    // 不再残留在全局。引擎按源池化，目录类规则（每章一条，企鹅浏览的
+    // `let data = …; let option = …`）第二次求值原本整段报
+    // `SyntaxError: redeclaration` → 章节 URL 全部为空。legado 的 Rhino
+    // 每次 eval 也是新脚本作用域；`var`/function 仍挂全局（跨规则共享，
+    // 与 legado SharedJsScope 等效）。完成值语义不变（eval 的完成值）。
+    final result = runtime.evaluate('eval(${jsonEncode(jsStr)})');
+    // 排空必须先于一切早退（isError 也一样）：脚本中途抛错（ajax 占位符
+    // 下游解析失败）同样产生 ajax 记录，settle 循环依赖它暖缓存重试；
+    // 完成值 undefined/null 的纯写脚本同样产生写操作（2026-11-14 实测）。
+    if (jsStr.contains('java.') || ShuyuanSourceContext.current != null) {
+      _drainJavaBridge();
+    }
+    return result;
   }
 
   /// eval 成功后统一排空 java.* 桥的三类宿主交互：
@@ -359,6 +440,25 @@ class JsEngine {
         .replaceAll('\u2029', '\\u2029');
   }
 
+  /// jsLib JSON 对象（`{"name":"https://host/lib.js"}`）里的绝对脚本 URL。
+  /// 解析失败返回 null（按普通 JS 内容处理）。
+  static List<String>? _jsLibUrls(String lib) {
+    try {
+      final decoded = jsonDecode(lib);
+      if (decoded is! Map) return null;
+      final urls = <String>[];
+      for (final v in decoded.values) {
+        final s = v?.toString() ?? '';
+        if (s.startsWith('http://') || s.startsWith('https://')) {
+          urls.add(s);
+        }
+      }
+      return urls;
+    } catch (_) {
+      return null;
+    }
+  }
+
   void dispose() {
     // 若本实例仍挂在按源池里，一并摘除，避免池中留下已释放的引擎。
     _pool.removeWhere((_, engine) => identical(engine, this));
@@ -368,6 +468,7 @@ class JsEngine {
     _preludeInjected = false;
     _jsLibApplied = null;
     _syncedAjaxKeys.clear();
+    _syncedAjaxBytesKeys.clear();
     _syncedWebviewKeys.clear();
   }
 }

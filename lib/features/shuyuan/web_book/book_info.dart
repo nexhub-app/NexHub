@@ -4,6 +4,7 @@ library;
 import '../model/book_source.dart';
 import '../model/xiaoshuo_book.dart';
 import '../analyze/analyze_rule.dart';
+import '../analyze/source_context.dart';
 import '../../../core/utils/app_log.dart';
 
 class BookInfo {
@@ -15,6 +16,12 @@ class BookInfo {
     required String body,
     bool canReName = true,
   }) {
+    // 变量贯通：注入搜索/发现阶段暂存的本书变量（gid/nid 等），
+    // 详情规则里的 @get / tocUrl 模板求值才能取到。
+    final stageVars = ShuyuanSourceContext.current?.bookItemVars[book.bookUrl];
+    if (stageVars != null && stageVars.isNotEmpty) {
+      book.variableMap.addAll(stageVars);
+    }
     final bookInfoRule = bookSource.getBookInfoRule();
     final analyzeRule = AnalyzeRule(book: book)
       ..setContent(body, redirectUrl ?? baseUrl)
@@ -36,7 +43,10 @@ class BookInfo {
       }
     }
 
-    final canReNameFlag = canReName && (bookInfoRule.canReName?.isEmpty ?? true);
+    // 对照 legado BookInfo：仅当书源声明了 ruleBookInfo.canReName 时才允许
+    // 覆盖已有书名/作者（旧实现取反：规则为空反而允许覆盖）。
+    final canReNameFlag =
+        canReName && (bookInfoRule.canReName?.isNotEmpty ?? false);
 
     if (bookInfoRule.name != null && bookInfoRule.name!.isNotEmpty) {
       try {
@@ -127,9 +137,12 @@ class BookInfo {
 
     if (bookInfoRule.coverUrl != null && bookInfoRule.coverUrl!.isNotEmpty) {
       try {
-        final coverUrl = analyzeRule.getString(bookInfoRule.coverUrl!, isUrl: true);
-        if (coverUrl.isNotEmpty) {
-          book.coverUrl = coverUrl;
+        // 对照 legado BookInfo：封面规则**不带** isUrl（isUrl 对空结果会
+        // 回退成 baseUrl，凭空造出假封面）；只在命中非空时按 redirectUrl
+        // 拼绝对地址，保留源站返回的相对路径/协议相对地址。
+        final rawCover = analyzeRule.getString(bookInfoRule.coverUrl!).trim();
+        if (rawCover.isNotEmpty) {
+          book.coverUrl = AnalyzeRule.absoluteUrl(redirectUrl ?? baseUrl, rawCover);
         }
       } catch (_) {}
     }
@@ -145,6 +158,22 @@ class BookInfo {
 
     if (book.tocUrl == null || book.tocUrl!.isEmpty) {
       book.tocUrl = redirectUrl ?? baseUrl;
+    }
+
+    // 对照 legado BookInfo：目录地址回落到详情页自身时，详情响应体即目录
+    // 页 HTML，缓存进 tocHtml 供目录阶段直接解析（省一次请求，也覆盖
+    // 详情页只有一次性 Cookie/签名的站点）。
+    if (book.tocUrl == (redirectUrl ?? baseUrl)) {
+      book.tocHtml = body;
+    }
+
+    // 变量回写：详情规则新 @put/java.put 的变量并入暂存，供目录/正文
+    // 阶段继续读取。
+    final ctx = ShuyuanSourceContext.current;
+    if (ctx != null && book.bookUrl.isNotEmpty &&
+        analyzeRule.variables.isNotEmpty) {
+      ctx.bookItemVars[book.bookUrl] =
+          Map<String, String>.from(analyzeRule.variables);
     }
 
     // 汇总日志：书名/作者/简介/封面/目录URL 最终结果（便于真机排查

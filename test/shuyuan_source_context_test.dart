@@ -262,7 +262,7 @@ void main() {
       ShuyuanSourceContext.run(ctx, () {
         final first = e.eval(js);
         expect(first.startsWith('__AJAX_'), isTrue);
-        expect(ctx.ajaxPending, contains('https://x.test/js'));
+        expect(ctx.ajaxPending, contains('https://x.test/sign.js'));
 
         // 模拟宿主抓取
         ctx.ajaxCache['https://x.test/sign.js'] = 'var a=1;';

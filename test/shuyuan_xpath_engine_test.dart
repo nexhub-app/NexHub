@@ -35,6 +35,17 @@ void main() {
     expect(a.getStringList('//li[last()]/a/@href'), ['/a3']);
   });
 
+  test('引擎不支持谓词降级：裸属性 / not(裸属性) / 子元素 / and 混合', () {
+    final a = AnalyzeByXPath(_html);
+    expect(a.getStringList('//li/a[@href]/@href'), ['/a1', '/a2', '/a3']);
+    expect(a.getStringList('//li[a]/a/@href'), ['/a1', '/a2', '/a3']);
+    expect(
+        a.getStringList('//li[contains(@class,"item") and @class]/a/@href'),
+        ['/a1', '/a2', '/a3']);
+    final frag = AnalyzeByXPath('<li><a href="/only">A</a><a>无链接</a></li>');
+    expect(frag.getStringList('//a[not(@href)]'), ['无链接']);
+  });
+
   test('并集 | 与顶层 normalize-space/string', () {
     final a = AnalyzeByXPath(_html);
     expect(

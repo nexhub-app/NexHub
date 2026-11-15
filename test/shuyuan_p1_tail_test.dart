@@ -4,8 +4,6 @@ library;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexhub/features/shuyuan/analyze/analyze_url.dart';
 import 'package:nexhub/features/shuyuan/analyze/concurrent_rate_limiter.dart';
-import 'package:nexhub/features/shuyuan/analyze/source_context.dart';
-import 'package:nexhub/features/shuyuan/model/book_source.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -43,6 +41,36 @@ void main() {
         itemContext: {'a': 1},
       );
       expect(au.url, 'http://x.com/p=3');
+    });
+  });
+
+  group('AnalyzeUrl 页数备选写法 <a,b,c>', () {
+    test('第 1 页取第 1 段（空段 → 无后缀路径）', () {
+      final au = AnalyzeUrl(url: 'http://x.com/index<,_1>.html', page: 1);
+      expect(au.url, 'http://x.com/index.html');
+    });
+
+    test('第 2 页取第 2 段', () {
+      final au = AnalyzeUrl(url: 'http://x.com/index<,_1>.html', page: 2);
+      expect(au.url, 'http://x.com/index_1.html');
+    });
+
+    test('超出段数取最后一段（legado clamp 语义）', () {
+      final au = AnalyzeUrl(url: 'http://x.com/list<,_2,_3>.html', page: 9);
+      expect(au.url, 'http://x.com/list_3.html');
+    });
+
+    test('多组备选同时展开', () {
+      final au = AnalyzeUrl(
+        url: 'http://x.com/a<,b><1,2>.html',
+        page: 2,
+      );
+      expect(au.url, 'http://x.com/ab2.html');
+    });
+
+    test('<page> 字面量不被当作备选段', () {
+      final au = AnalyzeUrl(url: 'http://x.com/list_<page>.html', page: 3);
+      expect(au.url, 'http://x.com/list_3.html');
     });
   });
 

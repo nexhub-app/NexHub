@@ -105,6 +105,10 @@ class BookChapterList {
           bookUrl: book.bookUrl,
           url: '',
         );
+        // 对照 legado BookChapterList：逐条元素先绑定当前 chapter 再求值，
+        // 章节规则的 JS（@js / {{...}}）才能读到 chapter.title/url 等；
+        // 也保证本章 @put 的变量归本章。
+        analyzeRule.setChapter(bookChapter);
 
         try {
           if (ruleName.isNotEmpty) {
@@ -126,9 +130,27 @@ class BookChapterList {
           } catch (_) {}
         }
 
+        // 与 legado 求值顺序一致：title → url → tag → isVolume。
+        try {
+          if (ruleUpdateTime.isNotEmpty) {
+            bookChapter.tag = analyzeRule.getStringFromRules(ruleUpdateTime);
+          }
+        } catch (_) {}
+
+        // 卷标记须在 URL 兜底前求值：卷条目的 chapterUrl 通常为空，
+        // 需用标题占位而非 baseUrl（否则首「卷」指向目录页/详情页）。
+        try {
+          if (ruleIsVolume.isNotEmpty) {
+            final isVolume = analyzeRule.getStringFromRules(ruleIsVolume);
+            if (isVolume.toLowerCase() == 'true' || isVolume == '1') {
+              bookChapter.isVolume = true;
+            }
+          }
+        } catch (_) {}
+
         if (bookChapter.url.isEmpty) {
-          // 与通用书源规范一致：卷章节用标题+索引做 URL 占位，普通章节用 baseUrl
-          // 回退。避免跳过（continue）导致目录数丢失，也保证后续跨书过滤不误删。
+          // 与 legado 一致：卷章节用标题+索引做 URL 占位，普通章节用
+          // baseUrl 回退（不跳过，避免目录数丢失）。
           if (bookChapter.isVolume) {
             bookChapter.url = '${bookChapter.title}$i';
           } else {
@@ -139,7 +161,7 @@ class BookChapterList {
         // 跨书过滤（源可配置 ruleToc.chapterScope = "bookDir"）：
         // 某些站点（如笔趣阁移动站）的目录页混入了"最新章节预览"等栏，
         // 其中包含指向【其他书籍】的章节链接。仅当章节 URL 与目录页同属一个
-        // 书籍目录（前缀一致，含结尾斜杠以区分 book_123 与 book_1234567）时
+        // 书籍目录（前缀一致，含结尾斜线以区分 book_123 与 book_1234567）时
         // 才保留，剔除跨书链接。此为通用引擎能力，仅在源显式开启时生效，
         // 不影响其他源。
         //
@@ -161,42 +183,29 @@ class BookChapterList {
           }
         }
 
-        try {
-          if (ruleIsVolume.isNotEmpty) {
-            final isVolume = analyzeRule.getStringFromRules(ruleIsVolume);
-            if (isVolume.toLowerCase() == 'true' || isVolume == '1') {
-              bookChapter.isVolume = true;
-            }
-          }
-        } catch (_) {}
-
-        try {
-          if (ruleIsVip.isNotEmpty) {
-            final isVip = analyzeRule.getStringFromRules(ruleIsVip);
-            if (isVip.toLowerCase() == 'true' || isVip == '1') {
-              bookChapter.isVip = true;
-            }
-          }
-        } catch (_) {}
-
-        try {
-          if (ruleIsPay.isNotEmpty) {
-            final isPay = analyzeRule.getStringFromRules(ruleIsPay);
-            if (isPay.toLowerCase() == 'true' || isPay == '1') {
-              bookChapter.isPay = true;
-            }
-          }
-        } catch (_) {}
-
-        try {
-          if (ruleUpdateTime.isNotEmpty) {
-            bookChapter.tag = analyzeRule.getStringFromRules(ruleUpdateTime);
-          }
-        } catch (_) {}
-
+        // 对照 legado：vip/pay 仅对标题非空的条目求值（少一次规则执行）。
         if (bookChapter.title.isNotEmpty) {
-          if (!_isJunkChapterTitle(bookChapter.title) &&
-              seenUrls.add(bookChapter.url)) {
+          try {
+            if (ruleIsVip.isNotEmpty) {
+              final isVip = analyzeRule.getStringFromRules(ruleIsVip);
+              if (isVip.toLowerCase() == 'true' || isVip == '1') {
+                bookChapter.isVip = true;
+              }
+            }
+          } catch (_) {}
+
+          try {
+            if (ruleIsPay.isNotEmpty) {
+              final isPay = analyzeRule.getStringFromRules(ruleIsPay);
+              if (isPay.toLowerCase() == 'true' || isPay == '1') {
+                bookChapter.isPay = true;
+              }
+            }
+          } catch (_) {}
+
+          // URL 去重：挡掉"最新章节预览"等重复收录；baseUrl 兜底条目
+          // （无真实 URL 的卷/占位章节）不参与去重，避免多条被折叠成一条。
+          if (bookChapter.url == baseUrl || seenUrls.add(bookChapter.url)) {
             chapters.add(bookChapter);
           }
         }
@@ -307,7 +316,7 @@ class BookChapterList {
       final result = <XiaoshuoBookChapter>[];
       for (final item in decoded) {
         if (item is! Map) continue;
-        final m = item as Map<dynamic, dynamic>;
+        final Map<dynamic, dynamic> m = item;
         final url = _jsStr(m['url']);
         if (url == null || url.isEmpty) continue;
         final ch = XiaoshuoBookChapter(bookUrl: _jsStr(m['bookUrl']) ?? '');
@@ -340,48 +349,6 @@ class BookChapterList {
     if (v is num) return v != 0;
     final s = v.toString().toLowerCase();
     return s == 'true' || s == '1';
-  }
-
-  /// 判断章节标题是否为"垃圾条目"（导航/翻页/公告/跨书预览等非正文章节）。
-  ///
-  /// 部分站点（如笔趣阁移动站）的目录页混合了"最新章节预览"区、翻页链接
-  /// 和真正的章节列表。CSS 选择器难以精确区分时，用标题文本过滤掉
-  /// 明显非章节的条目：翻页(下一页/上一页)、导航(首页/目录/书架)、
-  /// 公告类(新书已发/番外发布/通知)、跨书预览(含《其他书名》的标题)。
-  ///
-  /// 此为**通用引擎能力**，不依赖任何具体站点，符合架构约束。
-  static bool _isJunkChapterTitle(String title) {
-    final t = title.trim();
-    if (t.isEmpty) return true;
-
-    // 翻页 / 导航
-    if (t == '下一页' || t == '上一页' || t == '首页' || t == '目录' ||
-        t == '书架' || t == '返回' || t == '返回书页') {
-      return true;
-    }
-
-    // 公告 / 非章节内容
-    if (t == '新书已发' || t.contains('新番外发布') ||
-        t.contains('通知') || t == '更多') {
-      return true;
-    }
-
-    // 跨书预览：标题含《书名》格式的通常为"最新章节预览"栏的跨书链接
-    // （如 "12月1日《诡秘之主》新番外发布"、"《一个普通人的日常》最新"）
-    if (RegExp(r'《[^》]+》').hasMatch(t)) {
-      return true;
-    }
-
-    // 纯数字或 "第X页"
-    if (RegExp(r'^第\d+页$').hasMatch(t)) return true;
-
-    // 过短且不含中文章节特征（如 "第X章"/"第X卷"/"序章"）
-    if (t.length <= 3 &&
-        !RegExp(r'^第[一二三四五六七八九十百千0-9]+[章卷集部篇话]').hasMatch(t)) {
-      return true;
-    }
-
-    return false;
   }
 
   /// 计算目录页 URL 所属书籍目录前缀（不含结尾斜杠）。

@@ -10,6 +10,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -81,14 +82,21 @@ class ShuyuanWebviewFetcher {
         await Future<void>.delayed(_renderSettle);
       }
 
+      String? jsResult;
       if (js != null && js.trim().isNotEmpty) {
         try {
-          await controller.evaluateJavascript(source: js);
+          final raw = await controller.evaluateJavascript(source: js);
+          jsResult = _normalizeJsResult(raw);
         } on Object catch (e) {
           debugPrint('[书源webView] js 执行失败(忽略): $e');
         }
         await Future<void>.delayed(_jsSettle);
       }
+
+      // legado BackstageWebView：带 js 时返回 evaluateJavascript 的结果
+      // （unescapeJson + 去引号），而非整页 HTML。此前恒返回 getHtml，
+      // `java.webView(html,url,"JSON.stringify(...)")` 型源拿不到数据。
+      if (jsResult != null && jsResult.isNotEmpty) return jsResult;
 
       final out = await controller.getHtml();
       if (out == null || out.isEmpty) return null;
@@ -103,5 +111,25 @@ class ShuyuanWebviewFetcher {
         // 释放失败不影响已取到的内容。
       }
     }
+  }
+
+  /// 对齐 legado unescapeJson：字符串结果可能被 JSON 再编码一层
+  /// （`"<div>..."` 或 `\"` 转义），先解一层引号再反转义。
+  static String _normalizeJsResult(Object? raw) {
+    if (raw == null) return '';
+    var s = raw.toString();
+    if (s.length >= 2 && s.startsWith('"') && s.endsWith('"')) {
+      try {
+        final decoded = jsonDecode(s.replaceAll('\\"', '"'));
+        if (decoded is String) s = decoded;
+      } catch (_) {
+        s = s.substring(1, s.length - 1);
+      }
+    }
+    return s
+        .replaceAll(r'\n', '\n')
+        .replaceAll(r'\r', '\r')
+        .replaceAll(r'\t', '\t')
+        .replaceAll(r'\"', '"');
   }
 }

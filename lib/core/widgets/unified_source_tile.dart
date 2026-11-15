@@ -19,6 +19,7 @@ class UnifiedSourceTile extends StatelessWidget {
   final String hideTooltip; // 来自 l10n
   final String unhideTooltip; // 来自 l10n
   final String editTooltip; // 来自 l10n
+  final String varsTooltip; // 来自 l10n（书源变量编辑）
   final String deleteTooltip; // 来自 l10n
   final String migrateTooltip; // 来自 l10n
   final String networkOverrideTooltip; // 来自 l10n（「网络覆盖」）
@@ -32,6 +33,7 @@ class UnifiedSourceTile extends StatelessWidget {
   final VoidCallback? onMirrorSettings;
   final VoidCallback? onHide;
   final VoidCallback? onEdit;
+  final VoidCallback? onVars;
   final VoidCallback? onDelete;
   final VoidCallback? onMigrate;
   final VoidCallback? onNetworkOverride; // 网络覆盖（走代理/自定义 Hosts 等）
@@ -52,6 +54,7 @@ class UnifiedSourceTile extends StatelessWidget {
     this.hideTooltip = '',
     this.unhideTooltip = '',
     this.editTooltip = '',
+    this.varsTooltip = '',
     this.deleteTooltip = '',
     this.migrateTooltip = '',
     this.networkOverrideTooltip = '',
@@ -65,6 +68,7 @@ class UnifiedSourceTile extends StatelessWidget {
     this.onMirrorSettings,
     this.onHide,
     this.onEdit,
+    this.onVars,
     this.onDelete,
     this.onMigrate,
     this.onNetworkOverride,
@@ -190,6 +194,7 @@ class UnifiedSourceTile extends StatelessWidget {
   bool get _hasMenuActions =>
       onMirrorSettings != null ||
       onEdit != null ||
+      onVars != null ||
       onDelete != null ||
       onHide != null ||
       onMigrate != null ||
@@ -227,6 +232,7 @@ class UnifiedSourceTile extends StatelessWidget {
               Icons.privacy_tip_rounded,
               isIncognito ? incognitoOnLabel : incognitoTooltip),
         if (onEdit != null) _menuItem('edit', Icons.edit_rounded, editTooltip),
+        if (onVars != null) _menuItem('vars', Icons.tune_rounded, varsTooltip),
         if (onDelete != null)
           _menuItem('delete', Icons.delete_rounded, deleteTooltip),
         if (onHide != null)
@@ -252,6 +258,9 @@ class UnifiedSourceTile extends StatelessWidget {
         break;
       case 'edit':
         onEdit?.call();
+        break;
+      case 'vars':
+        onVars?.call();
         break;
       case 'delete':
         onDelete?.call();

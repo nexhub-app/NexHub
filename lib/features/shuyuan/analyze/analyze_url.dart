@@ -52,6 +52,11 @@ class AnalyzeUrl {
   String? requestType;
   int webViewDelayTime = 0;
 
+  /// 最近一次 [getStrResponse] 的原始响应字节（未解码）。
+  /// `org.jsoup…bodyAsBytes()` 的 settle 重放需要无损二进制
+  /// （AES 密文按 UTF-8 容错解码会丢字节，无法还原明文）。
+  Uint8List? lastResponseBytes;
+
   /// URL 内 JS 的求值器（同一 AnalyzeUrl 内复用，连同其 JS 引擎）。
   /// 一个 URL 模板常有多个 `{{...}}`，旧实现每个都 new AnalyzeRule →
   /// new QuickJS 运行时且从不释放。
@@ -177,6 +182,16 @@ class AnalyzeUrl {
       url = url.replaceAll('{{key}}', key!);
     }
     url = url.replaceAll('{{page}}', page.toString());
+
+    // legado 页数备选写法 `<a,b,c>`：按页取第 page 段，超出取最后一段
+    // （如分页路径 `/list<,_2,_3>.html` → 第 1 页 /list.html、第 2 页
+    // /list_2.html、第 3 页起 /list_3.html）。须在 `<page>` 字面量替换之后，
+    // 否则 `<page>` 会被当作只有一个备选段。
+    url = url.replaceAllMapped(RegExp(r'<(.*?)>'), (m) {
+      final pages = m.group(1)!.split(',');
+      final picked = page - 1 < pages.length ? pages[page - 1] : pages.last;
+      return picked.trim();
+    });
   }
 
   void analyzeUrl() {
@@ -190,44 +205,42 @@ class AnalyzeUrl {
 
     if (paramMatch != null && urlNoOption.length != originalUrl.length) {
       final optionStr = originalUrl.substring(paramMatch.end - 1);
-      try {
-        final option = json.decode(optionStr) as Map<String, dynamic>?;
-        if (option != null) {
-          method = option['method']?.toString();
-          // body 可为字符串或 JSON 对象/数组（QQ 等 API 源的
-          // `"body":{"key":"{{key}}"}` 写法）：对象须按 JSON 序列化，
-          // 此前 toString() 产出 Dart Map 字面量 `{key: value}` 导致服务端
-          // 解析失败 → API 型源搜索全空。
-          final rawBody = option['body'];
-          if (rawBody is String) {
-            body = rawBody;
-          } else if (rawBody != null) {
-            body = jsonEncode(rawBody);
-          }
-          charset = option['charset']?.toString();
-          retry = option['retry'] ?? 0;
-          // legado URL 选项键是 `webView`；`useWebView` 是历史兼容写法。
-          final wvRaw = option['webView'] ?? option['useWebView'];
-          useWebView = wvRaw == true || '$wvRaw' == 'true';
-          webJs = option['webJs']?.toString();
-          bodyJs = option['bodyJs']?.toString();
-          dnsIp = option['dnsIp']?.toString();
-          requestType = option['type']?.toString();
+      final option = parseJsonLenient(optionStr);
+      if (option != null) {
+        method = option['method']?.toString();
+        // body 可为字符串或 JSON 对象/数组（QQ 等 API 源的
+        // `"body":{"key":"{{key}}"}` 写法）：对象须按 JSON 序列化，
+        // 此前 toString() 产出 Dart Map 字面量 `{key: value}` 导致服务端
+        // 解析失败 → API 型源搜索全空。
+        final rawBody = option['body'];
+        if (rawBody is String) {
+          body = rawBody;
+        } else if (rawBody != null) {
+          body = jsonEncode(rawBody);
+        }
+        charset = option['charset']?.toString();
+        retry = option['retry'] ?? 0;
+        // legado URL 选项键是 `webView`；`useWebView` 是历史兼容写法。
+        final wvRaw = option['webView'] ?? option['useWebView'];
+        useWebView = wvRaw == true || '$wvRaw' == 'true';
+        webJs = option['webJs']?.toString();
+        bodyJs = option['bodyJs']?.toString();
+        dnsIp = option['dnsIp']?.toString();
+        requestType = option['type']?.toString();
 
-          final headers = option['headers'] as Map<String, dynamic>?;
-          if (headers != null) {
-            for (final entry in headers.entries) {
-              headerMap[entry.key.toString()] = entry.value.toString();
-            }
-          }
-
-          final js = option['js']?.toString();
-          if (js != null && js.isNotEmpty) {
-            final jsResult = _evalJs(js, urlNoOption);
-            url = jsResult;
+        final headers = option['headers'];
+        if (headers is Map) {
+          for (final entry in headers.entries) {
+            headerMap[entry.key.toString()] = entry.value.toString();
           }
         }
-      } catch (_) {}
+
+        final js = option['js']?.toString();
+        if (js != null && js.isNotEmpty) {
+          final jsResult = _evalJs(js, urlNoOption);
+          url = jsResult;
+        }
+      }
     }
 
     // 参数编码必须在 Uri 绝对化**之前**：Dart 的 Uri.parse/resolve 会把 query
@@ -374,6 +387,10 @@ class AnalyzeUrl {
   }
 
   String _getAbsoluteUrl(String urlStr) {
+    // 对齐 legado NetworkUtils.getAbsoluteURL：相对地址先 trim。
+    // `{{js}}\n/path` 类模板（banwenwu）替换后残留换行，直接 resolve
+    // 会被 Uri 编码成 `/%0A/path` → 400。
+    urlStr = urlStr.trim();
     if (urlStr.isEmpty) return baseUrl ?? '';
     if (urlStr.startsWith('http')) return urlStr;
     if (baseUrl == null || baseUrl!.isEmpty) return urlStr;
@@ -413,6 +430,52 @@ class AnalyzeUrl {
     }
   }
 
+  /// 组装声明型请求头（源 header + URL 选项 headers + 登录头 + Cookie），
+  /// **不发起网络请求**。供视频/音频直链解析：播放器拉 m3u8/分片必须带
+  /// 同一套 Referer/UA/Cookie，否则 CDN 403 全程黑屏。
+  Map<String, String> resolveRequestHeaders() {
+    final out = <String, String>{};
+    if (source?.header != null && source!.header!.isNotEmpty) {
+      try {
+        _parseHeader(source!.header!)
+            .forEach((k, v) => _putHeader(out, k, v));
+      } catch (_) {}
+    }
+    headerMap.forEach((k, v) => _putHeader(out, k, v));
+    final sharedCookie = HttpFetcher.instance.cookieHeaderForUrl(url);
+    if (sharedCookie != null && sharedCookie.isNotEmpty) {
+      final existing = _headerValue(out, 'Cookie');
+      _putHeader(
+          out,
+          'Cookie',
+          (existing != null && existing.isNotEmpty)
+              ? '$existing; $sharedCookie'
+              : sharedCookie);
+    }
+    final activeCtx = ShuyuanSourceContext.current;
+    if (activeCtx != null) {
+      activeCtx.loginHeader.forEach((k, v) {
+        if (k.isNotEmpty && v.isNotEmpty) _putHeader(out, k, v);
+      });
+      final reqHost = Uri.tryParse(url)?.host ?? '';
+      final overlay = activeCtx.cookiesForHost(reqHost);
+      if (overlay.isNotEmpty) {
+        final overlayStr =
+            overlay.entries.map((e) => '${e.key}=${e.value}').join('; ');
+        final existing = _headerValue(out, 'Cookie');
+        _putHeader(
+            out,
+            'Cookie',
+            (existing != null && existing.isNotEmpty)
+                ? '$existing; $overlayStr'
+                : overlayStr);
+      }
+    }
+    // 待重放占位符的头部对播放器无意义，剔除而不是把占位符发给 CDN。
+    out.removeWhere((_, v) => _hasReplayPlaceholder(v));
+    return out;
+  }
+
   Future<String> getStrResponse({
     String? jsStr,
     String? sourceRegex,
@@ -425,11 +488,13 @@ class AnalyzeUrl {
     // 阶段级页面缓存：settle 重放会整段重跑，命中则直接返回上一次的响应
     // （含 jsStr/sourceRegex 后处理结果，故 key 里带上这两项）。
     // 无活动上下文（离线调用/测试）时不缓存。
+    // WebView 分支不拼请求头；HTTP 分支的 key 在请求头组装完成后再算
+    // （源 header 的 @js 结果会影响响应，必须进 key，否则重放拿到错页）。
     final activeCtx = ShuyuanSourceContext.current;
-    final cacheKey =
+    final webviewCacheKey =
         activeCtx == null ? null : _pageCacheKey(jsStr, sourceRegex);
-    if (activeCtx != null && cacheKey != null) {
-      final hit = activeCtx.pageCache[cacheKey];
+    if (useWebView && activeCtx != null && webviewCacheKey != null) {
+      final hit = activeCtx.pageCache[webviewCacheKey];
       if (hit != null) {
         AppLog.instance.d('[书源HTTP] 阶段缓存命中 $url');
         return hit;
@@ -463,7 +528,8 @@ class AnalyzeUrl {
       }
       final checkJs = source?.loginCheckJs;
       if (checkJs != null && checkJs.trim().isNotEmpty) {
-        final code = _runLoginCheck(checkJs, 200, rendered);
+        final code = _runLoginCheck(checkJs, 200, rendered,
+            url: url, sourceUrl: source?.bookSourceUrl ?? '');
         if (code == 500) {
           throw ShuyuanLoginRequiredException(
               url: url, sourceName: source?.bookSourceName ?? '');
@@ -485,9 +551,10 @@ class AnalyzeUrl {
           if (m != null) out = m.groupCount > 0 ? (m.group(1) ?? out) : out;
         } catch (_) {}
       }
-      if (activeCtx != null && cacheKey != null) {
-        activeCtx.pageCachePut(cacheKey, out);
+      if (activeCtx != null && webviewCacheKey != null) {
+        activeCtx.pageCachePut(webviewCacheKey, out);
       }
+      lastResponseBytes = Uint8List.fromList(utf8.encode(out));
       return out;
     }
 
@@ -526,7 +593,7 @@ class AnalyzeUrl {
             HttpFetcher.instance.registerHostUserAgent(host, sourceUa);
           }
         }
-        requestHeaders.addAll(sourceHeader);
+        sourceHeader.forEach((k, v) => _putHeader(requestHeaders, k, v));
       } catch (_) {}
     }
 
@@ -534,11 +601,11 @@ class AnalyzeUrl {
     // Content-Type 补全）此前从未并入实际请求，源声明的请求头全部丢失；
     // 此处统一并入（选项头在源 header 之后、显式 headers 参数之前生效）。
     if (headerMap.isNotEmpty) {
-      requestHeaders.addAll(headerMap);
+      headerMap.forEach((k, v) => _putHeader(requestHeaders, k, v));
     }
 
     if (headers != null) {
-      requestHeaders.addAll(headers);
+      headers.forEach((k, v) => _putHeader(requestHeaders, k, v));
     }
 
     // 复用 HttpFetcher 共享 Cookie 存储：验证系统在 WebView（内置浏览器）里被
@@ -548,10 +615,13 @@ class AnalyzeUrl {
     // 首次请求时 jar 为空 → 此步为空操作，无副作用。
     final sharedCookie = HttpFetcher.instance.cookieHeaderForUrl(url);
     if (sharedCookie != null && sharedCookie.isNotEmpty) {
-      final existing = requestHeaders['Cookie'];
-      requestHeaders['Cookie'] = (existing != null && existing.isNotEmpty)
-          ? '$existing; $sharedCookie'
-          : sharedCookie;
+      final existing = _headerValue(requestHeaders, 'Cookie');
+      _putHeader(
+          requestHeaders,
+          'Cookie',
+          (existing != null && existing.isNotEmpty)
+              ? '$existing; $sharedCookie'
+              : sharedCookie);
     }
 
     // 注入对象上下文（P1-2）：登录头合并（source.putLoginHeader 语义）+
@@ -559,17 +629,40 @@ class AnalyzeUrl {
     // 只读合并进本次请求，不写全局罐）。activeCtx 已在函数入口取过。
     if (activeCtx != null) {
       activeCtx.loginHeader.forEach((k, v) {
-        if (k.isNotEmpty && v.isNotEmpty) requestHeaders[k] = v;
+        if (k.isNotEmpty && v.isNotEmpty) _putHeader(requestHeaders, k, v);
       });
       final reqHost = Uri.tryParse(url)?.host ?? '';
       final overlay = activeCtx.cookiesForHost(reqHost);
       if (overlay.isNotEmpty) {
         final overlayStr =
             overlay.entries.map((e) => '${e.key}=${e.value}').join('; ');
-        final existing = requestHeaders['Cookie'];
-        requestHeaders['Cookie'] = (existing != null && existing.isNotEmpty)
-            ? '$existing; $overlayStr'
-            : overlayStr;
+        final existing = _headerValue(requestHeaders, 'Cookie');
+        _putHeader(
+            requestHeaders,
+            'Cookie',
+            (existing != null && existing.isNotEmpty)
+                ? '$existing; $overlayStr'
+                : overlayStr);
+      }
+    }
+
+    // 源 header 的 @js 可能调用 java.ajax：首轮拿到的是 __AJAX_n__ 占位符，
+    // 真实请求必须等 settle 抓取回填后重放。带着占位符发请求只会得到
+    // 401/空页，整条链路归零——此处提前抛出让外层 settle 循环重放。
+    if (requestHeaders.values.any(_hasReplayPlaceholder)) {
+      throw Exception('请求头含待重放占位符，等待 settle 抓取：$url');
+    }
+
+    // HTTP 分支阶段缓存：请求头（含源 header 的 @js 求值结果）参与 key，
+    // 避免 settle 重放时把旧头取到的响应错配给新头请求。
+    final cacheKey = activeCtx == null
+        ? null
+        : _pageCacheKey(jsStr, sourceRegex, requestHeaders);
+    if (activeCtx != null && cacheKey != null) {
+      final hit = activeCtx.pageCache[cacheKey];
+      if (hit != null) {
+        AppLog.instance.d('[书源HTTP] 阶段缓存命中 $url');
+        return hit;
       }
     }
 
@@ -631,6 +724,7 @@ class AnalyzeUrl {
       }
 
       final bytes = Uint8List.fromList(response.data ?? <int>[]);
+      lastResponseBytes = bytes;
       final contentType = _extractHeaderValue(
         response.headers['content-type'],
       );
@@ -675,7 +769,8 @@ class AnalyzeUrl {
       // 脚本，种子 result={code,body} 可改写；code==500 → 未登录。
       final checkJs = source?.loginCheckJs;
       if (checkJs != null && checkJs.trim().isNotEmpty) {
-        final code = _runLoginCheck(checkJs, response.statusCode ?? 0, body);
+        final code = _runLoginCheck(checkJs, response.statusCode ?? 0, body,
+            url: url, sourceUrl: source?.bookSourceUrl ?? '');
         if (code == 500) {
           throw ShuyuanLoginRequiredException(
               url: url, sourceName: source?.bookSourceName ?? '');
@@ -754,25 +849,208 @@ class AnalyzeUrl {
     return body;
   }
 
-  /// 阶段缓存键：同 URL 但 method/body/后处理不同时不能复用。
-  String _pageCacheKey(String? jsStr, String? sourceRegex) {
+  /// 阶段缓存键：同 URL 但 method/body/请求头/后处理不同时不能复用。
+  String _pageCacheKey(String? jsStr, String? sourceRegex,
+      [Map<String, String>? headers]) {
     final m = method?.toUpperCase() ?? 'GET';
-    return '$m\n$url\n${body ?? ''}\n${jsStr ?? ''}\n${sourceRegex ?? ''}';
+    final h = headers == null || headers.isEmpty
+        ? ''
+        : ((headers.entries.toList()
+                  ..sort((a, b) => a.key.toLowerCase().compareTo(
+                      b.key.toLowerCase())))
+                .map((e) => '${e.key.toLowerCase()}:${e.value}')
+                .join('\n'));
+    return '$m\n$url\n${body ?? ''}\n${jsStr ?? ''}\n${sourceRegex ?? ''}\n$h';
+  }
+
+  /// 大小写不敏感的请求头写入：同名旧键先移除，避免 `User-Agent` 与
+  /// `user-agent` 并存（Dio 合并顺序不确定 → 源声明的 UA 可能失效）。
+  static void _putHeader(Map<String, String> target, String key, String value) {
+    final lower = key.toLowerCase();
+    target.removeWhere((k, _) => k.toLowerCase() == lower);
+    target[key] = value;
+  }
+
+  /// 大小写不敏感的请求头读取。
+  static String? _headerValue(Map<String, String> headers, String name) {
+    final lower = name.toLowerCase();
+    for (final e in headers.entries) {
+      if (e.key.toLowerCase() == lower) return e.value;
+    }
+    return null;
+  }
+
+  static bool _hasReplayPlaceholder(String v) =>
+      v.contains('__AJAX_') || v.contains('__WEBVIEW_');
+
+  /// JSON 宽松解析（对齐 legado Gson lenient）：社区源把 URL 选项/header
+  /// 写成单引号、裸键、尾逗号或带注释的形式，严格 json.decode 会整段
+  /// 失败 → method/body/headers 全部丢失。先严格解析，失败再修复重试。
+  static Map<String, dynamic>? parseJsonLenient(String raw) {
+    try {
+      final v = json.decode(raw);
+      return v is Map ? Map<String, dynamic>.from(v) : null;
+    } catch (_) {}
+    try {
+      final v = json.decode(_repairJson(raw));
+      return v is Map ? Map<String, dynamic>.from(v) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 宽松 JSON 修复：单引号→双引号、裸键/裸字符串值补引号、尾逗号与
+  /// `//`/`/* */` 注释剔除；字符串内部内容保持不变。
+  static String _repairJson(String s) {
+    final out = StringBuffer();
+    final stack = <String>[];
+    var i = 0;
+    var inStr = false;
+    var quote = '';
+    var prev = '';
+    while (i < s.length) {
+      final c = s[i];
+      if (inStr) {
+        if (c == '\\' && i + 1 < s.length) {
+          out.write(c);
+          out.write(s[i + 1]);
+          i += 2;
+          continue;
+        }
+        if (c == quote) {
+          inStr = false;
+          out.write('"');
+          i++;
+          continue;
+        }
+        if (c == '"' && quote == "'") {
+          out.write(r'\"');
+        } else {
+          out.write(c);
+        }
+        i++;
+        continue;
+      }
+      if (c == '"' || c == "'") {
+        inStr = true;
+        quote = c;
+        out.write('"');
+        i++;
+        continue;
+      }
+      if (c == '/' && i + 1 < s.length) {
+        if (s[i + 1] == '/') {
+          final nl = s.indexOf('\n', i);
+          i = nl < 0 ? s.length : nl;
+          continue;
+        }
+        if (s[i + 1] == '*') {
+          final end = s.indexOf('*/', i + 2);
+          i = end < 0 ? s.length : end + 2;
+          continue;
+        }
+      }
+      if (c == '{' || c == '[') {
+        stack.add(c);
+        out.write(c);
+        prev = c;
+        i++;
+        continue;
+      }
+      if (c == '}' || c == ']') {
+        if (stack.isNotEmpty) stack.removeLast();
+        out.write(c);
+        prev = c;
+        i++;
+        continue;
+      }
+      if (c == ',') {
+        var j = i + 1;
+        while (j < s.length && ' \t\r\n'.contains(s[j])) {
+          j++;
+        }
+        if (j < s.length && (s[j] == '}' || s[j] == ']')) {
+          i++;
+          continue;
+        }
+        out.write(c);
+        prev = c;
+        i++;
+        continue;
+      }
+      if (c == ':') {
+        out.write(c);
+        prev = ':';
+        i++;
+        continue;
+      }
+      if (' \t\r\n'.contains(c)) {
+        out.write(c);
+        i++;
+        continue;
+      }
+      final topIsObj = stack.isNotEmpty && stack.last == '{';
+      if (topIsObj && (prev == '{' || prev == ',')) {
+        var j = i;
+        while (j < s.length && RegExp(r'[A-Za-z0-9_$-]').hasMatch(s[j])) {
+          j++;
+        }
+        var k = j;
+        while (k < s.length && ' \t\r\n'.contains(s[k])) {
+          k++;
+        }
+        if (j > i && k < s.length && s[k] == ':') {
+          out.write('"${s.substring(i, j)}"');
+          i = j;
+          continue;
+        }
+      }
+      if (prev == ':') {
+        var j = i;
+        while (j < s.length && !',}] \t\r\n'.contains(s[j])) {
+          j++;
+        }
+        final token = s.substring(i, j);
+        if (token == 'true' || token == 'false' || token == 'null' ||
+            num.tryParse(token) != null) {
+          out.write(token);
+        } else {
+          out.write('"$token"');
+        }
+        i = j;
+        prev = 'v';
+        continue;
+      }
+      out.write(c);
+      prev = c;
+      i++;
+    }
+    return out.toString();
   }
 
   Map<String, String> _parseHeader(String headerStr) {
-    final headers = <String, String>{};
-    try {
-      final decoded = json.decode(headerStr);
-      if (decoded is Map) {
-        for (final entry in decoded.entries) {
-          headers[entry.key.toString()] = entry.value.toString();
-        }
-        return headers;
-      }
-    } catch (_) {}
+    var text = headerStr.trim();
+    // 源 header 本身是规则表达式（legado BaseSource.getHeaderMap 语义）：
+    // `@js:` / `<js>...</js>` 整串求值出 JSON。优++ 源普遍用它设移动端 UA
+    // 与 Referer；直接把 `@js:` 字面量按行解析会得到 `@js` 伪头 + 带引号的
+    // 假键值，真实 UA 丢失 → 站点按桌面模板返回（幻梦轻说列表为 0 条）。
+    final lower = text.toLowerCase();
+    if (lower.startsWith('@js:')) {
+      text = _evalSourceHeaderJs(text.substring(4));
+    } else if (lower.startsWith('<js>') && lower.contains('</js>')) {
+      text = _evalSourceHeaderJs(text.substring(4, lower.lastIndexOf('</js>')));
+    }
 
-    for (final line in headerStr.split('\n')) {
+    final headers = <String, String>{};
+    final decoded = parseJsonLenient(text);
+    if (decoded != null) {
+      for (final entry in decoded.entries) {
+        headers[entry.key.toString()] = entry.value.toString();
+      }
+      return headers;
+    }
+
+    for (final line in text.split('\n')) {
       final trimmed = line.trim();
       if (trimmed.isEmpty) continue;
       final colonIndex = trimmed.indexOf(': ');
@@ -783,6 +1061,23 @@ class AnalyzeUrl {
       }
     }
     return headers;
+  }
+
+  /// 源 header 的脚本求值：绑定 `baseUrl`（源根地址，legado `getKey()` 等效），
+  /// 脚本完成值作为 JSON 文本返回。求值失败返回空串（调用方退回默认头）。
+  String _evalSourceHeaderJs(String code) {
+    final ctx = ShuyuanSourceContext.current;
+    final engine = JsEngine.forSource(ctx?.sourceId);
+    try {
+      final base = (source?.bookSourceUrl.isNotEmpty ?? false)
+          ? source!.bookSourceUrl
+          : (baseUrl ?? '');
+      return engine.eval(code, bindings: {'baseUrl': base}).trim();
+    } catch (_) {
+      return '';
+    } finally {
+      if (ctx == null) engine.dispose();
+    }
   }
 
   /// 字符集解码优先级：
@@ -940,28 +1235,52 @@ class AnalyzeUrl {
     return lowerBody.substring(gt + 1, end).trim();
   }
 
-  /// loginCheckJs 求值：`result` 是可当字符串用的包装对象（保留
-  /// `indexOf/trim/length` 等），同时带 `code`（当前状态码）与 `body`
-  /// （原始响应）。脚本可以：
-  /// - 赋值 `result.code = 500`；
-  /// - 直接 `return 500` / `return '500'`；
-  /// - 重新赋值 `result = '500'`。
+  /// loginCheckJs 求值：`result` 按 legado 的 StrResponse 鸭子类型构造。
+  /// 源脚本普遍写 `result.body()` / `result.url()` / `result.code()`（方法
+  /// 调用，见幻梦轻说/太极小说），旧包装把 `body` 设成字符串属性导致
+  /// `result.body()` 抛 TypeError 整条脚本中断。这里：
+  /// - `body()` 返回正文；`body` 本身也可当字符串用（绑定了
+  ///   `match/includes/trim` 等 String.prototype 方法与 toString）；
+  /// - `url()/code()/message()/headers()` 齐备；
+  /// - 赋值 `result.code = 500`（覆盖函数属性）或直接 `return 500` /
+  ///   `return '500'` / `result = '500'` 仍可声明登录失效。
   /// 返回合法 HTTP 状态码（100..599）才采信，否则维持原状态码——避免把
   /// 正文里出现的数字误判成登录状态。
-  int _runLoginCheck(String js, int statusCode, String body) {
+  int _runLoginCheck(String js, int statusCode, String body,
+      {String url = '', String sourceUrl = ''}) {
     try {
       // 复用 per-source 引擎：loginCheckJs 每次请求都会求值，不能每次新建
       // QuickJS 运行时（旧实现还从不 dispose）。上下文种子由 JsEngine.eval
       // 统一注入，这里不再手动 evaluate，避免重复注入。
       final engine = JsEngine.forSource(ShuyuanSourceContext.current?.sourceId);
       final wrapped = 'var __lcBody = ${jsonEncode(body)};\n'
+          'var __lcUrl = ${jsonEncode(url)};\n'
           'var result = new String(__lcBody);\n'
-          'result.body = __lcBody;\n'
-          'result.code = $statusCode;\n'
+          'result.__code = $statusCode;\n'
+          'result.body = (function () {\n'
+          '  var f = function () { return __lcBody; };\n'
+          '  f.toString = f.valueOf = function () { return __lcBody; };\n'
+          '  var names = Object.getOwnPropertyNames(String.prototype);\n'
+          '  for (var i = 0; i < names.length; i++) {\n'
+          '    var k = names[i];\n'
+          '    if (k === "constructor") continue;\n'
+          '    try {\n'
+          '      var d = Object.getOwnPropertyDescriptor(String.prototype, k);\n'
+          '      if (d && typeof d.value === "function") f[k] = d.value.bind(__lcBody);\n'
+          '    } catch (e) {}\n'
+          '  }\n'
+          '  try { Object.defineProperty(f, "length", { value: __lcBody.length }); } catch (e) {}\n'
+          '  return f;\n'
+          '})();\n'
+          'result.code = function () { return result.__code; };\n'
+          'result.url = function () { return __lcUrl; };\n'
+          'result.message = function () { return ""; };\n'
+          'result.headers = function () { return {}; };\n'
           'var __lcOut = (function(){\n${js.trim()}\nreturn result;})();\n'
           'JSON.stringify({o: (__lcOut !== null && typeof __lcOut === "object") '
           '? __lcOut.code : __lcOut})';
-      final r = engine.eval(wrapped);
+      final r = engine.eval(wrapped,
+          bindings: {'baseUrl': sourceUrl.isEmpty ? url : sourceUrl, 'key': ''});
       if (r.isEmpty) return statusCode;
       final decoded = jsonDecode(r);
       if (decoded is! Map) return statusCode;
