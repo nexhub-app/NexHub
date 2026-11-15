@@ -843,12 +843,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     try {
       // 0) 脚本型视频路由（hybrid + video override type=='script'）脚本自带
       // 确定性解析（直连抓播放页 + 字符串抽取），无需 WebView 嗅探。
-      // 优先走脚本：省去嗅探最坏 12s 的等待，也避开 Windows 内嵌浏览器
-      // 频繁创建/销毁的崩溃高发区（Lost connection to device）。
+      // 书源视频源（selectors['xiaoshuo']）同样走确定性解析：章节页正文规则
+      // 输出的就是媒体直链（ShuyuanNovelResolver 的 video 路由），嗅探只会
+      // 白等 15s 还可能在内嵌浏览器里因反爬崩页面。优先走脚本：省去嗅探最坏
+      // 12s 的等待，也避开 Windows 内嵌浏览器频繁创建/销毁的崩溃高发区
+      // （Lost connection to device）。
       // 脚本失败（站点改版/网络异常）再落回下方通用嗅探链路，安全网不丢。
       if (isOuter &&
-          source.parser.type == 'hybrid' &&
-          source.parser.overrides?['video']?.type == 'script') {
+          ((source.parser.type == 'hybrid' &&
+                  source.parser.overrides?['video']?.type == 'script') ||
+              source.selectors?['xiaoshuo'] is Map)) {
         if (isOuter) _resolveProgress.value = 0.5;
         try {
           final scriptResult = await service.fetchVideoUrl(source, episodeUrl);

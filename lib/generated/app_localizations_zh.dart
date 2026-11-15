@@ -2819,6 +2819,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sourceTypeAnime => '动漫';
 
   @override
+  String get sourceTypeVideo => '视频';
+
+  @override
+  String get sourceTypeAudio => '音频';
+
+  @override
   String get sourceTypeManga => '漫画';
 
   @override

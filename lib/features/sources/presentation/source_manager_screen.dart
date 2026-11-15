@@ -151,7 +151,9 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
   List<PluginConfig> _getFilteredSources(SourceRepository repo) {
     var sources = repo.all;
     if (widget.filterType != null) {
-      sources = sources.where((c) => c.type == widget.filterType).toList();
+      sources = sources
+          .where((c) => c.type.mediaBucket == widget.filterType!.mediaBucket)
+          .toList();
     }
     // 隐藏源默认不显示，除非用户开启「显示隐藏源」
     if (!_showHidden) {
@@ -172,9 +174,10 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
       case 0:
         return sources.where((c) => c.type == SourceType.novelSource).toList();
       case 1:
-        // 媒体 Tab：animeSource（无 type 的旧源默认归 media，但 PluginConfig
-        // 强制 type 非空，因此此处无需额外兜底）。
-        return sources.where((c) => c.type == SourceType.animeSource).toList();
+        // 媒体 Tab：影视源 + 视频/音频源（legado bookSourceType=4/1 共用媒体栏）。
+        return sources
+            .where((c) => c.type.mediaBucket == SourceType.animeSource)
+            .toList();
       case 2:
         return sources.where((c) => c.type == SourceType.mangaSource).toList();
       default:
@@ -219,7 +222,9 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
       // 专属类型页：只保留匹配类型的源，其他类型直接忽略。
       final matched = widget.filterType == null
           ? configs
-          : configs.where((c) => c.type == widget.filterType).toList();
+          : configs
+              .where((c) => c.type.mediaBucket == widget.filterType!.mediaBucket)
+              .toList();
       final skippedByType = configs.length - matched.length;
 
       // 年龄限制开启时，18+ 源不可导入
@@ -461,7 +466,8 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
     if (widget.filterType != null) {
       final kept = <ImportPreviewItem>[];
       for (final it in items) {
-        if (it.config != null && it.type != widget.filterType) {
+        if (it.config != null &&
+            it.type?.mediaBucket != widget.filterType!.mediaBucket) {
           // 有效但类型不符 → 直接忽略，计入跳过数
           skippedByType++;
         } else {

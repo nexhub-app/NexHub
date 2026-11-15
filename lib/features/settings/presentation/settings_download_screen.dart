@@ -678,7 +678,10 @@ class _AutoDeleteExcludeSettingState extends State<_AutoDeleteExcludeSetting> {
     Widget option(FavoriteGroup g) {
       final selected = _excluded.contains(g.id);
       final moduleLabel = switch (g.sourceType) {
-        SourceType.animeSource => l10n.navMedia,
+        SourceType.animeSource ||
+        SourceType.videoSource ||
+        SourceType.audioSource =>
+          l10n.navMedia,
         SourceType.mangaSource => l10n.navComic,
         SourceType.novelSource => l10n.navNovel,
       };

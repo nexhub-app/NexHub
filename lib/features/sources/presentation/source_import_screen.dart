@@ -674,6 +674,8 @@ class _SourceImportScreenState extends State<SourceImportScreen> {
     return switch (type) {
       SourceType.novelSource => l10n.sourceTypeNovel,
       SourceType.animeSource => l10n.sourceTypeAnime,
+      SourceType.videoSource => l10n.sourceTypeVideo,
+      SourceType.audioSource => l10n.sourceTypeAudio,
       SourceType.mangaSource => l10n.sourceTypeManga,
     };
   }

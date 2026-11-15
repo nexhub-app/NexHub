@@ -86,13 +86,15 @@ class FavoriteEntry {
     this.myComment,
   });
 
-  factory FavoriteEntry.fromMediaItem(MediaItem item, {int? favoritedAt}) =>
+  factory FavoriteEntry.fromMediaItem(MediaItem item,
+          {int? favoritedAt, SourceType? sourceType}) =>
       FavoriteEntry(
         id: item.id,
         title: item.title,
         coverUrl: item.coverUrl,
         sourceId: item.sourceId,
-        sourceType: item.sourceType ?? SourceType.animeSource,
+        sourceType:
+            sourceType ?? item.sourceType ?? SourceType.animeSource,
         author: item.author,
         titleZh: item.title,
         director: item.director,
@@ -136,6 +138,29 @@ class FavoriteEntry {
         coverUrl: newCoverUrl,
         sourceId: sourceId,
         sourceType: sourceType,
+        author: author,
+        titleZh: titleZh,
+        director: director,
+        actors: actors,
+        detailUrl: detailUrl,
+        favoritedAt: favoritedAt,
+        lastRead: lastRead,
+        updatedAt: updatedAt,
+        lastSeenChapterCount: lastSeenChapterCount,
+        category: category,
+        status: status,
+        groupIds: groupIds,
+        myRating: myRating,
+        myComment: myComment,
+      );
+
+  /// 返回一个更新了所属模块桶的副本（导入旧数据归一化用）。
+  FavoriteEntry withSourceType(SourceType type) => FavoriteEntry(
+        id: id,
+        title: title,
+        coverUrl: coverUrl,
+        sourceId: sourceId,
+        sourceType: type,
         author: author,
         titleZh: titleZh,
         director: director,
@@ -320,6 +345,10 @@ class FavoritesManager extends ChangeNotifier {
 
   final Map<SourceType, List<FavoriteEntry>> _cache = {};
 
+  /// 持久化桶：视频/音频源与影视源共用媒体桶（见 [SourceType.mediaBucket]），
+  /// 保证媒体书架/分组能查到它们，条目不会落进无人查询的孤儿桶。
+  List<FavoriteEntry>? _bucket(SourceType type) => _cache[type.mediaBucket];
+
   /// 分组列表（内存态，按 sortOrder 排序后缓存）。
   final List<FavoriteGroup> _groups = <FavoriteGroup>[];
 
@@ -409,7 +438,7 @@ class FavoritesManager extends ChangeNotifier {
 
   /// 获取某模块的收藏列表（按收藏时间倒序）。
   List<FavoriteEntry> favoritesFor(SourceType type) =>
-      List.unmodifiable(_cache[type]?.reversed.toList() ?? const <FavoriteEntry>[]);
+      List.unmodifiable(_bucket(type)?.reversed.toList() ?? const <FavoriteEntry>[]);
 
   /// 获取某模块的收藏列表（按收藏时间倒序），并排除「仅属于隐藏分类」的条目。
   ///
@@ -428,7 +457,7 @@ class FavoritesManager extends ChangeNotifier {
 
   /// 是否已收藏。
   bool isFavorite(String contentId, SourceType type) =>
-      _cache[type]?.any((e) => e.id == contentId) ?? false;
+      _bucket(type)?.any((e) => e.id == contentId) ?? false;
 
   /// 切换收藏状态。重新收藏时保留原始 favoritedAt（不丢 dateAdded）。
   ///
@@ -437,7 +466,7 @@ class FavoritesManager extends ChangeNotifier {
   /// 若不传而走 `item.sourceType` 兜底 animeSource，会把漫画/小说收藏进动漫
   /// 书架，且详情页图标按正确类型查询永远不亮（表现为「无法收藏」）。
   Future<void> toggleFavorite(MediaItem item, {SourceType? type}) async {
-    final t = type ?? item.sourceType ?? SourceType.animeSource;
+    final t = (type ?? item.sourceType ?? SourceType.animeSource).mediaBucket;
     final list = _cache.putIfAbsent(t, () => <FavoriteEntry>[]);
 
     final idx = list.indexWhere((e) => e.id == item.id);
@@ -452,14 +481,14 @@ class FavoritesManager extends ChangeNotifier {
       if (cached != null) {
         // 重新收藏：保留原 favoritedAt 和 lastRead，但更新封面/作者等字段
         list.add(FavoriteEntry.fromMediaItem(item,
-            favoritedAt: cached.favoritedAt));
+            favoritedAt: cached.favoritedAt, sourceType: t));
         // 保留 lastRead + groupIds（fromMediaItem 会重置）
         final newIdx = list.length - 1;
         list[newIdx] = list[newIdx]
             .withLastRead(cached.lastRead)
             .withGroupIds(cached.groupIds);
       } else {
-        list.add(FavoriteEntry.fromMediaItem(item));
+        list.add(FavoriteEntry.fromMediaItem(item, sourceType: t));
       }
     }
     await _persist();
@@ -468,7 +497,7 @@ class FavoritesManager extends ChangeNotifier {
 
   /// 更新某收藏条目的 lastRead 时间戳（阅读器内调用）。
   Future<void> updateLastRead(String contentId, SourceType type) async {
-    final list = _cache[type];
+    final list = _bucket(type);
     if (list == null) return;
     final idx = list.indexWhere((e) => e.id == contentId);
     if (idx < 0) return;
@@ -487,7 +516,7 @@ class FavoritesManager extends ChangeNotifier {
     int count,
   ) async {
     if (count <= 0) return;
-    final list = _cache[type];
+    final list = _bucket(type);
     if (list == null) return;
     final idx = list.indexWhere((e) => e.id == contentId);
     if (idx < 0) return;
@@ -507,7 +536,7 @@ class FavoritesManager extends ChangeNotifier {
     int updatedAtMs,
   ) async {
     if (updatedAtMs <= 0) return;
-    final list = _cache[type];
+    final list = _bucket(type);
     if (list == null) return;
     final idx = list.indexWhere((e) => e.id == contentId);
     if (idx < 0) return;
@@ -524,7 +553,7 @@ class FavoritesManager extends ChangeNotifier {
     int? myRating,
     String? myComment,
   }) async {
-    final list = _cache[type];
+    final list = _bucket(type);
     if (list == null) return false;
     final idx = list.indexWhere((e) => e.id == contentId);
     if (idx < 0) return false;
@@ -541,7 +570,7 @@ class FavoritesManager extends ChangeNotifier {
     SourceType type,
     String? newCoverUrl,
   ) async {
-    final list = _cache[type];
+    final list = _bucket(type);
     if (list == null) return false;
     final idx = list.indexWhere((e) => e.id == contentId);
     if (idx < 0) return false;
@@ -557,7 +586,7 @@ class FavoritesManager extends ChangeNotifier {
 
   /// 移除收藏。
   Future<void> removeFavorite(String contentId, SourceType type) async {
-    final list = _cache[type];
+    final list = _bucket(type);
     if (list == null) return;
     list.removeWhere((e) => e.id == contentId);
     await _persist();
@@ -585,7 +614,10 @@ class FavoritesManager extends ChangeNotifier {
   Future<void> importFromList(List<dynamic> items) async {
     for (final item in items) {
       if (item is! Map<String, dynamic>) continue;
-      final entry = FavoriteEntry.fromJson(item);
+      final parsed = FavoriteEntry.fromJson(item);
+      final entry = parsed.sourceType == parsed.sourceType.mediaBucket
+          ? parsed
+          : parsed.withSourceType(parsed.sourceType.mediaBucket);
       final list =
           _cache.putIfAbsent(entry.sourceType, () => <FavoriteEntry>[]);
       if (list.any((e) => e.id == entry.id)) continue;
@@ -602,7 +634,7 @@ class FavoritesManager extends ChangeNotifier {
   List<FavoriteGroup> groupsFor(SourceType type,
       {bool includeHidden = false}) {
     final List<FavoriteGroup> result = _groups
-        .where((g) => g.sourceType == type && (includeHidden || !g.hidden))
+        .where((g) => g.sourceType.mediaBucket == type.mediaBucket && (includeHidden || !g.hidden))
         .toList()
       ..sortByOrder();
     return List.unmodifiable(result);
@@ -618,7 +650,7 @@ class FavoritesManager extends ChangeNotifier {
 
   /// 某分组下的收藏条目总数（仅统计同模块）。
   int entryCountInGroup(String groupId, {required SourceType type}) {
-    final list = _cache[type];
+    final list = _bucket(type);
     if (list == null) return 0;
     return list.where((e) => e.groupIds.contains(groupId)).length;
   }
@@ -626,7 +658,7 @@ class FavoritesManager extends ChangeNotifier {
   /// 某收藏条目所属的分组 id 列表（多分组标签；未收藏返回空列表）。
   /// 用于「读后自动删除」按收藏分类判断是否排除。
   List<String> groupIdsOf(String contentId, SourceType type) {
-    final list = _cache[type];
+    final list = _bucket(type);
     if (list == null) return const <String>[];
     final int idx = list.indexWhere((e) => e.id == contentId);
     if (idx < 0) return const <String>[];
@@ -638,13 +670,13 @@ class FavoritesManager extends ChangeNotifier {
       {required SourceType type}) async {
     final String trimmed = name.trim();
     if (trimmed.isEmpty) return null;
-    if (_groups.any((g) => g.sourceType == type && g.name == trimmed)) {
+    if (_groups.any((g) => g.sourceType.mediaBucket == type.mediaBucket && g.name == trimmed)) {
       return null;
     }
     final group = FavoriteGroup(
       id: FavoriteGroup.newId(),
       name: trimmed,
-      sourceType: type,
+      sourceType: type.mediaBucket,
       sortOrder: _nextSortOrder(type),
       createdAt: DateTime.now().millisecondsSinceEpoch,
     );
@@ -658,7 +690,7 @@ class FavoritesManager extends ChangeNotifier {
   int _nextSortOrder(SourceType type) {
     int max = -1;
     for (final g in _groups) {
-      if (g.sourceType == type && g.sortOrder > max) max = g.sortOrder;
+      if (g.sourceType.mediaBucket == type.mediaBucket && g.sortOrder > max) max = g.sortOrder;
     }
     return max + 1;
   }
@@ -672,7 +704,7 @@ class FavoritesManager extends ChangeNotifier {
     if (idx < 0) return false;
     final SourceType type = _groups[idx].sourceType;
     if (_groups.any(
-        (g) => g.id != id && g.sourceType == type && g.name == trimmed)) {
+        (g) => g.id != id && g.sourceType.mediaBucket == type.mediaBucket && g.name == trimmed)) {
       return false;
     }
     _groups[idx] = _groups[idx].copyWith(name: trimmed);
@@ -688,7 +720,7 @@ class FavoritesManager extends ChangeNotifier {
     final SourceType type = _groups[idx].sourceType;
     _groups.removeAt(idx);
     bool entriesChanged = false;
-    final list = _cache[type];
+    final list = _bucket(type);
     if (list != null) {
       for (int i = 0; i < list.length; i++) {
         if (list[i].groupIds.contains(id)) {
@@ -718,7 +750,7 @@ class FavoritesManager extends ChangeNotifier {
     }
     // 归一化同模块 sortOrder 为连续序号
     final List<FavoriteGroup> ordered = _groups
-        .where((g) => g.sourceType == type)
+        .where((g) => g.sourceType.mediaBucket == type.mediaBucket)
         .toList()
       ..sortByOrder();
     for (int i = 0; i < ordered.length; i++) {
@@ -745,12 +777,12 @@ class FavoritesManager extends ChangeNotifier {
     SourceType type,
     List<String> groupIds,
   ) async {
-    final list = _cache[type];
+    final list = _bucket(type);
     if (list == null) return false;
     final int idx = list.indexWhere((e) => e.id == contentId);
     if (idx < 0) return false;
     final Set<String> valid = _groups
-        .where((g) => g.sourceType == type)
+        .where((g) => g.sourceType.mediaBucket == type.mediaBucket)
         .map((g) => g.id)
         .toSet();
     list[idx] = list[idx]

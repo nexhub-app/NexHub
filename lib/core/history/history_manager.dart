@@ -157,12 +157,12 @@ class HistoryEntry {
         coverFetchFailed: json['coverFetchFailed'] as bool? ?? false,
       );
 
-  HistoryEntry copyWith({String? localCoverPath, bool? hidden, bool? coverFetchFailed}) => HistoryEntry(
+  HistoryEntry copyWith({String? localCoverPath, bool? hidden, bool? coverFetchFailed, SourceType? sourceType}) => HistoryEntry(
         id: id,
         title: title,
         coverUrl: coverUrl,
         sourceId: sourceId,
-        sourceType: sourceType,
+        sourceType: sourceType ?? this.sourceType,
         detailUrl: detailUrl,
         viewedAt: viewedAt,
         lastChapter: lastChapter,
@@ -188,6 +188,10 @@ class HistoryManager extends ChangeNotifier {
   static const String _key = 'history_v1';
 
   final Map<SourceType, List<HistoryEntry>> _cache = {};
+
+  /// 持久化桶：视频/音频源与影视源共用媒体桶（见 [SourceType.mediaBucket]），
+  /// 保证媒体书籍架/历史能查到它们，条目不会落进无人查询的孤儿桶。
+  List<HistoryEntry>? _bucket(SourceType type) => _cache[type.mediaBucket];
 
   /// 加载持久化数据。
   Future<void> init() async {
@@ -230,7 +234,7 @@ class HistoryManager extends ChangeNotifier {
   /// 书架/历史列表中。被隐藏的条目仍保留在内部缓存中（进度不丢），
   /// 可经 [findById] 取到；用户重新进入该作品后自动复原可见。
   List<HistoryEntry> historyFor(SourceType type) {
-    final list = _cache[type];
+    final list = _bucket(type);
     if (list == null) return const <HistoryEntry>[];
     return List.unmodifiable(
       list.reversed.where((e) => !e.hidden).toList(),
@@ -243,7 +247,7 @@ class HistoryManager extends ChangeNotifier {
   /// 作为"上次阅读"提示的相对时间锚点。
   HistoryEntry? findById(String contentId, {SourceType? sourceType}) {
     if (sourceType != null) {
-      final list = _cache[sourceType];
+      final list = _bucket(sourceType);
       if (list == null) return null;
       for (final e in list) {
         if (e.id == contentId) return e;
@@ -275,7 +279,8 @@ class HistoryManager extends ChangeNotifier {
         ConfigLoader.instance.isIncognitoBySourceId(sid)) {
       return;
     }
-    final type = sourceType ?? item.sourceType ?? SourceType.animeSource;
+    final type =
+        (sourceType ?? item.sourceType ?? SourceType.animeSource).mediaBucket;
     final list = _cache.putIfAbsent(type, () => <HistoryEntry>[]);
 
     // 旧记录（去重 + 元数据继承源）：本地/下载入口重建的条目缺封面等
@@ -352,9 +357,12 @@ class HistoryManager extends ChangeNotifier {
     HistoryEntry entry, {
     SourceType type = SourceType.animeSource,
   }) async {
-    final list = _cache.putIfAbsent(type, () => <HistoryEntry>[]);
+    final bucketType = type.mediaBucket;
+    final list = _cache.putIfAbsent(bucketType, () => <HistoryEntry>[]);
     list.removeWhere((e) => e.id == entry.id);
-    list.add(entry);
+    list.add(entry.sourceType == bucketType
+        ? entry
+        : entry.copyWith(sourceType: bucketType));
     while (list.length > maxPerModule) {
       list.removeAt(0);
     }
@@ -451,7 +459,7 @@ class HistoryManager extends ChangeNotifier {
   }
 
   void _replaceEntryInCache(HistoryEntry updated) {
-    final list = _cache[updated.sourceType];
+    final list = _bucket(updated.sourceType);
     if (list == null) return;
     final idx = list.indexWhere((e) => e.id == updated.id);
     if (idx >= 0) list[idx] = updated;
@@ -477,7 +485,7 @@ class HistoryManager extends ChangeNotifier {
   ///
   /// 与 [clearAll]（物理清空）语义区分：本方法保留条目与进度，仅隐藏。
   Future<void> hideAll(SourceType type) async {
-    final list = _cache[type];
+    final list = _bucket(type);
     if (list == null || list.isEmpty) return;
     for (var i = 0; i < list.length; i++) {
       list[i] = list[i].copyWith(hidden: true);
@@ -493,7 +501,7 @@ class HistoryManager extends ChangeNotifier {
   Future<void> markHidden(String contentId, {SourceType? sourceType}) async {
     var touched = false;
     if (sourceType != null) {
-      touched = _hideEntryInList(_cache[sourceType], contentId);
+      touched = _hideEntryInList(_bucket(sourceType), contentId);
     } else {
       for (final list in _cache.values) {
         touched = _hideEntryInList(list, contentId) || touched;
@@ -524,7 +532,7 @@ class HistoryManager extends ChangeNotifier {
   Future<void> restore(String contentId, {SourceType? sourceType}) async {
     var touched = false;
     if (sourceType != null) {
-      touched = _restoreEntryInList(_cache[sourceType], contentId);
+      touched = _restoreEntryInList(_bucket(sourceType), contentId);
     } else {
       for (final list in _cache.values) {
         touched = _restoreEntryInList(list, contentId) || touched;
@@ -553,7 +561,7 @@ class HistoryManager extends ChangeNotifier {
   /// 不传则在所有模块中删除匹配 id 的记录。删除后自动持久化并通知 UI。
   Future<void> removeHistory(String contentId, {SourceType? sourceType}) async {
     if (sourceType != null) {
-      _cache[sourceType]?.removeWhere((e) => e.id == contentId);
+      _bucket(sourceType)?.removeWhere((e) => e.id == contentId);
     } else {
       for (final list in _cache.values) {
         list.removeWhere((e) => e.id == contentId);

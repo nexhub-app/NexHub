@@ -90,6 +90,8 @@ class _BookshelfFilterSheetState extends State<_BookshelfFilterSheet> {
       case BookshelfSort.latestChapter:
         switch (widget.sourceType) {
           case SourceType.animeSource:
+          case SourceType.videoSource:
+          case SourceType.audioSource:
             return l10n.sortLatestUpdate;
           case SourceType.mangaSource:
             return l10n.sortLatestMangaChapter;

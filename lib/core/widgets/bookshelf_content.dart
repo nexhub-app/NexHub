@@ -697,7 +697,10 @@ void _sortLocalEntries(
 List<LocalMediaKind> _kindsForSourceType(SourceType type) => switch (type) {
       SourceType.mangaSource => [LocalMediaKind.images, LocalMediaKind.pdf],
       SourceType.novelSource => [LocalMediaKind.text],
-      SourceType.animeSource => [LocalMediaKind.video],
+      SourceType.animeSource ||
+      SourceType.videoSource ||
+      SourceType.audioSource =>
+        [LocalMediaKind.video],
     };
 
 /// 取下载任务首个产物文件的扩展名（不含点，小写）。
@@ -954,6 +957,8 @@ class _BookshelfGridState extends State<_BookshelfGrid> {
     try {
       switch (item.sourceType) {
         case SourceType.animeSource:
+        case SourceType.videoSource:
+        case SourceType.audioSource:
           try {
             // 书架环境无 Provider context，用默认实例读取。
             final mgr = MediaWatchedManager();
@@ -1276,6 +1281,8 @@ class _BookshelfGridState extends State<_BookshelfGrid> {
         case SourceType.mangaSource:
           return await _computeComicBadge(item);
         case SourceType.animeSource:
+        case SourceType.videoSource:
+        case SourceType.audioSource:
           return await _computeMediaBadge(ctx, item);
       }
     } on Object {

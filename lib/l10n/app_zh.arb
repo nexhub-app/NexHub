@@ -1485,6 +1485,8 @@
   "back": "返回",
   "sourceType": "类型",
   "sourceTypeAnime": "动漫",
+  "sourceTypeVideo": "视频",
+  "sourceTypeAudio": "音频",
   "sourceTypeManga": "漫画",
   "sourceTypeNovel": "小说",
   "playerTimerOff": "关闭定时",

@@ -112,7 +112,10 @@ abstract class UnifiedProgressRepository {
           watched,
           _tryRead<NovelProgressManager>(context) ?? NovelProgressManager(),
         ),
-      SourceType.animeSource => MediaProgressRepository(
+      SourceType.animeSource ||
+      SourceType.videoSource ||
+      SourceType.audioSource =>
+        MediaProgressRepository(
           watched,
           _tryRead<MediaPlaybackPositionManager>(context),
         ),

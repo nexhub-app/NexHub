@@ -5546,6 +5546,18 @@ abstract class AppLocalizations {
   /// **'Anime'**
   String get sourceTypeAnime;
 
+  /// No description provided for @sourceTypeVideo.
+  ///
+  /// In en, this message translates to:
+  /// **'Video'**
+  String get sourceTypeVideo;
+
+  /// No description provided for @sourceTypeAudio.
+  ///
+  /// In en, this message translates to:
+  /// **'Audio'**
+  String get sourceTypeAudio;
+
   /// No description provided for @sourceTypeManga.
   ///
   /// In en, this message translates to:

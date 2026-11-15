@@ -40,6 +40,10 @@ String importTypeLabel(SourceType type, AppLocalizations l10n) {
       return l10n.sourceCategoryNovel;
     case SourceType.animeSource:
       return l10n.sourceCategoryMedia;
+    case SourceType.videoSource:
+      return l10n.sourceTypeVideo;
+    case SourceType.audioSource:
+      return l10n.sourceTypeAudio;
     case SourceType.mangaSource:
       return l10n.sourceCategoryComic;
   }

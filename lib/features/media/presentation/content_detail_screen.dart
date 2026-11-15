@@ -179,6 +179,9 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
   bool get _isAnime => _sourceType == SourceType.animeSource;
   bool get _isManga => _sourceType == SourceType.mangaSource;
   bool get _isNovel => _sourceType == SourceType.novelSource;
+
+  /// 媒体家族（影视/视频/音频源）：共用媒体播放管线与剧集语义。
+  bool get _isMedia => _sourceType.isMediaFamily;
   bool get _isChapterBased => _isManga || _isNovel;
 
   // 小说渐进目录相关。
@@ -256,7 +259,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
     }
     _sourceType =
         fromSource ?? widget.item.sourceType ?? SourceType.animeSource;
-    _favType = widget.item.sourceType ?? _sourceType;
+    _favType = (widget.item.sourceType ?? _sourceType).mediaBucket;
   }
 
   // ───────────────────────── 加载 ─────────────────────────
@@ -346,7 +349,10 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
           renderedHtml: _renderedHtml,
           onProgress: _throttledChapterBatch,
         ),
-      SourceType.animeSource => service.fetchEpisodes(
+      SourceType.animeSource ||
+      SourceType.videoSource ||
+      SourceType.audioSource =>
+        service.fetchEpisodes(
           source,
           id,
           title: widget.item.title,
@@ -568,6 +574,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
 
     switch (_sourceType) {
       case SourceType.animeSource:
+      case SourceType.videoSource:
+      case SourceType.audioSource:
         // 「已看」由播放器在进度达到阈值时自动标记（见 VideoPlayerScreen），
         // 此处不再进入即标记，避免看几秒便记为已看。
         await Navigator.of(context).push(
@@ -1345,7 +1353,10 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
       fallbackIcon: switch (_sourceType) {
         SourceType.mangaSource => Icons.menu_book_rounded,
         SourceType.novelSource => Icons.auto_stories_rounded,
-        SourceType.animeSource => Icons.movie_rounded,
+        SourceType.audioSource => Icons.headphones_rounded,
+        SourceType.animeSource ||
+        SourceType.videoSource =>
+          Icons.movie_rounded,
       },
       banner: showWarning ? _buildWarningBanner(l10n, episodes.length) : null,
       appBarActions: <Widget>[
@@ -1497,7 +1508,10 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
         unitWord: switch (_sourceType) {
           SourceType.mangaSource => l10n.unitWordComicChapter,
           SourceType.novelSource => l10n.unitWordChapter,
-          SourceType.animeSource => l10n.unitWordEpisode,
+          SourceType.animeSource ||
+          SourceType.videoSource ||
+          SourceType.audioSource =>
+            l10n.unitWordEpisode,
         },
         contentId: item.id,
       ),

@@ -370,6 +370,8 @@ class HomeWidgetService with WidgetsBindingObserver {
     try {
       switch (e.sourceType) {
         case SourceType.animeSource:
+        case SourceType.videoSource:
+        case SourceType.audioSource:
           final MediaPlaybackPositionManager? positions = _positions;
           if (positions == null) return fallback;
           final int index = positions.getLastEpisode(e.id);

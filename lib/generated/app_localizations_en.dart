@@ -2871,6 +2871,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get sourceTypeAnime => 'Anime';
 
   @override
+  String get sourceTypeVideo => 'Video';
+
+  @override
+  String get sourceTypeAudio => 'Audio';
+
+  @override
   String get sourceTypeManga => 'Manga';
 
   @override

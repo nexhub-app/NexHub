@@ -235,12 +235,14 @@ class OnlineSourceBrowserScreen extends StatelessWidget {
 
   static Color _sourceColor(SourceType type, ColorScheme scheme) {
     if (type == SourceType.novelSource) return scheme.primary;
-    if (type == SourceType.animeSource) return scheme.tertiary;
+    if (type.isMediaFamily) return scheme.tertiary;
     return scheme.secondary; // mangaSource
   }
 
   static IconData _sourceIcon(SourceType type) {
     if (type == SourceType.novelSource) return Icons.menu_book_rounded;
+    if (type == SourceType.videoSource) return Icons.movie_rounded;
+    if (type == SourceType.audioSource) return Icons.headphones_rounded;
     if (type == SourceType.animeSource) return Icons.movie_rounded;
     return Icons.auto_stories_rounded; // mangaSource
   }

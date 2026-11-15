@@ -81,7 +81,8 @@ class _SourceManagerPanelState extends State<SourceManagerPanel> {
 
     final SourceRepository repo = context.watch<SourceRepository>();
     final List<PluginConfig> sources = repo.all
-        .where((PluginConfig c) => c.type == widget.filterType)
+        .where((PluginConfig c) =>
+            c.type.mediaBucket == widget.filterType.mediaBucket)
         .where((c) => !repo.isAgeBlocked(c))
         .toList();
 
@@ -110,6 +111,10 @@ class _SourceManagerPanelState extends State<SourceManagerPanel> {
         return l10n.sourceCategoryNovel;
       case SourceType.animeSource:
         return l10n.sourceCategoryMedia;
+      case SourceType.videoSource:
+        return l10n.sourceTypeVideo;
+      case SourceType.audioSource:
+        return l10n.sourceTypeAudio;
       case SourceType.mangaSource:
         return l10n.sourceCategoryComic;
     }

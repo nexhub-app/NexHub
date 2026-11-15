@@ -64,6 +64,8 @@ List<BookshelfSort> availableSortsFor(SourceType type) {
         BookshelfSort.manual,
       ];
     case SourceType.animeSource:
+    case SourceType.videoSource:
+    case SourceType.audioSource:
       return const <BookshelfSort>[
         BookshelfSort.recent,
         BookshelfSort.title,

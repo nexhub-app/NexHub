@@ -173,8 +173,11 @@ class SourceRepository extends ChangeNotifier {
           c.isEnabled && !c.isDeprecated && !c.isHidden && !isAgeBlocked(c))
       .toList();
 
-  List<PluginConfig> byType(SourceType type) =>
-      activeSources.where((c) => c.type == type).toList();
+  /// 按模块取活跃源。查询影视桶（animeSource）时一并返回视频/音频源
+  /// （legado bookSourceType=4/1）——三者共用媒体播放管线与「媒体」栏。
+  List<PluginConfig> byType(SourceType type) => activeSources
+      .where((c) => c.type.mediaBucket == type.mediaBucket)
+      .toList();
 
   PluginConfig? getById(String id) {
     for (final c in all) {

@@ -111,11 +111,15 @@ class ShuyuanAdapter {
     return PluginConfig(
       id: 'xiaoshuo_${_urlToId(baseUrl)}',
       name: source.bookSourceName,
-      // 源分发（P2-4）：bookSourceType=2（图片/漫画）→ 漫画模块消费；
-      // 其余（0 文本/1 音频/4 视频）暂留小说模块书架形态。
-      type: source.bookSourceType == 2
-          ? SourceType.mangaSource
-          : SourceType.novelSource,
+      // 源分发：bookSourceType=2（图片/漫画）→ 漫画模块；
+      // 1（音频）/4（视频）→ 媒体栏（走媒体播放管线）；
+      // 0 文本与 3 文件暂留小说模块书架形态。
+      type: switch (source.bookSourceType) {
+        2 => SourceType.mangaSource,
+        1 => SourceType.audioSource,
+        4 => SourceType.videoSource,
+        _ => SourceType.novelSource,
+      },
       responseType: 'html',
       site: SiteConfig(
         domain: Uri.tryParse(baseUrl)?.host ?? baseUrl,

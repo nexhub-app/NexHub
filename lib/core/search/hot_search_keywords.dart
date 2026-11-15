@@ -459,7 +459,10 @@ class HotSearchKeywords extends ChangeNotifier {
       BangumiHotQuery(types: <int>[BangumiSubjectType.book]),
     );
     return switch (type) {
-      SourceType.animeSource => <BangumiHotStep>[
+      SourceType.animeSource ||
+      SourceType.videoSource ||
+      SourceType.audioSource =>
+        <BangumiHotStep>[
           const BangumiHotStep.featured('/anime'),
           BangumiHotStep.search(
             BangumiHotQuery(

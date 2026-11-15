@@ -144,7 +144,10 @@ class SubjectLinkStore {
   ///
   /// animeSource 同时覆盖动画与三次元（影视与动漫共用 animeSource）。
   static List<int> searchTypesFor(SourceType type) => switch (type) {
-        SourceType.animeSource => const <int>[
+        SourceType.animeSource ||
+        SourceType.videoSource ||
+        SourceType.audioSource =>
+          const <int>[
             BangumiSubjectType.anime,
             BangumiSubjectType.real,
           ],

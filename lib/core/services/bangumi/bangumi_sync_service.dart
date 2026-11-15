@@ -116,7 +116,10 @@ class BangumiSyncService extends ChangeNotifier {
   Future<void> setTypeEnabled(SourceType type, bool enabled) async {
     _typeEnabled[type] = enabled;
     final key = switch (type) {
-      SourceType.animeSource => _syncAnimeKey,
+      SourceType.animeSource ||
+      SourceType.videoSource ||
+      SourceType.audioSource =>
+        _syncAnimeKey,
       SourceType.mangaSource => _syncMangaKey,
       SourceType.novelSource => _syncNovelKey,
     };
@@ -375,6 +378,8 @@ class BangumiSyncService extends ChangeNotifier {
         if (p == null) return null;
         return (p.chapterIndex + 1, p.totalChapters);
       case SourceType.animeSource:
+      case SourceType.videoSource:
+      case SourceType.audioSource:
         return null;
     }
   }

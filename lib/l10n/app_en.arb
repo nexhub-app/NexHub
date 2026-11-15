@@ -1506,6 +1506,8 @@
   "back": "Back",
   "sourceType": "Type",
   "sourceTypeAnime": "Anime",
+  "sourceTypeVideo": "Video",
+  "sourceTypeAudio": "Audio",
   "sourceTypeManga": "Manga",
   "sourceTypeNovel": "Novel",
   "playerTimerOff": "Turn off timer",

@@ -51,7 +51,10 @@ abstract class UnifiedBookmarkRepository {
     return switch (type) {
       SourceType.mangaSource => ComicBookmarkRepository(),
       SourceType.novelSource => NovelBookmarkRepository(),
-      SourceType.animeSource => null,
+      SourceType.animeSource ||
+      SourceType.videoSource ||
+      SourceType.audioSource =>
+        null,
     };
   }
 }

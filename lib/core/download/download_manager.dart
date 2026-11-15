@@ -513,12 +513,14 @@ class DownloadManager extends ChangeNotifier {
     // 以「源的真实 type」为准派发下载处理器，避免漫画/小说从影视入口进入时
     // item.sourceType 缺失或被错配成 anime，导致被当成视频去嗅探
     // （route not found → 全部下载失败）。sourceId 能查到源时强制采用源的 type；
-    // 查不到（如本地导入）才回退到 item.sourceType 或 animeSource。
-    final SourceType sourceType = (item.sourceId != null
-            ? sourceRepo.getById(item.sourceId!)?.type
-            : null) ??
-        item.sourceType ??
-        SourceType.animeSource;
+    // 查不到（如本地导入）才回退到 item.sourceType 或 animeSource。类型再按
+    // mediaBucket 归一，保证视频/音频源任务落在「媒体」下载桶里可见。
+    final SourceType sourceType = ((item.sourceId != null
+                ? sourceRepo.getById(item.sourceId!)?.type
+                : null) ??
+            item.sourceType ??
+            SourceType.animeSource)
+        .mediaBucket;
     final format = _resolveFormat(sourceType);
     // 规范化章节序号：下载文件名用「全局序号」（整本连续、跨批次稳定）命名，
     // 保证分批「单独下载」时各批不会用本地 1..N 互相覆盖（否则第二次下载会
@@ -1110,7 +1112,10 @@ class DownloadManager extends ChangeNotifier {
   static String _typeDirName(SourceType type) => switch (type) {
         SourceType.novelSource => '小说',
         SourceType.mangaSource => '漫画',
-        SourceType.animeSource => '媒体',
+        SourceType.animeSource ||
+        SourceType.videoSource ||
+        SourceType.audioSource =>
+          '媒体',
       };
 
   /// 清洗作品名为安全文件名：仅剔除文件系统非法字符，保留中文与可读性；
@@ -1156,7 +1161,10 @@ class DownloadManager extends ChangeNotifier {
     return switch (type) {
       SourceType.mangaSource => _formatPrefs.comicFormat,
       SourceType.novelSource => _formatPrefs.novelFormat,
-      SourceType.animeSource => DownloadFormat.video,
+      SourceType.animeSource ||
+      SourceType.videoSource ||
+      SourceType.audioSource =>
+        DownloadFormat.video,
     };
   }
 
@@ -1494,6 +1502,8 @@ class DownloadManager extends ChangeNotifier {
           coverUrl: novelCoverUrl,
         );
       case SourceType.animeSource:
+      case SourceType.videoSource:
+      case SourceType.audioSource:
         return MediaDownloadHandler(
           service: service,
           fs: fs,
@@ -1531,6 +1541,8 @@ class DownloadManager extends ChangeNotifier {
     if (root == null || root.isEmpty) return const <String>[];
     switch (task.sourceType) {
       case SourceType.animeSource:
+      case SourceType.videoSource:
+      case SourceType.audioSource:
         if (!await fs.exists(root)) return const <String>[];
         final files = await fs.listFiles(root);
         final sorted = files

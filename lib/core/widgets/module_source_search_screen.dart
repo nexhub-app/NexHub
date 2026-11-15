@@ -218,7 +218,7 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
     _checkedSourceIds
       ..clear()
       ..addAll(sources.map((s) => s.id));
-    _mediaServerChecked = widget.sourceType == SourceType.animeSource;
+    _mediaServerChecked = widget.sourceType.isMediaFamily;
   }
 
   Future<void> _doSearch(String query) async {
@@ -242,7 +242,7 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
     final checked =
         sources.where((s) => _checkedSourceIds.contains(s.id)).toList();
     final bool mediaServerActive =
-        widget.sourceType == SourceType.animeSource && _mediaServerChecked;
+        widget.sourceType.isMediaFamily && _mediaServerChecked;
     // 一个源都没勾选（且媒体服务器未勾选）：提示先勾选，不发起请求。
     if (checked.isEmpty && !mediaServerActive) {
       if (mounted) {
@@ -611,7 +611,10 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
       switch (type) {
         SourceType.mangaSource => [LocalMediaKind.images, LocalMediaKind.pdf],
         SourceType.novelSource => [LocalMediaKind.text],
-        SourceType.animeSource => [LocalMediaKind.video],
+        SourceType.animeSource ||
+        SourceType.videoSource ||
+        SourceType.audioSource =>
+          [LocalMediaKind.video],
       };
 
   /// 下载格式 → 本地媒体 kind（null 表示该格式无本地阅读路径）。
@@ -671,7 +674,7 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
     final sourceRepo = context.read<SourceRepository>();
     final sources = sourceRepo.byType(widget.sourceType);
     _ensureSelectionInit(sources);
-    final bool hasMediaServer = widget.sourceType == SourceType.animeSource;
+    final bool hasMediaServer = widget.sourceType.isMediaFamily;
     final int itemCount = sources.length + 1 + (hasMediaServer ? 1 : 0);
 
     return Padding(
@@ -786,7 +789,7 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
             _checkedSourceIds
               ..clear()
               ..addAll(sources.map((s) => s.id));
-            if (widget.sourceType == SourceType.animeSource) {
+            if (widget.sourceType.isMediaFamily) {
               _mediaServerChecked = true;
             }
           }
@@ -843,6 +846,8 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
           (l10n.searchFieldWork, 'title'),
         ];
       case SourceType.animeSource:
+      case SourceType.videoSource:
+      case SourceType.audioSource:
         return <(String, String?)>[
           ...base,
           (l10n.searchFieldDirector, 'director'),
@@ -1058,7 +1063,7 @@ class _ModuleSourceSearchScreenState extends State<ModuleSourceSearchScreen> {
   /// 已读章节占比；未缓存总章数时以极小进度标记「已开始」。
   Future<double?> _computeProgress(MediaItem item) async {
     final SourceType? type = item.sourceType;
-    if (type == SourceType.animeSource) {
+    if (type?.isMediaFamily == true) {
       try {
         final watchedMgr = context.read<MediaWatchedManager>();
         final watched = watchedMgr.watchedCount(item.id);
