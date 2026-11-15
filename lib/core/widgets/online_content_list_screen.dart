@@ -169,6 +169,10 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
   // 这样用户首次点分类不再撞冷启动首调失败，也不会弹出错误提示。
   bool _firstCategoryPreloaded = false;
 
+  // 分类加载态：书源以分类为主界面，分类请求中是首屏唯一内容来源。
+  bool _categoriesLoading = false;
+  bool _categoriesFailed = false;
+
   // 周期表数据（进入周期表 Tab 时按需抓取，见 [_ensureScheduleData]）
   List<MediaItem> _scheduleItems = <MediaItem>[];
   bool _scheduleLoading = false;
@@ -223,7 +227,8 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
         setState(() => _dismissedAnnouncements.addAll(list));
       }
     });
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: _tabCount, vsync: this);
+    _lastTabCount = _tabCount;
     _tabController.addListener(_onTabChanged);
     // 监听布局设置变化，切换预设/列数/间距后即时刷新网格
     _layoutStore.addListener(_onLayoutChanged);
@@ -234,7 +239,8 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
       _source = widget.sources.first;
     }
     _loadCategories();
-    _loadHome();
+    // 书源以分类为主界面，没有首页/周期表（首页是通用聚合视图）。
+    if (!_isShuyuanSource) _loadHome();
     // 首帧后弹出该源公告。
     if (_source != null) {
       _maybeShowAnnouncement(_source!);
@@ -252,7 +258,7 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
         _source = widget.sources.isNotEmpty ? widget.sources.first : null;
       }
       _loadCategories();
-      _loadHome();
+      if (!_isShuyuanSource) _loadHome();
     }
   }
 
@@ -268,17 +274,32 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
     if (mounted) setState(() {});
   }
 
+  /// 是否书源（通用 shuyuan 格式）。
+  ///
+  /// 书源的「发现」在 legado 里就是作者编排的分类栏：分类即主界面。首页 /
+  /// 周期表是通用聚合视图，对书源语义重复且经常为空（用户反馈「书源不要
+  /// 首页和周期表，直接展示分类」）。
+  bool get _isShuyuanSource {
+    final xiaoshuo = _source?.selectors?['xiaoshuo'];
+    return xiaoshuo is Map;
+  }
+
   /// 根据当前源能力决定 Tab 总数。
   ///
-  /// Tab 顺序：首页 / [周期表?] / [网络收藏?] / [动态分类...] / [排行?]
+  /// 通用源顺序：首页 / [周期表?] / [网络收藏?] / [动态分类...] / [排行?]
+  /// 书源顺序：[动态分类...] / [网络收藏?] / [排行?]（无分类时至少 1，占位）。
   int get _tabCount {
+    if (_isShuyuanSource) {
+      final count = _categories.length +
+          (_hasWebFavorite ? 1 : 0) +
+          (_hasRank ? 1 : 0);
+      return count < 1 ? 1 : count;
+    }
     int count = 1; // 首页
     if (_hasScheduleData) count += 1; // 周期表（条件显示）
     if (_hasWebFavorite) count += 1; // 网络收藏（条件显示）
     count += _categories.length; // 动态分类
-    if (_source != null && _source!.routes.containsKey('rank')) {
-      count += 1; // 排行
-    }
+    if (_hasRank) count += 1; // 排行
     return count;
   }
 
@@ -288,21 +309,36 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
   /// 源是否提供周期表能力（有 latest route 即认为可展示；数据由
   /// [_ensureScheduleData] 在切到周期表 Tab 时按需抓取，不再依赖已抓数据）。
   bool get _hasScheduleData =>
-      _source != null && _source!.routes.containsKey('latest');
+      !_isShuyuanSource &&
+      _source != null &&
+      _source!.routes.containsKey('latest');
 
   /// 源是否声明了网络收藏（`webFavorite` 段）。未声明 → 不显示该 Tab。
   bool get _hasWebFavorite => _source?.hasWebFavoriteBrowse ?? false;
 
-  /// 网络收藏 Tab 索引（紧随周期表之后；不显示时为 -1）。
-  int get _webFavoriteTabIndex =>
-      _hasWebFavorite ? (_hasScheduleData ? 2 : 1) : -1;
+  /// 网络收藏 Tab 索引（不显示时为 -1）。
+  ///
+  /// 书源模式排在分类之后；通用模式紧随首页/周期表之后。
+  int get _webFavoriteTabIndex {
+    if (!_hasWebFavorite) return -1;
+    if (_isShuyuanSource) return _categories.length;
+    return _hasScheduleData ? 2 : 1;
+  }
 
-  /// 动态分类 Tab 的起始索引（首页 + 可选周期表 + 可选网络收藏之后）。
+  /// 排行 Tab 索引（不显示时为 -1）。
+  int get _rankTabIndex {
+    if (!_hasRank) return -1;
+    if (_isShuyuanSource) {
+      return _categories.length + (_hasWebFavorite ? 1 : 0);
+    }
+    return _catStart + _categories.length;
+  }
+
+  /// 动态分类 Tab 的起始索引。
   ///
   /// **所有涉及 Tab 索引偏移的地方都必须走这个 getter**，否则新增/删除
   /// 条件 Tab 时极易漏改造成错位。
-  int get _catStart =>
-      1 + (_hasScheduleData ? 1 : 0) + (_hasWebFavorite ? 1 : 0);
+  int get _catStart => _isShuyuanSource ? 0 : 1 + (_hasScheduleData ? 1 : 0) + (_hasWebFavorite ? 1 : 0);
 
   void _rebuildTabController() {
     final newCount = _tabCount;
@@ -321,11 +357,12 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
   void _onTabChanged() {
     if (!_tabController.indexIsChanging) {
       final idx = _tabController.index;
-      // idx 0 = 首页（已加载）
-      // 可选 Tab 依次为：周期表 → 网络收藏，之后才是动态分类，排行在最后。
+      // 通用源：idx 0 = 首页，可选周期表 → 网络收藏，之后分类，排行最后。
+      // 书源：分类从 0 开始，网络收藏/排行接在分类之后。
       final catStart = _catStart;
-      final rankIdx = catStart + _categories.length;
-      if (_hasScheduleData &&
+      final rankIdx = _rankTabIndex;
+      if (!_isShuyuanSource &&
+          _hasScheduleData &&
           idx == 1 &&
           _scheduleItems.isEmpty &&
           !_scheduleLoading) {
@@ -334,9 +371,9 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
       } else if (idx == _webFavoriteTabIndex) {
         // 进入网络收藏 Tab：按需抓取源站书架（懒加载）。
         _loadWebFavorite();
-      } else if (idx == rankIdx && _hasRank && _rankItems.isEmpty) {
+      } else if (rankIdx >= 0 && idx == rankIdx && _rankItems.isEmpty) {
         _loadRank();
-      } else if (idx >= catStart && idx < rankIdx) {
+      } else if (idx >= catStart && idx < catStart + _categories.length) {
         final cat = _categories[idx - catStart];
         _ensureTabLoaded(cat.id);
       }
@@ -347,10 +384,16 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
     if (_source == null || widget.fetchCategories == null) {
       setState(() {
         _categories.clear();
+        _categoriesLoading = false;
+        _categoriesFailed = false;
         _rebuildTabController();
       });
       return;
     }
+    setState(() {
+      _categoriesLoading = true;
+      _categoriesFailed = false;
+    });
     try {
       final cats = await widget.fetchCategories!(_source!);
       if (mounted) {
@@ -359,15 +402,19 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
             ..clear()
             ..addAll(cats);
           _tabStates.clear();
+          _categoriesLoading = false;
           _rebuildTabController();
         });
-        // 分类就绪（若主页也已就绪）即触发首个分类预载，缩短首次点击的冷启动窗口。
+        // 分类就绪即触发首个分类预载（书源模式没有首页可等），
+        // 缩短首次点击的冷启动窗口。
         _tryPreloadFirstCategory();
       }
     } on Object {
       if (mounted) {
         setState(() {
           _categories.clear();
+          _categoriesLoading = false;
+          _categoriesFailed = true;
           _rebuildTabController();
         });
       }
@@ -936,7 +983,7 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
       _rankItems = <MediaItem>[];
     });
     _loadCategories();
-    _loadHome();
+    if (!_isShuyuanSource) _loadHome();
     _maybeShowAnnouncement(s);
   }
 
@@ -1161,7 +1208,9 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
                   icon: const Icon(Icons.refresh_rounded),
                   tooltip: l10n.refreshList,
                   onPressed: () {
-                    _loadHome();
+                    // 书源：刷新分类列表并重载已打开的分类页（无首页/周期表）。
+                    if (_isShuyuanSource) _loadCategories();
+                    if (!_isShuyuanSource) _loadHome();
                     _tabStates
                         .forEach((_, s) => _loadCategoryPage(s, reset: true));
                     if (_hasRank) _loadRank();
@@ -1177,14 +1226,20 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
             ? AppEmptyState(icon: widget.emptyIcon, message: l10n.emptySources)
             : Column(
                 children: <Widget>[
-                  // 分类 TabBar（源切换已收进 AppBar 标题弹窗）
-                  _buildCategoryTabBar(l10n),
-                  Expanded(
-                    child: TabBarView(
-                      controller: _tabController,
-                      children: _buildTabViews(l10n),
+                  // 书源无分类且无其它可选 Tab 时没有 Tab 可展示，直接给
+                  // 「仅支持搜索」/重试空态（legado 里这类源也不会出现在发现页）。
+                  if (!_showTabUi)
+                    Expanded(child: _buildShuyuanCategoriesEmpty(l10n))
+                  else ...<Widget>[
+                    // 分类 TabBar（源切换已收进 AppBar 标题弹窗）
+                    _buildCategoryTabBar(l10n),
+                    Expanded(
+                      child: TabBarView(
+                        controller: _tabController,
+                        children: _buildTabViews(l10n),
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               ),
       ),
@@ -1314,7 +1369,53 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
     );
   }
 
+  /// 是否存在可渲染的 Tab 界面。
+  ///
+  /// 书源在没有分类、也没有网络收藏/排行时 TabBar 为空：不渲染空 TabBar，
+  /// 直接展示「仅支持搜索」空态。
+  bool get _showTabUi =>
+      !_isShuyuanSource ||
+      _categories.isNotEmpty ||
+      _hasWebFavorite ||
+      _hasRank;
+
+  /// 书源分类为空时的主体：加载中 / 加载失败（可重试）/ 纯搜索源指引。
+  Widget _buildShuyuanCategoriesEmpty(AppLocalizations l10n) {
+    if (_categoriesLoading) {
+      return const Center(child: AppLoadingIndicator());
+    }
+    final xiaoshuo = _source?.selectors?['xiaoshuo'];
+    final exploreUrl = xiaoshuo is Map ? xiaoshuo['exploreUrl'] : null;
+    final hasExplore = exploreUrl is String && exploreUrl.trim().isNotEmpty;
+    if (hasExplore) {
+      return AppErrorState(
+        message: _categoriesFailed ? l10n.loadFailed : l10n.emptyContent,
+        onRetry: _loadCategories,
+        retryLabel: l10n.retry,
+      );
+    }
+    return _buildEmptyWithDiagnostics(
+      l10n,
+      message: l10n.bookSourceNoExplore,
+      sourceId: _source?.id,
+      actionLabel: l10n.search,
+      onAction: widget.onSearch,
+    );
+  }
+
   List<Widget> _buildTabs(AppLocalizations l10n) {
+    if (_isShuyuanSource) {
+      final tabs = <Widget>[
+        for (final c in _categories) Tab(text: c.title),
+      ];
+      if (_hasWebFavorite) {
+        tabs.add(Tab(text: l10n.onlineTabWebFavorite));
+      }
+      if (_hasRank) {
+        tabs.add(Tab(text: l10n.onlineTabRanking));
+      }
+      return tabs;
+    }
     final tabs = <Widget>[
       Tab(text: l10n.onlineTabHome),
     ];
@@ -1334,6 +1435,26 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
   }
 
   List<Widget> _buildTabViews(AppLocalizations l10n) {
+    if (_isShuyuanSource) {
+      final views = <Widget>[
+        for (final c in _categories) _buildCategoryTab(
+            l10n, _ensureTabState(c.id), c.title),
+      ];
+      // 仅对当前激活的分类 Tab 触发首次拉取；失败的分类等用户手动重试，
+      // 否则每次 build（加载失败会 setState）都会再拉一轮，形成重试环。
+      final activeIdx = _tabController.index;
+      if (activeIdx >= 0 && activeIdx < _categories.length) {
+        final activeState = _ensureTabState(_categories[activeIdx].id);
+        if (activeState.error == null) _ensureTabLoaded(activeState.categoryId);
+      }
+      if (_hasWebFavorite) {
+        views.add(_buildWebFavoriteTab(l10n));
+      }
+      if (_hasRank) {
+        views.add(_buildRankTab(l10n));
+      }
+      return views;
+    }
     final views = <Widget>[
       _buildHomeTab(l10n),
     ];
@@ -1348,9 +1469,12 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
       views.add(_buildCategoryTab(l10n, state, c.title));
     }
     // 仅对当前激活的分类 Tab 触发首次拉取；其余分类进入时才由 [_onTabChanged] 加载。
+    // 失败的分类等用户手动重试，避免 build → 失败 setState → 再拉的重试环。
     final activeIdx = _tabController.index;
     if (activeIdx >= _catStart && activeIdx < _catStart + _categories.length) {
-      _ensureTabLoaded(_categories[activeIdx - _catStart].id);
+      final activeState =
+          _ensureTabState(_categories[activeIdx - _catStart].id);
+      if (activeState.error == null) _ensureTabLoaded(activeState.categoryId);
     }
     if (_hasRank) {
       views.add(_buildRankTab(l10n));
@@ -2367,7 +2491,7 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
   Future<double?> _computeProgress(MediaItem item) async {
     final SourceType? type = item.sourceType;
 
-    if (type == SourceType.animeSource) {
+    if (type?.isMediaFamily == true) {
       try {
         final watchedMgr = context.read<MediaWatchedManager>();
         final watched = watchedMgr.watchedCount(item.id);

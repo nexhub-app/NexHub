@@ -14,13 +14,19 @@ import '../utils/image_decrypt_registry.dart';
 enum SourceType {
   animeSource,
   mangaSource,
-  novelSource;
+  novelSource,
+  /// legado bookSourceType=4（视频书源）：走媒体播放管线，归入「媒体」栏。
+  videoSource,
+  /// legado bookSourceType=1（音频书源）：走媒体播放管线，归入「媒体」栏。
+  audioSource;
 
   static SourceType? parse(String? raw) {
     return switch (raw) {
       'animeSource' => animeSource,
       'mangaSource' => mangaSource,
       'novelSource' => novelSource,
+      'videoSource' => videoSource,
+      'audioSource' => audioSource,
       _ => null,
     };
   }
@@ -30,8 +36,18 @@ enum SourceType {
       SourceType.animeSource => 'animeSource',
       SourceType.mangaSource => 'mangaSource',
       SourceType.novelSource => 'novelSource',
+      SourceType.videoSource => 'videoSource',
+      SourceType.audioSource => 'audioSource',
     };
   }
+
+  /// 媒体家族：影视/视频/音频共用媒体播放管线与「媒体」栏。
+  bool get isMediaFamily =>
+      this == animeSource || this == videoSource || this == audioSource;
+
+  /// 持久化桶：视频/音频源与影视源共用媒体收藏/历史/进度/下载桶，
+  /// 避免新类型的数据落在任何模块都看不到的孤儿桶里。
+  SourceType get mediaBucket => isMediaFamily ? animeSource : this;
 }
 
 /// 源年龄分级（三档）。源 JSON 通过顶层 `ageRating` 字段自行声明；

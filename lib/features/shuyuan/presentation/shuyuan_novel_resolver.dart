@@ -60,6 +60,9 @@ class ShuyuanNovelResolver
   /// 单阶段重放总时长预算。
   static const Duration _replayBudget = Duration(seconds: 120);
 
+  /// 发现分类重放预算：进分类页前的等待，超过则先用已解析结果出 Tab。
+  static const Duration _exploreCategoryBudget = Duration(seconds: 45);
+
   /// 是否还允许继续下一轮重放。
   bool _replayAllowed(int pass, DateTime deadline) =>
       pass + 1 < _maxReplayPasses && DateTime.now().isBefore(deadline);
@@ -79,6 +82,7 @@ class ShuyuanNovelResolver
     }
     final bookSource = shuyuanSource.toBookSource();
     final ctx = await _contextFor(source);
+    ctx.bookSourceUrl = bookSource.bookSourceUrl;
     // jsLib 预执行内容随作用域下发（引擎首次 eval 前执行）。
     ctx.jsLib = bookSource.jsLib ?? '';
 
@@ -162,10 +166,13 @@ class ShuyuanNovelResolver
         return await _handleDetail(source, bookSource, vars);
       case 'toc':
       case 'chapters':
+      case 'episodes':
         return await _handleChapterList(source, bookSource, vars,
             onProgress: onProgress);
       case 'content':
         return await _handleContent(source, bookSource, vars);
+      case 'video':
+        return await _handleVideo(source, bookSource, vars);
       case 'images':
         // 漫画模块的正文路由：书源正文（img 标签/URL 列表）→ 图片 URL 列表。
         return await _handleComicImages(source, bookSource, vars);
@@ -224,6 +231,7 @@ class ShuyuanNovelResolver
     // 旧实现 `?? ShuyuanSourceContext(...)` 直接新建空上下文，
     // WebView 回灌路径永远没有登录态。
     final ctx = await _contextFor(source);
+    ctx.bookSourceUrl = bookSource.bookSourceUrl;
     ctx.jsLib = bookSource.jsLib ?? '';
     // 渲染回灌同样从干净的重放缓存开始，避免命中上一阶段的旧响应。
     ctx.clearStageCaches();
@@ -243,7 +251,7 @@ class ShuyuanNovelResolver
           searchKey: isSearch ? (vars['keyword'] ?? vars['key'] ?? '') : null,
         );
         return books
-            .map((sb) => _searchBookToMediaItem(sb, source.id))
+            .map((sb) => _searchBookToMediaItem(sb, source))
             .toList();
       case 'detail':
         // 详情页：用 [BookInfo] 解析渲染后 HTML（与 [WebBook.getBookInfo] 同口径）。
@@ -256,9 +264,10 @@ class ShuyuanNovelResolver
           redirectUrl: id,
           body: html,
         );
-        return _xiaoshuoBookToMediaItem(book, source.id);
+        return _xiaoshuoBookToMediaItem(book, source);
       case 'toc':
       case 'chapters':
+      case 'episodes':
         // 目录：用 [BookChapterList] 解析渲染后 HTML（与 [WebBook.getChapterList]
         // 首页批次同口径，逐章连续编号以支持上下章导航）。
         final id = vars['id'] ?? vars['detailUrl'] ?? '';
@@ -296,6 +305,27 @@ class ShuyuanNovelResolver
           );
         }
         return blocks;
+      case 'video':
+        // 视频/音频源播放直链：渲染后 HTML 取正文规则里的媒体 URL。
+        final videoChapterUrl = vars['url'] ?? vars['chapter'] ?? '';
+        final videoBlocks = BookContent.analyzeContent(
+          bookSource: bookSource,
+          book: XiaoshuoBook(bookUrl: '', name: ''),
+          bookChapter:
+              XiaoshuoBookChapter(bookUrl: '', url: videoChapterUrl),
+          baseUrl: videoChapterUrl,
+          redirectUrl: videoChapterUrl,
+          body: html,
+        );
+        final renderedUrl = _extractMediaUrl(videoBlocks);
+        if (renderedUrl == null || renderedUrl.isEmpty) {
+          throw SourceResolveException(
+            sourceId: source.id,
+            apiName: 'video',
+            message: '渲染后正文未解析到媒体直链',
+          );
+        }
+        return VideoResult(url: renderedUrl);
       default:
         return resolve(source, apiName, vars: vars);
       }
@@ -306,26 +336,69 @@ class ShuyuanNovelResolver
   /// 解析书源 exploreUrl 为分类列表（支持 `名称::URL` 多行 / JSON 数组 /
   /// `<js>` 动态生成），供在线浏览页生成分类 Tab。此前静态正则解析会跳过
   /// 含 `<js>` 的 exploreUrl，这类源一个分类 Tab 都没有。
+  ///
+  /// 动态分类脚本在 legado 里可直接 `java.ajax`（阻塞拿真实响应）。本实现
+  /// 的同步沙箱做不到，走「占位符 + 宿主抓取 + 重放」：与搜索/目录同款
+  /// [ShuyuanSourceContext.settleAjax]，脚本重跑时 `java.ajax` 命中缓存
+  /// 直出真数据。未 resolve 的占位符分类（断网/请求失败）直接丢弃，避免
+  /// 把 `__AJAX_1__` 当 URL 生成假 Tab。
   @override
-  List<CategoryEntry> resolveExploreCategories(PluginConfig source) {
+  Future<List<CategoryEntry>> resolveExploreCategories(
+    PluginConfig source,
+  ) async {
     final shuyuanSource = ShuyuanAdapter.fromPluginConfig(source);
     if (shuyuanSource == null) return const <CategoryEntry>[];
     final bookSource = shuyuanSource.toBookSource();
-    // 同步入口：已装载的上下文直接用；未装载则用轻量内存上下文
-    // （源变量持久化装载走异步 resolve 链路）。
-    final ctx = _contexts[source.id] ?? ShuyuanSourceContext(source.id);
-    // 分类解析也可能求值 exploreUrl 里的 @js：从干净缓存开始。
-    ctx.clearStageCaches();
-    JsEngine.resetReplayCachesFor(source.id);
-    return ShuyuanSourceContext.run(ctx, () {
-      return _webBook
-          .getExploreCategories(bookSource)
-          .map((e) => CategoryEntry(
-                id: e.url,
-                title: e.name.isNotEmpty ? e.name : e.url,
-              ))
-          .toList();
+    final exploreUrl = bookSource.exploreUrl;
+    if (exploreUrl == null || exploreUrl.trim().isEmpty) {
+      return const <CategoryEntry>[];
+    }
+    // 静态声明（文本 / JSON）不需要 JS 运行时，直接同步解析。
+    if (!_exploreNeedsJs(exploreUrl)) {
+      return _toCategoryEntries(_webBook.getExploreCategories(bookSource));
+    }
+    final ctx = await _contextFor(source);
+    ctx.bookSourceUrl = bookSource.bookSourceUrl;
+    ctx.jsLib = bookSource.jsLib ?? '';
+    return ShuyuanSourceContext.run(ctx, () async {
+      ctx.clearStageCaches();
+      JsEngine.resetReplayCachesFor(source.id);
+      final deadline = DateTime.now().add(_exploreCategoryBudget);
+      var entries =
+          _toCategoryEntries(_webBook.getExploreCategories(bookSource));
+      for (var pass = 0; pass < _maxReplayPasses; pass++) {
+        if (!_hasPendingReplay(ctx)) break;
+        if (!_replayAllowed(pass, deadline)) break;
+        final fetched = await _settleReplay(ctx, bookSource);
+        if (fetched == 0) break;
+        entries =
+            _toCategoryEntries(_webBook.getExploreCategories(bookSource));
+      }
+      return entries
+          .where((e) =>
+              !e.id.contains('__AJAX_') && !e.id.contains('__WEBVIEW_'))
+          .toList(growable: false);
     });
+  }
+
+  /// exploreUrl 是否含需要 JS 求值的片段（整串或分段 `@js:`/`<js>`）。
+  static bool _exploreNeedsJs(String exploreUrl) {
+    final trimmed = exploreUrl.trim();
+    if (trimmed.startsWith('@js:') || trimmed.startsWith('<js>')) return true;
+    for (final line in trimmed.split(RegExp(r'&&|\n'))) {
+      final t = line.trim();
+      if (t.startsWith('@js:') || t.startsWith('<js>')) return true;
+    }
+    return false;
+  }
+
+  List<CategoryEntry> _toCategoryEntries(List<ExploreCategory> entries) {
+    return entries
+        .map((e) => CategoryEntry(
+              id: e.url,
+              title: e.name.isNotEmpty ? e.name : e.url,
+            ))
+        .toList();
   }
 
   // ── 搜索 ──
@@ -343,7 +416,7 @@ class ShuyuanNovelResolver
       key: keyword,
       page: page,
     );
-    return results.map((sb) => _searchBookToMediaItem(sb, source.id)).toList();
+    return results.map((sb) => _searchBookToMediaItem(sb, source)).toList();
   }
 
   // ── 发现：按分类 URL 抓取 ──
@@ -383,7 +456,7 @@ class ShuyuanNovelResolver
         categoryUrl: buf.toString(),
         page: page,
       );
-      return books.map((b) => _xiaoshuoBookToMediaItem(b, source.id)).toList();
+      return books.map((b) => _xiaoshuoBookToMediaItem(b, source)).toList();
     }
 
     final categoryUrl = vars['category'];
@@ -394,7 +467,7 @@ class ShuyuanNovelResolver
         categoryUrl: categoryUrl,
         page: page,
       );
-      return books.map((b) => _xiaoshuoBookToMediaItem(b, source.id)).toList();
+      return books.map((b) => _xiaoshuoBookToMediaItem(b, source)).toList();
     }
 
     // 没指定分类时，走全量发现页。书源未配置 exploreUrl（纯搜索源，无发现页）
@@ -414,7 +487,7 @@ class ShuyuanNovelResolver
       categoryUrl: categories.first.url,
       page: page,
     );
-    return books.map((b) => _xiaoshuoBookToMediaItem(b, source.id)).toList();
+    return books.map((b) => _xiaoshuoBookToMediaItem(b, source)).toList();
   }
 
   /// PTCMS 筛选段取值：
@@ -448,7 +521,7 @@ class ShuyuanNovelResolver
       throw ArgumentError('detail requires vars["id"]');
     }
     final book = await _webBook.getBookInfo(source: bookSource, bookUrl: id);
-    return _xiaoshuoBookToMediaItem(book, source.id);
+    return _xiaoshuoBookToMediaItem(book, source);
   }
 
   // ── 章节列表 ──
@@ -564,23 +637,9 @@ class ShuyuanNovelResolver
     final srcType =
         srcTypeRaw is int ? srcTypeRaw : int.tryParse('$srcTypeRaw') ?? 0;
     if (srcType == 1 || srcType == 4) {
-      String? mediaUrl;
-      for (final b in result.blocks) {
-        if (b is NovelTextBlock) {
-          final nl = String.fromCharCode(10);
-          for (final line in b.text.split(nl)) {
-            final t = line.trim();
-            if (t.startsWith('http://') || t.startsWith('https://')) {
-              mediaUrl = t;
-              break;
-            }
-          }
-          if (mediaUrl != null) break;
-        }
-      }
       final kind = srcType == 1 ? 'audio' : 'video';
       return <NovelBlock>[
-        NovelMediaBlock(mediaUrl ?? '', kind: kind),
+        NovelMediaBlock(_extractMediaUrl(result.blocks) ?? '', kind: kind),
       ];
     }
     // 图文块列表（文本段 + 插图），保留解析层给出的原始顺序，
@@ -588,15 +647,63 @@ class ShuyuanNovelResolver
     return result.blocks;
   }
 
+  /// 从正文块（音/视频源的正文规则输出）提取媒体直链。
+  ///
+  /// legado 对 bookSourceType=1/4 不做 htmlFormat，正文即直链（可能多行），
+  /// 这里取第一条 http(s) 行。
+  String? _extractMediaUrl(List<NovelBlock> blocks) {
+    const nl = '\n';
+    for (final b in blocks) {
+      if (b is! NovelTextBlock) continue;
+      for (final line in b.text.split(nl)) {
+        final t = line.trim();
+        if (t.startsWith('http://') || t.startsWith('https://')) {
+          return t;
+        }
+      }
+    }
+    return null;
+  }
+
+  /// 视频/音频源（legado bookSourceType=1/4）的播放直链解析。
+  ///
+  /// 媒体管线（VideoPlayerScreen → MediaApiService.fetchVideoUrl）按 `video`
+  /// 路由调用：抓章节页 → 正文规则 → 直链（[VideoResult]）。书源播放页常挂
+  /// Cloudflare，验证拦截由上层 verificationHandler 走 WebView 后回灌渲染
+  /// HTML（见 [resolveRenderedHtml] 的同名分支）。
+  Future<VideoResult> _handleVideo(
+    PluginConfig source,
+    XiaoshuoBookSource bookSource,
+    Map<String, String> vars,
+  ) async {
+    final chapterUrl = vars['url'] ?? vars['chapter'] ?? '';
+    if (chapterUrl.isEmpty) {
+      throw ArgumentError('video requires vars["url"]');
+    }
+    final result = await _webBook.getContent(
+      source: bookSource,
+      chapterUrl: chapterUrl,
+    );
+    final url = _extractMediaUrl(result.blocks);
+    if (url == null || url.isEmpty) {
+      throw SourceResolveException(
+        sourceId: source.id,
+        apiName: 'video',
+        message: result.error ?? '正文未解析到媒体直链',
+      );
+    }
+    return VideoResult(url: url);
+  }
+
   // ── 模型转换 ──
-  MediaItem _searchBookToMediaItem(SearchBook sb, String sourceId) {
+  MediaItem _searchBookToMediaItem(SearchBook sb, PluginConfig source) {
     return MediaItem(
       id: sb.bookUrl,
       title: sb.name,
       coverUrl: sb.coverUrl,
       detailUrl: sb.bookUrl,
-      sourceId: sourceId,
-      sourceType: SourceType.novelSource,
+      sourceId: source.id,
+      sourceType: source.type,
       author: sb.author.isNotEmpty ? sb.author : null,
       tags: sb.kind
           ?.split(RegExp(r'[,\s]+'))
@@ -606,7 +713,7 @@ class ShuyuanNovelResolver
     );
   }
 
-  MediaItem _xiaoshuoBookToMediaItem(XiaoshuoBook book, String sourceId) {
+  MediaItem _xiaoshuoBookToMediaItem(XiaoshuoBook book, PluginConfig source) {
     // 将引擎解析的 updateTime 字符串转为 DateTime。
     DateTime? parsedUpdatedAt;
     if (book.updateTime != null && book.updateTime!.isNotEmpty) {
@@ -618,8 +725,8 @@ class ShuyuanNovelResolver
       title: book.name,
       coverUrl: book.coverUrl,
       detailUrl: book.bookUrl,
-      sourceId: sourceId,
-      sourceType: SourceType.novelSource,
+      sourceId: source.id,
+      sourceType: source.type,
       author: book.author.isNotEmpty ? book.author : null,
       description: book.intro,
       status: book.bookStatus,

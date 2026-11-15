@@ -140,10 +140,15 @@ class ResolverRegistry {
   /// 导致这类源「分类页没有任何 Tab」。
   ///
   /// 引擎未注册（测试环境）或解析失败时返回空列表，由调用方回退静态解析。
-  List<CategoryEntry> resolveExploreCategories(PluginConfig source) {
+  ///
+  /// 异步：动态分类脚本可发 `java.ajax`，需要宿主一轮或多轮抓取后重放，
+  /// 才能在脚本里拿到真实响应（legado `evalJS` 的阻塞 ajax 等效）。
+  Future<List<CategoryEntry>> resolveExploreCategories(
+    PluginConfig source,
+  ) async {
     if (_isShuyuanSource(source)) {
       try {
-        return _shuyuanResolver.resolveExploreCategories(source);
+        return await _shuyuanResolver.resolveExploreCategories(source);
       } on Object {
         return const <CategoryEntry>[];
       }
@@ -187,13 +192,13 @@ class _LazyShuyuanResolver
 
   /// 发现分类解析转发：委托书源引擎完整解析（含动态分类）。
   @override
-  List<CategoryEntry> resolveExploreCategories(PluginConfig source) {
+  Future<List<CategoryEntry>> resolveExploreCategories(PluginConfig source) {
     final inner = _inner ??= _createShuyuanResolver() as RenderedHtmlCapable;
     if (inner is ExploreCategoriesCapable) {
       return (inner as ExploreCategoriesCapable)
           .resolveExploreCategories(source);
     }
-    return const <CategoryEntry>[];
+    return Future<List<CategoryEntry>>.value(const <CategoryEntry>[]);
   }
 
   SourceResolver _createShuyuanResolver() {
@@ -255,5 +260,7 @@ abstract class RenderedHtmlCapable {
 /// （[ResolverRegistry.resolveExploreCategories]）无需反向依赖 feature 层
 /// 即可获取分类列表。
 abstract class ExploreCategoriesCapable {
-  List<CategoryEntry> resolveExploreCategories(PluginConfig source);
+  /// 动态分类（`<js>`）可能依赖 `java.ajax` 等宿主能力，故为异步；静态
+  /// 声明（文本 / JSON）实现可直接返回已完成 Future。
+  Future<List<CategoryEntry>> resolveExploreCategories(PluginConfig source);
 }

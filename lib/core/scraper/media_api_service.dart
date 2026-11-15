@@ -153,7 +153,7 @@ class MediaApiService {
     final xiaoshuo = source.selectors?['xiaoshuo'];
     if (xiaoshuo is Map) {
       final engineEntries =
-          registry.resolveExploreCategories(source);
+          await registry.resolveExploreCategories(source);
       if (engineEntries.isNotEmpty) return engineEntries;
       if (xiaoshuo['exploreUrl'] is String) {
         final entries =

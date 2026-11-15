@@ -1,6 +1,8 @@
 /// WebBook 公共类型：发现分类、发现结果、正文结果、URL 条目，以及多级 URL 解析。
 library;
 
+import 'dart:convert';
+
 import '../../../core/models/novel_block.dart';
 import '../analyze/js_engine.dart';
 import '../model/xiaoshuo_book.dart';
@@ -143,24 +145,46 @@ List<UrlEntry> parseMultiLevelUrls(String multiLineUrl) {
 }
 
 String _executeExploreJs(String jsCode) {
-  final regexResult = _parseExploreJsByRegex(jsCode);
-  if (regexResult.isNotEmpty) {
-    return regexResult;
+  // 引擎优先：动态分类脚本常依赖 java.ajax / 源变量 / jsLib 现算 URL，
+  // 正则启发式只能捞到脚本里写死的字面量（还会把占位符当 URL）。
+  // 引擎不可用（未打包 QuickJS）或脚本无返回值时才用启发式兜底。
+  final engineResult = _executeExploreJsInEngine(jsCode);
+  if (engineResult.isNotEmpty) {
+    return engineResult;
   }
+  return _parseExploreJsByRegex(jsCode);
+}
 
+String _executeExploreJsInEngine(String jsCode) {
+  JsEngine? jsEngine;
   try {
-    final jsEngine = JsEngine();
-    final fullJs = '$jsCode\nJSON.stringify(typeof result !== "undefined" ? result : []);';
-    final jsResult = jsEngine.eval(fullJs);
-    jsEngine.dispose();
-
+    jsEngine = JsEngine();
+    // 与 legado `evalJS(jsStr).toString()` 对齐：先取脚本自身的完成值
+    // （末尾表达式的值），无值再退回 `result` 变量。脚本以字符串返回时
+    // 原样使用（常见写法 `JSON.stringify(list)`），否则序列化为 JSON。
+    final wrapped = '(function () {\n'
+        '  var __v = eval(${jsonEncode(jsCode)});\n'
+        '  if (__v === undefined || __v === null) {\n'
+        '    __v = (typeof result !== "undefined") ? result : "";\n'
+        '  }\n'
+        '  if (typeof __v === "string") return __v;\n'
+        '  return JSON.stringify(__v);\n'
+        '})()';
+    final jsResult = jsEngine.eval(wrapped);
     if (jsResult.isNotEmpty && jsResult != '[]') {
-      return _parseJsResult(jsResult);
+      final trimmed = jsResult.trim();
+      // 只接受「像分类数据」的返回值：JSON 数组或含 `名称::URL` 的多行文本。
+      // 脚本末尾的标量（赋值表达式完成值，如 `个人中心 = 1` → "1"）不是
+      // 分类，直接丢弃让启发式兜底，避免生成 url="1" 的假 Tab。
+      if (trimmed.startsWith('[') || trimmed.contains('::')) {
+        return _parseJsResult(jsResult);
+      }
     }
-
     return '';
-  } catch (e) {
+  } catch (_) {
     return '';
+  } finally {
+    jsEngine?.dispose();
   }
 }
 
