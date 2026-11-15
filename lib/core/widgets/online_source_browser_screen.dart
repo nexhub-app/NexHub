@@ -3,28 +3,41 @@
 /// 展示当前模块所有已配置的源列表（图标 + 名称 + 地址 + 状态），
 /// 点击某个源后进入该源的分类/内容浏览页（[OnlineContentListScreen]）。
 ///
-/// 解决「无法浏览在线的源」的问题：用户可在此页直观地看到并选择要浏览的源。
+/// 书源（legado 格式）在此对齐 legado 发现页交互：点击源行就地展开，
+/// 在源下方加载「选项栏」（分类 / 输入框 / 按钮 / 开关 / 下拉），
+/// 点击分类直接进入对应分类列表；非书源维持原导航行为。
 library;
 
+import 'dart:async';
+
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:nexhub/generated/app_localizations.dart';
 import 'package:provider/provider.dart';
 
+import '../../../core/models/explore_kind.dart';
 import '../../../core/models/plugin_config.dart';
+import '../../../core/scraper/media_api_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/app_tokens.dart';
 import '../../../core/widgets/app_glass_bar.dart';
 import '../../../core/widgets/app_empty_state.dart';
 import '../../../core/widgets/detail_action_utils.dart';
+import '../../../core/widgets/explore_kinds_panel.dart';
 import '../../../core/services/source_repository.dart';
 
-class OnlineSourceBrowserScreen extends StatelessWidget {
+class OnlineSourceBrowserScreen extends StatefulWidget {
   /// 当前模块过滤类型
   final SourceType sourceType;
   final IconData emptyIcon;
 
-  /// 点击某个源时的回调
+  /// 点击某个源时的回调（非书源 / 书源无 exploreUrl）
   final void Function(PluginConfig source) onSourceTap;
+
+  /// 点击书源选项栏里的分类（未传时回退 [onSourceTap]）。
+  final void Function(PluginConfig source, String categoryUrl, String title)?
+      onCategoryTap;
+
   final VoidCallback? onAddSource;
   final VoidCallback? onEnableRecommended;
 
@@ -38,31 +51,48 @@ class OnlineSourceBrowserScreen extends StatelessWidget {
     required this.sourceType,
     this.emptyIcon = Icons.language_rounded,
     required this.onSourceTap,
+    this.onCategoryTap,
     this.onAddSource,
     this.onEnableRecommended,
     this.mediaServerTiles,
   });
 
   @override
+  State<OnlineSourceBrowserScreen> createState() =>
+      _OnlineSourceBrowserScreenState();
+}
+
+class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
+  /// 当前展开的源 id（同时只展开一个，避免长列表被多个面板撑开）。
+  String? _expandedId;
+
+  /// 已解析的选项栏结果（按源缓存，折叠后不丢）。
+  final Map<String, ExploreKindsResult> _kinds = <String, ExploreKindsResult>{};
+
+  /// 正在加载选项栏的源 id。
+  final Set<String> _loading = <String>{};
+
+  @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
     final scheme = Theme.of(context).colorScheme;
     final repo = context.watch<SourceRepository>();
-    final sources = repo.byType(sourceType);
-    final tiles = mediaServerTiles ?? const <Widget>[];
+    final sources = repo.byType(widget.sourceType);
+    final tiles = widget.mediaServerTiles ?? const <Widget>[];
 
     final Widget body;
     if (sources.isEmpty && tiles.isEmpty) {
       body = AppEmptyState(
-        icon: emptyIcon,
+        icon: widget.emptyIcon,
         message: l10n.emptySources,
-        actionLabel: onEnableRecommended != null
+        actionLabel: widget.onEnableRecommended != null
             ? l10n.enableRecommendedSources
             : l10n.addSource,
-        onAction: onEnableRecommended ?? onAddSource,
+        onAction: widget.onEnableRecommended ?? widget.onAddSource,
         secondaryActionLabel:
-            onEnableRecommended != null ? l10n.addSource : null,
-        onSecondaryAction: onEnableRecommended != null ? onAddSource : null,
+            widget.onEnableRecommended != null ? l10n.addSource : null,
+        onSecondaryAction:
+            widget.onEnableRecommended != null ? widget.onAddSource : null,
       );
     } else {
       final Widget list = ListView.builder(
@@ -84,6 +114,8 @@ class OnlineSourceBrowserScreen extends StatelessWidget {
           // 之上无缝相融），行间发丝分隔线。
           final bool first = idx == 0;
           final bool last = idx == sources.length - 1;
+          final bool expandable = _hasExplore(source);
+          final bool expanded = expandable && _expandedId == source.id;
           return Material(
             color: AppTheme.cardContainer(scheme),
             shape: RoundedRectangleBorder(
@@ -142,14 +174,38 @@ class OnlineSourceBrowserScreen extends StatelessWidget {
                       ],
                     ),
                   ),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.open_in_new_rounded),
-                    tooltip: l10n.openSourceWebsite,
-                    onPressed: () => openInAppBrowser(
-                        context, source.site.baseUrl,
-                        source: source),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: <Widget>[
+                      IconButton(
+                        icon: const Icon(Icons.open_in_new_rounded),
+                        tooltip: l10n.openSourceWebsite,
+                        onPressed: () => openInAppBrowser(
+                            context, source.site.baseUrl,
+                            source: source),
+                      ),
+                      if (expandable)
+                        IconButton(
+                          icon: Icon(expanded
+                              ? Icons.expand_less_rounded
+                              : Icons.expand_more_rounded),
+                          tooltip:
+                              expanded ? l10n.collapse : l10n.expand,
+                          onPressed: () => _openSource(context, source),
+                        ),
+                    ],
                   ),
                 ),
+                if (expanded)
+                  ExploreKindsPanel(
+                    result: _kinds[source.id],
+                    loading: _loading.contains(source.id),
+                    onRefresh: () => _loadKinds(source, refresh: true),
+                    onOpenUrl: (kind) => _openKindUrl(source, kind),
+                    onValueChanged: (kind, value) =>
+                        _setKindValue(source, kind, value),
+                    onRunAction: (kind) => _runKindAction(source, kind),
+                  ),
               ],
             ),
           );
@@ -165,6 +221,107 @@ class OnlineSourceBrowserScreen extends StatelessWidget {
     }
 
     return body;
+  }
+
+  /// 书源是否声明了 exploreUrl（有发现页选项栏可展开）。
+  bool _hasExplore(PluginConfig source) {
+    final xiaoshuo = source.selectors?['xiaoshuo'];
+    if (xiaoshuo is! Map) return false;
+    final v = xiaoshuo['exploreUrl'];
+    return v is String && v.trim().isNotEmpty;
+  }
+
+  void _openSource(BuildContext context, PluginConfig source) {
+    if (!_hasExplore(source)) {
+      widget.onSourceTap(source);
+      return;
+    }
+    if (_expandedId == source.id) {
+      setState(() => _expandedId = null);
+      return;
+    }
+    setState(() => _expandedId = source.id);
+    if (_kinds[source.id] == null && !_loading.contains(source.id)) {
+      unawaited(_loadKinds(source));
+    }
+  }
+
+  Future<void> _loadKinds(PluginConfig source, {bool refresh = false}) async {
+    if (_loading.contains(source.id)) return;
+    final service = context.read<MediaApiService>();
+    setState(() {
+      _loading.add(source.id);
+      if (refresh) _kinds.remove(source.id);
+    });
+    try {
+      final result =
+          await service.resolveExploreKinds(source, refresh: refresh);
+      if (!mounted) return;
+      setState(() => _kinds[source.id] = result);
+    } finally {
+      if (mounted) setState(() => _loading.remove(source.id));
+    }
+  }
+
+  void _openKindUrl(PluginConfig source, ExploreKind kind) {
+    final url = kind.url;
+    if (url == null || url.isEmpty) return;
+    final title = kind.title.isNotEmpty ? kind.title : url;
+    final handler = widget.onCategoryTap;
+    if (handler != null) {
+      handler(source, url, title);
+    } else {
+      widget.onSourceTap(source);
+    }
+  }
+
+  /// 选项值（text/toggle/select）落盘并同步本地快照，立即回显。
+  Future<void> _setKindValue(
+      PluginConfig source, ExploreKind kind, String value) async {
+    final current = _kinds[source.id];
+    if (current != null) {
+      _kinds[source.id] = ExploreKindsResult(
+        items: <ExploreKindItem>[
+          for (final it in current.items)
+            if (identical(it.kind, kind) || it.kind.title == kind.title)
+              ExploreKindItem(
+                kind: it.kind,
+                displayName: it.displayName,
+                value: value,
+              )
+            else
+              it,
+        ],
+        infoMap: current.infoMap,
+      );
+      setState(() {});
+    }
+    // 必须等落盘完成再执行 action：脚本读的是持久化的 infoMap。
+    await context
+        .read<MediaApiService>()
+        .setExploreKindValue(source, kind.title, value);
+  }
+
+  Future<void> _runKindAction(PluginConfig source, ExploreKind kind) async {
+    final service = context.read<MediaApiService>();
+    final result = await service.executeExploreKindAction(source, kind);
+    if (!mounted) return;
+    for (final open in result.openRequests) {
+      if (open.url.isEmpty) continue;
+      openInAppBrowser(context, open.url, source: source);
+      if (!mounted) return;
+    }
+    if (result.copiedTexts.isNotEmpty) {
+      await Clipboard.setData(
+          ClipboardData(text: result.copiedTexts.last));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(AppLocalizations.of(context).shareCopied)),
+      );
+    }
+    if (result.refreshKinds) {
+      await _loadKinds(source, refresh: true);
+    }
   }
 
   Widget _buildStatusChip(
@@ -196,10 +353,6 @@ class OnlineSourceBrowserScreen extends StatelessWidget {
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
       padding: EdgeInsets.zero,
     );
-  }
-
-  void _openSource(BuildContext context, PluginConfig source) {
-    onSourceTap(source);
   }
 
   /// 年龄分级徽章（item 10）：general=中性灰 / teen=琥珀 / mature=红，与设置页一致。

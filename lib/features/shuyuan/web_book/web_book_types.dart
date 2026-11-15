@@ -3,8 +3,10 @@ library;
 
 import 'dart:convert';
 
+import '../../../core/models/explore_kind.dart';
 import '../../../core/models/novel_block.dart';
 import '../analyze/js_engine.dart';
+import '../analyze/source_context.dart';
 import '../model/xiaoshuo_book.dart';
 
 /// 发现分类。
@@ -144,24 +146,36 @@ List<UrlEntry> parseMultiLevelUrls(String multiLineUrl) {
   return entries;
 }
 
-String _executeExploreJs(String jsCode) {
+String _executeExploreJs(String jsCode, {Map<String, String>? infoMap}) {
   // 引擎优先：动态分类脚本常依赖 java.ajax / 源变量 / jsLib 现算 URL，
   // 正则启发式只能捞到脚本里写死的字面量（还会把占位符当 URL）。
   // 引擎不可用（未打包 QuickJS）或脚本无返回值时才用启发式兜底。
-  final engineResult = _executeExploreJsInEngine(jsCode);
-  if (engineResult.isNotEmpty) {
-    return engineResult;
+  final jsRaw = _evalExploreJsRaw(jsCode, infoMap: infoMap);
+  if (jsRaw.isNotEmpty && jsRaw != '[]') {
+    // 只接受「像分类数据」的返回值：JSON 数组或含 `名称::URL` 的多行文本。
+    // 脚本末尾的标量（赋值表达式完成值，如 `个人中心 = 1` → "1"）不是
+    // 分类，直接丢弃让启发式兜底，避免生成 url="1" 的假 Tab。
+    if (_looksLikeKinds(jsRaw)) return _parseJsResult(jsRaw);
   }
-  return _parseExploreJsByRegex(jsCode);
+  final fallback = _parseExploreJsByRegex(jsCode);
+  if (fallback.isNotEmpty) return fallback;
+  return '';
 }
 
-String _executeExploreJsInEngine(String jsCode) {
-  JsEngine? jsEngine;
+bool _looksLikeKinds(String s) {
+  final t = s.trim();
+  return t.startsWith('[') || t.contains('::');
+}
+
+/// 执行 exploreUrl 的 JS 片段，返回脚本原始结果（JSON 数组原样保留）。
+///
+/// 与 legado `evalJS(jsStr).toString()` 对齐：先取脚本自身的完成值
+/// （末尾表达式的值），无值再退回 `result` 变量。脚本以字符串返回时
+/// 原样使用（常见写法 `JSON.stringify(list)`），否则序列化为 JSON。
+String _evalExploreJsRaw(String jsCode, {Map<String, String>? infoMap}) {
+  final ctx = ShuyuanSourceContext.current;
+  final jsEngine = JsEngine.forSource(ctx?.sourceId);
   try {
-    jsEngine = JsEngine();
-    // 与 legado `evalJS(jsStr).toString()` 对齐：先取脚本自身的完成值
-    // （末尾表达式的值），无值再退回 `result` 变量。脚本以字符串返回时
-    // 原样使用（常见写法 `JSON.stringify(list)`），否则序列化为 JSON。
     final wrapped = '(function () {\n'
         '  var __v = eval(${jsonEncode(jsCode)});\n'
         '  if (__v === undefined || __v === null) {\n'
@@ -170,22 +184,149 @@ String _executeExploreJsInEngine(String jsCode) {
         '  if (typeof __v === "string") return __v;\n'
         '  return JSON.stringify(__v);\n'
         '})()';
-    final jsResult = jsEngine.eval(wrapped);
-    if (jsResult.isNotEmpty && jsResult != '[]') {
-      final trimmed = jsResult.trim();
-      // 只接受「像分类数据」的返回值：JSON 数组或含 `名称::URL` 的多行文本。
-      // 脚本末尾的标量（赋值表达式完成值，如 `个人中心 = 1` → "1"）不是
-      // 分类，直接丢弃让启发式兜底，避免生成 url="1" 的假 Tab。
-      if (trimmed.startsWith('[') || trimmed.contains('::')) {
-        return _parseJsResult(jsResult);
-      }
-    }
-    return '';
+    final bindings = infoMap == null
+        ? null
+        : <String, dynamic>{'infoMap': Map<String, String>.from(infoMap)};
+    return jsEngine.eval(wrapped, bindings: bindings).trim();
   } catch (_) {
     return '';
   } finally {
-    jsEngine?.dispose();
+    // 池化引擎按源复用（保留 __ajaxCache / 预置脚本）；无上下文时独立实例。
+    if (ctx == null) jsEngine.dispose();
   }
+}
+
+/// 提取整串 exploreUrl 的 JS 体（`@js:` 前缀 / `<js>...</js>` 包裹）。
+String? _extractWholeJsBody(String s) {
+  if (s.startsWith('@js:')) return s.substring(4);
+  if (s.startsWith('<js>') && s.contains('</js>')) {
+    final start = s.indexOf('<js>') + 4;
+    final end = s.lastIndexOf('</js>');
+    if (end > start) return s.substring(start, end);
+  }
+  return null;
+}
+
+/// 解析 exploreUrl 为完整选项列表（legado BookSource.exploreKinds 等效）。
+///
+/// 支持形态：
+/// - 整串 `@js:` / `<js>`：脚本返回 JSON 数组或 `名称::URL` 多行文本；
+/// - JSON 数组：保留 type/action/chars/default/viewName/style 全部字段；
+/// - 文本：`名称::URL` 以 `&&` / 换行分隔（可混入分段 JS）。
+///
+/// JS 求值时以 [infoMap] 作为全局绑定（toggle/select 当前值可参与 URL
+/// 拼装）。JSON 声明非法时抛出 [FormatException]，由调用方展示为错误项。
+List<ExploreKind> parseExploreKinds(
+  String exploreUrl, {
+  Map<String, String>? infoMap,
+}) {
+  var ruleStr = exploreUrl.trim();
+  if (ruleStr.isEmpty) return const <ExploreKind>[];
+  final jsBody = _extractWholeJsBody(ruleStr);
+  if (jsBody != null) {
+    final raw = _evalExploreJsRaw(jsBody, infoMap: infoMap);
+    if (raw.isEmpty || raw == '[]') return const <ExploreKind>[];
+    ruleStr = raw.trim();
+  }
+  if (ruleStr.startsWith('[')) {
+    return _parseKindsJson(ruleStr);
+  }
+  return _parseKindsText(ruleStr, infoMap: infoMap);
+}
+
+List<ExploreKind> _parseKindsJson(String raw) {
+  try {
+    final decoded = jsonDecode(_repairJsonRawNewlines(raw));
+    if (decoded is! List) {
+      throw const FormatException('exploreUrl JSON 不是数组');
+    }
+    return <ExploreKind>[
+      for (final e in decoded)
+        if (e is Map) ExploreKind.fromJson(Map<String, dynamic>.from(e)),
+    ];
+  } on FormatException {
+    rethrow;
+  } catch (e) {
+    throw FormatException('exploreUrl JSON 解析失败: $e');
+  }
+}
+
+List<ExploreKind> _parseKindsText(
+  String raw, {
+  Map<String, String>? infoMap,
+}) {
+  final kinds = <ExploreKind>[];
+  for (final segment in raw.split(RegExp(r'&&|\n'))) {
+    var trimmed = segment.trim();
+    if (trimmed.isEmpty) continue;
+    if ((trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+        (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+      trimmed = trimmed.substring(1, trimmed.length - 1).trim();
+    }
+    if (trimmed.isEmpty) continue;
+
+    final segJs = _extractWholeJsBody(trimmed);
+    if (segJs != null) {
+      final segResult = _evalExploreJsRaw(segJs, infoMap: infoMap);
+      if (segResult.isNotEmpty) {
+        kinds.addAll(parseExploreKinds(segResult, infoMap: infoMap));
+      }
+      continue;
+    }
+
+    String name = '';
+    String url = trimmed;
+    final colonColon = trimmed.indexOf('::');
+    if (colonColon >= 0) {
+      name = trimmed.substring(0, colonColon).trim();
+      url = trimmed.substring(colonColon + 2).trim();
+    }
+
+    final backtickMatch = RegExp(r'`([^`]+)`').firstMatch(url);
+    if (backtickMatch != null) url = backtickMatch.group(1)!.trim();
+
+    final quoteMatch = RegExp(r'''["']([^"']+)["']''').firstMatch(url);
+    if (quoteMatch != null) {
+      final extracted = quoteMatch.group(1)!.trim();
+      if (extracted.startsWith('http') ||
+          extracted.startsWith('/') ||
+          extracted.contains('.')) {
+        url = extracted;
+      }
+    }
+    url = url.replaceAll(RegExp(r'[,;]+$'), '').trim();
+    if (url.isEmpty && name.isEmpty) continue;
+    kinds.add(ExploreKind(
+      title: name.isEmpty ? url : name,
+      url: url.isEmpty ? null : url,
+    ));
+  }
+  return kinds;
+}
+
+/// 修复 JSON 字符串里的裸换行（书源 JSON 常见：字符串值直接断行）。
+String _repairJsonRawNewlines(String s) {
+  final out = StringBuffer();
+  var inString = false;
+  for (var i = 0; i < s.length; i++) {
+    final c = s[i];
+    if (c == '"') {
+      // 统计前缀反斜杠数：偶数为真实字符串边界，奇数为转义引号。
+      var bs = 0;
+      var j = i - 1;
+      while (j >= 0 && s[j] == '\\') {
+        bs++;
+        j--;
+      }
+      if (bs.isEven) inString = !inString;
+      out.write(c);
+    } else if (inString && (c == '\n' || c == '\r')) {
+      out.write(c == '\n' ? r'\n' : r'\r');
+    } else {
+      out.write(c);
+    }
+  }
+  return out.toString();
 }
 
 String _parseExploreJsByRegex(String jsCode) {

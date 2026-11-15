@@ -69,6 +69,15 @@ class ShuyuanSourceContext {
   /// 本轮 eval 中脚本发起、尚未满足的 ajax 请求（settle 循环抓取队列）。
   final List<String> ajaxPending = <String>[];
 
+  /// 发现页选项 action 请求宿主打开浏览器（java.startBrowser/openUrl）。
+  final List<Map<String, String>> kindBrowserOpens = <Map<String, String>>[];
+
+  /// 发现页选项 action 请求刷新选项栏（java.refreshExplore/reLoginView）。
+  bool kindRefreshRequested = false;
+
+  /// 发现页选项 action 请求复制文本（java.copyText）。
+  final List<String> copiedTexts = <String>[];
+
   /// 阶段级页面响应缓存：settle 重放会整段重跑 `_dispatch`，若不缓存，
   /// 同一页会被真实重复抓取 2–4 次（长目录尤其明显）。
   /// key = method|url|body|js|regex；每个解析阶段开始时 [clearStageCaches]。
@@ -213,6 +222,14 @@ class ShuyuanSourceContext {
         case 'ajax':
           // 脚本发起的网络请求记录（settle 循环抓取）。按 URL 去重。
           if (!ajaxPending.contains(a)) ajaxPending.add(a);
+        case 'browserOpen':
+          if (a.isNotEmpty) {
+            kindBrowserOpens.add(<String, String>{'url': a, 'title': b});
+          }
+        case 'refreshKinds':
+          kindRefreshRequested = true;
+        case 'copyText':
+          copiedTexts.add(a);
         case 'webview':
           // 脚本发起的无头 WebView 取源（settle 循环执行）。参数为
           // [html, url, js] 的 JSON 数组，b 里带着。

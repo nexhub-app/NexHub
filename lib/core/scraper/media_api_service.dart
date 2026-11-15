@@ -10,6 +10,7 @@ import 'package:flutter/foundation.dart';
 
 import '../models/category_entry.dart';
 import '../models/episode.dart';
+import '../models/explore_kind.dart';
 import '../models/media_item.dart';
 import '../models/novel_block.dart';
 import '../models/plugin_config.dart';
@@ -233,6 +234,32 @@ class MediaApiService {
     }
     if (!source.category.dynamicCategories) return const <CategoryEntry>[];
     return _fetchCollectCategories(source);
+  }
+
+  /// 解析某源的发现页完整选项栏（书源专属：url/text/button/toggle/select）。
+  /// 非书源返回空结果，调用方回退普通导航。
+  Future<ExploreKindsResult> resolveExploreKinds(
+    PluginConfig source, {
+    bool refresh = false,
+  }) {
+    return registry.resolveExploreKinds(source, refresh: refresh);
+  }
+
+  /// 持久化发现页选项值（text/toggle/select）。
+  Future<void> setExploreKindValue(
+    PluginConfig source,
+    String title,
+    String value,
+  ) {
+    return registry.setExploreKindValue(source, title, value);
+  }
+
+  /// 执行发现页选项 action（支持 java.* 的 UI/网络族）。
+  Future<ExploreKindActionResult> executeExploreKindAction(
+    PluginConfig source,
+    ExploreKind kind,
+  ) {
+    return registry.executeExploreKindAction(source, kind);
   }
 
   /// 解析某源的首页板块列表（共创式：源自行声明 `homeSections`）。

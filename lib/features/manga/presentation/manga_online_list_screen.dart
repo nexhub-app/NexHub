@@ -17,9 +17,16 @@ import 'package:nexhub/core/navigation/app_page_route.dart';
 /// 复用通用 [OnlineContentListScreen]，仅配置源类型与点击行为，不重复实现列表 UI。
 class MangaOnlineListScreen extends StatelessWidget {
   const MangaOnlineListScreen(
-      {super.key, this.initialSource, this.onAddSource, this.onEnableRecommended});
+      {super.key,
+      this.initialSource,
+      this.initialCategoryUrl,
+      this.initialCategoryTitle,
+      this.onAddSource,
+      this.onEnableRecommended});
 
   final PluginConfig? initialSource;
+  final String? initialCategoryUrl;
+  final String? initialCategoryTitle;
   final VoidCallback? onAddSource;
   final VoidCallback? onEnableRecommended;
 
@@ -34,6 +41,8 @@ class MangaOnlineListScreen extends StatelessWidget {
       title: 'manga',
       sources: sources,
       initialSource: initialSource,
+      initialCategoryUrl: initialCategoryUrl,
+      initialCategoryTitle: initialCategoryTitle,
       onAddSource: onAddSource,
       onEnableRecommended: onEnableRecommended,
       verificationHandler: handleVerificationRequest,

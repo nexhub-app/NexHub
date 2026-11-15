@@ -13,8 +13,11 @@
 /// - `content`：WebBook.getContent(chapterUrl=vars['url'])
 library;
 
+import 'dart:convert';
+
 import '../../../core/models/category_entry.dart';
 import '../../../core/models/episode.dart';
+import '../../../core/models/explore_kind.dart';
 import '../../../core/models/media_item.dart';
 import '../../../core/models/novel_block.dart'
     show NovelBlock, NovelImageBlock, NovelMediaBlock, NovelTextBlock;
@@ -36,10 +39,15 @@ import '../model/xiaoshuo_book_chapter.dart';
 import '../analyze/js_engine.dart';
 import '../analyze/source_context.dart';
 import '../shuyuan_adapter.dart';
+import '../shuyuan_explore_info_store.dart';
 import '../web_book/web_book.dart';
 
 class ShuyuanNovelResolver
-    implements SourceResolver, RenderedHtmlCapable, ExploreCategoriesCapable {
+    implements
+        SourceResolver,
+        RenderedHtmlCapable,
+        ExploreCategoriesCapable,
+        ExploreKindsCapable {
   ShuyuanNovelResolver();
 
   final WebBook _webBook = WebBook();
@@ -353,9 +361,12 @@ class ShuyuanNovelResolver
     if (exploreUrl == null || exploreUrl.trim().isEmpty) {
       return const <CategoryEntry>[];
     }
+    final infoKey = _exploreInfoKey(source, bookSource);
+    final infoMap = await ShuyuanExploreInfoStore.load(infoKey);
     // 静态声明（文本 / JSON）不需要 JS 运行时，直接同步解析。
     if (!_exploreNeedsJs(exploreUrl)) {
-      return _toCategoryEntries(_webBook.getExploreCategories(bookSource));
+      return _toCategoryEntries(
+          _webBook.getExploreCategories(bookSource, infoMap: infoMap));
     }
     final ctx = await _contextFor(source);
     ctx.bookSourceUrl = bookSource.bookSourceUrl;
@@ -364,21 +375,284 @@ class ShuyuanNovelResolver
       ctx.clearStageCaches();
       JsEngine.resetReplayCachesFor(source.id);
       final deadline = DateTime.now().add(_exploreCategoryBudget);
-      var entries =
-          _toCategoryEntries(_webBook.getExploreCategories(bookSource));
+      var entries = _toCategoryEntries(
+          _webBook.getExploreCategories(bookSource, infoMap: infoMap));
       for (var pass = 0; pass < _maxReplayPasses; pass++) {
         if (!_hasPendingReplay(ctx)) break;
         if (!_replayAllowed(pass, deadline)) break;
         final fetched = await _settleReplay(ctx, bookSource);
         if (fetched == 0) break;
-        entries =
-            _toCategoryEntries(_webBook.getExploreCategories(bookSource));
+        entries = _toCategoryEntries(
+            _webBook.getExploreCategories(bookSource, infoMap: infoMap));
       }
       return entries
           .where((e) =>
               !e.id.contains('__AJAX_') && !e.id.contains('__WEBVIEW_'))
           .toList(growable: false);
     });
+  }
+
+  /// 解析发现页完整选项栏（legado ExploreKind）：url/text/button/toggle/
+  /// select 全部保留，toggle/select 的值从持久化 infoMap 恢复（缺省时写入
+  /// kind.default 或 chars 首项），viewName 逐项求值。
+  ///
+  /// 动态 exploreUrl / viewName 可发 `java.ajax`，沿用与发现分类相同的
+  /// 占位符重放：每轮抓取未满足请求后重跑，直到无新请求或预算耗尽。
+  @override
+  Future<ExploreKindsResult> resolveExploreKinds(
+    PluginConfig source, {
+    bool refresh = false,
+  }) async {
+    final shuyuanSource = ShuyuanAdapter.fromPluginConfig(source);
+    if (shuyuanSource == null) return const ExploreKindsResult();
+    final bookSource = shuyuanSource.toBookSource();
+    final exploreUrl = bookSource.exploreUrl;
+    if (exploreUrl == null || exploreUrl.trim().isEmpty) {
+      return const ExploreKindsResult();
+    }
+    final infoKey = _exploreInfoKey(source, bookSource);
+    final infoMap = await ShuyuanExploreInfoStore.load(infoKey);
+    final ctx = await _contextFor(source);
+    ctx.bookSourceUrl = bookSource.bookSourceUrl;
+    ctx.jsLib = bookSource.jsLib ?? '';
+    try {
+      return await ShuyuanSourceContext.run(ctx, () async {
+        ctx.clearStageCaches();
+        JsEngine.resetReplayCachesFor(source.id);
+        final deadline = DateTime.now().add(_exploreCategoryBudget);
+        ExploreKindsResult? built;
+        for (var pass = 0; pass < _maxReplayPasses; pass++) {
+          ctx.ajaxPending.clear();
+          ctx.webviewPending.clear();
+          built = await _buildExploreKinds(source, bookSource, infoMap);
+          if (built.error != null) return built;
+          if (!_hasPendingReplay(ctx)) return built;
+          if (!_replayAllowed(pass, deadline)) return built;
+          final fetched = await _settleReplay(ctx, bookSource);
+          if (fetched == 0) return built;
+        }
+        return built ?? ExploreKindsResult(infoMap: infoMap);
+      });
+    } on Object catch (e) {
+      return ExploreKindsResult(infoMap: infoMap, error: '$e');
+    } finally {
+      // toggle/select 默认值与 viewName/action 的 infoMap 变化落盘。
+      await ShuyuanExploreInfoStore.save(infoKey, infoMap);
+    }
+  }
+
+  Future<ExploreKindsResult> _buildExploreKinds(
+    PluginConfig source,
+    XiaoshuoBookSource bookSource,
+    Map<String, String> infoMap,
+  ) async {
+    List<ExploreKind> kinds;
+    try {
+      kinds = _webBook.getExploreKinds(bookSource, infoMap: infoMap);
+    } on Object catch (e) {
+      return ExploreKindsResult(infoMap: infoMap, error: '$e');
+    }
+    final items = <ExploreKindItem>[];
+    for (final kind in kinds) {
+      if (kind.title.isEmpty && !kind.isBrowsable) continue;
+      final value = _buildKindValue(kind, infoMap);
+      var displayName = kind.title;
+      final viewName = kind.viewName?.trim() ?? '';
+      if (viewName.isNotEmpty) {
+        final resolved =
+            await _resolveKindViewName(source, viewName, infoMap);
+        if (resolved.isNotEmpty) displayName = resolved;
+      }
+      if (displayName.isEmpty) displayName = kind.url ?? '';
+      items.add(ExploreKindItem(
+        kind: kind,
+        displayName: displayName,
+        value: value,
+      ));
+    }
+    return ExploreKindsResult(items: items, infoMap: infoMap);
+  }
+
+  /// text 取 infoMap 已有值；toggle/select 缺省时写入并返回默认值。
+  String _buildKindValue(ExploreKind kind, Map<String, String> infoMap) {
+    switch (kind.recognizedType) {
+      case ExploreKindType.text:
+        return infoMap[kind.title] ?? '';
+      case ExploreKindType.toggle:
+      case ExploreKindType.select:
+        final existing = infoMap[kind.title];
+        if (existing != null && existing.isNotEmpty) return existing;
+        final options = _kindOptions(kind);
+        final fallback = kind.defaultValue?.trim() ?? '';
+        final value = fallback.isNotEmpty ? fallback : options.first;
+        infoMap[kind.title] = value;
+        return value;
+      default:
+        return '';
+    }
+  }
+
+  /// toggle/select 的可选值（legado：chars 缺失时用占位文案，不让 UI 崩）。
+  static List<String> _kindOptions(ExploreKind kind) {
+    if (kind.chars.isNotEmpty) return kind.chars;
+    return const <String>['chars', 'is null'];
+  }
+
+  /// viewName：`'字面量'`（长度 3–19）直接取内容，其余按 JS 求值
+  /// （legado ExploreKindUiUseCase.ResolveDisplayName）。
+  Future<String> _resolveKindViewName(
+    PluginConfig source,
+    String viewName,
+    Map<String, String> infoMap,
+  ) async {
+    final literal = _literalViewName(viewName);
+    if (literal != null) return literal;
+    final engine = JsEngine.forSource(source.id);
+    final out = engine.eval(
+      viewName,
+      bindings: <String, dynamic>{
+        'infoMap': Map<String, String>.from(infoMap),
+      },
+    );
+    engine.takeJavaVars();
+    return out;
+  }
+
+  static String? _literalViewName(String viewName) {
+    if (viewName.length < 3 || viewName.length > 19) return null;
+    if (viewName.startsWith("'") && viewName.endsWith("'")) {
+      return viewName.substring(1, viewName.length - 1);
+    }
+    return null;
+  }
+
+  /// 持久化单个选项值（text 输入 / toggle、select 选择）。
+  @override
+  Future<void> setExploreKindValue(
+    PluginConfig source,
+    String title,
+    String value,
+  ) async {
+    final shuyuanSource = ShuyuanAdapter.fromPluginConfig(source);
+    if (shuyuanSource == null) return;
+    final bookSource = shuyuanSource.toBookSource();
+    final infoKey = _exploreInfoKey(source, bookSource);
+    final infoMap = await ShuyuanExploreInfoStore.load(infoKey);
+    infoMap[title] = value;
+    await ShuyuanExploreInfoStore.save(infoKey, infoMap);
+  }
+
+  /// 执行选项 action 脚本。
+  ///
+  /// 与登录脚本同款 mini-settle：`java.ajax`/`java.webView` 先记占位符，
+  /// 宿主抓取后重放；脚本里的 `java.startBrowser/openUrl/refreshExplore/
+  /// copyText` 经 syOp 排空回传给 UI 执行。action 对 infoMap 的修改
+  /// （`infoMap.put(...)` / 下标赋值）在执行后落盘。
+  @override
+  Future<ExploreKindActionResult> executeExploreKindAction(
+    PluginConfig source,
+    ExploreKind kind,
+  ) async {
+    final action = kind.action?.trim() ?? '';
+    if (action.isEmpty) return const ExploreKindActionResult();
+    final shuyuanSource = ShuyuanAdapter.fromPluginConfig(source);
+    if (shuyuanSource == null) return const ExploreKindActionResult();
+    final bookSource = shuyuanSource.toBookSource();
+    final infoKey = _exploreInfoKey(source, bookSource);
+    final infoMap = await ShuyuanExploreInfoStore.load(infoKey);
+    final ctx = await _contextFor(source);
+    ctx.bookSourceUrl = bookSource.bookSourceUrl;
+    ctx.jsLib = bookSource.jsLib ?? '';
+    final engine = JsEngine.forSource(source.id);
+    try {
+      return await ShuyuanSourceContext.run(ctx, () async {
+        ctx.clearStageCaches();
+        engine.resetReplayCaches();
+        final deadline = DateTime.now().add(_exploreCategoryBudget);
+        for (var pass = 0; pass < _maxReplayPasses; pass++) {
+          ctx.ajaxPending.clear();
+          ctx.webviewPending.clear();
+          ctx.kindBrowserOpens.clear();
+          ctx.kindRefreshRequested = false;
+          ctx.copiedTexts.clear();
+          _runKindAction(engine, action, infoMap);
+          _syncInfoMapFromJs(engine, infoMap);
+          if (!_hasPendingReplay(ctx)) break;
+          if (!_replayAllowed(pass, deadline)) break;
+          final fetched = await _settleReplay(ctx, bookSource);
+          if (fetched == 0) break;
+        }
+        return ExploreKindActionResult(
+          openRequests: <ExploreKindOpenRequest>[
+            for (final open in ctx.kindBrowserOpens)
+              if ((open['url'] ?? '').isNotEmpty)
+                ExploreKindOpenRequest(
+                  url: open['url']!,
+                  title: open['title'] ?? '',
+                ),
+          ],
+          refreshKinds: ctx.kindRefreshRequested,
+          copiedTexts: List<String>.from(ctx.copiedTexts),
+        );
+      });
+    } finally {
+      engine.takeJavaVars();
+      await ShuyuanExploreInfoStore.save(infoKey, infoMap);
+    }
+  }
+
+  /// 执行 action：先给 infoMap 补 Map.put/get/remove/containsKey 兼容方法
+  /// （legado 的 infoMap 是 HashMap，脚本常用 `.put`），再 eval 脚本体。
+  void _runKindAction(
+    JsEngine engine,
+    String action,
+    Map<String, String> infoMap,
+  ) {
+    final wrapped = '(function () {\n'
+        '  if (infoMap && typeof infoMap === "object") {\n'
+        '    if (typeof infoMap.put !== "function") infoMap.put = function (k, v) {'
+        ' this[String(k)] = v == null ? "" : String(v); return v; };\n'
+        '    if (typeof infoMap.get !== "function") infoMap.get = function (k) {'
+        ' return this[String(k)]; };\n'
+        '    if (typeof infoMap.remove !== "function") infoMap.remove = function (k) {'
+        ' var v = this[String(k)]; delete this[String(k)]; return v == null ? null : v; };\n'
+        '    if (typeof infoMap.containsKey !== "function") infoMap.containsKey = function (k) {'
+        ' return Object.prototype.hasOwnProperty.call(this, String(k)); };\n'
+        '  }\n'
+        '  return eval(${jsonEncode(action)});\n'
+        '})()';
+    engine.eval(wrapped, bindings: <String, dynamic>{
+      'infoMap': Map<String, String>.from(infoMap),
+    });
+  }
+
+  void _syncInfoMapFromJs(
+    JsEngine engine,
+    Map<String, String> infoMap,
+  ) {
+    try {
+      final raw = engine.eval('JSON.stringify(infoMap)');
+      engine.takeJavaVars();
+      if (raw.isEmpty) return;
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+      infoMap
+        ..clear()
+        ..addAll(<String, String>{
+          for (final e in decoded.entries)
+            e.key.toString(): e.value?.toString() ?? '',
+        });
+    } catch (_) {}
+  }
+
+  /// infoMap 的持久化键：优先书源 URL（与 legado `infoMap_<key>` 对齐），
+  /// 未声明 URL 时退回内部源 id。
+  static String _exploreInfoKey(
+    PluginConfig source,
+    XiaoshuoBookSource bookSource,
+  ) {
+    final url = bookSource.bookSourceUrl.trim();
+    return url.isNotEmpty ? url : source.id;
   }
 
   /// exploreUrl 是否含需要 JS 求值的片段（整串或分段 `@js:`/`<js>`）。

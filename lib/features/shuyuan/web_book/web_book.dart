@@ -6,8 +6,7 @@
 /// 直接基于 XiaoshuoHttp/AnalyzeUrl + 静态分析方法实现，便于在新项目架构下复用。
 library;
 
-import 'dart:convert';
-
+import '../../../core/models/explore_kind.dart';
 import '../../../core/models/novel_block.dart';
 import '../../../core/novel/novel_chinese_converter.dart';
 import '../analyze/analyze_rule.dart';
@@ -96,18 +95,32 @@ class WebBook {
     );
   }
 
-  /// 解析书源的发现分类列表（基于 `exploreUrl` 多级 URL 字符串）。
-  List<ExploreCategory> getExploreCategories(XiaoshuoBookSource source) {
+  /// 解析书源的发现选项列表（含分类 / 输入框 / 按钮 / 开关 / 下拉）。
+  ///
+  /// [infoMap] 是发现页选项栏的持久化状态，动态 exploreUrl 脚本以全局
+  /// `infoMap` 绑定读取。静态声明不需要运行时；JS 动态分类须在
+  /// [ShuyuanSourceContext] 作用域内调用，ajax/webview 走重放协议。
+  List<ExploreKind> getExploreKinds(
+    XiaoshuoBookSource source, {
+    Map<String, String>? infoMap,
+  }) {
     final exploreUrl = source.exploreUrl;
-    if (exploreUrl == null || exploreUrl.isEmpty) {
-      return <ExploreCategory>[];
+    if (exploreUrl == null || exploreUrl.trim().isEmpty) {
+      return const <ExploreKind>[];
     }
+    return parseExploreKinds(exploreUrl, infoMap: infoMap);
+  }
 
-    final urlEntries = _parseExploreEntries(exploreUrl);
-    return urlEntries
-        .map((e) => ExploreCategory(
-              name: e.name.isNotEmpty ? e.name : e.url,
-              url: e.url,
+  /// 解析书源的发现分类列表（基于 `exploreUrl` 多级 URL 字符串）。
+  List<ExploreCategory> getExploreCategories(
+    XiaoshuoBookSource source, {
+    Map<String, String>? infoMap,
+  }) {
+    return getExploreKinds(source, infoMap: infoMap)
+        .where((k) => k.isBrowsable)
+        .map((k) => ExploreCategory(
+              name: k.title.isNotEmpty ? k.title : k.url!,
+              url: k.url!,
             ))
         .toList();
   }
@@ -128,7 +141,10 @@ class WebBook {
     }
 
     // 先解析 exploreUrl（JSON 数组 / @js: / 多行文本），失败回退整串单条目。
-    var urlEntries = _parseExploreEntries(exploreUrl);
+    var urlEntries = <UrlEntry>[
+      for (final kind in getExploreKinds(source))
+        if (kind.isBrowsable) UrlEntry(name: kind.title, url: kind.url!),
+    ];
     if (urlEntries.isEmpty) {
       final trimmed = exploreUrl.trim();
       if (trimmed.isNotEmpty) {
@@ -695,68 +711,5 @@ class WebBook {
       }
     } catch (_) {}
     return null;
-  }
-
-  /// 解析 exploreUrl 为分类条目。支持三种形态（对齐 legado 语义）：
-  /// ① JSON 数组：条目 `{title|name, url, style?}`——url 可为 `@js:`/`<js>`
-  ///    脚本（抓取期由 AnalyzeUrl.analyzeJs 带 page 绑定执行出最终 URL），
-  ///    空 url 条目是分组标题行（legado 样式行）→ 跳过；
-  /// ② 整体 `@js:`/`<js>` 脚本：执行结果再按行解析；
-  /// ③ 多行 `名称::URL` 文本。
-  /// 此前 JSON 数组走正则抽字段，url 含多行 @js: 脚本时正则截断 → 一条源
-  /// 解析出 84 个垃圾分类（2026-11-14 全免小说实测），故改为结构化解码。
-  /// 修复「曾被二次转义」的 exploreUrl JSON：字符串值内出现裸换行/回车
-  /// （外层 JSON 解码后，url 字段里的多行 @js: 脚本带着真实换行），严格
-  /// JSON 解码必败。扫描字符串边界（处理 \" 转义），仅把字符串内的裸
-  /// 换行/回车转义为 \n / \r，其余原样保留。
-  static String _repairJsonRawNewlines(String s) {
-    // 注意：StringBuffer 构造参数是初始内容而非容量，传数字会把长度前缀
-    // 写进输出（曾致 "22788[..." → JSON 解析在字符 6 处失败）。
-    final out = StringBuffer();
-    var inString = false;
-    for (var i = 0; i < s.length; i++) {
-      final c = s[i];
-      if (c == '"') {
-        // 统计前缀反斜杠数：偶数为真实字符串边界，奇数为转义引号。
-        var bs = 0;
-        var j = i - 1;
-        while (j >= 0 && s[j] == '\\') {
-          bs++;
-          j--;
-        }
-        if (bs.isEven) inString = !inString;
-        out.write(c);
-      } else if (inString && (c == '\n' || c == '\r')) {
-        out.write(c == '\n' ? r'\n' : r'\r');
-      } else {
-        out.write(c);
-      }
-    }
-    return out.toString();
-  }
-
-  List<UrlEntry> _parseExploreEntries(String exploreUrl) {
-    final trimmed = exploreUrl.trim();
-    if (trimmed.startsWith('[')) {
-      try {
-        final decoded = jsonDecode(_repairJsonRawNewlines(trimmed));
-        if (decoded is List) {
-          final entries = <UrlEntry>[];
-          for (final e in decoded) {
-            if (e is! Map) continue;
-            final t = e['title'] ?? e['name'];
-            final title = t == null ? '' : t.toString().trim();
-            final u = e['url'];
-            final url = u == null ? '' : u.toString().trim();
-            if (title.isEmpty || url.isEmpty) continue;
-            entries.add(UrlEntry(name: title, url: url));
-          }
-          if (entries.isNotEmpty) return entries;
-        }
-      } catch (_) {
-        // 非法 JSON：回退到文本行解析。
-      }
-    }
-    return parseMultiLevelUrls(exploreUrl);
   }
 }

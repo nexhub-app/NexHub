@@ -101,6 +101,8 @@ class OnlineContentListScreen extends StatefulWidget {
     this.verificationHandler,
     this.initialGrid = true,
     this.emptyIcon = Icons.video_library_rounded,
+    this.initialCategoryUrl,
+    this.initialCategoryTitle,
   });
 
   final String title;
@@ -108,6 +110,13 @@ class OnlineContentListScreen extends StatefulWidget {
   final PluginConfig? initialSource;
   final FetchItems fetchItems;
   final FetchCategories? fetchCategories;
+
+  /// 从发现页选项栏点入的分类 URL：分类加载后自动选中对应 Tab。
+  ///
+  /// 若 fetchCategories 没有返回该分类（书源选项栏与分类 Tab 的口径可能
+  /// 不同），会把它作为首个 Tab 注入，保证「点哪个分类就进哪个分类」。
+  final String? initialCategoryUrl;
+  final String? initialCategoryTitle;
 
   /// 首页板块解析（可选）；为 null 时回退旧行为（最新更新 + 热门推荐两段）。
   final ResolveHomeSections? resolveHomeSections;
@@ -216,6 +225,9 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
 
   // 是否已显示过 TabBar（避免 Tab 数变化时 index 越界）
   int _lastTabCount = 3;
+
+  /// 初始分类是否已应用（只应用一次，刷新分类不抢用户当前 Tab）。
+  bool _appliedInitialCategory = false;
 
   @override
   void initState() {
@@ -401,6 +413,7 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
           _categories
             ..clear()
             ..addAll(cats);
+          _injectInitialCategory();
           _tabStates.clear();
           _categoriesLoading = false;
           _rebuildTabController();
@@ -408,6 +421,7 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
         // 分类就绪即触发首个分类预载（书源模式没有首页可等），
         // 缩短首次点击的冷启动窗口。
         _tryPreloadFirstCategory();
+        _applyInitialCategory();
       }
     } on Object {
       if (mounted) {
@@ -419,6 +433,39 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
         });
       }
     }
+  }
+
+  /// 初始分类不在 fetchCategories 结果里时注入一个 Tab（保持点击意图）。
+  void _injectInitialCategory() {
+    final target = widget.initialCategoryUrl;
+    if (target == null || target.isEmpty) return;
+    if (_categories.any((c) => c.id == target)) return;
+    final title = widget.initialCategoryTitle?.trim() ?? '';
+    _categories.insert(
+      0,
+      CategoryEntry(id: target, title: title.isNotEmpty ? title : target),
+    );
+  }
+
+  /// 分类加载完成后自动切到从发现页点入的分类（只生效一次）。
+  void _applyInitialCategory() {
+    if (_appliedInitialCategory) return;
+    final target = widget.initialCategoryUrl;
+    if (target == null || target.isEmpty) {
+      _appliedInitialCategory = true;
+      return;
+    }
+    final index = _categories.indexWhere((c) => c.id == target);
+    if (index < 0) return; // 分类尚未就绪：等下一次加载
+    _appliedInitialCategory = true;
+    final tabIndex = _catStart + index;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (_tabController.index != tabIndex) {
+        _tabController.animateTo(tabIndex);
+      }
+      _ensureTabLoaded(_categories[index].id);
+    });
   }
 
   /// 加载首页数据（最新更新 + 热门推荐）。

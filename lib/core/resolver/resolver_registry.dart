@@ -7,6 +7,7 @@
 library;
 
 import '../models/category_entry.dart';
+import '../models/explore_kind.dart';
 import '../models/plugin_config.dart';
 import 'builtin_resolver.dart';
 import 'script_resolver.dart';
@@ -155,6 +156,46 @@ class ResolverRegistry {
     }
     return const <CategoryEntry>[];
   }
+
+  /// 解析书源发现页的完整选项栏（分类 / 输入框 / 按钮 / 开关 / 下拉）。
+  ///
+  /// 非书源返回空结果（调用方回退普通导航）；书源解析失败时 [error] 非空。
+  Future<ExploreKindsResult> resolveExploreKinds(
+    PluginConfig source, {
+    bool refresh = false,
+  }) async {
+    if (!_isShuyuanSource(source)) {
+      return const ExploreKindsResult();
+    }
+    try {
+      return await _shuyuanResolver
+          .resolveExploreKinds(source, refresh: refresh);
+    } on Object catch (e) {
+      return ExploreKindsResult(error: '$e');
+    }
+  }
+
+  /// 持久化发现页选项栏的单个值（text/toggle/select）。
+  Future<void> setExploreKindValue(
+    PluginConfig source,
+    String title,
+    String value,
+  ) {
+    if (!_isShuyuanSource(source)) return Future<void>.value();
+    return _shuyuanResolver.setExploreKindValue(source, title, value);
+  }
+
+  /// 执行发现页选项的 action 脚本（java.ajax/webView 走确定性重放）。
+  Future<ExploreKindActionResult> executeExploreKindAction(
+    PluginConfig source,
+    ExploreKind kind,
+  ) {
+    if (!_isShuyuanSource(source)) {
+      return Future<ExploreKindActionResult>.value(
+          const ExploreKindActionResult());
+    }
+    return _shuyuanResolver.executeExploreKindAction(source, kind);
+  }
 }
 
 // 惰性单例：书源解析器（WebBook 内部维护 XiaoshuoHttp，
@@ -162,7 +203,11 @@ class ResolverRegistry {
 final _LazyShuyuanResolver _shuyuanResolver = _LazyShuyuanResolver();
 
 class _LazyShuyuanResolver
-    implements SourceResolver, RenderedHtmlCapable, ExploreCategoriesCapable {
+    implements
+        SourceResolver,
+        RenderedHtmlCapable,
+        ExploreCategoriesCapable,
+        ExploreKindsCapable {
   RenderedHtmlCapable? _inner;
 
   @override
@@ -199,6 +244,47 @@ class _LazyShuyuanResolver
           .resolveExploreCategories(source);
     }
     return Future<List<CategoryEntry>>.value(const <CategoryEntry>[]);
+  }
+
+  @override
+  Future<ExploreKindsResult> resolveExploreKinds(
+    PluginConfig source, {
+    bool refresh = false,
+  }) {
+    final inner = _inner ??= _createShuyuanResolver() as RenderedHtmlCapable;
+    if (inner is ExploreKindsCapable) {
+      return (inner as ExploreKindsCapable)
+          .resolveExploreKinds(source, refresh: refresh);
+    }
+    return Future<ExploreKindsResult>.value(const ExploreKindsResult());
+  }
+
+  @override
+  Future<void> setExploreKindValue(
+    PluginConfig source,
+    String title,
+    String value,
+  ) {
+    final inner = _inner ??= _createShuyuanResolver() as RenderedHtmlCapable;
+    if (inner is ExploreKindsCapable) {
+      return (inner as ExploreKindsCapable)
+          .setExploreKindValue(source, title, value);
+    }
+    return Future<void>.value();
+  }
+
+  @override
+  Future<ExploreKindActionResult> executeExploreKindAction(
+    PluginConfig source,
+    ExploreKind kind,
+  ) {
+    final inner = _inner ??= _createShuyuanResolver() as RenderedHtmlCapable;
+    if (inner is ExploreKindsCapable) {
+      return (inner as ExploreKindsCapable)
+          .executeExploreKindAction(source, kind);
+    }
+    return Future<ExploreKindActionResult>.value(
+        const ExploreKindActionResult());
   }
 
   SourceResolver _createShuyuanResolver() {
@@ -263,4 +349,23 @@ abstract class ExploreCategoriesCapable {
   /// 动态分类（`<js>`）可能依赖 `java.ajax` 等宿主能力，故为异步；静态
   /// 声明（文本 / JSON）实现可直接返回已完成 Future。
   Future<List<CategoryEntry>> resolveExploreCategories(PluginConfig source);
+}
+
+/// 发现页选项栏能力：解析完整选项、持久化选项值、执行选项 action。
+abstract class ExploreKindsCapable {
+  Future<ExploreKindsResult> resolveExploreKinds(
+    PluginConfig source, {
+    bool refresh = false,
+  });
+
+  Future<void> setExploreKindValue(
+    PluginConfig source,
+    String title,
+    String value,
+  );
+
+  Future<ExploreKindActionResult> executeExploreKindAction(
+    PluginConfig source,
+    ExploreKind kind,
+  );
 }

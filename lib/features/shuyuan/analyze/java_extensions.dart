@@ -197,7 +197,10 @@ const String sourceContextJsPrelude = r'''
       syOp('loginHeaderDel', String(k), '');
       return null;
     },
-    refreshExplore: function () { return true; },
+    refreshExplore: function () {
+      syOp('refreshKinds', '', '');
+      return true;
+    },
     refreshJSLib: function () { return true; },
     refreshBookUrl: function () { return true; },
   };
@@ -363,6 +366,34 @@ const String sourceContextJsPrelude = r'''
         return global.java.readTxtFile(global.java.cacheFile(p));
       }
       return '';
+    };
+    // ── UI 操作族（发现页选项 action / 登录脚本） ──
+    // legado 脚本可在 action 里直接打开浏览器、刷新选项栏、复制文本；
+    // 同步沙箱内不能真开界面，统一记 op 由宿主排空后执行。
+    global.java.startBrowser = function (url, title, html) {
+      var u = String(url == null ? '' : url);
+      if (u) syOp('browserOpen', u, title == null ? '' : String(title));
+      return null;
+    };
+    global.java.startBrowserAwait = function (url, title) {
+      global.java.startBrowser(url, title);
+      // legado 返回响应对象；同步沙箱无真实响应，给空壳避免脚本 TypeError。
+      return { body: function () { return ''; },
+        code: function () { return 0; },
+        headers: function () { return {}; } };
+    };
+    global.java.openUrl = function (url, mimeType) {
+      global.java.startBrowser(url, '');
+      return true;
+    };
+    global.java.refreshExplore = function () {
+      syOp('refreshKinds', '', '');
+      return true;
+    };
+    global.java.copyText = function (text) {
+      var t = String(text == null ? '' : text);
+      syOp('copyText', t, '');
+      return t;
     };
   }
 })(globalThis);

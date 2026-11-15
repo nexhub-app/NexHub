@@ -18,9 +18,16 @@ import 'package:nexhub/core/navigation/app_page_route.dart';
 /// [OnlineContentListScreen]，不与小说 / 漫画模块重复实现。
 class MediaOnlineListScreen extends StatelessWidget {
   const MediaOnlineListScreen(
-      {super.key, this.initialSource, this.onAddSource, this.onEnableRecommended});
+      {super.key,
+      this.initialSource,
+      this.initialCategoryUrl,
+      this.initialCategoryTitle,
+      this.onAddSource,
+      this.onEnableRecommended});
 
   final PluginConfig? initialSource;
+  final String? initialCategoryUrl;
+  final String? initialCategoryTitle;
   final VoidCallback? onAddSource;
   final VoidCallback? onEnableRecommended;
 
@@ -35,6 +42,8 @@ class MediaOnlineListScreen extends StatelessWidget {
       title: 'media',
       sources: sources,
       initialSource: initialSource,
+      initialCategoryUrl: initialCategoryUrl,
+      initialCategoryTitle: initialCategoryTitle,
       onAddSource: onAddSource,
       onEnableRecommended: onEnableRecommended,
       verificationHandler: handleVerificationRequest,

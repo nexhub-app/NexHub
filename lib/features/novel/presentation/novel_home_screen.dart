@@ -133,6 +133,20 @@ class NovelHomeScreen extends StatelessWidget {
             ),
           ),
         ),
+        onCategoryTap:
+            (PluginConfig source, String categoryUrl, String title) =>
+                Navigator.of(context).push(
+          AppPageRoute<void>(
+            builder: (_) => NovelOnlineListScreen(
+              initialSource: source,
+              initialCategoryUrl: categoryUrl,
+              initialCategoryTitle: title,
+              onAddSource: navigateToCollectApiImport,
+              onEnableRecommended:
+                  () => context.read<SourceRepository>().enableRecommendedSources(),
+            ),
+          ),
+        ),
       ),
       subscribeBody:
           const RssFeedListScreen(moduleType: SourceType.novelSource),
