@@ -394,17 +394,15 @@ class AnalyzeByJsoup {
         }
         break;
       case 'textnodes':
-        // legado 语义：每个文本节点各占一条结果（非按元素 join 成单串）。
-        // getString 输出一致（同为 \n 连接）；差异在 getStringList 粒度与
-        // ## 替换的逐条应用（按节点过滤章节号等场景）。
+        // legado getResultLast("textNodes")：同一元素的文本节点用 "\n"
+        // 合并为一条结果；空节点跳过，元素整体为空则不产出。
         for (final el in elements) {
-          final nodes = el.nodes
-              .whereType<Text>()
-              .map((n) => (n).text.trim())
-              .where((s) => s.isNotEmpty);
-          for (final t in nodes) {
-            result.add(t);
+          final tn = <String>[];
+          for (final node in el.nodes.whereType<Text>()) {
+            final text = node.text.trim();
+            if (text.isNotEmpty) tn.add(text);
           }
+          if (tn.isNotEmpty) result.add(tn.join('\n'));
         }
         break;
       case 'owntext':
@@ -419,24 +417,36 @@ class AnalyzeByJsoup {
         }
         break;
       case 'html':
-        for (final el in elements) {
-          final clone = el.clone(true);
-          clone.querySelectorAll('script').forEach((e) => e.remove());
-          clone.querySelectorAll('style').forEach((e) => e.remove());
-          final html = clone.innerHtml;
+        // legado：移除 script/style 后取 Elements.outerHtml()（所有命中
+        // 元素的外层 HTML 拼成一条结果，含元素自身标签）。克隆后再改，
+        // 避免污染后续规则复用同一 DOM。
+        {
+          final buf = StringBuffer();
+          for (final el in elements) {
+            final clone = el.clone(true);
+            clone.querySelectorAll('script').forEach((e) => e.remove());
+            clone.querySelectorAll('style').forEach((e) => e.remove());
+            buf.write(clone.outerHtml);
+          }
+          final html = buf.toString();
           if (html.isNotEmpty) result.add(html);
         }
         break;
       case 'all':
-        for (final el in elements) {
-          result.add(el.outerHtml);
+        {
+          final buf = StringBuffer();
+          for (final el in elements) {
+            buf.write(el.outerHtml);
+          }
+          final html = buf.toString();
+          if (html.isNotEmpty) result.add(html);
         }
         break;
       default:
-        // 属性提取
+        // 属性提取：空值与重复值跳过（legado getResultLast else 分支）。
         for (final el in elements) {
           final attr = el.attributes[method] ?? '';
-          if (attr.isNotEmpty && !result.contains(attr)) result.add(attr);
+          if (attr.trim().isNotEmpty && !result.contains(attr)) result.add(attr);
         }
         break;
     }

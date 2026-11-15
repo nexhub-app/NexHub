@@ -6,6 +6,7 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:crypto/crypto.dart' as crypto;
+import 'package:nexhub/features/shuyuan/analyze/analyze_rule.dart';
 import 'package:nexhub/features/shuyuan/analyze/java_extensions.dart';
 import 'package:nexhub/features/shuyuan/analyze/js_engine.dart';
 import 'package:nexhub/features/shuyuan/analyze/source_context.dart';
@@ -275,6 +276,209 @@ void main() {
       expect(e.eval('typeof java.queryTTF'), 'function');
       expect(e.eval('typeof java.replaceFont'), 'function');
       expect(e.eval("java.replaceFont('abc', null, null, false)"), 'abc');
+    });
+  });
+
+  group('java.* 摘要与 HMAC（JsEncodeUtils）', () {
+    test('digestHex SHA-1 / SHA-256 标准向量', () {
+      final e = engine();
+      expect(e.eval("java.digestHex('abc', 'SHA-1')"),
+          'a9993e364706816aba3e25717850c26c9cd0d89d');
+      expect(e.eval("java.digestHex('abc', 'SHA-256')"),
+          'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+      expect(e.eval("java.digestHex('abc', 'MD5')"),
+          '900150983cd24fb0d6963f7d28e17f72');
+    });
+
+    test('digestHex 中文与 Dart crypto 交叉验证', () {
+      final e = engine();
+      const s = '中文abc123';
+      expect(e.eval("java.digestHex('$s', 'SHA-256')"),
+          crypto.sha256.convert(utf8.encode(s)).toString());
+      expect(e.eval("java.digestHex('$s', 'SHA-1')"),
+          crypto.sha1.convert(utf8.encode(s)).toString());
+    });
+
+    test('digestBase64Str', () {
+      final e = engine();
+      expect(e.eval("java.digestBase64Str('abc', 'SHA-256')"),
+          base64Encode(crypto.sha256.convert(utf8.encode('abc')).bytes));
+    });
+
+    test('HMacHex HmacMD5/HmacSHA1/HmacSHA256 标准向量', () {
+      final e = engine();
+      const msg = 'The quick brown fox jumps over the lazy dog';
+      expect(e.eval("java.HMacHex('$msg', 'HmacMD5', 'key')"),
+          '80070713463e7749b90c2dc24911e275');
+      expect(e.eval("java.HMacHex('$msg', 'HmacSHA1', 'key')"),
+          'de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9');
+      expect(e.eval("java.HMacHex('$msg', 'HmacSHA256', 'key')"),
+          'f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8');
+    });
+
+    test('HMacBase64 与 hex 同源', () {
+      final e = engine();
+      const msg = 'The quick brown fox jumps over the lazy dog';
+      final hex = e.eval("java.HMacHex('$msg', 'HmacSHA256', 'key')");
+      final b64 = e.eval("java.HMacBase64('$msg', 'HmacSHA256', 'key')");
+      final expected = base64Encode([
+        for (var i = 0; i < hex.length; i += 2)
+          int.parse(hex.substring(i, i + 2), radix: 16),
+      ]);
+      expect(b64, expected);
+    });
+
+    test('不支持的算法返回空串', () {
+      final e = engine();
+      expect(e.eval("java.digestHex('abc', 'SHA-512')"), '');
+      expect(e.eval("java.HMacHex('abc', 'HmacSHA512', 'k')"), '');
+    });
+  });
+
+  group('java.* DES / 3DES', () {
+    test('FIPS 46-3 DES-ECB 标准向量', () {
+      final e = engine();
+      expect(
+          e.eval("__desHexTest('133457799BBCDFF1', '', "
+              "'0123456789ABCDEF', true, false)"),
+          '85e813540f0ab405');
+      expect(
+          e.eval("__desHexTest('133457799BBCDFF1', '', "
+              "'85E813540F0AB405', false, false)"),
+          '0123456789abcdef');
+    });
+
+    test('FIPS 81 DES-CBC 第一块', () {
+      final e = engine();
+      expect(
+          e.eval("__desHexTest('0123456789ABCDEF', '1234567890ABCDEF', "
+              "'4E6F772069732074', true, false)"),
+          'e5c7cdde872bf27c');
+    });
+
+    test('NIST SP 800-67 3DES 标准向量', () {
+      final e = engine();
+      const key =
+          '0123456789ABCDEF23456789ABCDEF01456789ABCDEF0123';
+      expect(
+          e.eval("__desHexTest('$key', '', '5468652071756663', true, true)"),
+          'a826fd8ce53b855f');
+      expect(
+          e.eval("__desHexTest('$key', '', 'A826FD8CE53B855F', false, true)"),
+          '5468652071756663');
+    });
+
+    test('DESede 三钥相同退化为 DES（密钥编排自检）', () {
+      final e = engine();
+      expect(
+          e.eval("__desHexTest('133457799BBCDFF1' + '133457799BBCDFF1' + "
+              "'133457799BBCDFF1', '', '0123456789ABCDEF', true, true)"),
+          '85e813540f0ab405');
+    });
+
+    test('desEncodeToBase64String/desBase64DecodeToString 往返', () {
+      final e = engine();
+      final cipher = e.eval("java.desEncodeToBase64String('中文abc123', "
+          "'12345678', 'DES/CBC/PKCS5Padding', 'abcdefgh')");
+      expect(cipher, isNotEmpty);
+      expect(
+          e.eval("java.desBase64DecodeToString('$cipher', '12345678', "
+              "'DES/CBC/PKCS5Padding', 'abcdefgh')"),
+          '中文abc123');
+    });
+
+    test('DES 单块十六进制密文（16 个 hex 字符）可解', () {
+      final e = engine();
+      final hex = e.eval("java.createSymmetricCrypto("
+          "'DES/ECB/NoPadding', '133457799BBCDFF1').encryptHex('abcdefgh')");
+      expect(hex, isNotEmpty);
+      expect(
+          e.eval("java.desDecodeToString('$hex', '133457799BBCDFF1', "
+              "'DES/ECB/NoPadding', '')"),
+          'abcdefgh');
+    });
+
+    test('tripleDES* API 往返（含 base64 密钥变体）', () {
+      final e = engine();
+      const key = '123456789012345678901234';
+      final cipher = e.eval("java.tripleDESEncodeBase64Str('hello 3des', "
+          "'$key', 'CBC', 'PKCS5Padding', 'abcdefgh')");
+      expect(cipher, isNotEmpty);
+      expect(
+          e.eval("java.tripleDESDecodeStr('$cipher', '$key', "
+              "'CBC', 'PKCS5Padding', 'abcdefgh')"),
+          'hello 3des');
+      final keyB64 = base64Encode(utf8.encode(key));
+      final cipher2 = e.eval("java.tripleDESEncodeArgsBase64Str('args 3des', "
+          "'$keyB64', 'CBC', 'PKCS5Padding', 'abcdefgh')");
+      expect(
+          e.eval("java.tripleDESDecodeArgsBase64Str('$cipher2', '$keyB64', "
+              "'CBC', 'PKCS5Padding', 'abcdefgh')"),
+          'args 3des');
+    });
+
+    test('DES 密钥不足 8 字节返回空', () {
+      final e = engine();
+      expect(
+          e.eval("java.createSymmetricCrypto("
+              "'DES/ECB/PKCS5Padding', 'short').encryptBase64('x')"),
+          '');
+    });
+  });
+
+  group('java.* 环境别名', () {
+    test('getWebViewUA / getUserAgent 返回 UA 常量', () {
+      final e = engine();
+      final ua = e.eval('java.getWebViewUA()');
+      expect(ua, contains('Mozilla/5.0'));
+      expect(ua, contains('Android'));
+      expect(e.eval('java.getUserAgent()'), ua);
+    });
+
+    test('refresh* / sleep / showBrowser 无操作可调用', () {
+      final e = engine();
+      final logs = <String>[];
+      final prev = JavaFeedback.onLog;
+      JavaFeedback.onLog = logs.add;
+      try {
+        expect(
+            e.eval("java.sleep(10); java.refreshTocUrl(); "
+                "java.refreshContent(); java.showBrowser('x'); 'ok'"),
+            'ok');
+      } finally {
+        JavaFeedback.onLog = prev;
+      }
+      // 不支持的宿主动作各记一次运行日志，便于真机排查。
+      expect(logs, contains('[java.refreshTocUrl] 当前运行时不支持该操作，已忽略'));
+    });
+
+    test('toURL 解析 host/origin/pathname/searchParams', () {
+      final e = engine();
+      expect(
+          e.eval("var u = java.toURL('/x?k=v&m=1', 'https://a.test/'); "
+              "u.host + '|' + u.origin + '|' + u.pathname + '|' + u.searchParams.k"),
+          'a.test|https://a.test|/x|v');
+    });
+
+    test('getVerificationCode 返回空串（无 UI 能力）', () {
+      final e = engine();
+      expect(e.eval("java.getVerificationCode('https://a.test/img')"), '');
+    });
+  });
+
+  group('java.* Elements 包装补齐', () {
+    test('toArray / isEmpty（jsoup Elements 接口）', () {
+      const html = '<div class="i"><a href="/a">甲</a><a href="/b">乙</a></div>';
+      final r = AnalyzeRule()
+        ..setContent(html)
+        ..setBaseUrl('https://x.test/');
+      expect(
+          r.getString("@js:var l = java.getElements('.i a'); "
+              "l.isEmpty() ? 'E' : String(l.toArray().length)"),
+          '2');
+      expect(
+          r.getString("@js:java.getElements('.nope').isEmpty() ? 'YES' : 'NO'"),
+          'YES');
     });
   });
 }

@@ -1,6 +1,7 @@
 /// 规则桥接线测试：
-/// - `java.getElements / getElement / getStringList` 的宿主内联 +
+/// - `java.getElements / getElement / getString` 的重放求值 +
 ///   JS 侧 jsoup 风格包装（size/get/text/attr）；
+/// - `java.setContent` / 带内容参数求值 / 取值分支多轮收敛；
 /// - `@put` 的两种写法（legado 标准无括号 / 历史带括号）。
 library;
 
@@ -9,6 +10,7 @@ import 'package:nexhub/features/shuyuan/analyze/analyze_rule.dart';
 import 'package:nexhub/features/shuyuan/analyze/source_context.dart';
 import 'package:nexhub/features/shuyuan/analyze/source_rule.dart';
 import 'package:nexhub/features/shuyuan/model/xiaoshuo_book.dart';
+import 'package:nexhub/features/shuyuan/model/xiaoshuo_book_chapter.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -61,6 +63,24 @@ void main() {
       });
     });
 
+    test('tocUrl/wordCount/type/origin 可读，type 为数值', () {
+      final book = XiaoshuoBook(bookUrl: 'https://x.test/b', name: '书名');
+      book
+        ..tocUrl = 'https://x.test/b/catalog'
+        ..wordCount = '12万'
+        ..type = 2;
+      final ctx = ShuyuanSourceContext('book-fields')
+        ..bookSourceUrl = 'https://x.test/source.json';
+      final r = AnalyzeRule(book: book)..setContent('<p>x</p>');
+
+      ShuyuanSourceContext.run(ctx, () {
+        expect(r.getString('@js:book.tocUrl'), 'https://x.test/b/catalog');
+        expect(r.getString('@js:book.wordCount'), '12万');
+        expect(r.getString('@js:book.type === 2 ? "IMG" : "OTHER"'), 'IMG');
+        expect(r.getString('@js:book.origin'), 'https://x.test/source.json');
+      });
+    });
+
     test('脚本赋值回写当前书（空值不覆盖）', () {
       final book = XiaoshuoBook(bookUrl: 'https://x.test/b', name: '原标题');
       book.author = '原作者';
@@ -73,6 +93,100 @@ void main() {
         // 空串不覆盖已有值（正文阶段的空壳书不能抹掉详情字段）。
         expect(r.getString("@js:book.author = ''; book.author"), '');
         expect(book.author, '原作者');
+      });
+    });
+  });
+
+  group('java 规则桥重放', () {
+    test('动态规则（变量拼串）可求值', () {
+      final r = rule();
+      expect(r.getString("@js:var rule = '.i a@text'; java.getStringList(rule).length"),
+          '2');
+      expect(r.getString("@js:var sel = '.i a'; java.getString(sel + '@href')"),
+          '/a\n/b');
+    });
+
+    test('带内容参数求值（getString/getStringList 第 2 参）', () {
+      final r = rule();
+      const html = '<div class="z"><a href="/z">丙</a></div>';
+      expect(
+          r.getString("@js:java.getString('.z a@text', '$html')"), '丙');
+      expect(
+          r.getString("@js:java.getStringList('.z a@href', '$html').length"),
+          '1');
+    });
+
+    test('setContent 切换根内容，脚本内与脚本后都生效', () {
+      final r = rule();
+      expect(
+          r.getString("@js:java.setContent('<div class=\"j\"><a href=\"/c\">丙</a></div>'); "
+              "java.getString('.j a@text')"),
+          '丙');
+      // setContent 与 legado 一致：脚本结束后规则实例内容已切换。
+      expect(r.getString('.j a@text'), '丙');
+    });
+
+    test('取值分支脚本多轮收敛', () {
+      final r = rule();
+      expect(
+          r.getString("@js:var els = java.getElements('.i a'); "
+              "els.size() > 0 ? els.get(1).text() : '空'"),
+          '乙');
+    });
+
+    test('元素包装作为内容参数（近似其内部 HTML）', () {
+      final r = rule();
+      expect(
+          r.getString("@js:var el = java.getElement('.i'); "
+              "java.getString('a@href', el)"),
+          '/a\n/b');
+    });
+  });
+
+  group('变量读取链与实体还原', () {
+    test('get 优先级：chapter → book → 本轮 put → 源变量', () {
+      final ctx = ShuyuanSourceContext('get-chain');
+      ctx.sourceVars['k'] = '源';
+      ctx.sourceVars['onlySrc'] = 'S';
+      ShuyuanSourceContext.run(ctx, () {
+        final book = XiaoshuoBook(bookUrl: 'https://x.test/b', name: '书')
+          ..putVariable('k', '书')
+          ..putVariable('onlyBook', 'B');
+        final chapter = XiaoshuoBookChapter(
+          bookUrl: 'https://x.test/b',
+          url: 'https://x.test/1',
+          title: '章',
+        )..putVariable('k', '章');
+        final r = AnalyzeRule(book: book, chapter: chapter)
+          ..setContent('<p>x</p>');
+        expect(r.get('k'), '章');
+        chapter.variableMap.remove('k');
+        expect(r.get('k'), '书');
+        expect(r.get('onlyBook'), 'B');
+        expect(r.get('onlySrc'), 'S');
+        expect(r.get('missing'), '');
+        // @get 变量引用走同一链路。
+        expect(r.getString('@get:{onlySrc}'), 'S');
+      });
+    });
+
+    test('getString 结果做 HTML 实体还原（数字 + 命名全表）', () {
+      final r = rule();
+      expect(r.getString("@js:'&nbsp;&hellip;&#65;&#x42;&mdash;'"),
+          '\u00A0…AB—');
+      expect(r.getString("@js:'&amp;lt;&unknown;'"), '&lt;&unknown;');
+    });
+  });
+
+  group('cookie 注入对象', () {
+    test('setWebCookie 并入请求 cookie 罐', () {
+      final ctx = ShuyuanSourceContext('cookie-web');
+      ShuyuanSourceContext.run(ctx, () {
+        final r = AnalyzeRule()..setContent('<p>x</p>');
+        r.getString("@js:cookie.setWebCookie('https://a.test/x', 'sid=42')");
+        expect(ctx.cookies['sid']?['value'], '42');
+        expect(ctx.cookies['sid']?['host'], 'a.test');
+        expect(r.getString("@js:cookie.getKey('https://a.test/', 'sid')"), '42');
       });
     });
   });
@@ -94,6 +208,13 @@ void main() {
       final r = SourceRule('@put:{a:"x"}@put:{b:"y"} .list');
       expect(r.putMap, {'a': 'x', 'b': 'y'});
       expect(r.rule.contains('@put'), isFalse);
+    });
+
+    test('JSON 转义值还原（引号/换行/逗号）', () {
+      final r = SourceRule(r'@put:{a:"x\"y",b:"l1\nl2",c:"p,q"} .z');
+      expect(r.putMap['a'], 'x"y');
+      expect(r.putMap['b'], 'l1\nl2');
+      expect(r.putMap['c'], 'p,q');
     });
   });
 }

@@ -155,6 +155,11 @@ const String sourceContextJsPrelude = r'''
       syOp('removeCookie', url, '');
       return null;
     },
+    // legado 老版本脚本常用：写 WebView cookie；无内嵌 WebView 时并入
+    // 请求 cookie 罐（对后续 ajax 生效，比原语义更宽但不破坏脚本）。
+    setWebCookie: function (url, cookieStr) {
+      return cookie.setCookie(url, cookieStr);
+    },
   };
 
   var source = {
@@ -215,7 +220,8 @@ const String sourceContextJsPrelude = r'''
     },
     setVariable: function (v) { return book.putVariable('__variable', v); },
   };
-  ['name', 'author', 'bookUrl', 'intro', 'kind', 'coverUrl', 'lastChapter']
+  ['name', 'author', 'bookUrl', 'intro', 'kind', 'coverUrl', 'lastChapter',
+   'tocUrl', 'wordCount', 'origin']
       .forEach(function (f) {
         Object.defineProperty(book, f, {
           get: function () { return syCtx().bookInfo[f] || ''; },
@@ -228,6 +234,14 @@ const String sourceContextJsPrelude = r'''
           },
         });
       });
+  // legado Book.type 是 Int（0 文本 / 1 音频 / 2 图片），脚本常做数值比较。
+  Object.defineProperty(book, 'type', {
+    get: function () {
+      var v = syCtx().bookInfo.type;
+      var n = parseInt(v, 10);
+      return isNaN(n) ? 0 : n;
+    },
+  });
 
   var cache = {
     put: function (k, v, saveTime) {
@@ -863,6 +877,7 @@ const String javaExtensionsJsPrelude = r'''
   // 宿主按选择器再查，沙箱内做不到，故不提供（调用会抛错，走脚本兜底）。
   function __wrapEl(o) {
     var el = {
+      __javaEl: true,
       text: function () { return o.t || ''; },
       html: function () { return o.h || ''; },
       ownText: function () { return o.ot || ''; },
@@ -895,6 +910,9 @@ const String javaExtensionsJsPrelude = r'''
       for (var i = 0; i < list.length; i++) out.push(list[i].text());
       return out.join('\n');
     };
+    // jsoup Elements 常用接口（书源脚本 `getElements(...).toArray()/isEmpty()`）。
+    list.toArray = function () { return list.slice(); };
+    list.isEmpty = function () { return list.length === 0; };
     return list;
   }
 
@@ -1081,27 +1099,36 @@ const String javaExtensionsJsPrelude = r'''
   }
 
   /// transformation 解析：不支持的模式（CTR/GCM/CFB/OFB）返回 null。
+  /// 与 legado SymmetricCryptoAndroid 一致：无 `/` 的算法名补
+  /// ECB/PKCS5Padding（`"DES"` 即 `"DES/ECB/PKCS5Padding"`）。
   function aesParseTf(transformation, hasIv) {
-    var t = String(transformation || '').toUpperCase();
+    var raw = String(transformation || '');
+    var t = raw.toUpperCase();
     if (t.indexOf('/CTR') >= 0 || t.indexOf('/GCM') >= 0 ||
         t.indexOf('/CFB') >= 0 || t.indexOf('/OFB') >= 0) {
       return null;
     }
     var mode = t.indexOf('/ECB') >= 0 ? 'ECB'
-        : (t.indexOf('/CBC') >= 0 ? 'CBC' : (hasIv ? 'CBC' : 'ECB'));
+        : (t.indexOf('/CBC') >= 0 ? 'CBC'
+        : (raw.indexOf('/') < 0 ? 'ECB' : (hasIv ? 'CBC' : 'ECB')));
     var pad = t.indexOf('NOPADDING') < 0;
     return { mode: mode, pad: pad };
   }
 
   function aesDecodeInput(str) {
+    return cipherDecodeInput(str, 16);
+  }
+
+  /// 密文输入解析（legado SymmetricCryptoAndroid.decrypt：hex 优先，其余
+  /// base64）。hex 判定按块长收紧（整块字节数），避免把恰为 hex 字符集的
+  /// base64 串误判；[blockSize] 为分组字节数（AES=16，DES=8）。
+  function cipherDecodeInput(str, blockSize) {
     var s = String(str == null ? '' : str).trim();
-    // 十六进制形态（长度是 32 的整数倍 = 16 字节的整数倍）按 hex 解析，
-    // 其余按 base64。条件收紧到 32 的倍数，避免把恰好全为 hex 字符的
-    // base64 串误判（如 32 位纯十六进制的密文很常见，但 base64 很少）。
-    var isHex = s.length > 0 && s.length % 32 === 0 && /^[0-9a-fA-F]+$/.test(s);
+    var hexUnit = blockSize * 2;
+    var isHex = s.length > 0 && s.length % hexUnit === 0 && /^[0-9a-fA-F]+$/.test(s);
     var bytes = isHex ? hexToBytes(s) : bytesFromB64(s);
     var norm = bytes.map(function (b) { return b & 0xff; });
-    if (norm.length % 16 !== 0 && isHex) {
+    if (norm.length % blockSize !== 0 && isHex) {
       norm = bytesFromB64(s).map(function (b) { return b & 0xff; });
     }
     return norm;
@@ -1149,6 +1176,14 @@ const String javaExtensionsJsPrelude = r'''
     var data = hexToBytes(dataHex).map(function (b) { return b & 0xff; });
     var iv = ivHex ? hexToBytes(ivHex).map(function (b) { return b & 0xff; }) : null;
     var out = aesRun(!!encrypt, data, key, iv ? 'CBC' : 'ECB', false, iv);
+    return out == null ? '' : bytesToHex(out);
+  };
+
+  global.__desHexTest = function (keyHex, ivHex, dataHex, encrypt, triple) {
+    var key = hexToBytes(keyHex).map(function (b) { return b & 0xff; });
+    var data = hexToBytes(dataHex).map(function (b) { return b & 0xff; });
+    var iv = ivHex ? hexToBytes(ivHex).map(function (b) { return b & 0xff; }) : null;
+    var out = desRun(!!encrypt, data, key, iv ? 'CBC' : 'ECB', false, iv, !!triple);
     return out == null ? '' : bytesToHex(out);
   };
 
@@ -1366,34 +1401,230 @@ const String javaExtensionsJsPrelude = r'''
     return out;
   }
 
+  // ── DES / DESede（legado createSymmetricCrypto("DES/CBC/PKCS5Padding")）──
+  // FIPS 46-3 纯 JS 实现（位数组口径）；ECB/CBC + PKCS5/NoPadding。
+  var DES_IP = [58,50,42,34,26,18,10,2,60,52,44,36,28,20,12,4,
+    62,54,46,38,30,22,14,6,64,56,48,40,32,24,16,8,
+    57,49,41,33,25,17,9,1,59,51,43,35,27,19,11,3,
+    61,53,45,37,29,21,13,5,63,55,47,39,31,23,15,7];
+  var DES_FP = [40,8,48,16,56,24,64,32,39,7,47,15,55,23,63,31,
+    38,6,46,14,54,22,62,30,37,5,45,13,53,21,61,29,
+    36,4,44,12,52,20,60,28,35,3,43,11,51,19,59,27,
+    34,2,42,10,50,18,58,26,33,1,41,9,49,17,57,25];
+  var DES_E = [32,1,2,3,4,5,4,5,6,7,8,9,8,9,10,11,12,13,12,13,14,15,16,17,
+    16,17,18,19,20,21,20,21,22,23,24,25,24,25,26,27,28,29,28,29,30,31,32,1];
+  var DES_P = [16,7,20,21,29,12,28,17,1,15,23,26,5,18,31,10,
+    2,8,24,14,32,27,3,9,19,13,30,6,22,11,4,25];
+  var DES_PC1 = [57,49,41,33,25,17,9,1,58,50,42,34,26,18,10,2,59,51,43,35,
+    27,19,11,3,60,52,44,36,63,55,47,39,31,23,15,7,62,54,46,38,30,22,
+    14,6,61,53,45,37,29,21,13,5,28,20,12,4];
+  var DES_PC2 = [14,17,11,24,1,5,3,28,15,6,21,10,23,19,12,4,26,8,16,7,27,20,
+    13,2,41,52,31,37,47,55,30,40,51,45,33,48,44,49,39,56,34,53,46,42,50,36,
+    29,32];
+  var DES_SHIFTS = [1,1,2,2,2,2,2,2,1,2,2,2,2,2,2,1];
+  var DES_S = [
+    [14,4,13,1,2,15,11,8,3,10,6,12,5,9,0,7,0,15,7,4,14,2,13,1,10,6,12,11,
+      9,5,3,8,4,1,14,8,13,6,2,11,15,12,9,7,3,10,5,0,15,12,8,2,4,9,1,7,
+      5,11,3,14,10,0,6,13],
+    [15,1,8,14,6,11,3,4,9,7,2,13,12,0,5,10,3,13,4,7,15,2,8,14,12,0,1,10,
+      6,9,11,5,0,14,7,11,10,4,13,1,5,8,12,6,9,3,2,15,13,8,10,1,3,15,4,2,
+      11,6,7,12,0,5,14,9],
+    [10,0,9,14,6,3,15,5,1,13,12,7,11,4,2,8,13,7,0,9,3,4,6,10,2,8,5,14,
+      12,11,15,1,13,6,4,9,8,15,3,0,11,1,2,12,5,10,14,7,1,10,13,0,6,9,8,7,
+      4,15,14,3,11,5,2,12],
+    [7,13,14,3,0,6,9,10,1,2,8,5,11,12,4,15,13,8,11,5,6,15,0,3,4,7,2,12,
+      1,10,14,9,10,6,9,0,12,11,7,13,15,1,3,14,5,2,8,4,3,15,0,6,10,1,13,8,
+      9,4,5,11,12,7,2,14],
+    [2,12,4,1,7,10,11,6,8,5,3,15,13,0,14,9,14,11,2,12,4,7,13,1,5,0,15,10,
+      3,9,8,6,4,2,1,11,10,13,7,8,15,9,12,5,6,3,0,14,11,8,12,7,1,14,2,13,
+      6,15,0,9,10,4,5,3],
+    [12,1,10,15,9,2,6,8,0,13,3,4,14,7,5,11,10,15,4,2,7,12,9,5,6,1,13,14,
+      0,11,3,8,9,14,15,5,2,8,12,3,7,0,4,10,1,13,11,6,4,3,2,12,9,5,15,10,
+      11,14,1,7,6,0,8,13],
+    [4,11,2,14,15,0,8,13,3,12,9,7,5,10,6,1,13,0,11,7,4,9,1,10,14,3,5,12,
+      2,15,8,6,1,4,11,13,12,3,7,14,10,15,6,8,0,5,9,2,6,11,13,8,1,4,10,7,
+      9,5,0,15,14,2,3,12],
+    [13,2,8,4,6,15,11,1,10,9,3,14,5,0,12,7,1,15,13,8,10,3,7,4,12,5,6,11,
+      0,14,9,2,7,11,4,1,9,12,14,2,0,6,10,13,15,3,5,8,2,1,14,7,4,10,8,13,
+      15,12,9,0,3,5,6,11]
+  ];
+
+  function desBytesToBits(bytes) {
+    var bits = [];
+    for (var i = 0; i < bytes.length; i++) {
+      for (var b = 7; b >= 0; b--) bits.push((bytes[i] >> b) & 1);
+    }
+    return bits;
+  }
+
+  function desBitsToBytes(bits) {
+    var out = [];
+    for (var i = 0; i < bits.length; i += 8) {
+      var v = 0;
+      for (var b = 0; b < 8; b++) v = (v << 1) | (bits[i + b] || 0);
+      out.push(v);
+    }
+    return out;
+  }
+
+  function desPermute(bits, table) {
+    var out = [];
+    for (var i = 0; i < table.length; i++) out.push(bits[table[i] - 1]);
+    return out;
+  }
+
+  function desKeySchedule(keyBytes) {
+    var keyBits = desBytesToBits(keyBytes.slice(0, 8));
+    var cd = desPermute(keyBits, DES_PC1);
+    var c = cd.slice(0, 28), d = cd.slice(28);
+    var subkeys = [];
+    for (var r = 0; r < 16; r++) {
+      for (var s = 0; s < DES_SHIFTS[r]; s++) {
+        c.push(c.shift());
+        d.push(d.shift());
+      }
+      subkeys.push(desPermute(c.concat(d), DES_PC2));
+    }
+    return subkeys;
+  }
+
+  function desFeistel(r, subkey) {
+    var e = desPermute(r, DES_E);
+    for (var i = 0; i < 48; i++) e[i] ^= subkey[i];
+    var out = [];
+    for (var b = 0; b < 8; b++) {
+      var o = b * 6;
+      var row = (e[o] << 1) | e[o + 5];
+      var col = (e[o + 1] << 3) | (e[o + 2] << 2) | (e[o + 3] << 1) | e[o + 4];
+      var v = DES_S[b][row * 16 + col];
+      out.push((v >> 3) & 1, (v >> 2) & 1, (v >> 1) & 1, v & 1);
+    }
+    return desPermute(out, DES_P);
+  }
+
+  function desCryptBits(blockBits, subkeys, decrypt) {
+    var ip = desPermute(blockBits, DES_IP);
+    var l = ip.slice(0, 32), r = ip.slice(32);
+    for (var i = 0; i < 16; i++) {
+      var sk = subkeys[decrypt ? 15 - i : i];
+      var f = desFeistel(r, sk);
+      var next = [];
+      for (var j = 0; j < 32; j++) next.push(l[j] ^ f[j]);
+      l = r;
+      r = next;
+    }
+    return desPermute(r.concat(l), DES_FP);
+  }
+
+  /// DES/DESede 主流程（8 字节块）：返回有符号字节数组，参数非法返回 null。
+  function desRun(encrypt, data, key, mode, pad, iv, triple) {
+    var keyLen = triple ? (key.length >= 24 ? 24 : 16) : 8;
+    if (key.length < keyLen) return null;
+    var ks1 = desKeySchedule(key.slice(0, 8));
+    var ks2 = triple ? desKeySchedule(key.slice(8, 16)) : null;
+    var ks3 = triple
+        ? desKeySchedule(key.slice(keyLen >= 24 ? 16 : 0, keyLen >= 24 ? 24 : 8))
+        : null;
+    function cryptBlock(bytes8, decrypt) {
+      var bits = desBytesToBits(bytes8);
+      if (!triple) return desBitsToBytes(desCryptBits(bits, ks1, decrypt));
+      // DESede = E_k1 → D_k2 → E_k3（解密反向）；各步保持位数组形态。
+      var b2 = decrypt
+          ? desCryptBits(bits, ks3, true)
+          : desCryptBits(bits, ks1, false);
+      var b3 = desCryptBits(b2, ks2, !decrypt);
+      return desBitsToBytes(
+          decrypt ? desCryptBits(b3, ks1, true) : desCryptBits(b3, ks3, false));
+    }
+    var out = [];
+    var i;
+    if (encrypt) {
+      var buf = data.slice();
+      if (pad) {
+        var n = 8 - (buf.length % 8);
+        for (i = 0; i < n; i++) buf.push(n);
+      } else if (buf.length % 8 !== 0) {
+        return null;
+      }
+      var prev = mode === 'CBC' ? iv : null;
+      if (mode === 'CBC' && (!prev || prev.length !== 8)) return null;
+      for (i = 0; i < buf.length; i += 8) {
+        var blk = buf.slice(i, i + 8);
+        if (prev) for (var j = 0; j < 8; j++) blk[j] ^= prev[j];
+        var enc = cryptBlock(blk, false);
+        for (var k = 0; k < 8; k++) out.push(enc[k]);
+        prev = enc;
+      }
+      return out.map(signedByte);
+    }
+    if (data.length % 8 !== 0) return null;
+    var prevC = mode === 'CBC' ? iv : null;
+    if (mode === 'CBC' && (!prevC || prevC.length !== 8)) return null;
+    var plain = [];
+    for (i = 0; i < data.length; i += 8) {
+      var cb = data.slice(i, i + 8);
+      var dec = cryptBlock(cb, true);
+      for (var q = 0; q < 8; q++) plain.push(dec[q] ^ (prevC ? prevC[q] : 0));
+      if (prevC) prevC = cb;
+    }
+    if (pad) {
+      var padLen = plain[plain.length - 1];
+      if (padLen < 1 || padLen > 8) return null;
+      for (i = 0; i < padLen; i++) {
+        if (plain[plain.length - 1 - i] !== padLen) return null;
+      }
+      plain = plain.slice(0, plain.length - padLen);
+    }
+    return plain.map(signedByte);
+  }
+
   // ── SymmetricCrypto（legado java.createSymmetricCrypto） ──
-  // transformation 形如 "AES/CBC/PKCS5Padding"；key/iv/data 支持字符串或
-  // 字节数组（legado ByteArray 有符号口径）。不支持的算法/模式（DES、
-  // AES/CTR 等）返回空结果，避免给出错误明文。
+  // transformation 形如 "AES/CBC/PKCS5Padding" / "DES/ECB/PKCS5Padding" /
+  // "DESede/CBC/PKCS5Padding"；key/iv/data 支持字符串或字节数组（legado
+  // ByteArray 有符号口径）。不支持的算法/模式（AES/CTR 等）返回空结果，
+  // 避免给出错误明文。
   function makeSymmetricCrypto(transformation, key, iv) {
     var empty = {
-      decrypt: function () { return []; },
-      decryptStr: function () { return ''; },
-      encrypt: function () { return []; },
-      encryptBase64: function () { return ''; },
-      encryptHex: function () { return ''; },
+      decrypt: function (data) { return []; },
+      decryptStr: function (data) { return ''; },
+      encrypt: function (str) { return []; },
+      encryptBase64: function (str) { return ''; },
+      encryptHex: function (str) { return ''; },
     };
     var keyBytes = anyToBytes(key);
     var ivBytes = (iv == null || iv === '') ? null : anyToBytes(iv);
     var tf = aesParseTf(transformation, ivBytes != null);
     if (!tf) return empty;
-    if (tf.mode === 'CBC' && (ivBytes == null || ivBytes.length !== 16)) {
-      return empty;
-    }
-    function run(encrypt, bytes) {
-      return aesRun(encrypt, bytes, keyBytes, tf.mode, tf.pad, ivBytes);
+    var algo = String(transformation == null ? '' : transformation)
+        .split('/')[0].toUpperCase();
+    var blockSize = 16;
+    var run;
+    if (algo === 'DES' || algo === 'DESEDE' || algo === 'TRIPLEDES') {
+      var triple = algo !== 'DES';
+      blockSize = 8;
+      // legado SymmetricCryptoAndroid.normalizedKey：DES 取前 8 字节，
+      // DESede 取前 24 字节；DESede 另接受 16 字节双密钥形态。
+      if (triple ? (keyBytes.length < 16) : (keyBytes.length < 8)) return empty;
+      if (tf.mode === 'CBC' && (ivBytes == null || ivBytes.length !== 8)) {
+        return empty;
+      }
+      run = function (encrypt, bytes) {
+        return desRun(encrypt, bytes, keyBytes, tf.mode, tf.pad, ivBytes, triple);
+      };
+    } else {
+      if (tf.mode === 'CBC' && (ivBytes == null || ivBytes.length !== 16)) {
+        return empty;
+      }
+      run = function (encrypt, bytes) {
+        return aesRun(encrypt, bytes, keyBytes, tf.mode, tf.pad, ivBytes);
+      };
     }
     return {
       decrypt: function (data) {
         var bytes = (data && typeof data === 'object' &&
             typeof data.length === 'number')
             ? anyToBytes(data)
-            : aesDecodeInput(data);
+            : cipherDecodeInput(data, blockSize);
         var out = run(false, bytes);
         return out == null ? [] : out;
       },
@@ -1401,7 +1632,7 @@ const String javaExtensionsJsPrelude = r'''
         var bytes = (data && typeof data === 'object' &&
             typeof data.length === 'number')
             ? anyToBytes(data)
-            : aesDecodeInput(data);
+            : cipherDecodeInput(data, blockSize);
         var out = run(false, bytes);
         return out == null ? '' : utf8Decode(out);
       },
@@ -1421,10 +1652,259 @@ const String javaExtensionsJsPrelude = r'''
     };
   }
 
+  // ── 规则求值桥（java.getString/getStringList/getElement/getElements/setContent）──
+  // legado 的 java 就是 AnalyzeRule 本身，JS 内同步回调宿主求值；QuickJS 沙箱
+  // 不能同步回宿主，改为「确定性重放」协议：首轮把这些调用按序记入
+  // __javaRulePending 并返回类型占位（''/[]/空 Elements/null），宿主排空后
+  // 按 op 顺序在宿主侧求值（set 切换内容、get 求规则），把结果写回
+  // __javaRuleCache，再重跑脚本——本轮命中缓存即拿到真值。脚本若依赖取值
+  // 分支（如 `len>0 ? A : B`），宿主可再排空重跑，最多数轮收敛。
+  function ruleHash(s) {
+    var h = 5381;
+    for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+    return h.toString(16) + ':' + s.length;
+  }
+
+  // 求值内容参数：null=用当前根内容；字符串=HTML/文本；元素包装=其内部 HTML
+  // （legado 直接持有 Element，这里按 HTML 近似，选择器语义一致；对根元素
+  // 自身属性的规则会丢失，见局限记录）；对象=JSON 内容。
+  function ruleContentArg(x) {
+    if (x === undefined || x === null) return null;
+    if (typeof x === 'string') return { k: 's', v: x };
+    if (typeof x === 'object' && x.__javaEl) return { k: 'h', v: x.html() };
+    if (typeof x === 'object') return { k: 'j', v: x };
+    return { k: 's', v: String(x) };
+  }
+
+  function ruleCall(kind, rule, content, isUrl) {
+    rule = rule == null ? '' : String(rule);
+    var cArg = ruleContentArg(content);
+    var cKey;
+    if (cArg === null) {
+      cKey = 'r' + (global.__javaRootSig || 0);
+    } else if (cArg.k === 's') {
+      cKey = 's' + ruleHash(cArg.v);
+    } else if (cArg.k === 'h') {
+      cKey = 'h' + ruleHash(cArg.v);
+    } else {
+      cKey = 'j' + ruleHash(JSON.stringify(cArg.v));
+    }
+    var key = kind + '|' + (isUrl ? 1 : 0) + '|' + cKey + '|' + rule;
+    var cache = global.__javaRuleCache;
+    if (cache && cache[key] !== undefined) {
+      var v = cache[key];
+      if (typeof v === 'string') {
+        if (kind === 'l' || kind === 'e' || kind === 'g') {
+          try { v = JSON.parse(v); } catch (e) { v = []; }
+        }
+      }
+      if (kind === 'l') return (v || []).slice();
+      if (kind === 'e') return __javaElements(v || []);
+      if (kind === 'g') return (v && v.length) ? __wrapEl(v[0]) : null;
+      return String(v == null ? '' : v);
+    }
+    var seen = global.__javaRuleSeen;
+    if (!seen) seen = global.__javaRuleSeen = Object.create(null);
+    if (!seen[key]) {
+      seen[key] = true;
+      var pend = global.__javaRulePending;
+      if (!pend) pend = global.__javaRulePending = [];
+      pend.push({ op: 'get', k: kind, r: rule, c: cArg, u: isUrl ? 1 : 0, key: key });
+    }
+    if (kind === 'l') return [];
+    if (kind === 'e') return __javaElements([]);
+    if (kind === 'g') return null;
+    return '';
+  }
+
+  global.__javaRuleReset = function () {
+    global.__javaRuleCache = Object.create(null);
+    global.__javaRulePending = [];
+    global.__javaRuleSeen = Object.create(null);
+    global.__javaRootSig = 0;
+  };
+  // 每轮重放开始：根内容版本归零，保证同一脚本各轮的缓存键一致
+  // （脚本内 setContent 的调用顺序固定；跨求值由 __javaRuleReset 清缓存）。
+  global.__javaRuleRound = function () {
+    global.__javaRootSig = 0;
+  };
+  global.__javaRuleDrain = function () {
+    var p = global.__javaRulePending || [];
+    global.__javaRulePending = [];
+    global.__javaRuleSeen = Object.create(null);
+    return JSON.stringify(p);
+  };
+  global.__javaRuleFill = function (json) {
+    var c = global.__javaRuleCache;
+    if (!c) c = global.__javaRuleCache = Object.create(null);
+    var m = JSON.parse(json);
+    for (var k in m) c[k] = m[k];
+  };
+
+  // ── SHA-1 / SHA-256 / HMAC（digestHex / HMacHex / HMacBase64）──
+  // QuickJS 无 WebCrypto，按 FIPS 180-4 纯 JS 实现（字节数组输入输出）。
+  function sha1Bytes(bytes) {
+    var ml = bytes.length * 8;
+    var msg = bytes.slice();
+    msg.push(0x80);
+    while (msg.length % 64 !== 56) msg.push(0);
+    var hi = Math.floor(ml / 0x100000000);
+    msg.push((hi >>> 24) & 0xff, (hi >>> 16) & 0xff, (hi >>> 8) & 0xff, hi & 0xff);
+    msg.push((ml >>> 24) & 0xff, (ml >>> 16) & 0xff, (ml >>> 8) & 0xff, ml & 0xff);
+    var h0 = 0x67452301, h1 = 0xefcdab89, h2 = 0x98badcfe,
+        h3 = 0x10325476, h4 = 0xc3d2e1f0;
+    var w = new Array(80);
+    for (var i = 0; i < msg.length; i += 64) {
+      for (var t = 0; t < 16; t++) {
+        w[t] = ((msg[i + 4 * t] << 24) | (msg[i + 4 * t + 1] << 16) |
+            (msg[i + 4 * t + 2] << 8) | msg[i + 4 * t + 3]) >>> 0;
+      }
+      for (t = 16; t < 80; t++) {
+        var x = w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16];
+        w[t] = ((x << 1) | (x >>> 31)) >>> 0;
+      }
+      var a = h0, b = h1, c = h2, d = h3, e = h4;
+      for (t = 0; t < 80; t++) {
+        var f, k;
+        if (t < 20) { f = (b & c) | (~b & d); k = 0x5a827999; }
+        else if (t < 40) { f = b ^ c ^ d; k = 0x6ed9eba1; }
+        else if (t < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8f1bbcdc; }
+        else { f = b ^ c ^ d; k = 0xca62c1d6; }
+        var tmp = ((((a << 5) | (a >>> 27)) >>> 0) + (f >>> 0) + e + k + w[t]) >>> 0;
+        e = d; d = c; c = ((b << 30) | (b >>> 2)) >>> 0; b = a; a = tmp;
+      }
+      h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0;
+      h3 = (h3 + d) >>> 0; h4 = (h4 + e) >>> 0;
+    }
+    var out = [];
+    [h0, h1, h2, h3, h4].forEach(function (h) {
+      out.push((h >>> 24) & 0xff, (h >>> 16) & 0xff, (h >>> 8) & 0xff, h & 0xff);
+    });
+    return out;
+  }
+
+  var SHA256_K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
+    0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
+    0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
+    0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+    0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
+    0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+  ];
+
+  function sha256Bytes(bytes) {
+    var ml = bytes.length * 8;
+    var msg = bytes.slice();
+    msg.push(0x80);
+    while (msg.length % 64 !== 56) msg.push(0);
+    var hi = Math.floor(ml / 0x100000000);
+    msg.push((hi >>> 24) & 0xff, (hi >>> 16) & 0xff, (hi >>> 8) & 0xff, hi & 0xff);
+    msg.push((ml >>> 24) & 0xff, (ml >>> 16) & 0xff, (ml >>> 8) & 0xff, ml & 0xff);
+    var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+             0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    var w = new Array(64);
+    for (var i = 0; i < msg.length; i += 64) {
+      var t;
+      for (t = 0; t < 16; t++) {
+        w[t] = ((msg[i + 4 * t] << 24) | (msg[i + 4 * t + 1] << 16) |
+            (msg[i + 4 * t + 2] << 8) | msg[i + 4 * t + 3]) >>> 0;
+      }
+      for (t = 16; t < 64; t++) {
+        var s0 = ((w[t - 15] >>> 7) | (w[t - 15] << 25)) ^
+            ((w[t - 15] >>> 18) | (w[t - 15] << 14)) ^ (w[t - 15] >>> 3);
+        var s1 = ((w[t - 2] >>> 17) | (w[t - 2] << 15)) ^
+            ((w[t - 2] >>> 19) | (w[t - 2] << 13)) ^ (w[t - 2] >>> 10);
+        w[t] = (w[t - 16] + (s0 >>> 0) + w[t - 7] + (s1 >>> 0)) >>> 0;
+      }
+      var a = H[0], b = H[1], c = H[2], d = H[3],
+          e = H[4], f = H[5], g = H[6], h = H[7];
+      for (t = 0; t < 64; t++) {
+        var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^
+            ((e >>> 25) | (e << 7));
+        var ch = (e & f) ^ (~e & g);
+        var temp1 = (h + (S1 >>> 0) + (ch >>> 0) + SHA256_K[t] + w[t]) >>> 0;
+        var S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^
+            ((a >>> 22) | (a << 10));
+        var maj = (a & b) ^ (a & c) ^ (b & c);
+        var temp2 = ((S0 >>> 0) + (maj >>> 0)) >>> 0;
+        h = g; g = f; f = e; e = (d + temp1) >>> 0;
+        d = c; c = b; b = a; a = (temp1 + temp2) >>> 0;
+      }
+      H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0;
+      H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0;
+      H[4] = (H[4] + e) >>> 0; H[5] = (H[5] + f) >>> 0;
+      H[6] = (H[6] + g) >>> 0; H[7] = (H[7] + h) >>> 0;
+    }
+    var out = [];
+    for (var j = 0; j < 8; j++) {
+      out.push((H[j] >>> 24) & 0xff, (H[j] >>> 16) & 0xff,
+          (H[j] >>> 8) & 0xff, H[j] & 0xff);
+    }
+    return out;
+  }
+
+  function digestBytes(algo, bytes) {
+    var a = String(algo == null ? '' : algo).toUpperCase().replace(/-/g, '');
+    if (a === 'MD5') return md5Bytes(bytes);
+    if (a === 'SHA1') return sha1Bytes(bytes);
+    if (a === 'SHA256') return sha256Bytes(bytes);
+    return null;
+  }
+
+  function hmacBytes(algo, keyBytes, dataBytes) {
+    var a = String(algo == null ? '' : algo).toUpperCase().replace(/-/g, '');
+    var hash;
+    if (a.indexOf('HMAC') === 0) a = a.substring(4);
+    if (a === 'MD5') hash = md5Bytes;
+    else if (a === 'SHA1') hash = sha1Bytes;
+    else if (a === 'SHA256') hash = sha256Bytes;
+    else return null;
+    var block = 64;
+    var key = keyBytes.slice();
+    if (key.length > block) key = hash(key);
+    while (key.length < block) key.push(0);
+    var ipad = [], opad = [];
+    for (var i = 0; i < block; i++) {
+      ipad.push(key[i] ^ 0x36);
+      opad.push(key[i] ^ 0x5c);
+    }
+    var inner = hash(ipad.concat(dataBytes));
+    return hash(opad.concat(inner));
+  }
+
   var java = {
     // 加密/编码
     md5Encode: function (s) { return bytesToHex(md5Bytes(utf8Encode(String(s == null ? '' : s)))); },
     md5Encode16: function (s) { var h = java.md5Encode(s); return h.length >= 24 ? h.substring(8, 24) : h; },
+    // 摘要/HMAC（JsEncodeUtils.digestHex/HMacHex/HMacBase64；算法为 JCE 名：
+    // MD5/SHA-1/SHA-256、HmacMD5/HmacSHA1/HmacSHA256）。未支持的算法返回空。
+    digestHex: function (data, algorithm) {
+      var out = digestBytes(algorithm, utf8Encode(String(data == null ? '' : data)));
+      return out == null ? '' : bytesToHex(out);
+    },
+    digestBase64Str: function (data, algorithm) {
+      var out = digestBytes(algorithm, utf8Encode(String(data == null ? '' : data)));
+      return out == null ? ''
+          : b64FromBytes(out.map(function (b) { return b & 0xff; }));
+    },
+    HMacHex: function (data, algorithm, key) {
+      var out = hmacBytes(algorithm,
+          utf8Encode(String(key == null ? '' : key)),
+          utf8Encode(String(data == null ? '' : data)));
+      return out == null ? '' : bytesToHex(out);
+    },
+    HMacBase64: function (data, algorithm, key) {
+      var out = hmacBytes(algorithm,
+          utf8Encode(String(key == null ? '' : key)),
+          utf8Encode(String(data == null ? '' : data)));
+      return out == null ? ''
+          : b64FromBytes(out.map(function (b) { return b & 0xff; }));
+    },
     base64Encode: function (s) { return b64FromBytes(utf8Encode(String(s == null ? '' : s))); },
     base64Decode: function (s) { return utf8Decode(bytesFromB64(s)); },
     base64DecodeToByteArray: function (s) { return bytesFromB64(s); },
@@ -1482,6 +1962,47 @@ const String javaExtensionsJsPrelude = r'''
     aesEncodeArgsBase64Str: function (data, keyB64, mode, padding, ivB64) {
       return aesArgsBase64(true, data, keyB64, mode, padding, ivB64);
     },
+    // DES/3DES 旧 API（legado JsEncodeUtils，内部同 createSymmetricCrypto）。
+    desEncodeToBase64String: function (data, key, transformation, iv) {
+      return java.createSymmetricCrypto(transformation, key, iv)
+          .encryptBase64(data);
+    },
+    // legado 此处为 `String(encrypt(data))`（Java 字节数组 toString，实际
+    // 无可用语义）；按加密后 base64 返回，便于脚本继续处理。
+    desEncodeToString: function (data, key, transformation, iv) {
+      return java.createSymmetricCrypto(transformation, key, iv)
+          .encryptBase64(data);
+    },
+    desDecodeToString: function (data, key, transformation, iv) {
+      return java.createSymmetricCrypto(transformation, key, iv)
+          .decryptStr(data);
+    },
+    desBase64DecodeToString: function (data, key, transformation, iv) {
+      return java.createSymmetricCrypto(transformation, key, iv)
+          .decryptStr(data);
+    },
+    tripleDESEncodeBase64Str: function (data, key, mode, padding, iv) {
+      return java.createSymmetricCrypto(
+          'DESede/' + mode + '/' + padding, key, iv).encryptBase64(data);
+    },
+    tripleDESDecodeStr: function (data, key, mode, padding, iv) {
+      return java.createSymmetricCrypto(
+          'DESede/' + mode + '/' + padding, key, iv).decryptStr(data);
+    },
+    tripleDESEncodeArgsBase64Str: function (data, keyB64, mode, padding, iv) {
+      return java.createSymmetricCrypto(
+          'DESede/' + mode + '/' + padding,
+          bytesFromB64(String(keyB64 == null ? '' : keyB64))
+              .map(function (b) { return b & 0xff; }),
+          iv).encryptBase64(data);
+    },
+    tripleDESDecodeArgsBase64Str: function (data, keyB64, mode, padding, iv) {
+      return java.createSymmetricCrypto(
+          'DESede/' + mode + '/' + padding,
+          bytesFromB64(String(keyB64 == null ? '' : keyB64))
+              .map(function (b) { return b & 0xff; }),
+          iv).decryptStr(data);
+    },
     // legado SymmetricCrypto 对象形态（百度小说等用链式 decryptStr）。
     createSymmetricCrypto: makeSymmetricCrypto,
     // 字体反爬：解析 TTF（base64 / 字节数组），返回可查询字形轮廓的字体对象。
@@ -1536,7 +2057,103 @@ const String javaExtensionsJsPrelude = r'''
       global.__javaVars[String(k)] = v == null ? '' : String(v);
       return v;
     },
+    // ── 规则求值桥（确定性重放，见 ruleCall 注释）──
+    getString: function (rule, mContent, isUrl) {
+      var u = typeof mContent === 'boolean' ? mContent : !!isUrl;
+      var c = typeof mContent === 'boolean' ? null : mContent;
+      return ruleCall('s', rule, c, u);
+    },
+    getStringList: function (rule, mContent, isUrl) {
+      var u = typeof mContent === 'boolean' ? mContent : !!isUrl;
+      var c = typeof mContent === 'boolean' ? null : mContent;
+      return ruleCall('l', rule, c, u);
+    },
+    getElement: function (rule, mContent) {
+      return ruleCall('g', rule, mContent, false);
+    },
+    getElements: function (rule) {
+      return ruleCall('e', rule, null, false);
+    },
+    setContent: function (content, baseUrl) {
+      global.__javaRootSig = (global.__javaRootSig || 0) + 1;
+      var pend = global.__javaRulePending;
+      if (!pend) pend = global.__javaRulePending = [];
+      pend.push({
+        op: 'set',
+        c: ruleContentArg(content),
+        b: baseUrl == null ? '' : String(baseUrl)
+      });
+      return java;
+    },
+    // ── 设备/环境别名与无操作族（沙箱无对应能力，保持可调用不抛错）──
+    getWebViewUA: function () { return WEBVIEW_UA; },
+    getUserAgent: function () { return WEBVIEW_UA; },
+    webview: function (html, url, js) { return java.webView(html, url, js); },
+    ajaxTestAll: function (urlList, timeout) { return java.ajaxAll(urlList); },
+    sleep: function (ms) { return null; },
+    toURL: function (url, baseUrl) {
+      try { return makeJsUrl(url, baseUrl); } catch (e) { return null; }
+    },
+    refreshTocUrl: function () { return unsupported('refreshTocUrl'); },
+    refreshContent: function () { return unsupported('refreshContent'); },
+    refreshBookUrl: function () { return unsupported('refreshBookUrl'); },
+    refreshExplore: function () { return unsupported('refreshExplore'); },
+    initUrl: function () { return unsupported('initUrl'); },
+    openVideoPlayer: function () { return unsupported('openVideoPlayer'); },
+    showBrowser: function () { return unsupported('showBrowser'); },
+    getVerificationCode: function () { return ''; },
   };
+
+  // 固定 UA（legado getWebViewUA 读取系统 WebView 默认 UA；沙箱内用
+  // Chrome 移动端 UA 常量近似，脚本多用于 UA 指纹拼接）。
+  var WEBVIEW_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 '
+      + '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+
+  // 无宿主动作可执行的 API：每次引擎对同名调用只记一次运行日志，便于排查
+  // 「书源依赖刷新/播放器回调」类问题。
+  var __unsupportedLogged = Object.create(null);
+  function unsupported(name) {
+    if (!__unsupportedLogged[name]) {
+      __unsupportedLogged[name] = true;
+      pushLog('[java.' + name + '] 当前运行时不支持该操作，已忽略');
+    }
+    return null;
+  }
+
+  // JsURL 等价物（toURL）：host/origin/pathname/searchParams。
+  function makeJsUrl(url, baseUrl) {
+    var s = String(url == null ? '' : url);
+    if (baseUrl) {
+      var b = String(baseUrl);
+      if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(s)) {
+        var m = b.match(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\/]+/);
+        var origin0 = m ? m[0] : b.replace(/\/$/, '');
+        if (s.indexOf('/') === 0) s = origin0 + s;
+        else s = origin0 + '/' + s;
+      }
+    }
+    var mm = s.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/([^\/?#]+)([^?#]*)(?:\?([^#]*))?/);
+    if (!mm) return null;
+    var proto = mm[1], hostPort = mm[2], path = mm[3] || '';
+    var host = hostPort.split('@').pop().split(':')[0];
+    var searchParams = Object.create(null);
+    var q = mm[4] || '';
+    if (q) {
+      var parts = q.split('&');
+      for (var i = 0; i < parts.length; i++) {
+        var kv = parts[i].split('=');
+        var k = decodeURIComponent(kv[0] || '');
+        var v = kv.length > 1 ? decodeURIComponent(kv.slice(1).join('=')) : '';
+        searchParams[k] = v;
+      }
+    }
+    return {
+      host: host,
+      origin: proto + '://' + hostPort,
+      pathname: path,
+      searchParams: searchParams
+    };
+  }
 
   global.java = java;
 })(globalThis);

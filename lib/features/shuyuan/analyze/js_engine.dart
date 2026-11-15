@@ -182,6 +182,51 @@ class JsEngine {
     } catch (_) {}
   }
 
+  /// 开始一轮 java 规则桥重放：清空 JS 侧规则缓存/待办并递增根内容版本。
+  /// 缓存只在一次宿主规则求值的多轮重放内有效（跨求值内容不同，不能复用）。
+  void resetRuleReplay() {
+    if (_runtime == null) return;
+    try {
+      _runtime!.evaluate('globalThis.__javaRuleReset && globalThis.__javaRuleReset();');
+    } catch (_) {}
+  }
+
+  /// 一轮重放开始：根内容版本归零，使脚本内 setContent 的缓存键跨轮稳定。
+  void beginRuleRound() {
+    if (_runtime == null) return;
+    try {
+      _runtime!
+          .evaluate('globalThis.__javaRuleRound && globalThis.__javaRuleRound();');
+    } catch (_) {}
+  }
+
+  /// 取走本轮 JS 记录的 java 规则桥待办（setContent/getString 等，按调用顺序）。
+  List<Map<String, dynamic>> takeRuleOps() {
+    if (_runtime == null) return const [];
+    try {
+      final r = _runtime!.evaluate(
+          'globalThis.__javaRuleDrain ? globalThis.__javaRuleDrain() : "[]"');
+      if (r.isError) return const [];
+      final decoded = jsonDecode(r.stringResult);
+      if (decoded is! List) return const [];
+      return decoded.whereType<Map>().map(Map<String, dynamic>.from).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// 把宿主求值结果写回 JS 侧规则缓存，供重放脚本命中。
+  void fillRuleCache(Map<String, String> values) {
+    if (values.isEmpty) return;
+    try {
+      // __javaRuleFill(json) 接收 JSON 文本，须再编码一层成 JS 字符串字面量
+      // （直接把 JSON 对象字面量传进去会走 JSON.parse(object) → SyntaxError）。
+      runtime.evaluate(
+          'globalThis.__javaRuleFill && '
+          'globalThis.__javaRuleFill(${jsonEncode(jsonEncode(values))});');
+    } catch (_) {}
+  }
+
   /// 执行 [jsStr]，绑定 [bindings] 为 JS 全局变量。
   ///
   /// 返回值规整（对齐书源脚本语义）：

@@ -5,6 +5,7 @@ library;
 import 'dart:convert';
 
 import 'package:html/dom.dart';
+import 'package:html/parser.dart' as html_parser;
 import '../../../core/utils/app_log.dart';
 import 'source_rule.dart';
 import 'analyze_jsoup.dart';
@@ -25,6 +26,10 @@ class AnalyzeRule {
   String? nextChapterUrl;
   dynamic content;
   bool isJson = false;
+
+  /// 对齐 legado AnalyzeRule.isRegex：列表规则以 `:` 开头（AllInOne 正则）
+  /// 后，同一实例的后续规则默认按正则模式求值（`$N` 分组引用依赖此模式）。
+  bool _isRegex = false;
 
   AnalyzeByJsoup? _analyzeByJsoup;
   AnalyzeByXPath? _analyzeByXPath;
@@ -95,12 +100,22 @@ class AnalyzeRule {
   String get(String key) {
     switch (key) {
       case 'bookName':
-        return book?.name ?? '';
+        if (book != null) return book!.name;
+        break;
       case 'title':
-        return chapter?.title ?? '';
-      default:
-        return _variables[key] ?? book?.getVariable(key) ?? chapter?.getVariable(key) ?? '';
+        if (chapter != null) return chapter!.title;
+        break;
     }
+    // legado AnalyzeRule.get：chapter → book → ruleData → source，空值不
+    // 短路（`takeIf { it.isNotEmpty() }`），源级变量也能被 `@get` 读到。
+    String nonEmpty(String? v) => (v != null && v.isNotEmpty) ? v : '';
+    final fromChapter = nonEmpty(chapter?.getVariable(key));
+    if (fromChapter.isNotEmpty) return fromChapter;
+    final fromBook = nonEmpty(book?.getVariable(key));
+    if (fromBook.isNotEmpty) return fromBook;
+    final local = nonEmpty(_variables[key]);
+    if (local.isNotEmpty) return local;
+    return nonEmpty(ShuyuanSourceContext.current?.sourceVars[key]);
   }
 
   List<String> getStringList(String? ruleStr, {bool isUrl = false}) {
@@ -163,9 +178,14 @@ class AnalyzeRule {
     Mode mMode = Mode.defaultMode;
     var start = 0;
 
-    if (allInOne && ruleStr.startsWith(': ')) {
+    if (allInOne && ruleStr.startsWith(':')) {
+      // legado：仅首字符为 `:` 时为 AllInOne 正则（`:` 与伪类选择器冲突，
+      // 只用于列表规则）；一旦进入正则模式，本实例后续规则沿用。
       mMode = Mode.regex;
+      _isRegex = true;
       start = 1;
+    } else if (_isRegex) {
+      mMode = Mode.regex;
     }
 
     // 不再预分割 &&，让 AnalyzeByJsoup 内部处理 &&/||/%%
@@ -354,9 +374,12 @@ class AnalyzeRule {
         return [];
       case Mode.regex:
         if (result is String) {
+          // legado AnalyzeByRegex.getElements：每次命中产出「整串+全部分组」
+          // 的分组数组，供 chapterName/chapterUrl 的 `$N` 规则取值。
+          if (single) return AnalyzeByRegex.getElement(result, rule);
           return AnalyzeByRegex.getElements(result, rule);
         }
-        return [];
+        return single ? null : [];
       case Mode.json:
         final analyzer = _getJsonAnalyzer(result);
         // single（getElement/init 规则）：返回对象本身；列表规则返回元素数组。
@@ -403,7 +426,7 @@ class AnalyzeRule {
         // `java` 对象由 java_extensions 预置脚本提供（引擎侧跳过同名绑定）；
         // 变量表经 __javaVars 种子注入（动态 java.get 可读），脚本内 java.put
         // 的写入在 eval 后由 takeJavaVars 排空回写（对齐 legado java.put/get
-        // 跨规则段共享变量的语义；字面量参数仍走 _expandJavaBridge 宿主内联）。
+        // 跨规则段共享变量的语义）。
         'result': result,
         'baseUrl': baseUrl ?? '',
         'src': content?.toString() ?? '',
@@ -415,7 +438,13 @@ class AnalyzeRule {
         // 每轮都重置变量快照（不能因为当前为空就跳过）：引擎已按源池化，
         // 会跨书/跨章存活；若沿用上一轮的 __javaVars，`java.get` 会读到
         // 别的书的变量。put 的写回仍经 takeJavaVars → put 进 _variables。
-        '__javaVars': Map<String, String>.from(_variables),
+        // 种子顺序对齐 legado get 链：源变量 < 书变量 < 章节变量 < 本轮 put。
+        '__javaVars': <String, String>{
+          ...?ShuyuanSourceContext.current?.sourceVars,
+          ...?book?.variableMap,
+          ...?chapter?.variableMap,
+          ..._variables,
+        },
         if (extraBindings != null) ...extraBindings,
       };
       final activeCtx = ShuyuanSourceContext.current;
@@ -429,12 +458,13 @@ class AnalyzeRule {
           ..['intro'] = target.intro ?? ''
           ..['kind'] = target.kind ?? ''
           ..['coverUrl'] = target.coverUrl ?? ''
-          ..['lastChapter'] = target.lastChapter ?? '';
+          ..['lastChapter'] = target.lastChapter ?? ''
+          ..['tocUrl'] = target.tocUrl ?? ''
+          ..['wordCount'] = target.wordCount ?? ''
+          ..['type'] = '${target.type}'
+          ..['origin'] = activeCtx.bookSourceUrl;
       }
-      final out = structured
-          ? _jsEngine!
-              .evalStructured(_expandJavaBridge(jsStr), bindings: bindings)
-          : _jsEngine!.eval(_expandJavaBridge(jsStr), bindings: bindings);
+      final out = _evalJsWithRuleBridge(jsStr, bindings, structured: structured);
       final javaVars = _jsEngine!.takeJavaVars();
       javaVars.forEach(put);
       // JS 里 `book.name = '…'` 等字段写入回写当前书（空值不覆盖——
@@ -452,6 +482,8 @@ class AnalyzeRule {
         apply('kind', (v) => target.kind = v);
         apply('coverUrl', (v) => target.coverUrl = v);
         apply('lastChapter', (v) => target.lastChapter = v);
+        apply('tocUrl', (v) => target.tocUrl = v);
+        apply('wordCount', (v) => target.wordCount = v);
       }
       // 注入对象 book 变量回写：JS 里 book.putVariable 的写入镜像到当前书
       // （variableMap），规则层 @get/{book.getVariable} 即可读到。
@@ -471,6 +503,155 @@ class AnalyzeRule {
       AppLog.instance.w('[书源JS] 调用异常: '
           '${brief.length > 120 ? '${brief.substring(0, 120)}…' : brief} → $e');
       return '';
+    }
+  }
+
+  /// JS 内 `java.getString/getStringList/getElement(s)/setContent` 的重放求值。
+  ///
+  /// 对齐 legado：`java` 即 AnalyzeRule 本身，脚本可同步按规则取值。QuickJS
+  /// 沙箱无法同步回宿主，故脚本先记待办（占位返回），宿主按调用顺序求值后
+  /// 写回缓存重跑；依赖取值分支的脚本最多 [_jsRuleReplayRounds] 轮收敛。
+  /// 每轮开始把内容恢复到脚本入口快照（脚本内 setContent 的切换只在 op
+  /// 回放中生效），结束后保留最后一轮 setContent 的内容，与 legado 一致。
+  dynamic _evalJsWithRuleBridge(String jsStr, Map<String, dynamic> bindings,
+      {bool structured = false}) {
+    final engine = _jsEngine!;
+    final entryContent = content;
+    final entryBaseUrl = baseUrl;
+    final entryRedirect = redirectUrl;
+    final entryJson = isJson;
+    // 缓存按「本次求值的内容快照」有效，跨规则求值必须清空（引擎按源池化）。
+    // 嵌套求值（桥回放中某条规则又触发 @js）不能清空外层缓存与根内容版本，
+    // 否则外层待办键每轮都变，永远不收敛。
+    final topLevel = _jsReplayDepth == 0;
+    _jsReplayDepth++;
+    try {
+      if (topLevel) engine.resetRuleReplay();
+      dynamic out;
+      var pendingRounds = 0;
+      for (var round = 0; round <= _jsRuleReplayRounds; round++) {
+        if (round > 0) {
+          content = entryContent;
+          baseUrl = entryBaseUrl;
+          redirectUrl = entryRedirect;
+          isJson = entryJson;
+          _analyzeByJsoup = null;
+          _analyzeByXPath = null;
+          _analyzeByJson = null;
+        }
+        engine.beginRuleRound();
+        out = structured
+            ? engine.evalStructured(jsStr, bindings: bindings)
+            : engine.eval(jsStr, bindings: bindings);
+        final ops = engine.takeRuleOps();
+        if (ops.isEmpty) break;
+        pendingRounds = round + 1;
+        _applyJavaRuleOps(ops, engine);
+      }
+      if (pendingRounds > _jsRuleReplayRounds) {
+        AppLog.instance.w('[书源JS] java 规则桥重放未收敛'
+            '（>$_jsRuleReplayRounds 轮），结果可能不完整');
+      }
+      return out;
+    } finally {
+      _jsReplayDepth--;
+    }
+  }
+
+  /// 规则桥重放嵌套深度（见 [_evalJsWithRuleBridge] 的 topLevel 说明）。
+  int _jsReplayDepth = 0;
+
+  static const int _jsRuleReplayRounds = 4;
+
+  /// 顺序回放待办：set 切换当前内容；get 在宿主侧求值并写入 JS 缓存。
+  /// get 的待办键（kind|isUrl|内容签名|规则）由预置脚本生成，原样回填。
+  void _applyJavaRuleOps(List<Map<String, dynamic>> ops, JsEngine engine) {
+    final fills = <String, String>{};
+    for (final op in ops) {
+      if (op['op'] == 'set') {
+        final c = _jsRuleContentToDart(op['c']);
+        if (c == null) continue;
+        final b = op['b']?.toString() ?? '';
+        setContent(c, b.isEmpty ? null : b);
+        continue;
+      }
+      final key = op['key']?.toString() ?? '';
+      if (key.isEmpty) continue;
+      final kind = op['k']?.toString() ?? 's';
+      final rule = op['r']?.toString() ?? '';
+      final isUrl = op['u'] == 1;
+      final mContent = _jsRuleContentToDart(op['c']);
+      fills[key] = _resolveJavaRuleOp(kind, rule, mContent, isUrl);
+    }
+    if (fills.isNotEmpty) engine.fillRuleCache(fills);
+  }
+
+  /// JS 侧内容参数 → 宿主内容：字符串原样；元素包装取其内部 HTML
+  /// （legado 持有 Element 本身；根元素自身属性选择器会丢失，见局限）；
+  /// JSON 对象直接作为 JSON 内容求值。
+  dynamic _jsRuleContentToDart(dynamic c) {
+    if (c == null) return null;
+    if (c is Map) {
+      final v = c['v'];
+      final k = c['k']?.toString();
+      if (k == 'j') return v;
+      return v?.toString() ?? '';
+    }
+    return c.toString();
+  }
+
+  /// 按 kind 求值：s=字符串、l=字符串列表、e=元素列表、g=首个元素。
+  /// 结果统一序列化为 JS 缓存值（字符串/JSON 数组），由预置脚本还原类型。
+  String _resolveJavaRuleOp(
+      String kind, String rule, dynamic mContent, bool isUrl) {
+    String run(dynamic Function() fn) {
+      try {
+        final value = fn();
+        if (kind == 'l') {
+          return jsonEncode(value is List ? value : const []);
+        }
+        if (kind == 'e') {
+          return _elementsJsLiteral(value is List ? value : const []);
+        }
+        if (kind == 'g') {
+          // CSS/XPath 的 single 求值仍返回元素集合（legado getElement 同），
+          // JS 侧 getElement 语义取首个；正则单值（分组数组）不拆。
+          var one = value;
+          if (one is List && (one.isEmpty || one.first is Element)) {
+            one = one.isEmpty ? null : one.first;
+          }
+          return _elementsJsLiteral(one == null ? const [] : [one]);
+        }
+        return value?.toString() ?? '';
+      } catch (e) {
+        AppLog.instance.w('[书源JS] java 规则桥求值失败: $rule → $e');
+        return kind == 's' ? '' : '[]';
+      }
+    }
+
+    if (kind == 's') {
+      return run(() => getString(rule, isUrl: isUrl, mContent: mContent));
+    }
+    if (mContent == null) {
+      if (kind == 'l') return run(() => getStringList(rule, isUrl: isUrl));
+      if (kind == 'e') return run(() => getElements(rule));
+      return run(() => getElement(rule));
+    }
+    final saved = content;
+    final savedJson = isJson;
+    final savedBase = baseUrl;
+    setContent(mContent);
+    try {
+      if (kind == 'l') return run(() => getStringList(rule, isUrl: isUrl));
+      if (kind == 'e') return run(() => getElements(rule));
+      return run(() => getElement(rule));
+    } finally {
+      content = saved;
+      isJson = savedJson;
+      baseUrl = savedBase;
+      _analyzeByJsoup = null;
+      _analyzeByXPath = null;
+      _analyzeByJson = null;
     }
   }
 
@@ -496,21 +677,15 @@ class AnalyzeRule {
     };
   }
 
-  // ── 内嵌表达式（{{...}} / @get:{...}）求值期替换 ──
+  // ── 规则参数化求值（$N 分组 / {{...}} / @get:{...}）──
 
-  /// 内嵌表达式与变量引用的切分模式（对齐通用书源格式语义）。
-  static final RegExp _evalPattern = RegExp(
-    r'@get:\{[^}]+?\}|\{\{[\w\W]*?\}\}',
-    caseSensitive: false,
-  );
-
-  /// 计算规则的生效状态：替换 `{{...}}` 内嵌表达式与 `@get:{...}` 变量
-  /// 引用后，再分割 `##` 正则替换段。
+  /// 计算规则的生效状态：按参数段重建规则文本，再分割 `##` 正则替换段。
   ///
-  /// 不修改缓存的 [SourceRule]（规则列表按规则串缓存、跨元素复用），
-  /// 每次求值返回独立的生效状态。
+  /// 对齐 legado `SourceRule.makeUpRule`：分组参数从当前正则命中项的
+  /// 分组数组取 `N` 号元素；内嵌表达式按规则/JS 求值；`@get:` 取变量。
+  /// 不修改缓存的 [SourceRule]（跨元素复用），每次返回独立状态。
   _RuleState _makeUpRule(SourceRule sourceRule, dynamic result) {
-    if (!sourceRule.hasInnerRule) {
+    if (!sourceRule.hasParams) {
       return _RuleState(
         sourceRule.rule,
         sourceRule.replaceRegex,
@@ -519,42 +694,39 @@ class AnalyzeRule {
         sourceRule.templateMode,
       );
     }
-    if (sourceRule.mode == Mode.js) {
-      // js 脚本体：仅展开内嵌表达式（{{$.x}}/@ 内嵌走规则引擎对当前上下文
-      // 求值，{{key}}/{{page}} 等走 JS），展开后的脚本体交回执行；不做 ##
-      // 分割（脚本体无正则替换后缀语义）、无模板模式（脚本必须执行）。
-      final replacedJs = _replaceInnerRules(sourceRule.rawRule, result);
-      return _RuleState(replacedJs, '', '', false, false);
+    final buf = StringBuffer();
+    for (final param in sourceRule.params) {
+      final type = param.type;
+      if (type > 0) {
+        // legado：(result as? List)?.let { this[regType] } ?: 字面量
+        if (result is List) {
+          if (result.length > type) {
+            buf.write(result[type]?.toString() ?? '');
+          }
+        } else {
+          buf.write(param.text);
+        }
+      } else if (type == RuleParam.innerType) {
+        final expr = param.text.trim();
+        if (_isRuleExpr(expr)) {
+          buf.write(getString(expr));
+        } else {
+          buf.write(_formatJsNumberText(_evalJs(expr, result)));
+        }
+      } else if (type == RuleParam.getType) {
+        buf.write(get(param.text));
+      } else {
+        buf.write(param.text);
+      }
     }
-    final replaced = _replaceInnerRules(sourceRule.rawRule, result);
-    final parts = replaced.split('##');
+    final parts = buf.toString().split('##');
     return _RuleState(
       parts[0].trim(),
       parts.length > 1 ? parts[1] : '',
       parts.length > 2 ? parts[2] : '',
       parts.length > 3,
-      sourceRule.templateMode,
+      false,
     );
-  }
-
-  /// 替换规则串中的全部内嵌表达式：
-  /// - `@get:{key}` → 变量取值；
-  /// - `{{规则}}`（`@`/`$.`/`$[`/`//` 开头）→ 按规则对当前内容求值；
-  /// - `{{JS 表达式}}` → JS 求值（绑定 result/baseUrl 等宿主上下文）。
-  String _replaceInnerRules(String ruleStr, dynamic result) {
-    return ruleStr.replaceAllMapped(_evalPattern, (m) {
-      final token = m.group(0)!;
-      if (token.length > 6 &&
-          token.substring(0, 5).toLowerCase() == '@get:') {
-        final key = token.substring(6, token.length - 1);
-        return get(key);
-      }
-      final expr = token.substring(2, token.length - 2).trim();
-      if (_isRuleExpr(expr)) {
-        return getString(expr);
-      }
-      return _formatJsNumberText(_evalJs(expr, result));
-    });
   }
 
   /// 内嵌表达式是否为规则（而非 JS 表达式）。
@@ -573,25 +745,6 @@ class AnalyzeRule {
     }
     return s;
   }
-
-  // ── 宿主桥接调用展开 ──
-
-  static final RegExp _javaGetStringSingle =
-      RegExp(r"java\.getString\(\s*'([^']*)'\s*\)");
-  static final RegExp _javaGetStringDouble =
-      RegExp(r'java\.getString\(\s*"([^"]*)"\s*\)');
-  static final RegExp _javaGetStringListSingle =
-      RegExp(r"java\.getStringList\(\s*'([^']*)'\s*\)");
-  static final RegExp _javaGetStringListDouble =
-      RegExp(r'java\.getStringList\(\s*"([^"]*)"\s*\)');
-  static final RegExp _javaGetElementsSingle =
-      RegExp(r"java\.getElements\(\s*'([^']*)'\s*\)");
-  static final RegExp _javaGetElementsDouble =
-      RegExp(r'java\.getElements\(\s*"([^"]*)"\s*\)');
-  static final RegExp _javaGetElementSingle =
-      RegExp(r"java\.getElement\(\s*'([^']*)'\s*\)");
-  static final RegExp _javaGetElementDouble =
-      RegExp(r'java\.getElement\(\s*"([^"]*)"\s*\)');
 
   /// 节点 → JS 字面量：`{t:文本, h:内部HTML, ot:自身文本, a:属性表}`。
   /// 由预置脚本的 `__javaElements` 包装成 jsoup 风格对象（size/get/text/
@@ -620,46 +773,6 @@ class AnalyzeRule {
       }
     }
     return jsonEncode(out);
-  }
-
-  /// 宿主桥接调用展开：`java.getString/getStringList/getElements/getElement`
-  /// 需要「按规则求值」，JS 沙箱内无法同步回调宿主，故在求值前内联为结果。
-  ///
-  /// 注意：**不要**在此内联 `java.get(...)`。运行时已提供 `java.get`
-  /// （变量读取 + 单参 URL GET + 双参 HTTP 重载），宿主内联只会抢在它前面
-  /// 把 `java.get('https://…')` 替换成空串（旧实现即因此让 API 源的
-  /// `java.get(url).body()` 全部返回空）。
-  ///
-  /// 仅支持**字面量**规则（单/双引号无转义）；动态规则（变量拼出来的串）
-  /// 仍会落到运行时缺失函数 → TypeError → 该段返回空（可被日志定位）。
-  String _expandJavaBridge(String jsExpr) {
-    if (!jsExpr.contains('java.')) return jsExpr;
-    var out = jsExpr;
-    // 长名优先：getStringList / getElements / getElement 先于 getString 处理，
-    // 避免前缀被短规则截断（当前正则带 `\(`，其实不会误匹配，仍保持顺序）。
-    out = out.replaceAllMapped(
-        _javaGetStringListSingle, (m) => jsonEncode(getStringList(m.group(1) ?? '')));
-    out = out.replaceAllMapped(
-        _javaGetStringListDouble, (m) => jsonEncode(getStringList(m.group(1) ?? '')));
-    out = out.replaceAllMapped(
-        _javaGetElementsSingle,
-        (m) => '__javaElements(${_elementsJsLiteral(getElements(m.group(1) ?? ''))})');
-    out = out.replaceAllMapped(
-        _javaGetElementsDouble,
-        (m) => '__javaElements(${_elementsJsLiteral(getElements(m.group(1) ?? ''))})');
-    out = out.replaceAllMapped(
-        _javaGetElementSingle,
-        (m) =>
-            '(__javaElements(${_elementsJsLiteral(getElements(m.group(1) ?? ''))})[0] || null)');
-    out = out.replaceAllMapped(
-        _javaGetElementDouble,
-        (m) =>
-            '(__javaElements(${_elementsJsLiteral(getElements(m.group(1) ?? ''))})[0] || null)');
-    out = out.replaceAllMapped(
-        _javaGetStringSingle, (m) => jsonEncode(getString(m.group(1) ?? '')));
-    out = out.replaceAllMapped(
-        _javaGetStringDouble, (m) => jsonEncode(getString(m.group(1) ?? '')));
-    return out;
   }
 
   String _replaceRegex(String result, _RuleState st) {
@@ -745,14 +858,35 @@ class AnalyzeRule {
     }
   }
 
+  /// HTML 实体还原，对齐 legado `StringEscapeUtils.unescapeHtml4`
+  /// （数字实体 + HTML4/HTML5 全命名表）。命名实体交给 package:html 解析
+  /// 并按实体缓存结果，未知实体原样保留。
+  static final RegExp _entityPattern =
+      RegExp(r'&(?:#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);');
+  static final Map<String, String> _entityCache = {};
+
   String _unescapeHtml(String str) {
-    return str
-        .replaceAll('&amp;', '&')
-        .replaceAll('&lt;', '<')
-        .replaceAll('&gt;', '>')
-        .replaceAll('&quot;', '"')
-        .replaceAll('&#39;', "'")
-        .replaceAll('&nbsp;', ' ');
+    if (!str.contains('&')) return str;
+    return str.replaceAllMapped(_entityPattern, (m) {
+      final entity = m.group(0)!;
+      final body = entity.substring(1, entity.length - 1);
+      if (body.startsWith('#')) {
+        final hex = body.length > 1 && (body[1] == 'x' || body[1] == 'X');
+        final code =
+            int.tryParse(body.substring(hex ? 2 : 1), radix: hex ? 16 : 10);
+        if (code == null ||
+            code <= 0 ||
+            code > 0x10FFFF ||
+            (code >= 0xD800 && code <= 0xDFFF)) {
+          return entity;
+        }
+        return String.fromCharCode(code);
+      }
+      return _entityCache.putIfAbsent(body, () {
+        final text = html_parser.parseFragment(entity).text ?? '';
+        return text.isEmpty ? entity : text;
+      });
+    });
   }
 
   bool _isJsonString(String str) {
