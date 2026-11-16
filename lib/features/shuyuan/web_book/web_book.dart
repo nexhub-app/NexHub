@@ -98,7 +98,8 @@ class WebBook {
   /// 解析书源的发现选项列表（含分类 / 输入框 / 按钮 / 开关 / 下拉）。
   ///
   /// [infoMap] 是发现页选项栏的持久化状态，动态 exploreUrl 脚本以全局
-  /// `infoMap` 绑定读取。静态声明不需要运行时；JS 动态分类须在
+  /// `infoMap` 绑定读取；`baseUrl` 绑定为书源 URL（legado
+  /// `BaseSource.evalJS` 语义）。静态声明不需要运行时；JS 动态分类须在
   /// [ShuyuanSourceContext] 作用域内调用，ajax/webview 走重放协议。
   List<ExploreKind> getExploreKinds(
     XiaoshuoBookSource source, {
@@ -108,7 +109,8 @@ class WebBook {
     if (exploreUrl == null || exploreUrl.trim().isEmpty) {
       return const <ExploreKind>[];
     }
-    return parseExploreKinds(exploreUrl, infoMap: infoMap);
+    return parseExploreKinds(exploreUrl,
+        infoMap: infoMap, baseUrl: source.bookSourceUrl);
   }
 
   /// 解析书源的发现分类列表（基于 `exploreUrl` 多级 URL 字符串）。
@@ -193,8 +195,6 @@ class WebBook {
     final body = await analyzeUrl.getStrResponse();
     if (body.isEmpty) return <XiaoshuoBook>[];
 
-    BookList.setCurrentCategoryName('');
-
     final searchBooks = BookList.analyzeBookList(
       bookSource: source,
       baseUrl: analyzeUrl.url,
@@ -274,7 +274,6 @@ class WebBook {
     if (stagedVars != null && stagedVars.isNotEmpty) {
       stagedVars.forEach((k, v) => book.variableMap.putIfAbsent(k, () => v));
     }
-    final tocRule = source.getTocRule();
     var tocUrl = (book.tocUrl != null && book.tocUrl!.isNotEmpty)
         ? book.tocUrl!
         : book.bookUrl;
@@ -293,6 +292,11 @@ class WebBook {
         );
         if (detailBook.tocUrl != null && detailBook.tocUrl!.isNotEmpty) {
           tocUrl = detailBook.tocUrl!;
+          // 回填书对象：后续目录阶段复用 tocHtml / strict 条件依赖 tocUrl。
+          book.tocUrl ??= detailBook.tocUrl;
+        }
+        if (detailBook.tocHtml != null && detailBook.tocHtml!.isNotEmpty) {
+          book.tocHtml ??= detailBook.tocHtml;
         }
         // 顺带回填详情字段（书名/作者/简介/封面），阅读器顶部信息更完整。
         if (book.name.isEmpty) book.name = detailBook.name;
@@ -317,10 +321,12 @@ class WebBook {
     // 详情页自身时，详情响应体已缓存进 tocHtml，直接解析，不再重发请求。
     final String tocBaseUrl;
     final String body;
+    // legado 条件：仅当详情页本身就是目录页（bookUrl == tocUrl）时复用详情
+    // 响应体，避免把详情 HTML 当目录解析（规则必然 0 命中）。
     final cachedTocHtml = book.tocHtml;
     if (cachedTocHtml != null &&
         cachedTocHtml.isNotEmpty &&
-        (tocUrl == book.tocUrl || tocUrl == book.bookUrl)) {
+        book.bookUrl == book.tocUrl) {
       tocBaseUrl = tocUrl;
       body = cachedTocHtml;
     } else {
@@ -336,13 +342,29 @@ class WebBook {
     }
     if (body.isEmpty) return <XiaoshuoBookChapter>[];
 
+    // 对齐 legado WebBook.getChapterListAwait：整页解析的 baseUrl 是请求
+    // 时的 tocUrl（未跟随重定向），redirectUrl 才是最终 URL。
+    final firstNextUrls = <String>[];
     final allChapters = BookChapterList.analyzeChapterList(
       bookSource: source,
       book: book,
-      baseUrl: tocBaseUrl,
+      baseUrl: tocUrl,
       redirectUrl: tocBaseUrl,
       body: body,
+      nextUrlsOut: firstNextUrls,
     );
+
+    void appendBatch(List<XiaoshuoBookChapter> pageChapters) {
+      if (pageChapters.isEmpty) return;
+      // 增量批次以全局连续序号重编号，避免与已回传批次的 index
+      // （Episode.id）冲突导致上层合并时覆盖。
+      final startIdx = allChapters.length;
+      for (var i = 0; i < pageChapters.length; i++) {
+        pageChapters[i].index = startIdx + i;
+      }
+      allChapters.addAll(pageChapters);
+      onBatch?.call(List<XiaoshuoBookChapter>.from(pageChapters));
+    }
 
     // 首页批次：先回传已解析的首页章节，让上层即时渲染（无需等后续分页）。
     if (allChapters.isNotEmpty) {
@@ -352,22 +374,20 @@ class WebBook {
       onBatch?.call(List<XiaoshuoBookChapter>.from(allChapters));
     }
 
-    // 目录分页跟随：若声明了 nextTocUrl 且当前页有"下一页"链接，继续抓取。
-    final nextTocRule = tocRule.nextTocUrl;
-    if (nextTocRule != null && nextTocRule.isNotEmpty && allChapters.isNotEmpty) {
+    // 目录分页跟随（legado 语义：首页 nextTocUrl 命中 1 条 → 串行跟随，
+    // 每条后续页继续提取下一条；命中多条 → 并发抓取所有页，不再继续提取）。
+    // 首页章节为空时同样跟随——部分源的首页只有分页导航。
+    // 目录分页上限兜底 visited 防死循环（超长书目录可达 70+ 页）。
+    const maxTocPages = 200;
+    if (firstNextUrls.length == 1) {
       final visited = <String>{tocBaseUrl};
-      var currentUrl = tocBaseUrl;
-      var currentBody = body;
-      // 目录分页上限：部分超长书（如诡秘之主 1416 章）目录可达 70+ 页。
-      // 已有 visited 去重防死循环，上限仅作安全阀。原 20 对长书严重不足（只能
-      // 解析约 400 章），提升到 200 覆盖 4000 章以内的任何书籍。
-      const maxTocPages = 200;
-
-      for (var i = 0; i < maxTocPages; i++) {
-        final nextUrl =
-            _extractNextTocUrl(book, currentBody, currentUrl, nextTocRule);
-        if (nextUrl.isEmpty || visited.contains(nextUrl)) break;
+      var nextUrl = firstNextUrls.first;
+      var pageCount = 0;
+      while (nextUrl.isNotEmpty &&
+          !visited.contains(nextUrl) &&
+          pageCount < maxTocPages) {
         visited.add(nextUrl);
+        pageCount++;
 
         // 分页抓取失败时仅停止翻页，保留已解析的首页/前几页章节，
         // 不让单页异常拖垮整个目录。
@@ -386,31 +406,66 @@ class WebBook {
         }
         if (pageBody.isEmpty) break;
 
+        final pageNextUrls = <String>[];
         final pageChapters = BookChapterList.analyzeChapterList(
           bookSource: source,
           book: book,
-          baseUrl: pageAnalyze.url,
+          baseUrl: nextUrl,
           redirectUrl: pageAnalyze.url,
           body: pageBody,
+          nextUrlsOut: pageNextUrls,
         );
-        if (pageChapters.isEmpty) break;
+        if (pageChapters.isEmpty && pageNextUrls.isEmpty) break;
+        appendBatch(pageChapters);
+        nextUrl = pageNextUrls.isNotEmpty ? pageNextUrls.first : '';
+      }
+    } else if (firstNextUrls.length > 1) {
+      final visited = <String>{tocBaseUrl};
+      final urls = <String>[];
+      for (final u in firstNextUrls) {
+        if (visited.add(u)) urls.add(u);
+      }
+      final pageResults = await mapOrderedPool<List<XiaoshuoBookChapter>>(
+        urls,
+        4,
+        (url) async {
+          final pageAnalyze = AnalyzeUrl(
+            url: url,
+            baseUrl: source.bookSourceUrl,
+            source: source,
+            ruleData: book,
+          );
+          final pageBody = await pageAnalyze.getStrResponse();
+          if (pageBody.isEmpty) return const <XiaoshuoBookChapter>[];
+          return BookChapterList.analyzeChapterList(
+            bookSource: source,
+            book: book,
+            baseUrl: url,
+            redirectUrl: pageAnalyze.url,
+            body: pageBody,
+            getNextUrl: false,
+          );
+        },
+      );
+      for (final pages in pageResults) {
+        if (pages != null) appendBatch(pages);
+      }
+    }
 
-        // 本页增量批次：以全局连续序号重编号后再回传，避免与已回传批次的
-        // index（Episode.id）冲突导致上层合并时覆盖。
-        final startIdx = allChapters.length;
-        for (var i = 0; i < pageChapters.length; i++) {
-          pageChapters[i].index = startIdx + i;
+    if (allChapters.isNotEmpty) {
+      // 对齐 legado：多页合并后按「URL + 标题」整体去重，再全局重编号。
+      final seen = <String>{};
+      final deduped = <XiaoshuoBookChapter>[];
+      for (final chapter in allChapters) {
+        if (seen.add('${chapter.url}\u0000${chapter.title}')) {
+          deduped.add(chapter);
         }
-        allChapters.addAll(pageChapters);
-        onBatch?.call(List<XiaoshuoBookChapter>.from(pageChapters));
-        currentUrl = pageAnalyze.url;
-        currentBody = pageBody;
       }
-
       // 兜底重编号（增量批次已保证连续，此处仅为安全网）。
-      for (var i = 0; i < allChapters.length; i++) {
-        allChapters[i].index = i;
+      for (var i = 0; i < deduped.length; i++) {
+        deduped[i].index = i;
       }
+      return deduped;
     }
 
     return allChapters;
@@ -668,32 +723,6 @@ class WebBook {
       <Future<void>>[for (var w = 0; w < workerCount; w++) worker()],
     );
     return results;
-  }
-
-  /// 从当前目录页中提取"下一页"绝对 URL；无下一页时返回空串。
-  ///
-  /// 逻辑与 [_extractNextContentUrl] 一致，但语义上用于目录分页跟随。
-  /// 携带 [book] 求值：nextTocUrl 规则里可读书变量（legado 同一
-  /// AnalyzeRule 实例贯穿目录解析）。
-  String _extractNextTocUrl(
-      XiaoshuoBook book, String body, String baseUrl, String rule) {
-    try {
-      final analyzeRule = AnalyzeRule(book: book)
-        ..setContent(body, baseUrl)
-        ..setBaseUrl(baseUrl)
-        ..setRedirectUrl(baseUrl);
-      final url = analyzeRule.getString(rule, isUrl: true).trim();
-      if (url.isEmpty || url == baseUrl) return '';
-      // 目录只有一页时，"下一页"常是占位链接（javascript:void(0)、#、空锚点），
-      // 必须过滤，否则会被当成合法分页 URL 抓取而抛 "Invalid URL"。
-      final lower = url.toLowerCase();
-      if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
-        return '';
-      }
-      return url;
-    } catch (_) {
-      return '';
-    }
   }
 
   /// 计算章节根：host + path（去扩展名）。作为「本章第 1 页」的唯一标识。

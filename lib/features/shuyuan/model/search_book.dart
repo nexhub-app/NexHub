@@ -60,6 +60,39 @@ class SearchBook {
         'type': type,
       };
 
+  /// 值相等：对齐 legado `SearchBook`（data class）的 LinkedHashSet 去重
+  /// 语义——同一条目重复出现（同 URL 同字段）只保留首次。
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is SearchBook &&
+          bookUrl == other.bookUrl &&
+          name == other.name &&
+          author == other.author &&
+          coverUrl == other.coverUrl &&
+          kind == other.kind &&
+          lastChapter == other.lastChapter &&
+          tocUrl == other.tocUrl &&
+          wordCount == other.wordCount &&
+          bookSourceUrl == other.bookSourceUrl &&
+          bookSourceName == other.bookSourceName &&
+          type == other.type;
+
+  @override
+  int get hashCode => Object.hash(
+        bookUrl,
+        name,
+        author,
+        coverUrl,
+        kind,
+        lastChapter,
+        tocUrl,
+        wordCount,
+        bookSourceUrl,
+        bookSourceName,
+        type,
+      );
+
   XiaoshuoBook toBook() {
     return XiaoshuoBook(
       bookUrl: bookUrl,

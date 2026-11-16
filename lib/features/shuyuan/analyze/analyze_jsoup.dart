@@ -42,6 +42,9 @@ class AnalyzeByJsoup {
     if (s.contains(':has(')) {
       return _queryHas(root, s);
     }
+    if (_needsExtended(s)) {
+      return _queryExtended(root, s);
+    }
     if (s.contains(':contains(')) {
       return _queryContains(root, s);
     }
@@ -69,6 +72,9 @@ class AnalyzeByJsoup {
   static bool _matchesSelf(Element el, String selector) {
     final s = selector.trim();
     if (s.isEmpty) return false;
+    if (_needsExtended(s) || s.contains(':has(')) {
+      return _matchesSelector(el, s);
+    }
     final parent = el.parent;
     if (parent == null) return false;
     try {
@@ -139,7 +145,7 @@ class AnalyzeByJsoup {
   /// 应用组合器得到目标元素。
   static List<Element> _queryHas(Element root, String selector) {
     final result = <Element>[];
-    for (final group in selector.split(',')) {
+    for (final group in _splitTopLevel(selector, ',')) {
       var g = group.trim();
       if (g.isEmpty) continue;
       final parts = _splitHas(g);
@@ -159,7 +165,7 @@ class AnalyzeByJsoup {
       // 过滤出包含匹配 inner 的子元素的宿主（inner 可含 :contains 等，
       // 递归走 _safeQuery 透明处理）。
       if (inner.isNotEmpty) {
-        hosts = hosts.where((el) => _safeQuery(el, inner).isNotEmpty).toList();
+        hosts = hosts.where((el) => _hasMatch(el, inner)).toList();
       }
       result.addAll(_applyAfterCombinator(hosts, after));
     }
@@ -206,8 +212,22 @@ class AnalyzeByJsoup {
             candidates = const [];
           }
       }
-      for (final c in candidates) {
-        if (_matchesSelector(c, target)) out.add(c);
+      // after 可能仍是多段选择器（`> li:nth-child(1) > a`）：第一段在
+      // candidates（已应用首个组合器）上过滤，后续段继续按组合器展开。
+      final segs = _splitCombinators(target);
+      if (segs.length <= 1) {
+        for (final c in candidates) {
+          if (_matchesSelector(c, target)) out.add(c);
+        }
+      } else {
+        final (b0, c0) = _parseCompound(segs.first.$2.trim());
+        final filtered = <Element>[];
+        for (final c in candidates) {
+          if (b0.isNotEmpty && !_matchesBase(c, b0)) continue;
+          if (c0.isNotEmpty && !_matchConds(c, c0)) continue;
+          filtered.add(c);
+        }
+        out.addAll(_advance(filtered, segs, 1));
       }
     }
     return out;
@@ -217,9 +237,17 @@ class AnalyzeByJsoup {
   /// 用「父元素 querySelectorAll 的结果包含该元素」等价判定；选择器含
   /// `:contains(...)` 时降级为「基础选择器命中 + 文本包含」。
   static bool _matchesSelector(Element el, String selector) {
+    final s = selector.trim();
+    if (s.isEmpty) return false;
     final parent = el.parent;
     if (parent == null) return false;
-    if (selector.contains(':contains(')) {
+    if (s.contains(':has(')) {
+      return _queryHas(parent, s).any((e) => identical(e, el));
+    }
+    if (_needsExtended(s)) {
+      return _queryExtended(parent, s).any((e) => identical(e, el));
+    }
+    if (s.contains(':contains(')) {
       final texts = <String>[];
       final base = selector.replaceAllMapped(_containsRegex, (mm) {
         final t = (mm.group(1) ?? '').trim();
@@ -272,6 +300,538 @@ class AnalyzeByJsoup {
       }
     }
     return result;
+  }
+
+  // ── jsoup 扩展伪选择器兼容层 ──────────────────────────────────────────
+  // package:html 的 querySelectorAll 不支持 jsoup Selector 的扩展伪类：
+  // :nth-child / :nth-last-child / :nth-of-type / :nth-last-of-type 返回空，
+  // :nth-child(an+b) 直接抛 UnimplementedError，:eq/:gt/:lt/:containsOwn/
+  // :matches/:matchesOwn/:empty 同理；旧实现被 _safeQuery 的 catch 吞掉，
+  // 表现为规则「命中 0 元素」（目录/搜索列表为空）。这里按 jsoup 语义用
+  // 「基础 CSS 查询 + 条件过滤」实现等价能力。
+
+  static final RegExp _aliasPseudoRegex = RegExp(r':(?:first|last)(?![\w-])');
+
+  static bool _needsExtended(String selector) {
+    final lower = selector.toLowerCase();
+    return lower.contains(':nth-child(') ||
+        lower.contains(':nth-last-child(') ||
+        lower.contains(':nth-of-type(') ||
+        lower.contains(':nth-last-of-type(') ||
+        lower.contains(':eq(') ||
+        lower.contains(':gt(') ||
+        lower.contains(':lt(') ||
+        lower.contains(':matches(') ||
+        lower.contains(':matchesown(') ||
+        lower.contains(':containsown(') ||
+        lower.contains(':empty') ||
+        _aliasPseudoRegex.hasMatch(lower);
+  }
+
+  /// 查询含扩展伪类的选择器（支持逗号分组与 ` ` / `>` / `+` / `~` 组合器）。
+  ///
+  /// 每段复合选择器拆成「基础 CSS + 伪类条件」：基础部分尽量交给
+  /// package:html 原生查询（保留其性能与标准 CSS 能力），条件部分逐元素
+  /// 按 jsoup 语义过滤（:eq 为同级 0 起索引，:nth-child 为 1 起序号）。
+  static List<Element> _queryExtended(Element root, String selector) {
+    final result = <Element>[];
+    for (final rawGroup in _splitTopLevel(selector, ',')) {
+      final group = rawGroup.trim();
+      if (group.isEmpty) continue;
+      final segs = _splitCombinators(group);
+      if (segs.isEmpty) continue;
+      final (headComb, headRaw) = segs.first;
+      if (headComb.isNotEmpty) continue; // 相对选择器由 :has 路径处理
+      final head = headRaw.trim();
+      if (head.isEmpty) continue;
+      final (base, conds) = _parseCompound(head);
+      var current = _queryDescendants(root, base);
+      if (conds.isNotEmpty) {
+        current = current.where((e) => _matchConds(e, conds)).toList();
+      }
+      current = _advance(current, segs, 1);
+      for (final el in current) {
+        if (!result.any((e) => identical(e, el))) result.add(el);
+      }
+    }
+    return result;
+  }
+
+  /// 从第 [from] 段开始继续按组合器展开并应用伪类条件。
+  static List<Element> _advance(
+      List<Element> start, List<(String, String)> segs, int from) {
+    var current = start;
+    for (var i = from; i < segs.length; i++) {
+      if (current.isEmpty) return current;
+      final (comb, raw) = segs[i];
+      final compound = raw.trim();
+      if (compound.isEmpty) return const [];
+      final (base, conds) = _parseCompound(compound);
+      var candidates = _expandFrom(current, comb.isEmpty ? ' ' : comb, base);
+      if (conds.isNotEmpty) {
+        candidates = candidates.where((e) => _matchConds(e, conds)).toList();
+      }
+      current = candidates;
+    }
+    return current;
+  }
+
+  /// 基础 CSS 查询（空基础 = 全部后代），异常时降级补属性引号后重试。
+  static List<Element> _queryDescendants(Element root, String base) {
+    if (base.isEmpty) return root.querySelectorAll('*');
+    try {
+      return root.querySelectorAll(base);
+    } catch (_) {
+      final repaired = _repairAttrQuotes(base);
+      if (repaired != null && repaired != base) {
+        try {
+          return root.querySelectorAll(repaired);
+        } catch (_) {}
+      }
+      return const [];
+    }
+  }
+
+  /// 从当前元素集合按组合器展开候选（基础 CSS 命中判断）。
+  static List<Element> _expandFrom(
+      List<Element> current, String comb, String base) {
+    final out = <Element>[];
+    void take(List<Element> els) {
+      if (base.isEmpty) {
+        out.addAll(els);
+        return;
+      }
+      for (final e in els) {
+        if (_matchesBase(e, base)) out.add(e);
+      }
+    }
+
+    for (final host in current) {
+      switch (comb) {
+        case '>':
+          take(host.children);
+          break;
+        case '+':
+          final ns = host.nextElementSibling;
+          if (ns != null) take([ns]);
+          break;
+        case '~':
+          final parent = host.parent;
+          if (parent != null) {
+            final siblings = parent.children;
+            final idx = siblings.indexOf(host);
+            if (idx >= 0 && idx < siblings.length - 1) {
+              take(siblings.sublist(idx + 1));
+            }
+          }
+          break;
+        default:
+          take(_queryDescendants(host, base));
+      }
+    }
+    return out;
+  }
+
+  static bool _matchesBase(Element el, String base) {
+    if (base.isEmpty) return true;
+    final parent = el.parent;
+    if (parent == null) return false;
+    try {
+      return parent.querySelectorAll(base).any((e) => identical(e, el));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 应用伪类条件列表（全部满足才算命中）。
+  static bool _matchConds(Element el, List<_PseudoCond> conds) {
+    for (final cond in conds) {
+      final arg = cond.arg.trim();
+      switch (cond.name) {
+        case 'nth-child':
+          final p = _position(el);
+          if (p == null || !_nthMatch(p.$1 + 1, arg)) return false;
+          break;
+        case 'nth-last-child':
+          final p = _position(el);
+          if (p == null || !_nthMatch(p.$2 - p.$1, arg)) return false;
+          break;
+        case 'nth-of-type':
+          final p = _typedPosition(el);
+          if (p == null || !_nthMatch(p.$1 + 1, arg)) return false;
+          break;
+        case 'nth-last-of-type':
+          final p = _typedPosition(el);
+          if (p == null || !_nthMatch(p.$2 - p.$1, arg)) return false;
+          break;
+        case 'eq':
+        case 'gt':
+        case 'lt':
+          final p = _position(el);
+          final idx = _resolveIndex(int.tryParse(arg), p?.$2 ?? 0);
+          if (p == null || idx == null) return false;
+          if (cond.name == 'eq' && p.$1 != idx) return false;
+          if (cond.name == 'gt' && p.$1 <= idx) return false;
+          if (cond.name == 'lt' && p.$1 >= idx) return false;
+          break;
+        case 'contains':
+          if (!el.text
+              .toLowerCase()
+              .contains(_unquote(arg).toLowerCase())) {
+            return false;
+          }
+          break;
+        case 'containsown':
+          if (!_ownText(el)
+              .toLowerCase()
+              .contains(_unquote(arg).toLowerCase())) {
+            return false;
+          }
+          break;
+        case 'matches':
+          if (!_regexMatch(arg, el.text)) return false;
+          break;
+        case 'matchesown':
+          if (!_regexMatch(arg, _ownText(el))) return false;
+          break;
+        case 'empty':
+          if (el.nodes.isNotEmpty) return false;
+          break;
+        case 'not':
+          if (_querySingleMatch(el, arg)) return false;
+          break;
+        case 'has':
+          if (!_hasMatch(el, arg)) return false;
+          break;
+        default:
+          break;
+      }
+    }
+    return true;
+  }
+
+  /// `:has(inner)`：inner 可为后代选择器，也支持 `>` / `+` / `~` 相对写法。
+  static bool _hasMatch(Element el, String inner) {
+    var t = inner.trim();
+    if (t.isEmpty) return false;
+    if (t.startsWith('>')) {
+      final rest = t.substring(1).trim();
+      if (rest.isEmpty) return el.children.isNotEmpty;
+      return el.children.any((c) => _matchesSelector(c, rest));
+    }
+    if (t.startsWith('+')) {
+      final rest = t.substring(1).trim();
+      final ns = el.nextElementSibling;
+      return ns != null && (rest.isEmpty || _matchesSelector(ns, rest));
+    }
+    if (t.startsWith('~')) {
+      final rest = t.substring(1).trim();
+      final parent = el.parent;
+      if (parent == null) return false;
+      final idx = parent.children.indexOf(el);
+      if (idx < 0) return false;
+      return parent.children
+          .sublist(idx + 1)
+          .any((c) => rest.isEmpty || _matchesSelector(c, rest));
+    }
+    return _safeQuery(el, t).isNotEmpty;
+  }
+
+  /// 元素在同级中的位置（0 起索引, 同级总数）。
+  static (int, int)? _position(Element el) {
+    final parent = el.parent;
+    if (parent == null) return null;
+    final idx = parent.children.indexOf(el);
+    if (idx < 0) return null;
+    return (idx, parent.children.length);
+  }
+
+  /// 元素在同标签同级中的位置（nth-of-type 语义）。
+  static (int, int)? _typedPosition(Element el) {
+    final parent = el.parent;
+    if (parent == null) return null;
+    final peers =
+        parent.children.where((e) => e.localName == el.localName).toList();
+    final idx = peers.indexOf(el);
+    if (idx < 0) return null;
+    return (idx, peers.length);
+  }
+
+  static int? _resolveIndex(int? n, int count) {
+    if (n == null) return null;
+    return n < 0 ? count + n : n;
+  }
+
+  /// CSS `an+b` 语义（1 起序号）：支持数字 / odd / even / `2n+1` / `-n+2`。
+  static bool _nthMatch(int pos, String raw) {
+    final arg = raw.replaceAll(RegExp(r'\s+'), '').toLowerCase();
+    if (arg.isEmpty) return false;
+    if (arg == 'odd') return pos.isOdd;
+    if (arg == 'even') return pos.isEven;
+    final anb = RegExp(r'^([+-]?\d*)n([+-]\d+)?$').firstMatch(arg);
+    if (anb != null) {
+      final aStr = anb.group(1) ?? '';
+      final a = aStr.isEmpty || aStr == '+'
+          ? 1
+          : (aStr == '-' ? -1 : int.parse(aStr));
+      final b = int.tryParse(anb.group(2) ?? '0') ?? 0;
+      if (a == 0) return pos == b;
+      final diff = pos - b;
+      return diff % a == 0 && diff ~/ a >= 0;
+    }
+    final n = int.tryParse(arg);
+    return n != null && pos == n;
+  }
+
+  static String _unquote(String s) {
+    if (s.length >= 2 &&
+        ((s.startsWith('"') && s.endsWith('"')) ||
+            (s.startsWith("'") && s.endsWith("'")))) {
+      return s.substring(1, s.length - 1);
+    }
+    return s;
+  }
+
+  static bool _regexMatch(String pattern, String text) {
+    try {
+      return RegExp(_unquote(pattern)).hasMatch(text);
+    } catch (_) {
+      return text.contains(_unquote(pattern));
+    }
+  }
+
+  static String _ownText(Element el) =>
+      el.nodes.whereType<Text>().map((n) => n.text).join().trim();
+
+  static bool _querySingleMatch(Element el, String selector) {
+    final parent = el.parent;
+    if (parent == null) return false;
+    if (_needsExtended(selector)) {
+      return _queryExtended(parent, selector).any((e) => identical(e, el));
+    }
+    if (selector.contains(':has(')) {
+      return _queryHas(parent, selector).any((e) => identical(e, el));
+    }
+    try {
+      return parent.querySelectorAll(selector).any((e) => identical(e, el));
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 括号/引号/属性段感知的顶层分割（用于逗号分组）。
+  static List<String> _splitTopLevel(String s, String separators) {
+    final out = <String>[];
+    final buf = StringBuffer();
+    var depth = 0;
+    var bracket = 0;
+    var quote = '';
+    for (var i = 0; i < s.length; i++) {
+      final c = s[i];
+      if (quote.isNotEmpty) {
+        buf.write(c);
+        if (c == quote) quote = '';
+        continue;
+      }
+      if (c == '"' || c == "'") {
+        quote = c;
+        buf.write(c);
+        continue;
+      }
+      if (c == '(') depth++;
+      if (c == ')') depth--;
+      if (c == '[') bracket++;
+      if (c == ']') bracket--;
+      if (depth == 0 && bracket == 0 && separators.contains(c)) {
+        out.add(buf.toString());
+        buf.clear();
+        continue;
+      }
+      buf.write(c);
+    }
+    out.add(buf.toString());
+    return out;
+  }
+
+  /// 按顶层 ` ` / `>` / `+` / `~` 拆分为 (组合器, 复合选择器) 序列。
+  /// 首段的组合器为空串，其余段缺省为后代组合器（` `）。
+  static List<(String, String)> _splitCombinators(String group) {
+    final out = <(String, String)>[];
+    final buf = StringBuffer();
+    var depth = 0;
+    var bracket = 0;
+    var quote = '';
+    var comb = '';
+
+    void flush() {
+      final c = comb.isNotEmpty ? comb : (out.isEmpty ? '' : ' ');
+      out.add((c, buf.toString()));
+      buf.clear();
+      comb = '';
+    }
+
+    for (var i = 0; i < group.length; i++) {
+      final c = group[i];
+      if (quote.isNotEmpty) {
+        buf.write(c);
+        if (c == quote) quote = '';
+        continue;
+      }
+      if (c == '"' || c == "'") {
+        quote = c;
+        buf.write(c);
+        continue;
+      }
+      if (c == '(') depth++;
+      if (c == ')') depth--;
+      if (c == '[') bracket++;
+      if (c == ']') bracket--;
+      if (depth == 0 && bracket == 0) {
+        if (c == '>' || c == '+' || c == '~') {
+          if (buf.isNotEmpty) flush();
+          comb = c;
+          continue;
+        }
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+          if (buf.isNotEmpty) flush();
+          continue;
+        }
+      }
+      buf.write(c);
+    }
+    if (buf.isNotEmpty) flush();
+    return out;
+  }
+
+  /// 拆分复合选择器：剥离扩展伪类为条件，其余部分保留给原生 CSS。
+  static (String, List<_PseudoCond>) _parseCompound(String compound) {
+    final base = StringBuffer();
+    final conds = <_PseudoCond>[];
+    var i = 0;
+    final nameChar = RegExp(r'[\w-]');
+    while (i < compound.length) {
+      final c = compound[i];
+      if (c == '[') {
+        var depth = 0;
+        var quote = '';
+        while (i < compound.length) {
+          final ch = compound[i];
+          base.write(ch);
+          if (quote.isNotEmpty) {
+            if (ch == quote) quote = '';
+          } else if (ch == '"' || ch == "'") {
+            quote = ch;
+          } else if (ch == '[') {
+            depth++;
+          } else if (ch == ']') {
+            depth--;
+            if (depth == 0) {
+              i++;
+              break;
+            }
+          }
+          i++;
+        }
+        continue;
+      }
+      if (c != ':') {
+        base.write(c);
+        i++;
+        continue;
+      }
+      if (i + 1 < compound.length && compound[i + 1] == ':') {
+        final start = i;
+        i += 2;
+        while (i < compound.length && nameChar.hasMatch(compound[i])) {
+          i++;
+        }
+        base.write(compound.substring(start, i));
+        continue;
+      }
+      final nameStart = i + 1;
+      var j = nameStart;
+      while (j < compound.length && nameChar.hasMatch(compound[j])) {
+        j++;
+      }
+      if (j == nameStart) {
+        base.write(c);
+        i++;
+        continue;
+      }
+      final name = compound.substring(nameStart, j).toLowerCase();
+      if (j < compound.length && compound[j] == '(') {
+        var depth = 0;
+        var quote = '';
+        var k = j;
+        for (; k < compound.length; k++) {
+          final ch = compound[k];
+          if (quote.isNotEmpty) {
+            if (ch == quote) quote = '';
+            continue;
+          }
+          if (ch == '"' || ch == "'") {
+            quote = ch;
+            continue;
+          }
+          if (ch == '(') depth++;
+          if (ch == ')') {
+            depth--;
+            if (depth == 0) break;
+          }
+        }
+        final closed = k < compound.length;
+        final arg = closed ? compound.substring(j + 1, k) : '';
+        final end = closed ? k + 1 : compound.length;
+        switch (name) {
+          case 'nth-child':
+          case 'nth-last-child':
+          case 'nth-of-type':
+          case 'nth-last-of-type':
+          case 'eq':
+          case 'gt':
+          case 'lt':
+          case 'matches':
+          case 'matchesown':
+          case 'contains':
+          case 'containsown':
+          case 'has':
+            conds.add(_PseudoCond(name, arg));
+            i = end;
+            break;
+          case 'not':
+            if (_needsExtended(arg)) {
+              conds.add(_PseudoCond('not', arg));
+              i = end;
+            } else {
+              base.write(compound.substring(i, end));
+              i = end;
+            }
+            break;
+          default:
+            base.write(compound.substring(i, end));
+            i = end;
+        }
+        continue;
+      }
+      switch (name) {
+        case 'empty':
+          conds.add(const _PseudoCond('empty', ''));
+          i = j;
+          break;
+        case 'first':
+          conds.add(const _PseudoCond('eq', '0'));
+          i = j;
+          break;
+        case 'last':
+          conds.add(const _PseudoCond('eq', '-1'));
+          i = j;
+          break;
+        default:
+          base.write(compound.substring(i, j));
+          i = j;
+      }
+    }
+    return (base.toString(), conds);
   }
 
   /// 主入口：获取字符串列表，支持 @ 链式选择器。
@@ -574,6 +1134,13 @@ class AnalyzeByJsoup {
       return list.first;
     }
   }
+}
+
+/// 扩展伪类条件（名称统一小写，参数为括号原文）。
+class _PseudoCond {
+  final String name;
+  final String arg;
+  const _PseudoCond(this.name, this.arg);
 }
 
 /// legado `AnalyzeByJSoup.ElementsSingle` 的 Dart 移植：

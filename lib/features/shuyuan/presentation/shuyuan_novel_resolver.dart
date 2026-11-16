@@ -539,8 +539,9 @@ class ShuyuanNovelResolver
       var displayName = kind.title;
       final viewName = kind.viewName?.trim() ?? '';
       if (viewName.isNotEmpty) {
-        final resolved =
-            await _resolveKindViewName(source, viewName, infoMap);
+        final resolved = await _resolveKindViewName(
+            source, viewName, infoMap,
+            baseUrl: bookSource.bookSourceUrl);
         if (resolved.isNotEmpty) displayName = resolved;
       }
       if (displayName.isEmpty) displayName = kind.url ?? '';
@@ -579,12 +580,14 @@ class ShuyuanNovelResolver
   }
 
   /// viewName：`'字面量'`（长度 3–19）直接取内容，其余按 JS 求值
-  /// （legado ExploreKindUiUseCase.ResolveDisplayName）。
+  /// （legado ExploreKindUiUseCase.ResolveDisplayName → BaseSource.evalJS，
+  /// 脚本可读 `infoMap` 与 `baseUrl`=书源 URL）。
   Future<String> _resolveKindViewName(
     PluginConfig source,
     String viewName,
-    Map<String, String> infoMap,
-  ) async {
+    Map<String, String> infoMap, {
+    required String baseUrl,
+  }) async {
     final literal = _literalViewName(viewName);
     if (literal != null) return literal;
     final engine = JsEngine.forSource(source.id);
@@ -592,6 +595,7 @@ class ShuyuanNovelResolver
       viewName,
       bindings: <String, dynamic>{
         'infoMap': Map<String, String>.from(infoMap),
+        'baseUrl': baseUrl,
       },
     );
     engine.takeJavaVars();
@@ -654,7 +658,7 @@ class ShuyuanNovelResolver
           ctx.kindBrowserOpens.clear();
           ctx.kindRefreshRequested = false;
           ctx.copiedTexts.clear();
-          _runKindAction(engine, action, infoMap);
+          _runKindAction(engine, action, infoMap, bookSource.bookSourceUrl);
           _syncInfoMapFromJs(engine, infoMap);
           if (!_hasPendingReplay(ctx)) break;
           if (!_replayAllowed(pass, deadline)) break;
@@ -682,10 +686,12 @@ class ShuyuanNovelResolver
 
   /// 执行 action：先给 infoMap 补 Map.put/get/remove/containsKey 兼容方法
   /// （legado 的 infoMap 是 HashMap，脚本常用 `.put`），再 eval 脚本体。
+  /// `baseUrl` 与 legado `BaseSource.evalJS` 一致绑定为书源 URL。
   void _runKindAction(
     JsEngine engine,
     String action,
     Map<String, String> infoMap,
+    String baseUrl,
   ) {
     final wrapped = '(function () {\n'
         '  if (infoMap && typeof infoMap === "object") {\n'
@@ -702,6 +708,7 @@ class ShuyuanNovelResolver
         '})()';
     engine.eval(wrapped, bindings: <String, dynamic>{
       'infoMap': Map<String, String>.from(infoMap),
+      'baseUrl': baseUrl,
     });
   }
 
@@ -735,11 +742,13 @@ class ShuyuanNovelResolver
   }
 
   /// exploreUrl 是否含需要 JS 求值的片段（整串或分段 `@js:`/`<js>`）。
+  /// 前缀忽略大小写（legado `startsWith(..., true)`）。
   static bool _exploreNeedsJs(String exploreUrl) {
     final trimmed = exploreUrl.trim();
-    if (trimmed.startsWith('@js:') || trimmed.startsWith('<js>')) return true;
+    final lower = trimmed.toLowerCase();
+    if (lower.startsWith('@js:') || lower.startsWith('<js>')) return true;
     for (final line in trimmed.split(RegExp(r'&&|\n'))) {
-      final t = line.trim();
+      final t = line.trim().toLowerCase();
       if (t.startsWith('@js:') || t.startsWith('<js>')) return true;
     }
     return false;

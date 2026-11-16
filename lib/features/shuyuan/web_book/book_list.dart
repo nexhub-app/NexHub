@@ -1,5 +1,9 @@
 /// 书籍列表解析：依据书源 `ruleSearch` 或 `ruleExplore` 解析书籍列表
-/// （书名/作者/封面/详情 URL/分类/最新章节），并提供通用 HTML 链接兜底解析。
+/// （书名/作者/封面/详情 URL/分类/最新章节）。
+///
+/// 对齐 legado BookList：规则命中为空时按「整页详情」解析（搜索直达详情 /
+/// 列表规则失效），不再从任意 `<a>` 标签猜测书籍——猜测会把导航链接当书，
+/// 表现为「点开是另一本书/首页」。
 library;
 
 import 'dart:collection';
@@ -14,35 +18,6 @@ import '../model/xiaoshuo_book.dart';
 import 'book_info.dart';
 
 class BookList {
-  static String _currentCategoryName = '';
-  static String _currentSourceName = '';
-  static Set<String> _allCategoryNames = <String>{};
-
-  /// 设置当前分类名（用于过滤同名项）
-  static void setCurrentCategoryName(String name) {
-    _currentCategoryName = name;
-  }
-
-  /// 获取当前分类名
-  static String getCurrentCategoryName() {
-    return _currentCategoryName;
-  }
-
-  /// 设置当前源名称
-  static void setCurrentSourceName(String name) {
-    _currentSourceName = name;
-  }
-
-  /// 设置全部分类名集合（用于过滤分类导航项）
-  static void setAllCategoryNames(Set<String> names) {
-    _allCategoryNames = names;
-  }
-
-  /// 清空分类名集合
-  static void clearAllCategoryNames() {
-    _allCategoryNames = <String>{};
-  }
-
   static List<SearchBook> analyzeBookList({
     required XiaoshuoBookSource bookSource,
     required String baseUrl,
@@ -67,8 +42,6 @@ class BookList {
       ..setContent(body, baseUrl)
       ..setBaseUrl(baseUrl)
       ..setRedirectUrl(baseUrl);
-
-    setCurrentSourceName(bookSource.bookSourceName);
 
     String? bookListRule;
     String? nameRule;
@@ -113,12 +86,10 @@ class BookList {
       }
     }
 
-    if (bookListRule == null || bookListRule.isEmpty) {
-      return _parseGenericBookList(body, bookSource, baseUrl);
-    }
-
+    // legado：列表规则缺失等价于空规则（getElements("") → 空集合），
+    // 随后走「列表为空」分支按整页详情解析，不做链接猜测。
     var reverse = false;
-    var listRule = bookListRule;
+    var listRule = bookListRule ?? '';
     if (listRule.startsWith('-')) {
       reverse = true;
       listRule = listRule.substring(1);
@@ -146,17 +117,13 @@ class BookList {
       }
 
       if (elements.isEmpty) {
-        // legado 行为：列表为空且未声明 bookUrlPattern → 整页按详情解析
-        //（声明了 ruleBookInfo.name 时字段更全）；否则通用解析兜底。
-        final infoName = bookSource.ruleBookInfo?.name;
-        if (infoName != null && infoName.isNotEmpty) {
-          // 页级书名提取不到（如 API 返回空数组）时不产出条目：
-          // 否则空名条目会带 baseUrl 作为 bookUrl 混入结果（legado
-          // getInfoItem 同样以 name 非空为产出前提）。
+        // legado：列表为空且未声明 bookUrlPattern → 整页按详情解析
+        //（getInfoItem 以 name 非空为产出前提，解析不出书名则无结果）。
+        if ((bookSource.bookUrlPattern ?? '').isEmpty) {
           final detail = _detailPageAsSearchBook(bookSource, body, baseUrl);
           return detail == null ? const <SearchBook>[] : [detail];
         }
-        return _parseGenericBookList(body, bookSource, baseUrl);
+        return const <SearchBook>[];
       }
 
       final ruleName = analyzeRule.splitSourceRule(nameRule ?? '');
@@ -191,11 +158,7 @@ class BookList {
         }
       }
 
-      // 如果所有提取的书籍名称都为空，回退到通用解析
-      if (books.isEmpty) {
-        return _parseGenericBookList(body, bookSource, baseUrl);
-      }
-
+      // legado：全部条目书名为空时直接返回空列表，不回退到链接猜测。
       final uniqueBooks = LinkedHashSet<SearchBook>.from(books);
       books.clear();
       books.addAll(uniqueBooks);
@@ -204,10 +167,6 @@ class BookList {
         books = books.reversed.toList();
       }
     } catch (_) {}
-
-    if (books.isEmpty) {
-      return _parseGenericBookList(body, bookSource, baseUrl);
-    }
 
     return books;
   }
@@ -326,11 +285,10 @@ class BookList {
     );
   }
 
-  /// 规则路径书名轻量清洗（对齐通用书源引擎语义）：
+  /// 规则路径书名清洗（对齐 legado BookHelp.formatBookName）：
   /// - 去「作者：xxx」/「xxx 著」尾缀（列表项书名常带）；
   /// - 去首尾分隔符并 trim。
-  /// 不做任何关键词级丢弃——书源规则明确指向书名元素，信任源作者的规则；
-  /// 激进的导航词过滤仅用于 [formatBookName]（通用兜底解析路径）。
+  /// 不做关键词级丢弃——规则明确指向书名元素，信任源作者的规则。
   static String formatBookNameLight(String name) {
     if (name.isEmpty) return name;
     var result = name
@@ -342,148 +300,6 @@ class BookList {
     // 超长防御：正常书名不会超过 50 字，超长多为解析到整段文本。
     if (result.length > 80) result = result.substring(0, 80);
     return result;
-  }
-
-  /// 书名格式化：过滤分类导航/广告/品牌词，剥离方括号与分隔符。
-  /// 仅用于通用兜底解析（[_parseGenericBookList]）——该路径从任意 <a> 标签
-  /// 提取候选，必须激进过滤导航/品牌/分类词；规则路径请用
-  /// [formatBookNameLight]。
-  static String formatBookName(String name) {
-    if (name.isEmpty) return name;
-
-    // 过滤与当前分类名称相同的项
-    if (_currentCategoryName.isNotEmpty && name == _currentCategoryName) {
-      return '';
-    }
-
-    // 过滤与当前源名称相同的项
-    if (_currentSourceName.isNotEmpty && name == _currentSourceName) {
-      return '';
-    }
-
-    // 过滤全部分类名称
-    if (_allCategoryNames.contains(name)) {
-      return '';
-    }
-
-    // 过滤邮件地址
-    if (name.contains('@')) {
-      return '';
-    }
-
-    // 过滤 URL 格式文本
-    if (name.contains('http://') || name.contains('https://') || name.contains('www.')) {
-      return '';
-    }
-
-    // 过滤常见的非书籍内容
-    final nonBookPatterns = [
-      r'返回',
-      r'首页',
-      r'秒钟',
-      r'秒后',
-      r'正在跳转',
-      r'请稍候',
-      r'loading',
-      r'下载APP',
-      r'安装客户端',
-      // 页面功能/导航文字
-      r'足迹',
-      r'版本感想',
-      r'直达底部',
-      r'返回顶部',
-      r'回到顶部',
-      r'顶部',
-      r'底部',
-      r'回到首页',
-      r'返回首页',
-      // 章节标题模式（如"第 76 章 真理论"）
-      r'^第[零一二三四五六七八九十百千万0-9]+[章节话回]',
-      // 导航链接
-      r'^阅读$',
-      r'^目录$',
-      r'^加入书架',
-      r'^书架$',
-      r'^收藏本书',
-      r'^推荐本书',
-      r'^投推荐票',
-      r'^TXT下载',
-      r'^手机阅读',
-      // 导航入口和品牌名称
-      r'书库',
-      r'全本',
-      r'排行',
-      r'榜单',
-      r'热门',
-      r'推荐',
-      r'新书',
-      r'完结',
-      r'连载',
-      r'免费',
-      r'精品',
-      r'精选',
-      r'阅读历史',
-      r'我的书架',
-      r'我的收藏',
-      r'更多',
-      r'^完本$',
-      r'^更新$',
-      r'^分类$',
-      r'^搜索$',
-      r'^登录$',
-      r'^注册$',
-      r'^设置$',
-    ];
-
-    for (final pattern in nonBookPatterns) {
-      if (RegExp(pattern, caseSensitive: false).hasMatch(name)) {
-        return '';
-      }
-    }
-
-    // 过滤品牌名称：文本长度 <= 4 且包含品牌关键词
-    if (name.length <= 4) {
-      if (RegExp(r'漫画|动漫|书吧|书城|书屋|读书|文库|阅读|小说|看书').hasMatch(name)) {
-        return '';
-      }
-    }
-
-    // 过滤常见短分类词（如 玄幻、言情、都市 等分类导航标签）
-    if (name.length <= 4) {
-      if (RegExp(r'^玄幻$|^奇幻$|^武侠$|^仙侠$|^都市$|^现实$|^历史$|^军事$|^悬疑$|^游戏$|^体育$|^科幻$|^轻小说$|^言情$|^同人$|^短篇$|^漫画$|^动漫$|^绘本$|^读物$|^文学$|^青春$|^校园$|^甜宠$|^古言$|^宫斗$|^穿越$|^重生$|^修真$|^洪荒$|^种田$|^系统$|^快穿$|^耽美$|^百合$|^架空$|^职场$|^娱乐$|^明星$|^影视$|^经典$|^畅销$|^新书$|^热门$|^完结$|^连载$|^全本$|^免费$|^精品$|^精选$').hasMatch(name)) {
-        return '';
-      }
-    }
-
-    // 过滤 1-2 个字符的常见导航用汉字
-    if (name.length <= 2) {
-      const navChars = '读阅看书章节卷部篇集话回阅览';
-      if (name.length == 1 && navChars.contains(name)) {
-        return '';
-      }
-      if (name.length == 2) {
-        // 两个字符都是导航用单字也过滤
-        if (navChars.contains(name[0]) && navChars.contains(name[1])) {
-          return '';
-        }
-      }
-    }
-
-    // 过滤过短或过长的内容
-    if (name.length < 2 || name.length > 50) {
-      return '';
-    }
-
-    return name
-        // 去除各类方括号及其内容：【】、[]、（）()、{}、<>、《》
-        .replaceAll(
-          RegExp(r'[【\[（\(｛{<《][^】\]）\)｝}>》]*[】\]）\)｝}>》]'),
-          '',
-        )
-        // 去除开头/结尾的分隔符
-        .replaceAll(RegExp(r'^\s*[-_—–|/\\]+\s*'), '')
-        .replaceAll(RegExp(r'\s*[-_—–|/\\]+\s*$'), '')
-        .trim();
   }
 
   /// 作者名格式化：剥离"作者："前缀、首尾分隔符。
@@ -498,247 +314,6 @@ class BookList {
         .replaceAll(RegExp(r'^\s*[-_—–|/\\]+\s*'), '')
         .replaceAll(RegExp(r'\s*[-_—–|/\\]+\s*$'), '')
         .trim();
-  }
-
-  /// 通用书籍列表解析：当书源规则未配置或失败时，从 HTML <a> 标签提取候选。
-  static List<SearchBook> _parseGenericBookList(
-    String body,
-    XiaoshuoBookSource bookSource,
-    String baseUrl,
-  ) {
-    final document = html_parser.parse(body);
-    final books = <SearchBook>[];
-
-    final links = document.querySelectorAll('a[href]');
-    for (final a in links) {
-      final href = a.attributes['href'] ?? '';
-
-      // 1. 过滤空链接、锚点、javascript
-      if (href.isEmpty || href == '#' || href.startsWith('javascript:')) {
-        continue;
-      }
-
-      // 2. 过滤 URL 路径为 / 或空的链接（首页链接）
-      try {
-        final uri = Uri.parse(href.startsWith('http')
-            ? href
-            : Uri.parse(baseUrl).resolve(href).toString());
-        if (uri.path == '/' || uri.path.isEmpty) continue;
-      } catch (_) {}
-
-      final originalText = a.text.trim();
-
-      // 过滤邮件地址
-      if (originalText.contains('@')) continue;
-
-      // 过滤 URL 格式文本
-      if (originalText.contains('http://') ||
-          originalText.contains('https://') ||
-          originalText.contains('www.')) {
-        continue;
-      }
-
-      // 3. 过滤分页元素
-      if (RegExp(r'^\d+$').hasMatch(originalText)) continue;
-      if (originalText == '>>' ||
-          originalText == '<<' ||
-          originalText == '>' ||
-          originalText == '<') {
-        continue;
-      }
-      if (originalText.contains('下一页') ||
-          originalText.contains('上一页')) {
-        continue;
-      }
-
-      // 4. 使用 formatBookName 过滤（已包含分类名、源名称、导航关键词等过滤）
-      var text = formatBookName(originalText);
-      if (text.isEmpty) continue;
-
-      // 5. 使用 _isNonBookContent 进行更严格的过滤
-      if (_isNonBookContent(originalText)) continue;
-
-      // 优先从 <a> 内部查找 img 标签
-      var img = a.querySelector('img');
-
-      // 回退：如果 <a> 内没有 img，检查父元素中的 img（img 与 a 为兄弟节点的情况）
-      img ??= a.parent?.querySelector('img');
-
-      var cover = img?.attributes['src'] ??
-          img?.attributes['data-src'] ??
-          img?.attributes['data-original'] ??
-          img?.attributes['lazy-src'] ??
-          img?.attributes['data-lazy'] ??
-          img?.attributes['data-lazy-src'] ??
-          img?.attributes['original'] ??
-          '';
-
-      // 同时检查 srcset 属性（响应式图片）
-      if (cover.isEmpty) {
-        final srcset = img?.attributes['srcset'] ?? '';
-        if (srcset.isNotEmpty) {
-          // 取 srcset 中第一个 URL（格式："url1 1x, url2 2x"）
-          final firstSrc =
-              srcset.split(',').first.trim().split(' ').first.trim();
-          if (firstSrc.isNotEmpty) {
-            cover = firstSrc;
-          }
-        }
-      }
-
-      // 封面 URL 转换为绝对路径
-      if (cover.isNotEmpty) {
-        if (cover.startsWith('//')) {
-          cover = 'https:$cover';
-        } else if (!cover.startsWith('http')) {
-          cover = _getAbsoluteUrl(cover, baseUrl);
-        }
-      }
-
-      var link = href;
-      if (!link.startsWith('http')) {
-        link = _getAbsoluteUrl(link, baseUrl);
-      }
-
-      books.add(SearchBook(
-        bookUrl: link,
-        name: text,
-        coverUrl: cover,
-        bookSourceUrl: bookSource.bookSourceUrl,
-        bookSourceName: bookSource.bookSourceName,
-        type: bookSource.bookSourceType,
-      ));
-    }
-
-    return books;
-  }
-
-  /// 严格非书籍内容判定：用于通用解析路径的二次过滤。
-  static bool _isNonBookContent(String text) {
-    // 过滤与当前分类名称相同的项
-    if (_currentCategoryName.isNotEmpty && text == _currentCategoryName) {
-      return true;
-    }
-
-    // 过滤与当前源名称相同的项
-    if (_currentSourceName.isNotEmpty && text == _currentSourceName) {
-      return true;
-    }
-
-    // 过滤全部分类名称
-    if (_allCategoryNames.contains(text)) {
-      return true;
-    }
-
-    // 过滤邮件地址（包含 @ 符号）
-    if (text.contains('@')) {
-      return true;
-    }
-
-    // 过滤 URL 格式文本
-    if (text.contains('http://') ||
-        text.contains('https://') ||
-        text.contains('www.')) {
-      return true;
-    }
-
-    // 过滤包含跳转/导航关键词的内容
-    final nonBookPatterns = [
-      r'返回',
-      r'首页',
-      r'秒钟',
-      r'秒后',
-      r'正在跳转',
-      r'请稍候',
-      r'loading',
-      r'下载APP',
-      r'安装',
-      r'足迹',
-      r'版本感想',
-      r'直达底部',
-      r'返回顶部',
-      r'回到顶部',
-      r'顶部',
-      r'底部',
-      r'回到首页',
-      r'返回首页',
-      r'^阅读$',
-      r'^目录$',
-      r'^加入书架',
-      r'^书架$',
-      r'^收藏本书',
-      r'^推荐本书',
-      r'^投推荐票',
-      r'^TXT下载',
-      r'^手机阅读',
-      r'书库',
-      r'全本',
-      r'排行',
-      r'榜单',
-      r'热门',
-      r'推荐',
-      r'新书',
-      r'完结',
-      r'连载',
-      r'免费',
-      r'精品',
-      r'精选',
-      r'阅读历史',
-      r'我的书架',
-      r'我的收藏',
-      r'更多',
-      r'^Copyright',
-      r'^ICP',
-      r'^备案',
-      r'^第[零一二三四五六七八九十百千万0-9]+[章节话回]',
-    ];
-
-    for (final pattern in nonBookPatterns) {
-      if (RegExp(pattern, caseSensitive: false).hasMatch(text)) {
-        return true;
-      }
-    }
-
-    // 过滤品牌名称：文本长度 <= 4 且包含品牌关键词
-    if (text.length <= 4) {
-      if (RegExp(r'漫画|动漫|书吧|书城|书屋|读书|文库|阅读|小说|看书').hasMatch(text)) {
-        return true;
-      }
-    }
-
-    // 过滤常见短分类词（如 玄幻、言情、都市 等分类导航标签）
-    if (text.length <= 4) {
-      if (RegExp(r'^玄幻$|^奇幻$|^武侠$|^仙侠$|^都市$|^现实$|^历史$|^军事$|^悬疑$|^游戏$|^体育$|^科幻$|^轻小说$|^言情$|^武侠$|^同人$|^短篇$|^漫画$|^动漫$|^绘本$|^读物$|^文学$|^青春$|^校园$|^甜宠$|^古言$|^宫斗$|^穿越$|^重生$|^修真$|^洪荒$|^种田$|^系统$|^快穿$|^耽美$|^百合$|^架空$|^职场$|^娱乐$|^明星$|^影视$|^经典$|^畅销$|^新书$|^热门$|^完结$|^连载$|^全本$|^免费$|^精品$|^精选$').hasMatch(text)) {
-        return true;
-      }
-    }
-
-    // 过滤 1-2 个字符的常见导航用汉字
-    if (text.length <= 2) {
-      const navChars = '读阅看书章节卷部篇集话回阅览';
-      if (text.length == 1 && navChars.contains(text)) {
-        return true;
-      }
-      if (text.length == 2) {
-        if (navChars.contains(text[0]) && navChars.contains(text[1])) {
-          return true;
-        }
-      }
-    }
-
-    // 过滤纯数字、纯标点符号（但保留包含中文/英文的内容）
-    if (RegExp(r'^[\d\s\p{P}]+$', unicode: true).hasMatch(text)) {
-      if (!RegExp(r'[a-zA-Z\u4e00-\u9fff]').hasMatch(text)) {
-        return true;
-      }
-    }
-
-    // 过滤过短或过长的内容
-    if (text.length < 2 || text.length > 50) {
-      return true;
-    }
-
-    return false;
   }
 
   /// 判断页面是否为「登录墙」（服务端要求登录/验证码才能访问）。

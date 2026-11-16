@@ -172,7 +172,16 @@ bool _looksLikeKinds(String s) {
 /// 与 legado `evalJS(jsStr).toString()` 对齐：先取脚本自身的完成值
 /// （末尾表达式的值），无值再退回 `result` 变量。脚本以字符串返回时
 /// 原样使用（常见写法 `JSON.stringify(list)`），否则序列化为 JSON。
-String _evalExploreJsRaw(String jsCode, {Map<String, String>? infoMap}) {
+///
+/// [baseUrl] 对应 legado `BaseSource.evalJS` 的 `baseUrl = getKey()` 绑定
+/// （即书源 URL）。视频源的动态分类普遍写成
+/// `baseUrl + '/api.php/provide/vod/?ac=list'`，缺失时整个脚本
+/// ReferenceError、发现页零分类。
+String _evalExploreJsRaw(
+  String jsCode, {
+  Map<String, String>? infoMap,
+  String? baseUrl,
+}) {
   final ctx = ShuyuanSourceContext.current;
   final jsEngine = JsEngine.forSource(ctx?.sourceId);
   try {
@@ -184,9 +193,12 @@ String _evalExploreJsRaw(String jsCode, {Map<String, String>? infoMap}) {
         '  if (typeof __v === "string") return __v;\n'
         '  return JSON.stringify(__v);\n'
         '})()';
-    final bindings = infoMap == null
-        ? null
-        : <String, dynamic>{'infoMap': Map<String, String>.from(infoMap)};
+    final bindings = <String, dynamic>{
+      // legado 的 baseUrl 恒有定义（书源 getKey()），未提供时绑定空串，
+      // 让 `if (baseUrl)` 之类的脚本分支不因 ReferenceError 中断。
+      'baseUrl': baseUrl ?? '',
+      if (infoMap != null) 'infoMap': Map<String, String>.from(infoMap),
+    };
     return jsEngine.eval(wrapped, bindings: bindings).trim();
   } catch (_) {
     return '';
@@ -440,12 +452,15 @@ int _skipRegexJs(String src, int start) {
 }
 
 /// 提取整串 exploreUrl 的 JS 体（`@js:` 前缀 / `<js>...</js>` 包裹）。
+///
+/// 前缀与标签按 legado 口径忽略大小写（`startsWith("@js:", true)` /
+/// `startsWith("<js>", true)`），`@JS:` 同样按脚本执行。
 String? _extractWholeJsBody(String s) {
-  if (s.startsWith('@js:')) return s.substring(4);
-  if (s.startsWith('<js>') && s.contains('</js>')) {
-    final start = s.indexOf('<js>') + 4;
-    final end = s.lastIndexOf('</js>');
-    if (end > start) return s.substring(start, end);
+  final lower = s.toLowerCase();
+  if (lower.startsWith('@js:')) return s.substring(4);
+  if (lower.startsWith('<js>')) {
+    final end = lower.lastIndexOf('</js>');
+    if (end > 4) return s.substring(4, end);
   }
   return null;
 }
@@ -458,23 +473,26 @@ String? _extractWholeJsBody(String s) {
 /// - 文本：`名称::URL` 以 `&&` / 换行分隔（可混入分段 JS）。
 ///
 /// JS 求值时以 [infoMap] 作为全局绑定（toggle/select 当前值可参与 URL
-/// 拼装）。JSON 声明非法时抛出 [FormatException]，由调用方展示为错误项。
+/// 拼装），[baseUrl] 对齐 legado `BaseSource.evalJS` 的 `baseUrl` 绑定。
+/// JSON 声明非法时抛出 [FormatException]，由调用方展示为错误项。
 List<ExploreKind> parseExploreKinds(
   String exploreUrl, {
   Map<String, String>? infoMap,
+  String? baseUrl,
 }) {
   var ruleStr = exploreUrl.trim();
   if (ruleStr.isEmpty) return const <ExploreKind>[];
   final jsBody = _extractWholeJsBody(ruleStr);
   if (jsBody != null) {
-    final raw = _evalExploreJsRaw(jsBody, infoMap: infoMap);
+    final raw =
+        _evalExploreJsRaw(jsBody, infoMap: infoMap, baseUrl: baseUrl);
     if (raw.isEmpty || raw == '[]') return const <ExploreKind>[];
     ruleStr = raw.trim();
   }
   if (ruleStr.startsWith('[')) {
     return _parseKindsJson(ruleStr);
   }
-  return _parseKindsText(ruleStr, infoMap: infoMap);
+  return _parseKindsText(ruleStr, infoMap: infoMap, baseUrl: baseUrl);
 }
 
 List<ExploreKind> _parseKindsJson(String raw) {
@@ -497,6 +515,7 @@ List<ExploreKind> _parseKindsJson(String raw) {
 List<ExploreKind> _parseKindsText(
   String raw, {
   Map<String, String>? infoMap,
+  String? baseUrl,
 }) {
   final kinds = <ExploreKind>[];
   for (final segment in raw.split(RegExp(r'&&|\n'))) {
@@ -510,9 +529,11 @@ List<ExploreKind> _parseKindsText(
 
     final segJs = _extractWholeJsBody(trimmed);
     if (segJs != null) {
-      final segResult = _evalExploreJsRaw(segJs, infoMap: infoMap);
+      final segResult =
+          _evalExploreJsRaw(segJs, infoMap: infoMap, baseUrl: baseUrl);
       if (segResult.isNotEmpty) {
-        kinds.addAll(parseExploreKinds(segResult, infoMap: infoMap));
+        kinds.addAll(
+            parseExploreKinds(segResult, infoMap: infoMap, baseUrl: baseUrl));
       }
       continue;
     }

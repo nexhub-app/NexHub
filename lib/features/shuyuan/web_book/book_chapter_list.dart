@@ -18,18 +18,42 @@ class BookChapterList {
     return _jsEngineHolder!;
   }
 
+  /// [nextUrlsOut] 非空时回填本页 `ruleToc.nextTocUrl` 解析出的后续目录页
+  /// 绝对 URL（对齐 legado：先取下一页列表，再解析章节；首页/串行跟随页
+  /// 会继续提取，并发模式传 [getNextUrl]=false 不提取）。
   static List<XiaoshuoBookChapter> analyzeChapterList({
     required XiaoshuoBookSource bookSource,
     required XiaoshuoBook book,
     required String baseUrl,
     required String? redirectUrl,
     required String body,
+    List<String>? nextUrlsOut,
+    bool getNextUrl = true,
   }) {
     final tocRule = bookSource.getTocRule();
     final analyzeRule = AnalyzeRule(book: book)
       ..setContent(body, redirectUrl ?? baseUrl)
       ..setBaseUrl(baseUrl)
       ..setRedirectUrl(redirectUrl ?? baseUrl);
+
+    final nextTocRule = tocRule.nextTocUrl;
+    if (getNextUrl &&
+        nextUrlsOut != null &&
+        nextTocRule != null &&
+        nextTocRule.isNotEmpty) {
+      try {
+        final redirect = redirectUrl ?? baseUrl;
+        for (final raw in analyzeRule.getStringList(nextTocRule, isUrl: true)) {
+          final url = raw.trim();
+          if (url.isEmpty || url == redirect || url == baseUrl) continue;
+          final lower = url.toLowerCase();
+          if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
+            continue;
+          }
+          if (!nextUrlsOut.contains(url)) nextUrlsOut.add(url);
+        }
+      } catch (_) {}
+    }
 
     var chapters = <XiaoshuoBookChapter>[];
     // URL 去重：避免目录页中"最新章节预览"等栏与正式列表重复收录同一章节，
