@@ -147,6 +147,12 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
   /// 源作者发布新公告（updatedAt 变化）时 key 不同，仍会弹出。
   final Set<String> _dismissedAnnouncements = <String>{};
   static const String _kDismissedAnnouncements = 'announcement_dismissed_v1';
+
+  /// 书源分类页空页自动连翻上限与间隔（legado `ExploreShowViewModel`
+  /// `MAX_AUTO_PAGES` / `AUTO_PAGE_DELAY_MS` 对等）。
+  static const int _categoryAutoPageLimit = 3;
+  static const Duration _categoryAutoPageDelay = Duration(milliseconds: 500);
+
   late TabController _tabController;
   final List<CategoryEntry> _categories = <CategoryEntry>[];
 
@@ -913,6 +919,42 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
     );
   }
 
+  /// 单次分类页抓取 + 首屏冷启动保护。
+  ///
+  /// 首屏(page==1 且 reset) JS 引擎首调不稳 / HttpFetcher 节流未就绪时，
+  /// 静默重试最多 2 次（800ms、1500ms），重试期间不写 error，避免向用户
+  /// 弹错误提示；校验类错误（Cloudflare 等）不在此重试，交由
+  /// [VerificationNavigator] 处理。首屏偶发返回空列表时再静默重试一次。
+  Future<List<MediaItem>> _fetchCategoryWithColdStartRetry(
+    _CategoryTabState state, {
+    required bool coldStart,
+  }) async {
+    List<MediaItem> list;
+    int attempts = 0;
+    const maxAttempts = 3;
+    while (true) {
+      try {
+        list = await _fetchCategoryOnce(state);
+        break;
+      } on Object catch (e) {
+        final verifyErr = VerificationNavigator.isVerificationError(e);
+        if (coldStart && !verifyErr && attempts < maxAttempts - 1) {
+          attempts++;
+          await Future.delayed(
+              Duration(milliseconds: attempts == 1 ? 800 : 1500));
+          continue;
+        }
+        rethrow;
+      }
+    }
+    // 首屏冷启动偶发返回空列表（引擎/节流未就绪），再静默重试一次。
+    if (coldStart && state.page == 1 && list.isEmpty) {
+      await Future.delayed(const Duration(milliseconds: 800));
+      list = await _fetchCategoryOnce(state);
+    }
+    return list;
+  }
+
   Future<void> _loadCategoryPage(
     _CategoryTabState state, {
     bool reset = false,
@@ -922,44 +964,52 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
       state.page = 1;
       state.items.clear();
       state.hasMore = true;
+      state.autoPageCount = 0;
       state.error = null;
     }
     setState(() => state.loading = true);
     try {
-      List<MediaItem> list;
-      // 首屏(page==1 且 reset)冷启动保护：JS 引擎首调不稳 / HttpFetcher 节流未就绪时，
-      // 静默重试最多 2 次（800ms、1500ms）。重试期间不写 error，避免向用户弹错误提示；
-      // 校验类错误（Cloudflare 等）不在此重试，交由下方 VerificationNavigator 处理。
-      int attempts = 0;
-      const maxAttempts = 3;
+      // 书源发现分类对齐 legado ExploreShowViewModel：有新增条目即停；
+      // 空页/全重复页自动顺延，最多 [_categoryAutoPageLimit] 页后视为到底。
+      // 非书源维持原行为（空页即到底，不做自动请求）。
+      final shuyuanPaging = _isShuyuanSource;
       while (true) {
-        try {
-          list = await _fetchCategoryOnce(state);
-          break;
-        } on Object catch (e) {
-          final coldStart = reset && state.page == 1;
-          final verifyErr = VerificationNavigator.isVerificationError(e);
-          if (coldStart && !verifyErr && attempts < maxAttempts - 1) {
-            attempts++;
-            await Future.delayed(
-                Duration(milliseconds: attempts == 1 ? 800 : 1500));
-            continue;
+        final list = await _fetchCategoryWithColdStartRetry(
+          state,
+          coldStart: reset && state.page == 1,
+        );
+        if (shuyuanPaging) {
+          final added = appendUniqueCategoryItems(state.items, list);
+          if (added > 0) {
+            state.autoPageCount = 0;
+            state.hasMore = true;
+            state.page++;
+            state.loaded = true;
+            state.error = null;
+            state.extractedUrl = null;
+            break;
           }
-          rethrow;
+          state.page++;
+          state.autoPageCount++;
+          if (state.autoPageCount >= _categoryAutoPageLimit) {
+            state.hasMore = false;
+            state.loaded = true;
+            state.error = null;
+            state.extractedUrl = null;
+            break;
+          }
+          await Future<void>.delayed(_categoryAutoPageDelay);
+          if (!mounted) break;
+          continue;
         }
+        state.items.addAll(list);
+        state.hasMore = list.isNotEmpty;
+        state.page++;
+        state.loaded = true;
+        state.error = null;
+        state.extractedUrl = null;
+        break;
       }
-      // 首屏冷启动偶发返回空列表（引擎/节流未就绪），再静默重试一次。
-      if (reset && state.page == 1 && list.isEmpty) {
-        await Future.delayed(const Duration(milliseconds: 800));
-        list = await _fetchCategoryOnce(state);
-      }
-      if (reset) state.items.clear();
-      state.items.addAll(list);
-      state.hasMore = list.isNotEmpty;
-      state.page++;
-      state.loaded = true;
-      state.error = null;
-      state.extractedUrl = null;
     } on Object catch (e) {
       if (!mounted) return;
       final handled = await VerificationNavigator.handleVerificationAndRetry(
@@ -974,10 +1024,14 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
             renderedHtml: state.renderedHtml,
             vars: _categoryPageVars(_source!, state),
           );
-          if (reset) state.items.clear();
-          state.items.addAll(list);
+          if (_isShuyuanSource) {
+            appendUniqueCategoryItems(state.items, list);
+          } else {
+            state.items.addAll(list);
+          }
           state.hasMore = list.isNotEmpty;
           state.page++;
+          state.autoPageCount = 0;
           state.loaded = true;
           state.extractedUrl = null;
           state.renderedHtml = null;
@@ -2822,6 +2876,23 @@ class _Handle extends StatelessWidget {
   }
 }
 
+/// 追加分类列表条目并返回新增数量（legado `ExploreShowViewModel.fetchPage`：
+/// 跨页按 bookUrl 去重，页内重复只保留首条）。
+///
+/// 书源映射以 `MediaItem.id = bookUrl`，与 legado `SearchBook.bookUrl` 同口径；
+/// id 为空的空壳条目退回 [MediaItemHeroKey.heroKey] 的稳定兜底，避免全部撞键。
+@visibleForTesting
+int appendUniqueCategoryItems(List<MediaItem> target, List<MediaItem> incoming) {
+  final seen = target.map((e) => e.heroKey()).toSet();
+  var added = 0;
+  for (final item in incoming) {
+    if (!seen.add(item.heroKey())) continue;
+    target.add(item);
+    added++;
+  }
+  return added;
+}
+
 /// 每个动态分类 Tab 的独立状态。
 class _CategoryTabState {
   _CategoryTabState({required this.categoryId});
@@ -2833,6 +2904,10 @@ class _CategoryTabState {
   // ignore: prefer_function_declarations_over_variables
   late VoidCallback scrollListener = () {};
   int page = 1;
+
+  /// 连续「无新增条目」的页数（legado `autoPageCount`）：拿到新条目即清零，
+  /// 达到上限后视为到底。
+  int autoPageCount = 0;
   bool loading = false;
   bool hasMore = true;
 
