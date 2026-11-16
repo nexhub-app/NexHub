@@ -31,6 +31,7 @@ class JsEngine {
   /// 已推送进 JS 全局的重放缓存键（增量同步用，避免整表重灌）。
   final Set<String> _syncedAjaxKeys = <String>{};
   final Set<String> _syncedAjaxBytesKeys = <String>{};
+  final Set<String> _syncedAjaxMetaKeys = <String>{};
   final Set<String> _syncedWebviewKeys = <String>{};
 
   // ── 按源复用 ──
@@ -139,6 +140,11 @@ class JsEngine {
     _pushDeltas('__ajaxBytesCache', cache, _syncedAjaxBytesKeys);
   }
 
+  /// 响应元数据（状态码/响应头/最终 URL）同样增量推送。
+  void _pushAjaxMetaDeltas(Map<String, String> cache) {
+    _pushDeltas('__ajaxMetaCache', cache, _syncedAjaxMetaKeys);
+  }
+
   /// `java.webView` 的重放结果（整页 HTML）同样增量推送。
   void _pushWebviewDeltas(Map<String, String> cache) {
     _pushDeltas('__webviewCache', cache, _syncedWebviewKeys);
@@ -172,12 +178,14 @@ class JsEngine {
   void resetReplayCaches() {
     _syncedAjaxKeys.clear();
     _syncedAjaxBytesKeys.clear();
+    _syncedAjaxMetaKeys.clear();
     _syncedWebviewKeys.clear();
     if (_runtime == null) return;
     try {
       _runtime!.evaluate(
           'globalThis.__ajaxCache = Object.create(null);'
           'globalThis.__ajaxBytesCache = Object.create(null);'
+          'globalThis.__ajaxMetaCache = Object.create(null);'
           'globalThis.__webviewCache = Object.create(null);');
     } catch (_) {}
   }
@@ -293,6 +301,7 @@ class JsEngine {
       // ajax / webview 重放缓存增量推送（不进 ctx 种子，避免每轮整表序列化）。
       _pushAjaxDeltas(activeCtx.ajaxCache);
       _pushAjaxBytesDeltas(activeCtx.ajaxBytesCache);
+      _pushAjaxMetaDeltas(activeCtx.ajaxMetaCache);
       _pushWebviewDeltas(activeCtx.webviewCache);
       // jsLib 预执行（按源，同引擎同内容只执行一次）：书源自定义函数/
       // 变量对所有后续脚本可见（legado SharedJsScope 等效）。
@@ -514,6 +523,7 @@ class JsEngine {
     _jsLibApplied = null;
     _syncedAjaxKeys.clear();
     _syncedAjaxBytesKeys.clear();
+    _syncedAjaxMetaKeys.clear();
     _syncedWebviewKeys.clear();
   }
 }

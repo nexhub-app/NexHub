@@ -112,4 +112,34 @@ void main() {
       expect(sw.elapsedMilliseconds, lessThan(50));
     });
   });
+
+  group('AnalyzeUrl URL 选项 headers / followRedirects / HEAD', () {
+    test('headers 字符串（单引号伪 JSON）并入 headerMap', () {
+      final au = AnalyzeUrl(
+        url: "http://x.com/s,{\"method\":\"POST\","
+            "\"headers\":\"{Referer:'https://r.example'}\","
+            "\"body\":\"kw=1\"}",
+      );
+      expect(au.headerMap['Referer'], 'https://r.example');
+      expect(au.method, 'POST');
+      expect(au.body, 'kw=1');
+    });
+
+    test('headers 对象并入 headerMap', () {
+      final au = AnalyzeUrl(url: 'http://x.com/s,{"headers":{"X-A":"1"}}');
+      expect(au.headerMap, {'X-A': '1'});
+    });
+
+    test('followRedirects:false 解析（java.get/post/head 的 Jsoup 口径）', () {
+      final au = AnalyzeUrl(url: 'http://x.com/s,{"followRedirects":false}');
+      expect(au.followRedirects, false);
+    });
+
+    test('method HEAD 解析', () {
+      final au = AnalyzeUrl(
+          url: 'http://x.com/s,{"method":"HEAD","followRedirects":false}');
+      expect(au.method, 'HEAD');
+      expect(au.followRedirects, false);
+    });
+  });
 }

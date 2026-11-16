@@ -80,12 +80,88 @@ void main() {
     expect(decoded['code'], 200);
   });
 
-  test('post 记录组合键（url||POST||body）', () {
+  test('post 记录组合键（url||POST||body），空 body 不降级为 GET', () {
     final ctx = ShuyuanSourceContext('src_1');
     ShuyuanSourceContext.run(ctx, () {
       final e = JsEngine();
       e.eval("java.post('https://x.com/p','a=1&b=2')");
-      expect(ctx.ajaxPending, ['https://x.com/p||POST||a=1&b=2']);
+      // java.post 走 legado Jsoup 口径：不跟随重定向（302 Location 是脚本
+      // 要的答案），选项串在 POST 标记之前。
+      expect(ctx.ajaxPending,
+          ['https://x.com/p,{"followRedirects":false}||POST||a=1&b=2']);
+      e.eval("java.post('https://x.com/p2','',{})");
+      expect(ctx.ajaxPending.last,
+          'https://x.com/p2,{"followRedirects":false}||POST||');
+    });
+  });
+
+  test('connect 的 header 参数（JSON 字符串）合进 URL 选项', () {
+    final ctx = ShuyuanSourceContext('src_1');
+    ShuyuanSourceContext.run(ctx, () {
+      final e = JsEngine();
+      e.eval("java.connect('https://x.com/a', "
+          "JSON.stringify({'Referer':'https://r.example'}))");
+      expect(ctx.ajaxPending,
+          ['https://x.com/a,{"headers":{"Referer":"https://r.example"}}']);
+    });
+  });
+
+  test('header 参数与 URL 选项 headers 合并（选项优先，legado 语义）', () {
+    final ctx = ShuyuanSourceContext('src_1');
+    ShuyuanSourceContext.run(ctx, () {
+      final e = JsEngine();
+      e.eval("java.connect('https://x.com/a,{\"headers\":{\"UA\":\"opt\"}}', "
+          "JSON.stringify({UA:'arg',Ref:'r'}))");
+      final key = ctx.ajaxPending.single;
+      final opts = jsonDecode(key.substring(key.indexOf(',{') + 1)) as Map;
+      expect(opts['headers'], {'UA': 'opt', 'Ref': 'r'});
+    });
+  });
+
+  test('get(url, headers) 发送 headers 且不带重定向', () {
+    final ctx = ShuyuanSourceContext('src_1');
+    ShuyuanSourceContext.run(ctx, () {
+      final e = JsEngine();
+      e.eval("java.get('https://x.com/g', {'X-A':'1'})");
+      final key = ctx.ajaxPending.single;
+      final opts = jsonDecode(key.substring(key.indexOf(',{') + 1)) as Map;
+      expect(opts['headers'], {'X-A': '1'});
+      expect(opts['followRedirects'], false);
+    });
+  });
+
+  test('响应元数据重放：code/header/headers/cookies/url/raw', () {
+    final ctx = ShuyuanSourceContext('src_1')
+      ..ajaxCache['https://x.com/m'] = 'BODY'
+      ..ajaxMetaCache['https://x.com/m'] = jsonEncode({
+        'code': 302,
+        'url': 'https://x.com/final',
+        'headers': {
+          'Location': ['https://x.com/next'],
+          'Set-Cookie': ['sid=abc; Path=/', 'uid=7; Path=/'],
+        },
+      });
+    ShuyuanSourceContext.run(ctx, () {
+      final e = JsEngine();
+      expect(e.eval("java.connect('https://x.com/m').code()"), '302');
+      expect(e.eval("java.connect('https://x.com/m').header('Location')"),
+          'https://x.com/next');
+      expect(e.eval("java.connect('https://x.com/m').headers().get('location')"),
+          'https://x.com/next');
+      expect(e.eval("java.connect('https://x.com/m').url()"),
+          'https://x.com/final');
+      expect(e.eval("java.connect('https://x.com/m').raw().request().url()"),
+          'https://x.com/final');
+      expect(e.eval("String(java.connect('https://x.com/m').cookies())"),
+          '{sid=abc, uid=7}');
+    });
+  });
+
+  test('StrResponse.body 属性式读取（String(res.body)）取正文', () {
+    final ctx = ShuyuanSourceContext('src_1')..ajaxCache['https://x.com/bp'] = 'TXT';
+    ShuyuanSourceContext.run(ctx, () {
+      final e = JsEngine();
+      expect(e.eval("String(java.connect('https://x.com/bp').body)"), 'TXT');
     });
   });
 

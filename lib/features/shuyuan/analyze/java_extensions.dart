@@ -309,6 +309,7 @@ const String sourceContextJsPrelude = r'''
   // 随 ctx 走，只能整表重灌（长目录 O(n²)）。
   global.__ajaxCache = global.__ajaxCache || Object.create(null);
   global.__ajaxBytesCache = global.__ajaxBytesCache || Object.create(null);
+  global.__ajaxMetaCache = global.__ajaxMetaCache || Object.create(null);
   // base64 → 字节数组（有符号口径，与 java.base64DecodeToByteArray 一致）。
   var __syB64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   var __syB64Rev = Object.create(null);
@@ -329,6 +330,196 @@ const String sourceContextJsPrelude = r'''
     return out;
   }
   global.__webviewCache = global.__webviewCache || Object.create(null);
+
+  // ── 响应对象与请求头选项（legado StrResponse / Jsoup Response 口径） ──
+  // 同步沙箱里响应元数据（状态码/响应头/最终 URL/Set-Cookie）只能由宿主
+  // settle 抓取时记录、经 __ajaxMetaCache 增量重放。脚本侧的高频用法：
+  // `java.post(url, body, head).header("Location")`（搜索 302 跳转）、
+  // `java.post(...).cookies()`（登录 Set-Cookie）、
+  // `java.connect(key).raw().request().url()`（重定向后基址发现）。
+  function syMetaOf(key) {
+    var m = global.__ajaxMetaCache && global.__ajaxMetaCache[key];
+    if (m == null) return null;
+    try { return typeof m === 'string' ? JSON.parse(m) : m; } catch (e) { return null; }
+  }
+  function syHeaderGet(headers, name) {
+    if (!headers) return '';
+    var lower = String(name == null ? '' : name).toLowerCase();
+    for (var k in headers) {
+      if (String(k).toLowerCase() !== lower) continue;
+      var v = headers[k];
+      if (v && typeof v === 'object' && v.length != null) {
+        return v.length ? String(v[0]) : '';
+      }
+      return String(v);
+    }
+    return '';
+  }
+  // headers 入参归一：Map 对象或 JSON 字符串（legado connect 的 header 参数
+  // 是字符串；社区源也有手写单引号伪 JSON，正则兜底取值）。
+  function syParseHeaders(h) {
+    if (h == null) return null;
+    if (typeof h === 'string') {
+      var s = h.trim();
+      if (!s) return null;
+      try {
+        var o = JSON.parse(s);
+        if (o && typeof o === 'object') return o;
+      } catch (e) {}
+      var out = {}, re = /([A-Za-z0-9_\-]+)\s*:\s*(?:'([^']*)'|"([^"]*)")/g, m;
+      while ((m = re.exec(s))) out[m[1]] = m[2] != null ? m[2] : m[3];
+      return Object.keys(out).length ? out : null;
+    }
+    if (typeof h === 'object') {
+      var keys = Object.keys(h);
+      if (!keys.length) return null;
+      var copy = {};
+      for (var i = 0; i < keys.length; i++) copy[keys[i]] = String(h[keys[i]]);
+      return copy;
+    }
+    return null;
+  }
+  // 把 headers/额外选项合进 URL 的 `,{...}` 选项串（legado 语义：URL 选项
+  // 里的 headers 在 connect 的 header 参数之后写入 → 选项优先）。
+  function syWithHeaders(url, headers, extra) {
+    var u = String(url == null ? '' : url);
+    var h = syParseHeaders(headers);
+    if (!h && !extra) return u;
+    var optIdx = u.indexOf(',{');
+    var opts = null;
+    if (optIdx >= 0) {
+      try { opts = JSON.parse(u.substring(optIdx + 1)); } catch (e) { opts = null; }
+      if (!opts || typeof opts !== 'object') return u; // 选项串不规范：保持原样
+    }
+    if (!opts) opts = {};
+    if (h) {
+      var merged = {}, k;
+      for (k in h) merged[k] = h[k];
+      var oh = opts.headers;
+      if (typeof oh === 'string') oh = syParseHeaders(oh);
+      if (oh && typeof oh === 'object') {
+        for (k in oh) merged[k] = String(oh[k]);
+      }
+      opts.headers = merged;
+    }
+    if (extra) {
+      for (var ek in extra) opts[ek] = extra[ek];
+    }
+    var base = optIdx >= 0 ? u.substring(0, optIdx) : u;
+    return base + ',' + JSON.stringify(opts);
+  }
+  // Jsoup/StrResponse 的 headers()：Map 形态 + Java Map 的 get()，
+  // 多值头（set-cookie）取第一条。
+  function syHeadersMap(headers) {
+    var m = {};
+    if (headers && typeof headers === 'object') {
+      for (var k in headers) {
+        var v = headers[k];
+        if (v && typeof v === 'object' && v.length != null) {
+          m[k] = v.length ? String(v[0]) : '';
+        } else {
+          m[k] = String(v);
+        }
+      }
+    }
+    Object.defineProperty(m, 'get', {
+      value: function (name) { return syHeaderGet(headers, name); },
+      enumerable: false,
+    });
+    return m;
+  }
+  // Jsoup Response.cookies()：返回 Java Map 形态（脚本普遍 `String(ck)` 后
+  // 用正则取 `{a=b, c=d}`），同时提供 get()。
+  function syCookiesOf(headers) {
+    var m = {};
+    var list = headers && (headers['set-cookie'] || headers['Set-Cookie']);
+    if (typeof list === 'string') list = [list];
+    if (list && list.length != null) {
+      for (var i = 0; i < list.length; i++) {
+        var seg = String(list[i]).split(';')[0];
+        var eq = seg.indexOf('=');
+        if (eq > 0) m[seg.substring(0, eq).trim()] = seg.substring(eq + 1).trim();
+      }
+    }
+    Object.defineProperty(m, 'get', {
+      value: function (name) {
+        if (m[name] != null) return m[name];
+        var lower = String(name).toLowerCase();
+        for (var kk in m) if (kk.toLowerCase() === lower) return m[kk];
+        return null;
+      },
+      enumerable: false,
+    });
+    Object.defineProperty(m, 'toString', {
+      value: function () {
+        var parts = [];
+        for (var kk in m) parts.push(kk + '=' + m[kk]);
+        return '{' + parts.join(', ') + '}';
+      },
+      enumerable: false,
+    });
+    return m;
+  }
+  function syMethodOf(key) {
+    var i = key.indexOf(',{');
+    if (i >= 0) {
+      try {
+        var o = JSON.parse(key.substring(i + 1));
+        if (o && o.method) return String(o.method).toUpperCase();
+      } catch (e) {}
+    }
+    return key.indexOf('||POST||') >= 0 ? 'POST' : 'GET';
+  }
+  // java.connect/get/post/head 的统一返回对象：StrResponse 与 Jsoup Response
+  // 的超集（body()/code()/headers()/header()/cookies()/url()/raw()…）。
+  function syResp(key, bodyText) {
+    var meta = syMetaOf(key);
+    var code = meta && meta.code != null ? Number(meta.code)
+      : (bodyText ? 200 : 0);
+    var finalUrl = meta && meta.url ? String(meta.url) : '';
+    var headers = (meta && meta.headers) || {};
+    var resp = {
+      body: function () { return bodyText; },
+      bodyAsBytes: function () {
+        var c = global.__ajaxBytesCache;
+        var b64 = c && c[key];
+        if (b64 == null) {
+          syOp('ajaxBytes', key, '');
+          return [];
+        }
+        return syB64ToBytes(b64);
+      },
+      code: function () { return code; },
+      statusCode: function () { return code; },
+      message: function () { return code >= 200 && code < 300 ? 'OK' : String(code); },
+      statusMessage: function () { return code >= 200 && code < 300 ? 'OK' : ''; },
+      headers: function () { return syHeadersMap(headers); },
+      header: function (name) { return syHeaderGet(headers, name); },
+      cookies: function () { return syCookiesOf(headers); },
+      url: function () { return finalUrl; },
+      isSuccessful: function () { return code >= 200 && code < 300; },
+      method: function () { return syMethodOf(key); },
+      charset: function () { return 'UTF-8'; },
+      contentType: function () { return syHeaderGet(headers, 'content-type'); },
+      raw: function () {
+        return {
+          request: function () {
+            return { url: function () { return finalUrl; } };
+          },
+          code: function () { return code; },
+          headers: function () { return syHeadersMap(headers); },
+        };
+      },
+    };
+    // legado StrResponse 同时暴露 body 属性与 body() 方法；JS 无法同名共存，
+    // 用可调用值 + toString/valueOf 让 `String(res.body)` 也拿到正文。
+    try {
+      resp.body.toString = function () { return bodyText; };
+      resp.body.valueOf = function () { return bodyText; };
+    } catch (e) {}
+    return resp;
+  }
+
   if (global.java) {
     global.java.__ajaxReq = function (url) {
       var key = String(url == null ? '' : url);
@@ -346,45 +537,49 @@ const String sourceContextJsPrelude = r'''
     global.java.ajaxAll = function (urlList, skipRateLimit) {
       var arr = urlList;
       if (typeof urlList === 'string') arr = [urlList];
-      var mk = function (b) {
-        return { body: function () { return b; },
-          code: function () { return b ? 200 : 0; },
-          headers: function () { return {}; } };
-      };
       var out = [];
       for (var i = 0; arr && i < arr.length; i++) {
-        out.push(mk(global.java.__ajaxReq(arr[i])));
+        out.push(syResp(arr[i], global.java.__ajaxReq(arr[i])));
       }
       return out;
     };
     global.java.connect = function (urlStr, header, callTimeout) {
-      var body = global.java.__ajaxReq(urlStr);
-      return { body: function () { return body; },
-        code: function () { return body ? 200 : 0; },
-        headers: function () { return {}; },
-        bodyBytes: function () { return String(body || '').split('').map(function (c) { return c.charCodeAt(0) & 0xff; }) } };
+      var key = syWithHeaders(urlStr, header, null);
+      return syResp(key, global.java.__ajaxReq(key));
     };
     // get 分派（legado 两个重载）：
-    // - 2 参及以上 → HTTP GET（JsExtensions.get(url, headers)）；
+    // - 2 参及以上 → HTTP GET（JsExtensions.get(url, headers)，Jsoup 口径：
+    //   不跟随重定向、headers 是 Map）；
     // - 1 参 → **变量优先**，取不到且形如 URL 才发请求。
     // 变量优先很关键：`java.get('bookUrl')` 的值本身就是 URL，按「看起来
     // 像 URL 就发请求」会把它误当接口（旧逻辑即如此）。
     global.java.get = function (a, b, c) {
       if (arguments.length >= 2) {
-        return global.java.connect(a);
+        var key = syWithHeaders(a, b, { followRedirects: false });
+        return syResp(key, global.java.__ajaxReq(key));
       }
       var s = String(a == null ? '' : a);
       var v = global.__javaVars;
       if (v && v[s] != null) return String(v[s]);
-      if (/^https?:\/\//i.test(s)) return global.java.connect(s);
+      if (/^https?:\/\//i.test(s)) {
+        var key2 = syWithHeaders(s, null, { followRedirects: false });
+        return syResp(key2, global.java.__ajaxReq(key2));
+      }
       return '';
     };
-    // POST 记录组合键 url||POST||body（宿主 settle 拆分后组装选项串）。
+    // POST 记录组合键 url||POST||body（宿主 settle 拆分后组装选项串；
+    // 选项串在标记之前，headers/followRedirects 随 URL 一起保留）。
+    // legado Jsoup requestBody 语义：空 body 也是 POST，不降级为 GET。
     global.java.post = function (urlStr, bodyStr, headers, timeout) {
-      return global.java.connect(urlStr + (bodyStr ? '||POST||' + bodyStr : ''));
+      var keyUrl = syWithHeaders(urlStr, headers, { followRedirects: false });
+      var b = bodyStr == null ? '' : String(bodyStr);
+      var key = keyUrl + '||POST||' + b;
+      return syResp(key, global.java.__ajaxReq(key));
     };
     global.java.head = function (urlStr, headers, timeout) {
-      return global.java.connect(urlStr);
+      var key = syWithHeaders(urlStr, headers,
+          { followRedirects: false, method: 'HEAD' });
+      return syResp(key, global.java.__ajaxReq(key));
     };
     global.java.getStrResponse = function (urlStr) {
       return global.java.connect(urlStr);
@@ -452,26 +647,7 @@ const String sourceContextJsPrelude = r'''
                 var key = isPost && form
                     ? finalUrl + '||POST||' + form
                     : finalUrl;
-                var bodyText = global.java.__ajaxReq(key);
-                var code = bodyText ? 200 : 0;
-                return {
-                  body: function () { return bodyText; },
-                  bodyAsBytes: function () {
-                    var c = global.__ajaxBytesCache;
-                    var b64 = c && c[key];
-                    if (b64 == null) {
-                      syOp('ajaxBytes', key, '');
-                      return [];
-                    }
-                    return syB64ToBytes(b64);
-                  },
-                  code: function () { return code; },
-                  statusCode: function () { return code; },
-                  statusMessage: function () { return code === 200 ? 'OK' : ''; },
-                  headers: function () { return {}; },
-                  contentType: function () { return ''; },
-                  charset: function () { return 'UTF-8'; },
-                };
+                return syResp(key, global.java.__ajaxReq(key));
               },
             };
             return req;

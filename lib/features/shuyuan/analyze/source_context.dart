@@ -108,6 +108,12 @@ class ShuyuanSourceContext {
   final Map<String, String> ajaxBytesCache = <String, String>{};
   final List<String> ajaxBytesPending = <String>[];
 
+  /// 响应元数据重放缓存：请求键 → `{code, url, headers}`（JSON）。
+  /// `java.connect/get/post/head` 返回对象的 `code()/headers()/header()`/
+  /// `cookies()`/`url()` 及 `.raw().request().url()` 都从它取值；与
+  /// [ajaxCache] 同款增量推送，不进种子。
+  final Map<String, String> ajaxMetaCache = <String, String>{};
+
   /// 发现页选项 action 请求宿主打开浏览器（java.startBrowser/openUrl）。
   final List<Map<String, String>> kindBrowserOpens = <Map<String, String>>[];
 
@@ -149,6 +155,7 @@ class ShuyuanSourceContext {
     ajaxPending.clear();
     ajaxBytesCache.clear();
     ajaxBytesPending.clear();
+    ajaxMetaCache.clear();
     webviewCache.clear();
     webviewPending.clear();
     webviewArgs.clear();
@@ -514,9 +521,19 @@ class ShuyuanSourceContext {
               Uint8List.fromList(utf8.encode(resp));
           ctx.ajaxBytesCache[key] = base64Encode(bytes);
         }
+        ctx.ajaxMetaCache[key] = jsonEncode(<String, dynamic>{
+          'code': analyzeUrl.lastStatusCode ?? 200,
+          'url': analyzeUrl.lastFinalUrl ?? analyzeUrl.url,
+          'headers': analyzeUrl.lastResponseHeaders ?? const <String, List<String>>{},
+        });
       } catch (_) {
         if (wantBody) ctx.ajaxCache[key] = '';
         if (wantBytes) ctx.ajaxBytesCache[key] = '';
+        ctx.ajaxMetaCache[key] = jsonEncode(<String, dynamic>{
+          'code': 0,
+          'url': url,
+          'headers': const <String, List<String>>{},
+        });
       }
     }
     ctx.ajaxPending.clear();

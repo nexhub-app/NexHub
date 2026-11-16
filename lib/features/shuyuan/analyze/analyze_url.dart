@@ -57,6 +57,19 @@ class AnalyzeUrl {
   /// （AES 密文按 UTF-8 容错解码会丢字节，无法还原明文）。
   Uint8List? lastResponseBytes;
 
+  /// 最近一次真实请求的响应元数据（settle 回放给 java.connect/get/post/head：
+  /// `statusCode()` / `headers()` / `header("Location")` / `cookies()` /
+  /// `.raw().request().url()` 都依赖它）。页面缓存命中时为 null（无新请求）。
+  int? lastStatusCode;
+  Map<String, List<String>>? lastResponseHeaders;
+  String? lastFinalUrl;
+
+  /// URL 选项 `followRedirects`：`java.get/post/head` 对齐 legado 的
+  /// Jsoup `followRedirects(false)`（302 响应头 Location 是搜索 URL 的
+  /// 常见来源）；`java.connect`/`java.ajax` 走默认跟随（重定向后的最终
+  /// 地址是 `raw().request().url()` 的基址发现来源）。null = 跟随。
+  bool? followRedirects;
+
   /// URL 内 JS 的求值器（同一 AnalyzeUrl 内复用，连同其 JS 引擎）。
   /// 一个 URL 模板常有多个 `{{...}}`，旧实现每个都 new AnalyzeRule →
   /// new QuickJS 运行时且从不释放。
@@ -227,11 +240,24 @@ class AnalyzeUrl {
         bodyJs = option['bodyJs']?.toString();
         dnsIp = option['dnsIp']?.toString();
         requestType = option['type']?.toString();
+        final frRaw = option['followRedirects'];
+        if (frRaw != null) {
+          followRedirects = frRaw == true || '$frRaw' == 'true';
+        }
 
         final headers = option['headers'];
         if (headers is Map) {
           for (final entry in headers.entries) {
             headerMap[entry.key.toString()] = entry.value.toString();
+          }
+        } else if (headers is String && headers.trim().isNotEmpty) {
+          // legado UrlOption.getHeaderMap 兼容字符串形态：`"headers":
+          // "{Referer:'https://x'}"`（单引号伪 JSON，社区源常见）。
+          final decoded = parseJsonLenient(headers);
+          if (decoded != null) {
+            for (final entry in decoded.entries) {
+              headerMap[entry.key.toString()] = entry.value.toString();
+            }
           }
         }
 
@@ -484,6 +510,10 @@ class AnalyzeUrl {
     if (!_isValidHttpUrl) {
       throw Exception('Invalid URL: $url');
     }
+    // 元数据随请求走：缓存命中/失败分支不得复用上一条请求的状态。
+    lastStatusCode = null;
+    lastResponseHeaders = null;
+    lastFinalUrl = null;
 
     // 阶段级页面缓存：settle 重放会整段重跑，命中则直接返回上一次的响应
     // （含 jsStr/sourceRegex 后处理结果，故 key 里带上这两项）。
@@ -690,7 +720,12 @@ class AnalyzeUrl {
       final options = Options(
         headers: requestHeaders,
         responseType: ResponseType.bytes,
-        validateStatus: (status) => status != null && status >= 200 && status < 300,
+        followRedirects: followRedirects ?? true,
+        // 不跟随重定向时 3xx 是正常结果（Location 头即脚本要的答案），
+        // 不能按错误抛出。
+        validateStatus: (status) => status != null &&
+            (status >= 200 && status < 300 ||
+                (followRedirects == false && status >= 300 && status < 400)),
       );
 
       // concurrentRate 限速（legado ConcurrentRateLimiter 等效，书源侧
@@ -702,10 +737,16 @@ class AnalyzeUrl {
       var attempt = 0;
       while (true) {
         try {
-          if (method?.toUpperCase() == 'POST') {
+          final m = method?.toUpperCase();
+          if (m == 'POST') {
             response = await dio.post<List<int>>(
               url,
               data: this.body,
+              options: options,
+            );
+          } else if (m == 'HEAD') {
+            response = await dio.head<List<int>>(
+              url,
               options: options,
             );
           } else {
@@ -725,6 +766,9 @@ class AnalyzeUrl {
 
       final bytes = Uint8List.fromList(response.data ?? <int>[]);
       lastResponseBytes = bytes;
+      lastStatusCode = response.statusCode;
+      lastResponseHeaders = response.headers.map;
+      lastFinalUrl = response.realUri.toString();
       final contentType = _extractHeaderValue(
         response.headers['content-type'],
       );
@@ -860,7 +904,8 @@ class AnalyzeUrl {
                       b.key.toLowerCase())))
                 .map((e) => '${e.key.toLowerCase()}:${e.value}')
                 .join('\n'));
-    return '$m\n$url\n${body ?? ''}\n${jsStr ?? ''}\n${sourceRegex ?? ''}\n$h';
+    return '$m\n$url\n${body ?? ''}\n${jsStr ?? ''}\n${sourceRegex ?? ''}\n'
+        '${followRedirects == false ? 'noredir' : ''}\n$h';
   }
 
   /// 大小写不敏感的请求头写入：同名旧键先移除，避免 `User-Agent` 与
@@ -887,17 +932,26 @@ class AnalyzeUrl {
   /// 写成单引号、裸键、尾逗号或带注释的形式，严格 json.decode 会整段
   /// 失败 → method/body/headers 全部丢失。先严格解析，失败再修复重试。
   static Map<String, dynamic>? parseJsonLenient(String raw) {
+    final v = decodeJsonLenient(raw);
+    return v is Map ? Map<String, dynamic>.from(v) : null;
+  }
+
+  /// 宽松 JSON 解码（legado 侧等价 GSON 宽松模式：单引号、裸键、裸字符串
+  /// 值、尾逗号、`//` 与 `/* */` 注释）。严格解码失败后按修复文本重试。
+  static Object? decodeJsonLenient(String raw) {
     try {
-      final v = json.decode(raw);
-      return v is Map ? Map<String, dynamic>.from(v) : null;
+      return json.decode(raw);
     } catch (_) {}
     try {
-      final v = json.decode(_repairJson(raw));
-      return v is Map ? Map<String, dynamic>.from(v) : null;
+      return json.decode(_repairJson(raw));
     } catch (_) {
       return null;
     }
   }
+
+  /// 宽松 JSON 文本修复（单引号→双引号、裸键/裸字符串值补引号、尾逗号与
+  /// 注释剔除）；供其它内嵌 JSON（如发现页 kinds）在严格解码失败后复用。
+  static String repairJsonLenient(String raw) => _repairJson(raw);
 
   /// 宽松 JSON 修复：单引号→双引号、裸键/裸字符串值补引号、尾逗号与
   /// `//`/`/* */` 注释剔除；字符串内部内容保持不变。
@@ -1010,7 +1064,12 @@ class AnalyzeUrl {
         while (j < s.length && !',}] \t\r\n'.contains(s[j])) {
           j++;
         }
-        final token = s.substring(i, j);
+        var token = s.substring(i, j);
+        // 残缺 JSON 常见「值缺开引号但保留闭引号」（如 `"title": 文本"`）：
+        // 去掉悬空尾引号再整体补引号，否则会补出 `"文本""`。
+        if (token.endsWith('"')) {
+          token = token.substring(0, token.length - 1);
+        }
         if (token == 'true' || token == 'false' || token == 'null' ||
             num.tryParse(token) != null) {
           out.write(token);
