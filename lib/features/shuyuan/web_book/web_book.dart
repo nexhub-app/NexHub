@@ -114,17 +114,23 @@ class WebBook {
   }
 
   /// 解析书源的发现分类列表（基于 `exploreUrl` 多级 URL 字符串）。
+  ///
+  /// 对齐 legado `loadableExploreMainKinds`：只保留可浏览项，并按
+  /// (title, url) 去重——同一分类重复声明只生成一个分类 Tab（完整选项栏
+  /// 仍由 [getExploreKinds] 提供）。
   List<ExploreCategory> getExploreCategories(
     XiaoshuoBookSource source, {
     Map<String, String>? infoMap,
   }) {
-    return getExploreKinds(source, infoMap: infoMap)
-        .where((k) => k.isBrowsable)
-        .map((k) => ExploreCategory(
-              name: k.title.isNotEmpty ? k.title : k.url!,
-              url: k.url!,
-            ))
-        .toList();
+    final seen = <(String, String)>{};
+    return <ExploreCategory>[
+      for (final k in getExploreKinds(source, infoMap: infoMap))
+        if (k.isBrowsable && seen.add((k.title, k.url!)))
+          ExploreCategory(
+            name: k.title.isNotEmpty ? k.title : k.url!,
+            url: k.url!,
+          ),
+    ];
   }
   /// 当前源上下文中 bookUrl 对应的搜索条目（{{\$.field}} 模板求值根）。
   Object? _bookItemContext(String bookUrl) =>

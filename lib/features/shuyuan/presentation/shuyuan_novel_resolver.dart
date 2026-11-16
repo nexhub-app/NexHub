@@ -141,6 +141,10 @@ class ShuyuanNovelResolver
   /// 发现分类重放预算：进分类页前的等待，超过则先用已解析结果出 Tab。
   static const Duration _exploreCategoryBudget = Duration(seconds: 45);
 
+  /// 无 category 的发现入口最多尝试的分类数（首个失效/为空时顺延，
+  /// 避免全量串行抓取导致首页长时间加载）。
+  static const int _exploreHomeFallbackLimit = 3;
+
   /// 是否还允许继续下一轮重放。
   bool _replayAllowed(int pass, DateTime deadline) =>
       pass + 1 < _maxReplayPasses && DateTime.now().isBefore(deadline);
@@ -842,17 +846,28 @@ class ShuyuanNovelResolver
       return <MediaItem>[];
     }
 
-    // 首页 latest 板块（未指定分类）：只取第一个分类，而非逐个抓取全部分类
-    // 再合并。此前串行抓取全部分类（同 host 限流下可达数十秒），首页长时间
-    // 停留在加载态，用户感知即「页面没有内容」；分类 Tab 已提供完整分类浏览。
+    // 首页 latest 板块（未指定分类）：legado 的发现页一次只加载一个分类，
+    // NexHub 无分类入口时取首个可浏览分类。首个分类失效（断链/拦截）或为空时
+    // 继续尝试后续分类，避免首页直接呈现空列表；尝试数有上限，不做全量串行
+    // 抓取（同 host 限流下可达数十秒）。拿到首个非空结果即停。
     final categories = _webBook.getExploreCategories(bookSource);
     if (categories.isEmpty) return <MediaItem>[];
-    final books = await _webBook.exploreCategory(
-      source: bookSource,
-      categoryUrl: categories.first.url,
-      page: page,
-    );
-    return _mapAndSeedBooks(books, source);
+    Object? firstError;
+    for (final category in categories.take(_exploreHomeFallbackLimit)) {
+      try {
+        final books = await _webBook.exploreCategory(
+          source: bookSource,
+          categoryUrl: category.url,
+          page: page,
+        );
+        if (books.isNotEmpty) return _mapAndSeedBooks(books, source);
+      } on Object catch (e) {
+        firstError ??= e;
+      }
+    }
+    // 全部尝试都失败时保留首个错误（验证流程/网络诊断依赖原始异常类型）。
+    if (firstError != null) throw firstError;
+    return <MediaItem>[];
   }
 
   /// PTCMS 筛选段取值：

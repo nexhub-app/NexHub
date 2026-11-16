@@ -18,6 +18,16 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 class ShuyuanWebviewFetcher {
   ShuyuanWebviewFetcher._();
 
+  /// 测试注入：合成探针无法启动平台无头 WebView（flutter test 无插件宿主），
+  /// 用它替换真实渲染，验证 `java.webView` 分类的占位符重放闭环。
+  @visibleForTesting
+  static Future<String?> Function({
+    String? html,
+    String? url,
+    String? js,
+    int delayMs,
+  })? debugFetchOverride;
+
   static const Duration _loadTimeout = Duration(seconds: 20);
   static const Duration _renderSettle = Duration(milliseconds: 1200);
   static const Duration _jsSettle = Duration(milliseconds: 600);
@@ -35,6 +45,10 @@ class ShuyuanWebviewFetcher {
     String? js,
     int delayMs = 0,
   }) async {
+    final override = debugFetchOverride;
+    if (override != null) {
+      return override(html: html, url: url, js: js, delayMs: delayMs);
+    }
     final data = html ?? '';
     final pageUrl = (url ?? '').trim();
     final hasHtml = data.trim().isNotEmpty;
