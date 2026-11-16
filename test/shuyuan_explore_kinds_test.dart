@@ -150,6 +150,57 @@ JSON.stringify(sort);
       expect(kinds.single.url, 'https://a.com/x\n?p=1');
     });
 
+    test('GSON 宽松：单引号与裸键（神凑轻说样式）', () {
+      const json = "[{'title':'文库分类','url':'','style':{layout_flexGrow:1,"
+          "layout_flexBasisPercent:1}},\n"
+          "{'title':'电击文库','url':'/list.php?class=1&page={{page}}',"
+          "style:{layout_flexGrow:1,layout_flexBasisPercent:0.25}}]";
+      final kinds = parseExploreKinds(json);
+      expect(kinds.map((k) => k.title).toList(), ['文库分类', '电击文库']);
+      expect(kinds[1].url, '/list.php?class=1&page={{page}}');
+      expect(kinds[1].style.layoutFlexBasisPercent, 0.25);
+    });
+
+    test('GSON 宽松：尾逗号（起点样式）', () {
+      const json = '[\n'
+          '{"title":"男频","url":"","style":{"layout_flexGrow":1}},\n'
+          '{"title":"月票榜","url":"/rank?page={{page}}",'
+          '"style":{"layout_flexGrow":1}},\n'
+          ']';
+      final kinds = parseExploreKinds(json);
+      expect(kinds.map((k) => k.title).toList(), ['男频', '月票榜']);
+      expect(kinds[1].url, '/rank?page={{page}}');
+    });
+
+    test('GSON 宽松：单引号字符串含裸换行的 @js URL', () {
+      const json = r'''[
+{'title':'推荐','url':'@js:
+time=Date.now();
+"https://a.com/rank?t="+time;','style':{layout_flexGrow:1}}]''';
+      final kinds = parseExploreKinds(json);
+      expect(kinds.single.title, '推荐');
+      expect(kinds.single.url, contains('@js:'));
+      expect(kinds.single.url, contains('time=Date.now()'));
+    });
+
+    test('GSON 宽松：值缺开引号（番茄样式）', () {
+      const json = '{"title": 女生频道","url": "/girl","style":'
+          '{"layout_flexGrow": 1}}';
+      final kinds =
+          parseExploreKinds('[$json]');
+      expect(kinds.single.title, '女生频道');
+      expect(kinds.single.url, '/girl');
+    });
+
+    test('GSON 宽松：注释剔除', () {
+      const json = '[\n'
+          '// 男频榜单\n'
+          '{"title":"周榜","url":"/week","style":{"layout_flexGrow":1}} /* 尾注 */\n'
+          ']';
+      final kinds = parseExploreKinds(json);
+      expect(kinds.single.title, '周榜');
+    });
+
     test('非法 JSON 抛 FormatException', () {
       expect(() => parseExploreKinds('[{bad json}]'),
           throwsA(isA<FormatException>()));

@@ -5,6 +5,7 @@ import 'dart:convert';
 
 import '../../../core/models/explore_kind.dart';
 import '../../../core/models/novel_block.dart';
+import '../analyze/analyze_url.dart';
 import '../analyze/js_engine.dart';
 import '../analyze/source_context.dart';
 import '../model/xiaoshuo_book.dart';
@@ -496,20 +497,27 @@ List<ExploreKind> parseExploreKinds(
 }
 
 List<ExploreKind> _parseKindsJson(String raw) {
+  Object? decoded;
   try {
-    final decoded = jsonDecode(_repairJsonRawNewlines(raw));
-    if (decoded is! List) {
-      throw const FormatException('exploreUrl JSON 不是数组');
+    decoded = jsonDecode(_repairJsonRawNewlines(raw));
+  } catch (_) {
+    // legado 用 GSON（宽松模式）解析 kinds JSON：单引号、裸键、尾逗号、
+    // 注释均接受。语料中约 9% 的 JSON 发现页（含起点/晋江/刺猬猫）依赖
+    // 该宽松度，严格解码会把整页分类变成错误项。
+    try {
+      decoded = jsonDecode(
+          _repairJsonRawNewlines(AnalyzeUrl.repairJsonLenient(raw)));
+    } catch (e) {
+      throw FormatException('exploreUrl JSON 解析失败: $e');
     }
-    return <ExploreKind>[
-      for (final e in decoded)
-        if (e is Map) ExploreKind.fromJson(Map<String, dynamic>.from(e)),
-    ];
-  } on FormatException {
-    rethrow;
-  } catch (e) {
-    throw FormatException('exploreUrl JSON 解析失败: $e');
   }
+  if (decoded is! List) {
+    throw const FormatException('exploreUrl JSON 不是数组');
+  }
+  return <ExploreKind>[
+    for (final e in decoded)
+      if (e is Map) ExploreKind.fromJson(Map<String, dynamic>.from(e)),
+  ];
 }
 
 List<ExploreKind> _parseKindsText(
