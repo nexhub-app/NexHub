@@ -734,13 +734,11 @@ class AnalyzeUrl {
     // 首次请求时 jar 为空 → 此步为空操作，无副作用。
     final sharedCookie = HttpFetcher.instance.cookieHeaderForUrl(url);
     if (sharedCookie != null && sharedCookie.isNotEmpty) {
-      final existing = _headerValue(requestHeaders, 'Cookie');
       _putHeader(
           requestHeaders,
           'Cookie',
-          (existing != null && existing.isNotEmpty)
-              ? '$existing; $sharedCookie'
-              : sharedCookie);
+          _mergeCookieStrings(
+              _headerValue(requestHeaders, 'Cookie'), sharedCookie));
     }
 
     // 注入对象上下文（P1-2）：登录头合并（source.putLoginHeader 语义）+
@@ -755,13 +753,11 @@ class AnalyzeUrl {
       if (overlay.isNotEmpty) {
         final overlayStr =
             overlay.entries.map((e) => '${e.key}=${e.value}').join('; ');
-        final existing = _headerValue(requestHeaders, 'Cookie');
         _putHeader(
             requestHeaders,
             'Cookie',
-            (existing != null && existing.isNotEmpty)
-                ? '$existing; $overlayStr'
-                : overlayStr);
+            _mergeCookieStrings(
+                _headerValue(requestHeaders, 'Cookie'), overlayStr));
       }
     }
 
@@ -858,6 +854,7 @@ class AnalyzeUrl {
       lastStatusCode = response.statusCode;
       lastResponseHeaders = response.headers.map;
       lastFinalUrl = response.realUri.toString();
+      _storeResponseCookies(activeCtx, url, response.headers.map);
       final contentType = _extractHeaderValue(
         response.headers['content-type'],
       );
@@ -923,6 +920,10 @@ class AnalyzeUrl {
     } on DioException catch (e) {
       AppLog.instance.w('[书源HTTP] Dio异常 ${e.response?.statusCode} $url');
       final status = e.response?.statusCode;
+      // 错误响应（403 挑战页 / 重定向等）同样可能携带 Set-Cookie
+      //（如防爬系统在挑战页下发校验 cookie），先落库再判定异常类型，
+      // 让后续验证重试/下一请求能回放（legado 拦截器对状态码无差别保存）。
+      _storeResponseCookies(activeCtx, url, e.response?.headers.map);
       // 非 2xx 也可能是「验证 / 反爬挑战页」：PTCMS「系统安全验证」常以 403
       // 返回挑战 HTML，此时 validateStatus 已拒收、请求体被丢给上层前必须先过
       // 一遍挑战检测；否则异常类型不对（普通 Exception 而非
@@ -996,6 +997,56 @@ class AnalyzeUrl {
                 .join('\n'));
     return '$m\n$url\n${body ?? ''}\n${jsStr ?? ''}\n${sourceRegex ?? ''}\n'
         '${followRedirects == false ? 'noredir' : ''}\n$h';
+  }
+
+  /// 响应 Set-Cookie 落库（legado `CookieManager.saveResponse` 对等）。
+  ///
+  /// 无活动上下文（离线调用/非书源链路）时不写：cookie 只进 per-source
+  /// 覆盖层，绝不写全局 HttpFetcher 罐（三通道隔离红线）。
+  static void _storeResponseCookies(ShuyuanSourceContext? ctx, String url,
+      Map<String, List<String>>? headers) {
+    if (ctx == null) return;
+    final setCookies = _setCookieHeaders(headers);
+    if (setCookies == null || setCookies.isEmpty) return;
+    ctx.applyResponseCookies(url, setCookies);
+    // 持久化沿用排空同一入口（fire-and-forget，下一请求读内存镜像）。
+    ctx.persistIfNeeded();
+  }
+
+  /// 取响应头里的全部 Set-Cookie 值（Dio 可能合并为单值逗号串，也可能是
+  /// 多值列表；键大小写不敏感）。
+  static List<String>? _setCookieHeaders(Map<String, List<String>>? headers) {
+    if (headers == null) return null;
+    for (final e in headers.entries) {
+      if (e.key.toLowerCase() != 'set-cookie') continue;
+      if (e.value.isEmpty) return null;
+      // Dio 默认把多个 Set-Cookie 收进列表；个别适配器合并成单个逗号串时
+      // 不能按逗号拆分（Expires 也含逗号），整串交给解析器按分号处理即可。
+      return e.value;
+    }
+    return null;
+  }
+
+  /// Cookie 请求头合并（legado `CookieManager.loadRequest` 语义）：按 cookie
+  /// 名合并，后到者（已存储/覆盖层）覆盖同名旧值，保留首次出现顺序。
+  /// 拼接方式会让同名 cookie 在头里重复出现，服务端取值不确定——存储的
+  /// 会话 cookie 必须能顶掉源里写死的同名旧值。
+  static String _mergeCookieStrings(String? existing, String incoming) {
+    if (existing == null || existing.trim().isEmpty) return incoming;
+    final merged = <String, String>{};
+    final parts = <String>[
+      ...existing.split(';'),
+      ...incoming.split(';'),
+    ];
+    for (final part in parts) {
+      final pair = part.trim();
+      if (pair.isEmpty) continue;
+      final eq = pair.indexOf('=');
+      if (eq <= 0) continue;
+      merged[pair.substring(0, eq).trim()] = pair.substring(eq + 1).trim();
+    }
+    if (merged.isEmpty) return incoming;
+    return merged.entries.map((e) => '${e.key}=${e.value}').join('; ');
   }
 
   /// 大小写不敏感的请求头写入：同名旧键先移除，避免 `User-Agent` 与

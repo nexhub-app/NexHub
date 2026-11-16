@@ -362,6 +362,63 @@ class ShuyuanSourceContext {
     return out;
   }
 
+  /// 响应 Set-Cookie 写入覆盖层（legado `CookieManager.saveResponse` 对等：
+  /// OkHttp 拦截器对每个响应按域保存、后续请求自动回放）。
+  ///
+  /// 旧实现只读不写：服务端在首个响应下发的会话 cookie（鉴权/防爬握手）
+  /// 全部丢失，后续 API/列表请求不带 cookie → 服务端按未授权返回空数据，
+  /// 表现为「发现页和分类页都解析不到内容」。
+  ///
+  /// Domain 属性优先（去前导点）；缺省落在请求 host。Max-Age<=0 依浏览器
+  /// 语义删除同名 cookie。Path 不参与键控（与 legado 一致：只要域匹配就回放）。
+  void applyResponseCookies(String requestUrl, List<String>? setCookies) {
+    if (setCookies == null || setCookies.isEmpty) return;
+    final reqHost = _hostOf(requestUrl);
+    var changed = false;
+    for (final raw in setCookies) {
+      final header = raw.trim();
+      if (header.isEmpty) continue;
+      final segments = header.split(';');
+      final pair = segments.first;
+      final eq = pair.indexOf('=');
+      if (eq <= 0) continue;
+      final name = pair.substring(0, eq).trim();
+      final value = pair.substring(eq + 1).trim();
+      if (name.isEmpty) continue;
+
+      var host = reqHost;
+      var maxAge = 0;
+      var hasMaxAge = false;
+      for (var i = 1; i < segments.length; i++) {
+        final seg = segments[i];
+        final sep = seg.indexOf('=');
+        final key =
+            (sep >= 0 ? seg.substring(0, sep) : seg).trim().toLowerCase();
+        final val = sep >= 0 ? seg.substring(sep + 1).trim() : '';
+        if (key == 'domain' && val.isNotEmpty) {
+          host = val.toLowerCase().replaceFirst(RegExp(r'^\.+'), '');
+        } else if (key == 'max-age') {
+          final parsed = int.tryParse(val);
+          if (parsed != null) {
+            maxAge = parsed;
+            hasMaxAge = true;
+          }
+        }
+      }
+
+      if (hasMaxAge && maxAge <= 0) {
+        if (cookies.remove(name) != null) changed = true;
+        continue;
+      }
+      final prev = cookies[name];
+      if (prev == null || prev['value'] != value || prev['host'] != host) {
+        cookies[name] = {'value': value, 'host': host};
+        changed = true;
+      }
+    }
+    if (changed) cookiesDirty = true;
+  }
+
   // ── cookie 覆盖层持久化（per sourceId） ──
   static const String _cookieStoreKey = 'shuyuan_source_cookies_v1';
   static Map<String, Map<String, Map<String, String>>>? _cookieCache;
