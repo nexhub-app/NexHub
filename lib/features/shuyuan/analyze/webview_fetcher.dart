@@ -33,6 +33,7 @@ class ShuyuanWebviewFetcher {
     String? html,
     String? url,
     String? js,
+    int delayMs = 0,
   }) async {
     final data = html ?? '';
     final pageUrl = (url ?? '').trim();
@@ -80,6 +81,12 @@ class ShuyuanWebviewFetcher {
       } else {
         await loaded.future.timeout(_loadTimeout, onTimeout: () {});
         await Future<void>.delayed(_renderSettle);
+      }
+
+      // legado BackstageWebView delayTime：页面加载后额外等待源声明时长
+      // （基础等待已由 _renderSettle 覆盖，此处只叠加额外部分）。
+      if (delayMs > 0) {
+        await Future<void>.delayed(Duration(milliseconds: delayMs));
       }
 
       String? jsResult;

@@ -240,6 +240,12 @@ class AnalyzeUrl {
         bodyJs = option['bodyJs']?.toString();
         dnsIp = option['dnsIp']?.toString();
         requestType = option['type']?.toString();
+        // legado `max(0, option.webViewDelayTime ?: 0)`：页面加载后额外等待。
+        final wvDelay = option['webViewDelayTime'];
+        webViewDelayTime = wvDelay is num
+            ? wvDelay.toInt()
+            : int.tryParse('${wvDelay ?? ''}'.trim()) ?? 0;
+        if (webViewDelayTime < 0) webViewDelayTime = 0;
         final frRaw = option['followRedirects'];
         if (frRaw != null) {
           followRedirects = frRaw == true || '$frRaw' == 'true';
@@ -276,40 +282,39 @@ class AnalyzeUrl {
 
     url = _getAbsoluteUrl(url);
 
-    if (url.isNotEmpty) {
-      try {
-        final uri = Uri.parse(url);
-        baseUrl = '${uri.scheme}://${uri.host}';
-      } catch (_) {}
-    }
+    // 对齐 legado `NetworkUtils.getBaseUrl`：保留端口（`http://host:8080`
+    // 的 baseUrl 绑定/相对地址解析不能丢端口）；非 http(s) 时保持原值。
+    final legadoBase = _getBaseUrl(url);
+    if (legadoBase != null) baseUrl = legadoBase;
   }
 
-  /// 按源声明的字符集对请求参数编码（GET query / POST form）。
-  ///
-  /// 占位符（`{{key}}` 等）替换的是**原始关键词**，编码统一延迟到此处：
-  /// - GBK 系站点（charset=gbk/gb2312/gb18030）按 GBK 编码关键词，
-  /// 否则按 UTF-8 —— 此前恒定 UTF-8 预编码，GBK 站点收到乱码导致
-  /// 「搜索有请求但永远无结果」。
-  /// - POST form 补声明 `application/x-www-form-urlencoded`：多数站点
-  /// （尤其 PHP `$_POST`）不按该 Content-Type 解析请求体，缺省时整个
-  /// 表单体被服务端丢弃 → POST 搜索全部为空。
-  /// - 已编码值（合法 `%XX` 序列）不重复编码，避免把预编码源二次转义。
+  /// 按源声明的字符集对请求参数编码，逐行对齐 legado
+  /// `AnalyzeUrl.analyzeQuery/analyzeFields/encodeParams`：
+  /// - GET query：整串已是「query 安全字符 + 合法 `%XX`」则原样，否则按
+  ///   字符逐个百分号编码（安全 ASCII 保留，其余取 charset 字节）；
+  ///   `charset=escape` 走 JS escape 编码。
+  /// - POST form：声明了 Content-Type 时 legado 不做 form 编码；否则按 `&`
+  ///   拆分逐键值编码（已编码判定/escape/URLEncoder 三态与 legado 一致）。
+  /// - GBK 系站点按 GBK 取字节，其余 UTF-8。
   void _encodeRequestParams() {
     final cs = _normalizeCharset(charset);
     final isPost = method?.toUpperCase() == 'POST';
 
     if (isPost) {
       final b = body;
-      if (b != null && b.isNotEmpty && !_looksLikeStructuredBody(b)) {
-        body = _encodeForm(b, cs);
-        headerMap.putIfAbsent(
-            'Content-Type', () => 'application/x-www-form-urlencoded');
-      } else if (b != null && b.isNotEmpty) {
+      if (b == null || b.isEmpty) return;
+      if (_looksLikeStructuredBody(b)) {
         // JSON/XML 请求体：按原文发送，仅补 JSON 的 Content-Type。
         if (b.trimLeft().startsWith('{')) {
           headerMap.putIfAbsent('Content-Type', () => 'application/json');
         }
+        return;
       }
+      // legado analyzeFields 仅在未声明 Content-Type 时执行。
+      if (_headerValue(headerMap, 'Content-Type') != null) return;
+      body = _encodeFormLegado(b, cs);
+      headerMap.putIfAbsent(
+          'Content-Type', () => 'application/x-www-form-urlencoded');
       return;
     }
 
@@ -319,11 +324,14 @@ class AnalyzeUrl {
     final base = url.substring(0, qIdx);
     final query = url.substring(qIdx + 1);
     if (query.isEmpty) return;
-    // 全部为可见 ASCII（无中文/空格等需编码字符）时无需处理。
-    final needsEncode =
-        query.codeUnits.any((c) => c > 0x7e || c < 0x20);
-    if (!needsEncode) return;
-    url = '$base?${_encodeForm(query, cs)}';
+    if (cs == 'escape') {
+      url = '$base?${_encodeFormLegado(query, cs)}';
+      return;
+    }
+    // legado `NetworkUtils.encodedQuery`：整串无需编码时原样保留
+    // （ASCII 安全字符之外的空格/引号等仍会按 charset 编码）。
+    if (_encodedQuery(query)) return;
+    url = '$base?${_encodeQueryLegado(query, cs)}';
   }
 
   /// JSON / XML 请求体判定（这类体不做 form 编码，按原文发送）。
@@ -332,52 +340,75 @@ class AnalyzeUrl {
     return t.startsWith('{') || t.startsWith('[') || t.startsWith('<');
   }
 
-  /// form 编码：按 `&`/`=` 拆分键值对，逐个值按 [charsetLower] 编码。
-  String _encodeForm(String form, String? charsetLower) {
+  /// legado `NetworkUtils.encodedQuery`：全部字符为 query 安全字符或合法
+  /// `%XX` 序列时视为已编码。
+  bool _encodedQuery(String s) {
+    for (var i = 0; i < s.length; i++) {
+      final c = s.codeUnitAt(i);
+      if (c < 128 && _queryNoEncodeChars.contains(s[i])) continue;
+      if (c == 0x25 &&
+          i + 2 < s.length &&
+          _isHexDigit(s.codeUnitAt(i + 1)) &&
+          _isHexDigit(s.codeUnitAt(i + 2))) {
+        i += 2;
+        continue;
+      }
+      return false;
+    }
+    return true;
+  }
+
+  /// legado `encodeQueryParams`：安全字符原样，其余按字符取 charset 字节
+  /// 百分号编码（大写十六进制）。
+  String _encodeQueryLegado(String query, String? charsetLower) {
+    final sb = StringBuffer();
+    for (var i = 0; i < query.length; i++) {
+      final ch = query[i];
+      final c = query.codeUnitAt(i);
+      if (c < 128 && _querySafeChars.contains(ch)) {
+        sb.write(ch);
+      } else {
+        for (final b in _charsetBytes(ch, charsetLower)) {
+          sb.write('%${b.toRadixString(16).toUpperCase().padLeft(2, '0')}');
+        }
+      }
+    }
+    return sb.toString();
+  }
+
+  /// legado `AnalyzeUrl.encodeParams` 通用分支（POST form / escape query）。
+  String _encodeFormLegado(String form, String? rawCharset) {
+    final checkEncoded = rawCharset == null || rawCharset.isEmpty;
+    final escapeMode = rawCharset == 'escape';
+    String encodeValue(String value) {
+      if (checkEncoded && _encodedForm(value)) return value;
+      if (escapeMode) return _jsEscape(value);
+      return _urlEncodeForm(value, rawCharset);
+    }
+
     final out = <String>[];
     for (final pair in form.split('&')) {
       final eq = pair.indexOf('=');
       if (eq < 0) {
-        out.add(_encodeValue(pair, charsetLower));
-        continue;
+        out.add(encodeValue(pair));
+      } else {
+        out.add('${encodeValue(pair.substring(0, eq))}'
+            '=${encodeValue(pair.substring(eq + 1))}');
       }
-      out.add('${_encodeValue(pair.substring(0, eq), charsetLower)}'
-          '=${_encodeValue(pair.substring(eq + 1), charsetLower)}');
     }
     return out.join('&');
   }
 
-  /// 单值编码：已编码值原样保留；GBK 系按 GBK，其余 UTF-8。
-  String _encodeValue(String value, String? charsetLower) {
-    if (value.isEmpty) return value;
-    if (_isAlreadyEncoded(value)) return value;
-    final lower = charsetLower?.toLowerCase();
-    if (lower == 'gbk' || lower == 'gb2312' || lower == 'gb18030') {
-      try {
-        return _percentEncodeBytes(gbk.encode(value));
-      } catch (_) {
-        // GBK 编码失败（生僻字等）回退 UTF-8。
-      }
-    }
-    return Uri.encodeComponent(value);
-  }
-
-  /// 已编码判定：仅含未保留字符与合法 `%XX` 序列。
-  bool _isAlreadyEncoded(String value) {
-    for (var i = 0; i < value.length; i++) {
-      final c = value.codeUnitAt(i);
-      final unreserved = (c >= 0x30 && c <= 0x39) ||
-          (c >= 0x41 && c <= 0x5a) ||
-          (c >= 0x61 && c <= 0x7a) ||
-          c == 0x2d || // -
-          c == 0x2e || // .
-          c == 0x5f || // _
-          c == 0x7e; // ~
-      if (unreserved) continue;
-      if (c == 0x25 && // %
-          i + 2 < value.length &&
-          _isHexDigit(value.codeUnitAt(i + 1)) &&
-          _isHexDigit(value.codeUnitAt(i + 2))) {
+  /// legado `NetworkUtils.encodedForm`：全为 form 安全字符（字母数字与
+  /// `*-._`）或合法 `%XX` 时视为已编码。
+  bool _encodedForm(String s) {
+    for (var i = 0; i < s.length; i++) {
+      final c = s.codeUnitAt(i);
+      if (c < 128 && _formNoEncodeChars.contains(s[i])) continue;
+      if (c == 0x25 &&
+          i + 2 < s.length &&
+          _isHexDigit(s.codeUnitAt(i + 1)) &&
+          _isHexDigit(s.codeUnitAt(i + 2))) {
         i += 2;
         continue;
       }
@@ -391,41 +422,100 @@ class AnalyzeUrl {
       (c >= 0x41 && c <= 0x46) ||
       (c >= 0x61 && c <= 0x66);
 
-  /// 字节序列百分号编码（未保留字符保留原样）。
-  String _percentEncodeBytes(List<int> bytes) {
+  /// Java `URLEncoder.encode`：字母数字与 `.-*_` 保留，空格转 `+`，其余
+  /// 按 charset 字节编码（大写十六进制）。
+  String _urlEncodeForm(String value, String? charsetLower) {
     final sb = StringBuffer();
-    for (final b in bytes) {
-      final unreserved = (b >= 0x30 && b <= 0x39) ||
+    for (final b in _charsetBytes(value, charsetLower)) {
+      final keep = (b >= 0x30 && b <= 0x39) ||
           (b >= 0x41 && b <= 0x5a) ||
           (b >= 0x61 && b <= 0x7a) ||
-          b == 0x2d ||
           b == 0x2e ||
-          b == 0x5f ||
-          b == 0x7e;
-      if (unreserved) {
+          b == 0x2d ||
+          b == 0x2a ||
+          b == 0x5f;
+      if (keep) {
         sb.writeCharCode(b);
+      } else if (b == 0x20) {
+        sb.write('+');
       } else {
-        sb.write('%');
-        sb.write(b.toRadixString(16).toUpperCase().padLeft(2, '0'));
+        sb.write('%${b.toRadixString(16).toUpperCase().padLeft(2, '0')}');
       }
     }
     return sb.toString();
   }
 
+  /// legado `EncoderUtils.escape`：字母数字保留，其余按 UTF-16 code unit
+  /// 转 `%0x` / `%xx` / `%uXXXX`（小写十六进制，与 legado 一致）。
+  String _jsEscape(String value) {
+    final sb = StringBuffer();
+    for (var i = 0; i < value.length; i++) {
+      final code = value.codeUnitAt(i);
+      final isAlnum = (code >= 0x30 && code <= 0x39) ||
+          (code >= 0x41 && code <= 0x5a) ||
+          (code >= 0x61 && code <= 0x7a);
+      if (isAlnum) {
+        sb.write(value[i]);
+        continue;
+      }
+      final prefix = code < 16 ? '%0' : (code < 256 ? '%' : '%u');
+      sb.write('$prefix${code.toRadixString(16)}');
+    }
+    return sb.toString();
+  }
+
+  /// 按声明字符集取字节（GBK 系用 GBK，其余 UTF-8；GBK 失败回退 UTF-8）。
+  List<int> _charsetBytes(String value, String? charsetLower) {
+    final lower = charsetLower?.toLowerCase();
+    if (lower == 'gbk' || lower == 'gb2312' || lower == 'gb18030') {
+      try {
+        return gbk.encode(value);
+      } catch (_) {}
+    }
+    return utf8.encode(value);
+  }
+
+  static const String _queryNoEncodeChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+      'abcdefghijklmnopqrstuvwxyz'
+      '0123456789'
+      r'!$&()*+,-./:;=?@[\]^_`{|}~';
+
+  static const String _querySafeChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+      'abcdefghijklmnopqrstuvwxyz'
+      '0123456789'
+      r'_.-~!$%&()*+,/:;=?@[\]^`{|}';
+
+  static const String _formNoEncodeChars =
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789*-._';
+
   String _getAbsoluteUrl(String urlStr) {
-    // 对齐 legado NetworkUtils.getAbsoluteURL：相对地址先 trim。
-    // `{{js}}\n/path` 类模板（banwenwu）替换后残留换行，直接 resolve
-    // 会被 Uri 编码成 `/%0A/path` → 400。
+    // 对齐 legado NetworkUtils.getAbsoluteURL：先 trim（`{{js}}\n/path`
+    // 类模板替换后残留换行，直接 resolve 会被编码成 `/%0A/path` → 400）、
+    // `http` / `data:` 原样、`javascript` 开头返回空串，其余按 base 解析。
+    // `//host` 协议相对地址由 Uri.resolve 保留页面协议。
     urlStr = urlStr.trim();
-    if (urlStr.isEmpty) return baseUrl ?? '';
+    final base = baseUrl;
+    if (base == null || base.isEmpty) return urlStr;
     if (urlStr.startsWith('http')) return urlStr;
-    if (baseUrl == null || baseUrl!.isEmpty) return urlStr;
+    if (urlStr.startsWith('data:')) return urlStr;
+    if (urlStr.startsWith('javascript')) return '';
     try {
-      final base = Uri.parse(baseUrl!);
-      return base.resolve(urlStr).toString();
+      // legado 解析 base 前按首个逗号截断（URL 选项后缀残留）。
+      return Uri.parse(base.split(',').first).resolve(urlStr).toString();
     } catch (_) {
       return urlStr;
     }
+  }
+
+  /// legado `NetworkUtils.getBaseUrl`：http(s) 取下标 9 起首个 `/` 之前的
+  /// 部分（保留端口）；其余协议返回 null（保持原 baseUrl）。
+  static String? _getBaseUrl(String u) {
+    final lower = u.toLowerCase();
+    if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
+      return null;
+    }
+    final idx = u.indexOf('/', 9);
+    return idx == -1 ? u : u.substring(0, idx);
   }
 
   String _evalJs(String jsCode, String currentResult) {
@@ -515,6 +605,11 @@ class AnalyzeUrl {
     lastResponseHeaders = null;
     lastFinalUrl = null;
 
+    // legado `AnalyzeUrl.getStrResponseAwait`：声明 URL 选项 `type` 时响应体
+    // 改为原始字节的 hex 字符串（音频等二进制内容），且不走 WebView、不做
+    // jsStr/sourceRegex/bodyJs 文本后处理。
+    final typeHex = requestType != null && requestType!.trim().isNotEmpty;
+
     // 阶段级页面缓存：settle 重放会整段重跑，命中则直接返回上一次的响应
     // （含 jsStr/sourceRegex 后处理结果，故 key 里带上这两项）。
     // 无活动上下文（离线调用/测试）时不缓存。
@@ -523,7 +618,7 @@ class AnalyzeUrl {
     final activeCtx = ShuyuanSourceContext.current;
     final webviewCacheKey =
         activeCtx == null ? null : _pageCacheKey(jsStr, sourceRegex);
-    if (useWebView && activeCtx != null && webviewCacheKey != null) {
+    if (useWebView && !typeHex && activeCtx != null && webviewCacheKey != null) {
       final hit = activeCtx.pageCache[webviewCacheKey];
       if (hit != null) {
         AppLog.instance.d('[书源HTTP] 阶段缓存命中 $url');
@@ -535,9 +630,9 @@ class AnalyzeUrl {
     // 多半是 JS 壳。渲染成功直接用渲染 HTML；失败/命中挑战页 → 抛 WebView
     // 异常走可见浏览器回灌（与源级 useWebview 同一条用户路径）。
     // 无头取源失败且平台不支持时也走同一回灌，不会静默返回壳页。
-    if (useWebView) {
-      final rendered =
-          await ShuyuanWebviewFetcher.fetch(url: url, js: webJs);
+    if (useWebView && !typeHex) {
+      final rendered = await ShuyuanWebviewFetcher.fetch(
+          url: url, js: webJs, delayMs: webViewDelayTime);
       if (rendered == null || rendered.isEmpty) {
         throw VerificationRequiredException(
           url: url,
@@ -775,17 +870,20 @@ class AnalyzeUrl {
       final effectiveCs = _normalizeCharset(charset) ??
           _extractCharsetFromContentType(contentType) ??
           _extractCharsetFromMeta(bytes);
-      body = _decodeBody(bytes, charset, contentType);
+      body = typeHex
+          ? _toHex(bytes)
+          : _decodeBody(bytes, charset, contentType);
       AppLog.instance.d(
           '[书源HTTP] ← ${response.statusCode} ${body.length}字符 '
-          'charset=${effectiveCs ?? 'utf8-容错'}');
+          'charset=${typeHex ? 'hex' : (effectiveCs ?? 'utf8-容错')}');
 
       // 解码后统一检测「验证/反爬挑战页」（覆盖 Cloudflare、以及 PTCMS 等站点
       // 自带的「系统安全验证」等）。命中则抛 [VerificationRequiredException]，
       // 交由既有 WebView 验证回灌流程过验证，而非静默返回空结果或抛普通异常被上层吞掉。
       // webJs 选项（legado 语义）：页面内容需在 WebView 内执行取值脚本
       // 才能得到正文——抛 WebView 渲染回灌请求（脚本经异常携带）。
-      if (webJs != null && webJs!.trim().isNotEmpty) {
+      // type=hex 的二进制响应不做文本挑战检测。
+      if (!typeHex && webJs != null && webJs!.trim().isNotEmpty) {
         throw VerificationRequiredException(
           url: url,
           body: body,
@@ -795,7 +893,7 @@ class AnalyzeUrl {
         );
       }
 
-      if (_looksLikeVerificationChallenge(body)) {
+      if (!typeHex && _looksLikeVerificationChallenge(body)) {
         throw VerificationRequiredException(
           url: url,
           body: body,
@@ -807,6 +905,11 @@ class AnalyzeUrl {
 
       if (response.statusCode != null && response.statusCode! >= 400) {
         throw Exception('请求失败：HTTP ${response.statusCode}，URL：$url');
+      }
+
+      // legado bodyJs：响应体作为 `result` 再过一遍 JS（JSON 解包等）。
+      if (!typeHex && bodyJs != null && bodyJs!.trim().isNotEmpty) {
+        body = _evalJs(bodyJs!, body);
       }
 
       // loginCheckJs 消费（legado 五环节 check 语义）：书源声明的登录校验
@@ -864,7 +967,7 @@ class AnalyzeUrl {
       throw Exception('网络请求失败：$url，${e.toString()}');
     }
 
-    if (jsStr != null && jsStr.isNotEmpty) {
+    if (!typeHex && jsStr != null && jsStr.isNotEmpty) {
       try {
         final analyzeRule = AnalyzeRule(book: ruleData, chapter: chapter)
           ..setContent(body, url)
@@ -873,7 +976,7 @@ class AnalyzeUrl {
       } catch (_) {}
     }
 
-    if (sourceRegex != null && sourceRegex.isNotEmpty) {
+    if (!typeHex && sourceRegex != null && sourceRegex.isNotEmpty) {
       try {
         final regex = RegExp(sourceRegex, dotAll: true);
         final match = regex.firstMatch(body);
@@ -927,6 +1030,15 @@ class AnalyzeUrl {
 
   static bool _hasReplayPlaceholder(String v) =>
       v.contains('__AJAX_') || v.contains('__WEBVIEW_');
+
+  /// 原始字节转小写 hex（对齐 legado `ByteArray.toHexString`）。
+  static String _toHex(Uint8List bytes) {
+    final sb = StringBuffer();
+    for (final b in bytes) {
+      sb.write(b.toRadixString(16).padLeft(2, '0'));
+    }
+    return sb.toString();
+  }
 
   /// JSON 宽松解析（对齐 legado Gson lenient）：社区源把 URL 选项/header
   /// 写成单引号、裸键、尾逗号或带注释的形式，严格 json.decode 会整段
