@@ -26,7 +26,7 @@ class BookInfo {
     }
     final bookInfoRule = bookSource.getBookInfoRule();
     final analyzeRule = AnalyzeRule(book: book)
-      ..setContent(body, redirectUrl ?? baseUrl)
+      ..setContent(body, baseUrl)
       ..setBaseUrl(baseUrl)
       ..setRedirectUrl(redirectUrl ?? baseUrl);
 
@@ -169,14 +169,13 @@ class BookInfo {
       } catch (_) {}
     }
 
+    // 对照 legado BookInfo：目录地址回落到详情页**原始** URL（baseUrl）；
+    // 回落到详情页自身时，详情响应体即目录页 HTML，缓存进 tocHtml 供目录
+    // 阶段直接解析（省一次请求，也覆盖详情页只有一次性 Cookie/签名的站点）。
     if (book.tocUrl == null || book.tocUrl!.isEmpty) {
-      book.tocUrl = redirectUrl ?? baseUrl;
+      book.tocUrl = baseUrl;
     }
-
-    // 对照 legado BookInfo：目录地址回落到详情页自身时，详情响应体即目录
-    // 页 HTML，缓存进 tocHtml 供目录阶段直接解析（省一次请求，也覆盖
-    // 详情页只有一次性 Cookie/签名的站点）。
-    if (book.tocUrl == (redirectUrl ?? baseUrl)) {
+    if (book.tocUrl == baseUrl) {
       book.tocHtml = body;
     }
 
@@ -199,23 +198,37 @@ class BookInfo {
         'toc=${(book.tocUrl ?? '').isEmpty ? '(空)' : book.tocUrl}');
   }
 
+  // legado AppPattern.nameRegex/authorRegex 的 Java `\s` 语义：只含
+  // 半角空白（Dart `\s` 额外含 U+3000，直接用会多删全角空格内容）。
+  static final RegExp _nameRegex = RegExp(
+      r'[ \t\n\x0B\f\r]+作[ \t\n\x0B\f\r]*者[\s\S]*|'
+      r'[ \t\n\x0B\f\r]+[^ \t\n\x0B\f\r]+[ \t\n\x0B\f\r]+著');
+  static final RegExp _authorRegex = RegExp(
+      r'^[ \t\n\x0B\f\r]*作[ \t\n\x0B\f\r]*者[:： \t\n\x0B\f\r]+|'
+      r'[ \t\n\x0B\f\r]+著');
+
+  /// legado `BookHelp.formatBookName`：仅剥离作者尾巴，再按
+  /// `trim { it <= ' ' }`（ASCII 空白）修剪，保留全角空格。
   static String _formatBookName(String name) {
     if (name.isEmpty) return name;
-    return name
-        .replaceAll(RegExp(r'[【［【\[\(（]([^【［【\[\(（]*?)[】］】\]\)）]'), '')
-        .replaceAll(RegExp(r'^\s*[\-_—–]+'), '')
-        .replaceAll(RegExp(r'[\-_—–]+\s*$'), '')
-        .trim();
+    return _trimAscii(name.replaceAll(_nameRegex, ''));
   }
 
+  /// legado `BookHelp.formatBookAuthor`。
   static String _formatBookAuthor(String author) {
     if (author.isEmpty) return author;
-    return author
-        // 去除 "作者:" / "作者：" 前缀（与 book_list.formatBookAuthor 一致，
-        // 用字面序列匹配而非字符类 [作者：]，后者只删首字"作"）
-        .replaceAll(RegExp(r'^\s*作\s*者\s*[:：]\s*'), '')
-        .replaceAll(RegExp(r'^\s*[\-_—–]+'), '')
-        .replaceAll(RegExp(r'[\-_—–]+\s*$'), '')
-        .trim();
+    return _trimAscii(author.replaceAll(_authorRegex, ''));
+  }
+
+  static String _trimAscii(String s) {
+    var start = 0;
+    var end = s.length;
+    while (start < end && s.codeUnitAt(start) <= 0x20) {
+      start++;
+    }
+    while (end > start && s.codeUnitAt(end - 1) <= 0x20) {
+      end--;
+    }
+    return s.substring(start, end);
   }
 }

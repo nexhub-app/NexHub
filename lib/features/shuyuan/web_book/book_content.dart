@@ -12,6 +12,7 @@ import '../analyze/analyze_rule.dart';
 import '../analyze/js_engine.dart';
 import '../analyze/regex_compat.dart';
 import '../model/book_source.dart';
+import '../model/rule_content.dart';
 import '../model/xiaoshuo_book.dart';
 import '../model/xiaoshuo_book_chapter.dart';
 
@@ -147,30 +148,19 @@ class BookContent {
     required String body,
     String? nextChapterUrl,
     bool mediaSource = false,
+    bool processTitle = true,
   }) {
     final contentRule = bookSource.getContentRule();
     final analyzeRule = AnalyzeRule(book: book, chapter: bookChapter)
-      ..setContent(body, redirectUrl ?? baseUrl)
+      ..setContent(body, baseUrl)
       ..setBaseUrl(baseUrl)
-      ..setRedirectUrl(redirectUrl ?? baseUrl);
+      ..setRedirectUrl(redirectUrl ?? baseUrl)
+      ..setNextChapterUrl(nextChapterUrl);
 
     String content = '';
 
     if (contentRule.content != null && contentRule.content!.isNotEmpty) {
-      // legado 语义：若声明了 subContent，则先按 content 取若干容器元素，
-      // 再对每个容器应用 subContent 提取正文（典型用于「外层多个内容块、
-      // 内层才是段落」的站点）。未声明时维持原 getString(content) 行为不变。
-      if (contentRule.subContent != null && contentRule.subContent!.isNotEmpty) {
-        content = _getContentWithSub(
-          analyzeRule,
-          contentRule.content!,
-          contentRule.subContent!,
-          baseUrl,
-          redirectUrl ?? baseUrl,
-        );
-      } else {
-        content = _getContent(analyzeRule, contentRule.content!);
-      }
+      content = _getContent(analyzeRule, contentRule.content!);
     }
 
     // 正文规则提取结果日志：空结果 → 规则未命中 / JS 失败（真机排查关键）。
@@ -182,6 +172,8 @@ class BookContent {
           '${content.length}字符 url=$redirectUrl');
     }
 
+    if (processTitle) applyChapterTitle(analyzeRule, contentRule, bookChapter);
+
     // 音/视频源（legado bookSourceType=1/4，BookContent.analyzeContent 同款
     // 分支）：正文即媒体直链或 DASH/MPD 清单文本，不做 fallback 选择器、
     // HTML 剥离与分块（MPD 的 XML 会被当标签删光 → 播放器拿不到地址）。
@@ -189,7 +181,8 @@ class BookContent {
       if (contentRule.replaceRegex != null &&
           contentRule.replaceRegex!.isNotEmpty) {
         content = content.split('\n').map((line) => line.trim()).join('\n');
-        content = applyReplaceRules(content, contentRule.replaceRegex!);
+        content = applyReplaceRules(content, contentRule.replaceRegex!,
+            analyzeRule: analyzeRule);
       }
       final mediaText = content.trim();
       return mediaText.isEmpty
@@ -224,22 +217,11 @@ class BookContent {
     if (contentRule.replaceRegex != null && contentRule.replaceRegex!.isNotEmpty) {
       // 逐行 trim 后应用替换规则（对齐 legado：逐行 trim）
       content = content.split('\n').map((line) => line.trim()).join('\n');
-      content = applyReplaceRules(content, contentRule.replaceRegex!);
-    }
-
-    if (contentRule.title != null && contentRule.title!.isNotEmpty) {
-      try {
-        final title = analyzeRule.getString(contentRule.title!);
-        if (title.isNotEmpty) {
-          bookChapter.title = title;
-        }
-      } catch (_) {}
+      content = applyReplaceRules(content, contentRule.replaceRegex!,
+          analyzeRule: analyzeRule);
     }
 
     // 内容清洗：块级剥离 HTML + 按段提取插图 + 按段去除广告行。
-    // 此前 _formatContent 会把 <img> 连同所有标签一起删掉，插图永远丢失；
-    // 现在 _formatToBlocks 在剥离标签的同时把 <img> 提取为插图块（插在其
-    // 相邻文本段之后），使阅读器能图文混排。图片块不参与广告行过滤。
     var blocks = _formatToBlocks(content, baseUrl, redirectUrl ?? baseUrl);
     blocks = _cleanContentAdsBlocks(blocks);
 
@@ -258,52 +240,68 @@ class BookContent {
           : b).toList();
     }
 
-    // 添加段落缩进（仅对声明了 replaceRegex 的源，幂等处理）。
-    // 先去掉行首可能存在的全角/半角缩进，再统一加一个全角空格，避免源 HTML
-    // 已带首行缩进时与引擎缩进叠加（笔趣阁 #nr1@html 多页一致性修复）。
-    if (contentRule.replaceRegex != null &&
-        contentRule.replaceRegex!.isNotEmpty &&
-        blocks.isNotEmpty) {
+    // legado HtmlFormatter.formatKeepImg 对正文每一段统一补两个全角空格
+    // （与 replaceRegex 是否声明无关）；幂等剥离源自带缩进后再统一加。
+    if (blocks.isNotEmpty) {
       blocks = _applyIndentBlocks(blocks);
     }
 
     return blocks;
   }
 
+  static final RegExp _chapterImgRegex =
+      RegExp(r'^(.*)((?:data|https?):[\s\S]+)$');
+
+  /// legado BookContent 外层标题规则：在页拼接后求值一次；命中
+  /// `图片地址` 尾巴时剥离为章节名（图片部分 legado 存入 reviewImg，
+  /// NexHub 章节模型无该字段，丢弃）。
+  static void applyChapterTitle(
+    AnalyzeRule analyzeRule,
+    ContentRule contentRule,
+    XiaoshuoBookChapter bookChapter,
+  ) {
+    final titleRule = contentRule.title;
+    if (titleRule == null || titleRule.isEmpty) return;
+    try {
+      var title = analyzeRule.getString(titleRule);
+      if (title.isEmpty) return;
+      final match = _chapterImgRegex.firstMatch(title);
+      if (match != null) {
+        final beforeImg = match.group(1) ?? '';
+        title = beforeImg.isNotEmpty ? beforeImg : bookChapter.title;
+      }
+      bookChapter.title = title;
+    } catch (_) {}
+  }
+
+  /// legado BookContent 外层 subContent：all 页拼接后对首页响应求值一次，
+  /// 作为附加正文追加（http 开头时先抓取）。legado 随后才对整段跑
+  /// replaceRegex/缩进，这里对附加段单独复现这两个后处理。
+  static List<NovelBlock> formatAppendedContent({
+    required String content,
+    required ContentRule contentRule,
+    required String baseUrl,
+    required String redirectUrl,
+    required AnalyzeRule analyzeRule,
+  }) {
+    var text = content;
+    final replaceRule = contentRule.replaceRegex;
+    final hasReplace = replaceRule != null && replaceRule.isNotEmpty;
+    if (hasReplace) {
+      text = text.split('\n').map((line) => line.trim()).join('\n');
+      text = applyReplaceRules(text, replaceRule, analyzeRule: analyzeRule);
+    }
+    var blocks = _formatToBlocks(text, baseUrl, redirectUrl);
+    blocks = _cleanContentAdsBlocks(blocks);
+    if (hasReplace && blocks.isNotEmpty) {
+      blocks = _applyIndentBlocks(blocks);
+    }
+    return blocks;
+  }
+
   static String _getContent(AnalyzeRule analyzeRule, String contentRule) {
     try {
       return analyzeRule.getString(contentRule, unescape: false);
-    } catch (_) {
-      return '';
-    }
-  }
-
-  /// 带 subContent 的正文提取：先按 [contentRule] 取若干容器元素，
-  /// 再对每个容器应用 [subRule] 提取其正文，逐容器拼接。
-  /// 若 [contentRule] 命中不到元素（如本身是 `@text` 文本型规则），
-  /// 退化为直接 getString([contentRule])，保证不漏内容。
-  static String _getContentWithSub(
-    AnalyzeRule analyzeRule,
-    String contentRule,
-    String subRule,
-    String baseUrl,
-    String redirectUrl,
-  ) {
-    try {
-      final elements = analyzeRule.getElements(contentRule);
-      if (elements.isEmpty) {
-        return analyzeRule.getString(contentRule, unescape: false);
-      }
-      final parts = <String>[];
-      for (final el in elements) {
-        final subAnalyzer = AnalyzeRule()
-          ..setContent(el, redirectUrl)
-          ..setBaseUrl(baseUrl)
-          ..setRedirectUrl(redirectUrl);
-        final s = subAnalyzer.getString(subRule, unescape: false).trim();
-        if (s.isNotEmpty) parts.add(s);
-      }
-      return parts.join('\n');
     } catch (_) {
       return '';
     }
@@ -475,7 +473,10 @@ class BookContent {
           _attr(tag, 'src') ??
           _attrFirstDataXxx(tag);
       if (src == null || src.isEmpty) continue;
-      final abs = _toAbsoluteUrl(src, baseUrl, redirectUrl);
+      // legado formatKeepImg 之后整段执行 unescapeHtml4，图片地址中的
+      // `&amp;` 等实体会还原；图块提前抽取，这里补同一次解码。
+      final abs = _toAbsoluteUrl(
+          AnalyzeRule.unescapeHtml(src), baseUrl, redirectUrl);
       if (_looksLikeImage(abs)) urls.add(abs);
     }
     return urls;
@@ -520,19 +521,11 @@ class BookContent {
   }
 
   /// 相对路径转绝对 URL：优先用最终页地址（redirectUrl），回退 baseUrl。
+  /// 复用 [AnalyzeRule.absoluteUrl] 的 legado 语义（data:/javascript: 特判、
+  /// URL 选项 `,{...}` 原样保留）。
   static String _toAbsoluteUrl(String src, String baseUrl, String redirectUrl) {
-    if (src.startsWith('http://') ||
-        src.startsWith('https://') ||
-        src.startsWith('data:image')) {
-      return src;
-    }
     final base = redirectUrl.isNotEmpty ? redirectUrl : baseUrl;
-    if (base.isEmpty) return src;
-    try {
-      return Uri.parse(base).resolve(src).toString();
-    } catch (_) {
-      return src;
-    }
+    return AnalyzeRule.absoluteUrl(base, src);
   }
 
   /// 过滤明显非插图的占位图（1px 透明图、loading 动画、spacer 等）。
@@ -579,15 +572,25 @@ class BookContent {
     return out;
   }
 
-  /// 解码常见 HTML 实体（与旧 _formatContent 行为一致）。
+  /// 解码 HTML 实体并对齐 legado `HtmlFormatter` 的空白归一：
+  /// `&nbsp;/&ensp;/&emsp;` → 半角空格，`&thinsp;/&zwnj;/&zwj;` 与其
+  /// Unicode 形态删除；随后完整 HTML4 反转义（legado 正文在格式化后执行
+  /// `StringEscapeUtils.unescapeHtml4`）。
   static String _decodeEntities(String text) {
-    return text
-        .replaceAll('&amp;', '&')
-        .replaceAll('&lt;', '<')
-        .replaceAll('&gt;', '>')
-        .replaceAll('&quot;', '"')
-        .replaceAll('&#39;', "'")
-        .replaceAll('&nbsp;', ' ');
+    if (!text.contains('&') &&
+        !text.contains('\u00A0') &&
+        !text.contains('\u2002') &&
+        !text.contains('\u2003') &&
+        !text.contains('\u2009') &&
+        !text.contains('\u200C') &&
+        !text.contains('\u200D')) {
+      return text;
+    }
+    return AnalyzeRule.unescapeHtml(text)
+        .replaceAll('\u00A0', ' ')
+        .replaceAll('\u2002', ' ')
+        .replaceAll('\u2003', ' ')
+        .replaceAll(RegExp('[\u2009\u200C\u200D]'), '');
   }
 
   static String _extractGenericContent(String body) {
@@ -731,11 +734,18 @@ class BookContent {
   /// - 多行多规则：每行一条 `pattern##replacement`（replacement 可含 ##），
   ///   依序应用；空 pattern 行跳过（防 RegExp('') 撑爆正文）。
   /// multiLine: true 让 ^...$ 锚点支持每行边界匹配。
+  ///
+  /// [analyzeRule] 为正文页规则实例时，JS 分支复用其 book/chapter/baseUrl
+  /// 绑定（legado 的 replaceRegex 在正文 AnalyzeRule 上求值）。
   @visibleForTesting
-  static String applyReplaceRules(String content, String replaceRegex) {
+  static String applyReplaceRules(
+    String content,
+    String replaceRegex, {
+    AnalyzeRule? analyzeRule,
+  }) {
     final rr = replaceRegex.trim();
     if (rr.startsWith('@js:') || rr.contains('<js>')) {
-      final ar = AnalyzeRule()..setContent(content);
+      final ar = analyzeRule ?? (AnalyzeRule()..setContent(content));
       final out = ar.getString(rr, mContent: content);
       return out.isEmpty ? content : out;
     }

@@ -865,7 +865,7 @@ class AnalyzeRule {
       RegExp(r'&(?:#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);');
   static final Map<String, String> _entityCache = {};
 
-  String _unescapeHtml(String str) {
+  static String unescapeHtml(String str) {
     if (!str.contains('&')) return str;
     return str.replaceAllMapped(_entityPattern, (m) {
       final entity = m.group(0)!;
@@ -888,6 +888,8 @@ class AnalyzeRule {
       });
     });
   }
+
+  String _unescapeHtml(String str) => unescapeHtml(str);
 
   bool _isJsonString(String str) {
     final trimmed = str.trim();

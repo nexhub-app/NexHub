@@ -245,7 +245,9 @@ class WebBook {
     BookInfo.analyzeBookInfo(
       bookSource: source,
       book: book,
-      baseUrl: analyzeUrl.url,
+      // legado WebBook.getBookInfoAwait：baseUrl 是请求前的书籍 URL，
+      // redirectUrl 才是响应最终 URL（tocUrl 兜底/tocHtml 判定依赖前者）。
+      baseUrl: bookUrl,
       redirectUrl: analyzeUrl.url,
       body: body,
     );
@@ -513,6 +515,7 @@ class WebBook {
     required XiaoshuoBookSource source,
     required String chapterUrl,
     XiaoshuoBook? originalBook,
+    String? nextChapterUrl,
   }) async {
     final contentRule = source.getContentRule();
     final book = originalBook ?? XiaoshuoBook(bookUrl: '', name: '');
@@ -541,16 +544,23 @@ class WebBook {
       firstBody = cachedTocHtml;
       firstBaseUrl = chapterUrl;
     } else {
+      final tocBase =
+          (book.tocUrl != null && book.tocUrl!.isNotEmpty)
+              ? book.tocUrl!
+              : source.bookSourceUrl;
       final analyzeUrl = AnalyzeUrl(
         url: chapterUrl,
-        baseUrl: source.bookSourceUrl,
+        baseUrl: tocBase,
         source: source,
         ruleData: book,
         chapter: chapter,
       );
-      // ruleContent.sourceRegex：响应体预过滤（legado 语义，命中组为正文源）。
-      firstBody =
-          await analyzeUrl.getStrResponse(sourceRegex: contentRule.sourceRegex);
+      // legado getStrResponseAwait(jsStr = ruleContent.webJs, sourceRegex = …)：
+      // webJs 在 WebView 路径作为页内取值脚本（Java 直连分支不消费）。
+      firstBody = await analyzeUrl.getStrResponse(
+        jsStr: contentRule.webJs,
+        sourceRegex: contentRule.sourceRegex,
+      );
       firstBaseUrl = analyzeUrl.url;
     }
     if (firstBody.isEmpty) {
@@ -566,10 +576,14 @@ class WebBook {
       bookSource: source,
       book: book,
       bookChapter: chapter,
-      baseUrl: firstBaseUrl,
+      // legado：baseUrl=章节原始地址，redirectUrl=响应最终地址。
+      baseUrl: chapterUrl,
       redirectUrl: firstBaseUrl,
       body: firstBody,
+      nextChapterUrl: nextChapterUrl,
       mediaSource: mediaSource,
+      // 标题规则在全部页拼接后执行一次（见下方 postRule）。
+      processTitle: false,
     );
     blocks.addAll(firstContent);
 
@@ -585,7 +599,15 @@ class WebBook {
       // 选择器返回整组页码链接）时，按声明顺序并发抓取（≤4 并发）并保序
       // 拼接。任一子页失败/为空即停止追加（只保留连续前缀，避免正文中段
       // 缺页）；并发子页不再继续提取下页，与串行循环互斥。
-      final batchUrls = _extractNextContentUrls(firstBody, firstBaseUrl, nextRule)
+      final batchUrls = _extractNextContentUrls(
+        firstBody,
+        chapterUrl,
+        firstBaseUrl,
+        nextRule,
+        book: book,
+        chapter: chapter,
+        nextChapterUrl: nextChapterUrl,
+      )
           .where((u) =>
               !visited.contains(u) &&
               _isNextPageOfChapter(chapterRoot, u, firstBaseUrl))
@@ -614,10 +636,12 @@ class WebBook {
               bookSource: source,
               book: book,
               bookChapter: chapter,
-              baseUrl: analyze.url,
+              baseUrl: url,
               redirectUrl: analyze.url,
               body: body,
+              nextChapterUrl: nextChapterUrl,
               mediaSource: mediaSource,
+              processTitle: false,
             );
           },
         );
@@ -628,13 +652,31 @@ class WebBook {
         }
       } else {
         // 串行跟随模式：逐页提取单个"下一页"并抓取，直到没有下一页为止。
-        var currentUrl = firstBaseUrl;
+        var currentBaseUrl = chapterUrl;
+        var currentRedirectUrl = firstBaseUrl;
         var currentBody = firstBody;
         for (var i = 0; i < maxPages; i++) {
-          final nextUrl =
-              _extractNextContentUrl(currentBody, currentUrl, nextRule);
+          final nextUrl = _extractNextContentUrl(
+            currentBody,
+            currentBaseUrl,
+            currentRedirectUrl,
+            nextRule,
+            book: book,
+            chapter: chapter,
+            nextChapterUrl: nextChapterUrl,
+          );
           if (nextUrl.isEmpty || visited.contains(nextUrl)) break;
-          if (!_isNextPageOfChapter(chapterRoot, nextUrl, currentUrl)) break;
+          if (!_isNextPageOfChapter(chapterRoot, nextUrl, currentRedirectUrl)) {
+            break;
+          }
+          // legado：下一页与目录中的"下一章"同一地址时停止（最后页的
+          // "下一页"元素常指向下一章）。
+          if (nextChapterUrl != null && nextChapterUrl.isNotEmpty) {
+            final absNext = AnalyzeRule.absoluteUrl(currentRedirectUrl, nextUrl);
+            final absChapter =
+                AnalyzeRule.absoluteUrl(currentRedirectUrl, nextChapterUrl);
+            if (absNext == absChapter) break;
+          }
           visited.add(nextUrl);
 
           final pageAnalyze = AnalyzeUrl(
@@ -651,19 +693,60 @@ class WebBook {
             bookSource: source,
             book: book,
             bookChapter: chapter,
-            baseUrl: pageAnalyze.url,
+            baseUrl: nextUrl,
             redirectUrl: pageAnalyze.url,
             body: pageBody,
+            nextChapterUrl: nextChapterUrl,
             mediaSource: mediaSource,
+            processTitle: false,
           );
           if (pageContent.isEmpty) break;
 
           blocks.addAll(pageContent);
-          currentUrl = pageAnalyze.url;
+          currentBaseUrl = nextUrl;
+          currentRedirectUrl = pageAnalyze.url;
           currentBody = pageBody;
         }
       }
     }
+
+    // legado BookContent 外层：全部页拼接后执行 subContent（附加正文/音频
+    // 歌词）与 title 规则（一次）。subContent 以首页响应为求值内容。
+    final postRule = AnalyzeRule(book: book, chapter: chapter)
+      ..setContent(firstBody, chapterUrl)
+      ..setBaseUrl(chapterUrl)
+      ..setRedirectUrl(firstBaseUrl)
+      ..setNextChapterUrl(nextChapterUrl);
+    final subRule = contentRule.subContent;
+    if (subRule != null && subRule.isNotEmpty) {
+      try {
+        var subContent = postRule.getString(subRule, unescape: false).trim();
+        if (subContent.toLowerCase().startsWith('http')) {
+          final subAnalyze = AnalyzeUrl(
+            url: subContent,
+            baseUrl: firstBaseUrl,
+            source: source,
+            ruleData: book,
+            chapter: chapter,
+          );
+          subContent = await subAnalyze.getStrResponse();
+        }
+        if (subContent.isNotEmpty) {
+          if (mediaSource) {
+            chapter.putVariable('lyric', subContent);
+          } else {
+            blocks.addAll(BookContent.formatAppendedContent(
+              content: subContent,
+              contentRule: contentRule,
+              baseUrl: chapterUrl,
+              redirectUrl: firstBaseUrl,
+              analyzeRule: postRule,
+            ));
+          }
+        }
+      } catch (_) {}
+    }
+    BookContent.applyChapterTitle(postRule, contentRule, chapter);
 
     if (blocks.isEmpty) {
       return BookContentResult(content: '', error: '解析失败');
@@ -675,12 +758,25 @@ class WebBook {
   }
 
   /// 从当前页正文中提取"下一页"绝对 URL；无下一页时返回空串。
-  String _extractNextContentUrl(String body, String baseUrl, String rule) {
+  ///
+  /// 分析器绑定书/章/baseUrl/redirectUrl/nextChapterUrl：legado 用页级
+  /// AnalyzeRule 求值 nextContentUrl，JS 里可读 `chapter.*` 与
+  /// `nextChapterUrl`。
+  String _extractNextContentUrl(
+    String body,
+    String baseUrl,
+    String redirectUrl,
+    String rule, {
+    XiaoshuoBook? book,
+    XiaoshuoBookChapter? chapter,
+    String? nextChapterUrl,
+  }) {
     try {
-      final analyzeRule = AnalyzeRule()
+      final analyzeRule = AnalyzeRule(book: book, chapter: chapter)
         ..setContent(body, baseUrl)
         ..setBaseUrl(baseUrl)
-        ..setRedirectUrl(baseUrl);
+        ..setRedirectUrl(redirectUrl)
+        ..setNextChapterUrl(nextChapterUrl);
       final url = analyzeRule.getString(rule, isUrl: true).trim();
       // isUrl 规则命中为空时会回退返回 baseUrl，视为"无下一页"。
       if (url.isEmpty || url == baseUrl) return '';
@@ -695,12 +791,20 @@ class WebBook {
   /// 规则一次命中多个链接（如分页条全量选择器）时逐条过滤：空串、
   /// 回退 baseUrl、非 http(s) 占位链接（javascript:void(0)/# 等）均剔除。
   List<String> _extractNextContentUrls(
-      String body, String baseUrl, String rule) {
+    String body,
+    String baseUrl,
+    String redirectUrl,
+    String rule, {
+    XiaoshuoBook? book,
+    XiaoshuoBookChapter? chapter,
+    String? nextChapterUrl,
+  }) {
     try {
-      final analyzeRule = AnalyzeRule()
+      final analyzeRule = AnalyzeRule(book: book, chapter: chapter)
         ..setContent(body, baseUrl)
         ..setBaseUrl(baseUrl)
-        ..setRedirectUrl(baseUrl);
+        ..setRedirectUrl(redirectUrl)
+        ..setNextChapterUrl(nextChapterUrl);
       final raw = analyzeRule.getStringList(rule, isUrl: true);
       final out = <String>[];
       for (final u in raw) {

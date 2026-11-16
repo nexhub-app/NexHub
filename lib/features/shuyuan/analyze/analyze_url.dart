@@ -631,8 +631,10 @@ class AnalyzeUrl {
     // 异常走可见浏览器回灌（与源级 useWebview 同一条用户路径）。
     // 无头取源失败且平台不支持时也走同一回灌，不会静默返回壳页。
     if (useWebView && !typeHex) {
+      // legado BackstageWebView：`javaScript = webJs ?: jsStr` ——
+      // URL 选项 webJs 优先，其次调用方传入的页内取值脚本（正文 webJs）。
       final rendered = await ShuyuanWebviewFetcher.fetch(
-          url: url, js: webJs, delayMs: webViewDelayTime);
+          url: url, js: webJs ?? jsStr, delayMs: webViewDelayTime);
       if (rendered == null || rendered.isEmpty) {
         throw VerificationRequiredException(
           url: url,
@@ -661,14 +663,6 @@ class AnalyzeUrl {
         }
       }
       var out = rendered;
-      if (jsStr != null && jsStr.isNotEmpty) {
-        try {
-          final ar = AnalyzeRule(book: ruleData, chapter: chapter)
-            ..setContent(out, url)
-            ..setBaseUrl(url);
-          out = ar.getString(jsStr);
-        } catch (_) {}
-      }
       if (sourceRegex != null && sourceRegex.isNotEmpty) {
         try {
           final regex = RegExp(sourceRegex, dotAll: true);
@@ -967,15 +961,8 @@ class AnalyzeUrl {
       throw Exception('网络请求失败：$url，${e.toString()}');
     }
 
-    if (!typeHex && jsStr != null && jsStr.isNotEmpty) {
-      try {
-        final analyzeRule = AnalyzeRule(book: ruleData, chapter: chapter)
-          ..setContent(body, url)
-          ..setBaseUrl(url);
-        body = analyzeRule.getString(jsStr);
-      } catch (_) {}
-    }
-
+    // legado：jsStr 仅在 WebView 路径作为页内脚本消费（Java 直连分支不处理），
+    // 此处保持一致；sourceRegex 在直连分支继续应用（NexHub 既有扩展语义）。
     if (!typeHex && sourceRegex != null && sourceRegex.isNotEmpty) {
       try {
         final regex = RegExp(sourceRegex, dotAll: true);
