@@ -4,7 +4,9 @@ library;
 import '../model/book_source.dart';
 import '../model/xiaoshuo_book.dart';
 import '../analyze/analyze_rule.dart';
+import '../analyze/html_formatter.dart';
 import '../analyze/source_context.dart';
+import '../analyze/string_utils.dart';
 import '../../../core/utils/app_log.dart';
 
 class BookInfo {
@@ -87,9 +89,18 @@ class BookInfo {
 
     if (bookInfoRule.intro != null && bookInfoRule.intro!.isNotEmpty) {
       try {
+        // legado BookInfo：带渲染指令前缀（<usehtml>/<md>/<useweb>）的简介
+        // 原样保留（源作者用其承载交互标记），其余经 HtmlFormatter 转纯文本
+        // 并截断 5000；旧实现直接把 HTML 塞给 UI。
         final intro = analyzeRule.getString(bookInfoRule.intro!);
-        if (intro.isNotEmpty) {
-          book.intro = intro.length > 5000 ? intro.substring(0, 5000) : intro;
+        final introTrim = intro.trimLeft();
+        if (introTrim.startsWith('<usehtml>') ||
+            introTrim.startsWith('<md>') ||
+            introTrim.startsWith('<useweb>')) {
+          book.intro = introTrim;
+        } else {
+          final formatted = HtmlFormatter.formatIntro(introTrim);
+          if (formatted.isNotEmpty) book.intro = formatted;
         }
       } catch (_) {}
     }
@@ -114,7 +125,9 @@ class BookInfo {
 
     if (bookInfoRule.wordCount != null && bookInfoRule.wordCount!.isNotEmpty) {
       try {
-        final wordCount = analyzeRule.getString(bookInfoRule.wordCount!);
+        // legado BookInfo：wordCountFormat 归一（12000 → 1.2万字）。
+        final wordCount =
+            StringUtils.wordCountFormat(analyzeRule.getString(bookInfoRule.wordCount!));
         if (wordCount.isNotEmpty) {
           book.wordCount = wordCount;
         }

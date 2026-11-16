@@ -10,6 +10,7 @@ class SearchBook {
   String? coverUrl;
   String? kind;
   String? lastChapter;
+  String? intro;
   String? tocUrl;
   String? wordCount;
   String? bookSourceUrl;
@@ -23,6 +24,7 @@ class SearchBook {
     this.coverUrl,
     this.kind,
     this.lastChapter,
+    this.intro,
     this.tocUrl,
     this.wordCount,
     this.bookSourceUrl,
@@ -38,6 +40,7 @@ class SearchBook {
       coverUrl: json['coverUrl'] as String?,
       kind: json['kind'] as String?,
       lastChapter: json['lastChapter'] as String?,
+      intro: json['intro'] as String?,
       tocUrl: json['tocUrl'] as String?,
       wordCount: json['wordCount'] as String?,
       bookSourceUrl: json['bookSourceUrl'] as String?,
@@ -53,6 +56,7 @@ class SearchBook {
         if (coverUrl != null) 'coverUrl': coverUrl,
         if (kind != null) 'kind': kind,
         if (lastChapter != null) 'lastChapter': lastChapter,
+        if (intro != null) 'intro': intro,
         if (tocUrl != null) 'tocUrl': tocUrl,
         if (wordCount != null) 'wordCount': wordCount,
         if (bookSourceUrl != null) 'bookSourceUrl': bookSourceUrl,
@@ -60,38 +64,14 @@ class SearchBook {
         'type': type,
       };
 
-  /// 值相等：对齐 legado `SearchBook`（data class）的 LinkedHashSet 去重
-  /// 语义——同一条目重复出现（同 URL 同字段）只保留首次。
+  /// 值相等：对齐 legado `SearchBook` 的自定义 equals——**仅按 bookUrl**
+  /// 判定，列表去重（LinkedHashSet）保留首次出现的条目。
   @override
   bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is SearchBook &&
-          bookUrl == other.bookUrl &&
-          name == other.name &&
-          author == other.author &&
-          coverUrl == other.coverUrl &&
-          kind == other.kind &&
-          lastChapter == other.lastChapter &&
-          tocUrl == other.tocUrl &&
-          wordCount == other.wordCount &&
-          bookSourceUrl == other.bookSourceUrl &&
-          bookSourceName == other.bookSourceName &&
-          type == other.type;
+      identical(this, other) || other is SearchBook && bookUrl == other.bookUrl;
 
   @override
-  int get hashCode => Object.hash(
-        bookUrl,
-        name,
-        author,
-        coverUrl,
-        kind,
-        lastChapter,
-        tocUrl,
-        wordCount,
-        bookSourceUrl,
-        bookSourceName,
-        type,
-      );
+  int get hashCode => bookUrl.hashCode;
 
   XiaoshuoBook toBook() {
     return XiaoshuoBook(
@@ -101,7 +81,9 @@ class SearchBook {
       coverUrl: coverUrl,
       kind: kind,
       lastChapter: lastChapter,
+      intro: intro,
       tocUrl: tocUrl,
+      wordCount: wordCount,
       type: type,
     );
   }

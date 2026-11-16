@@ -9,6 +9,8 @@ class ExploreRule {
   String? bookCoverUrl;
   String? bookKind;
   String? bookLastChapter;
+  String? bookIntro;
+  String? bookWordCount;
 
   ExploreRule({
     this.bookList,
@@ -18,11 +20,13 @@ class ExploreRule {
     this.bookCoverUrl,
     this.bookKind,
     this.bookLastChapter,
+    this.bookIntro,
+    this.bookWordCount,
   });
 
   factory ExploreRule.fromJson(Map<String, dynamic> json) {
     // 与 SearchRule 一致：兼容 legado 原文键名（name/author/coverUrl/
-    // kind/lastChapter）与内部命名（bookName/...），原名优先。
+    // kind/lastChapter/intro/wordCount）与内部命名（bookName/...），原名优先。
     String? pick(String legado, String internal) {
       final v = json[legado] as String?;
       if (v != null && v.isNotEmpty) return v;
@@ -36,6 +40,8 @@ class ExploreRule {
       bookCoverUrl: pick('coverUrl', 'bookCoverUrl'),
       bookKind: pick('kind', 'bookKind'),
       bookLastChapter: pick('lastChapter', 'bookLastChapter'),
+      bookIntro: pick('intro', 'bookIntro'),
+      bookWordCount: pick('wordCount', 'bookWordCount'),
     );
   }
 
@@ -47,5 +53,7 @@ class ExploreRule {
         if (bookCoverUrl != null) 'bookCoverUrl': bookCoverUrl,
         if (bookKind != null) 'bookKind': bookKind,
         if (bookLastChapter != null) 'bookLastChapter': bookLastChapter,
+        if (bookIntro != null) 'bookIntro': bookIntro,
+        if (bookWordCount != null) 'bookWordCount': bookWordCount,
       };
 }

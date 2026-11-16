@@ -1,8 +1,6 @@
 /// 章节目录解析：依据书源 `ruleToc` 解析章节列表（标题、URL、卷/VIP/付费标记）。
 library;
 
-import 'dart:convert';
-
 import '../../../core/utils/app_log.dart';
 import '../analyze/js_engine.dart';
 import '../analyze/analyze_rule.dart';
@@ -29,6 +27,7 @@ class BookChapterList {
     required String body,
     List<String>? nextUrlsOut,
     bool getNextUrl = true,
+    bool applyReverse = true,
   }) {
     final tocRule = bookSource.getTocRule();
     final analyzeRule = AnalyzeRule(book: book)
@@ -122,121 +121,124 @@ class BookChapterList {
       final ruleUpdateTime = analyzeRule.splitSourceRule(tocRule.updateTime ?? '');
 
       for (int i = 0; i < elements.length; i++) {
-        analyzeRule.setContent(elements[i]);
-        analyzeRule.setBaseUrl(redirectUrl ?? baseUrl);
-
-        final bookChapter = XiaoshuoBookChapter(
-          bookUrl: book.bookUrl,
-          url: '',
-        );
-        // 对照 legado BookChapterList：逐条元素先绑定当前 chapter 再求值，
-        // 章节规则的 JS（@js / {{...}}）才能读到 chapter.title/url 等；
-        // 也保证本章 @put 的变量归本章。
-        analyzeRule.setChapter(bookChapter);
-
+        // 逐条隔离：源规则对个别条目抛异常（典型是 @js 空值）时跳过该条，
+        // 不吞掉后续章节——否则一条坏数据会让整页目录解析为 0 章。
         try {
-          if (ruleName.isNotEmpty) {
-            bookChapter.title = analyzeRule.getStringFromRules(ruleName);
-          }
-        } catch (_) {}
+          analyzeRule.setContent(elements[i]);
+          analyzeRule.setBaseUrl(redirectUrl ?? baseUrl);
 
-        try {
-          if (ruleUrl.isNotEmpty) {
-            bookChapter.url = analyzeRule.getStringFromRules(ruleUrl, isUrl: true);
-          }
-          // 规则提取失败或返回空时，尝试用 @href 作为后备
+          final bookChapter = XiaoshuoBookChapter(
+            bookUrl: book.bookUrl,
+            url: '',
+          );
+          // 对照 legado BookChapterList：逐条元素先绑定当前 chapter 再求值，
+          // 章节规则的 JS（@js / {{...}}）才能读到 chapter.title/url 等；
+          // 也保证本章 @put 的变量归本章。
+          analyzeRule.setChapter(bookChapter);
+
+          try {
+            if (ruleName.isNotEmpty) {
+              bookChapter.title = analyzeRule.getStringFromRules(ruleName);
+            }
+          } catch (_) {}
+
+          try {
+            if (ruleUrl.isNotEmpty) {
+              // legado getString(urlRule, isUrl=true)：空结果回落 baseUrl
+              //（而非空串），章节 URL 缺失的判定因此落在下方 isEmpty 分支。
+              bookChapter.url =
+                  analyzeRule.getStringFromRules(ruleUrl, isUrl: true);
+            }
+          } catch (_) {}
+
+          // 与 legado 求值顺序一致：title → url → tag → isVolume。
+          try {
+            if (ruleUpdateTime.isNotEmpty) {
+              bookChapter.tag = analyzeRule.getStringFromRules(ruleUpdateTime);
+            }
+          } catch (_) {}
+
+          // 卷标记须在 URL 兜底前求值：urlRule 缺失时卷条目 URL 为空，
+          // 需用标题占位而非 baseUrl。
+          try {
+            if (ruleIsVolume.isNotEmpty) {
+              final isVolume = analyzeRule.getStringFromRules(ruleIsVolume);
+              if (isVolume.toLowerCase() == 'true' || isVolume == '1') {
+                bookChapter.isVolume = true;
+              }
+            }
+          } catch (_) {}
+
           if (bookChapter.url.isEmpty) {
-            bookChapter.url = analyzeRule.getString('@href', isUrl: true);
+            // 与 legado 一致：卷章节用标题+索引做 URL 占位，普通章节用
+            // baseUrl 回退（不跳过，避免目录数丢失）。
+            if (bookChapter.isVolume) {
+              bookChapter.url = '${bookChapter.title}$i';
+            } else {
+              bookChapter.url = baseUrl;
+            }
+          }
+
+          // 跨书过滤（源可配置 ruleToc.chapterScope = "bookDir"）：
+          // 某些站点（如笔趣阁移动站）的目录页混入了"最新章节预览"等栏，
+          // 其中包含指向【其他书籍】的章节链接。仅当章节 URL 与目录页同属一个
+          // 书籍目录（前缀一致，含结尾斜线以区分 book_123 与 book_1234567）时
+          // 才保留，剔除跨书链接。此为通用引擎能力，仅在源显式开启时生效，
+          // 不影响其他源。
+          //
+          // 同时兼容绝对 URL（https://...）与相对路径（/book_N/...）两种格式：
+          // getStringFromRules(isUrl:true) 通常会解析为绝对 URL，但某些解析路径
+          // 可能返回相对路径，需双重校验。
+          if (tocRule.chapterScope == 'bookDir' && baseUrl.isNotEmpty) {
+            final prefix = _bookDirPrefix(baseUrl);
+            if (prefix != null) {
+              final absPrefix = '$prefix/';
+              // 绝对 URL 前缀匹配
+              if (bookChapter.url.startsWith(absPrefix)) {
+                // 同一书 → 保留
+              } else {
+                // 相对路径兜底：从 baseUrl 和 chapterUrl 分别提取 /book_N 段比较
+                final relMatch = _isSameBookDir(baseUrl, bookChapter.url);
+                if (!relMatch) continue;
+              }
+            }
+          }
+
+          // 对照 legado：vip/pay 仅对标题非空的条目求值（少一次规则执行）。
+          if (bookChapter.title.isNotEmpty) {
+            try {
+              if (ruleIsVip.isNotEmpty) {
+                final isVip = analyzeRule.getStringFromRules(ruleIsVip);
+                if (isVip.toLowerCase() == 'true' || isVip == '1') {
+                  bookChapter.isVip = true;
+                }
+              }
+            } catch (_) {}
+
+            try {
+              if (ruleIsPay.isNotEmpty) {
+                final isPay = analyzeRule.getStringFromRules(ruleIsPay);
+                if (isPay.toLowerCase() == 'true' || isPay == '1') {
+                  bookChapter.isPay = true;
+                }
+              }
+            } catch (_) {}
+
+            // URL 去重：挡掉"最新章节预览"等重复收录；baseUrl 兜底条目
+            // （无真实 URL 的卷/占位章节）不参与去重，避免多条被折叠成一条。
+            if (bookChapter.url == baseUrl || seenUrls.add(bookChapter.url)) {
+              chapters.add(bookChapter);
+            }
           }
         } catch (_) {
-          try {
-            bookChapter.url = analyzeRule.getString('@href', isUrl: true);
-          } catch (_) {}
-        }
-
-        // 与 legado 求值顺序一致：title → url → tag → isVolume。
-        try {
-          if (ruleUpdateTime.isNotEmpty) {
-            bookChapter.tag = analyzeRule.getStringFromRules(ruleUpdateTime);
-          }
-        } catch (_) {}
-
-        // 卷标记须在 URL 兜底前求值：卷条目的 chapterUrl 通常为空，
-        // 需用标题占位而非 baseUrl（否则首「卷」指向目录页/详情页）。
-        try {
-          if (ruleIsVolume.isNotEmpty) {
-            final isVolume = analyzeRule.getStringFromRules(ruleIsVolume);
-            if (isVolume.toLowerCase() == 'true' || isVolume == '1') {
-              bookChapter.isVolume = true;
-            }
-          }
-        } catch (_) {}
-
-        if (bookChapter.url.isEmpty) {
-          // 与 legado 一致：卷章节用标题+索引做 URL 占位，普通章节用
-          // baseUrl 回退（不跳过，避免目录数丢失）。
-          if (bookChapter.isVolume) {
-            bookChapter.url = '${bookChapter.title}$i';
-          } else {
-            bookChapter.url = baseUrl;
-          }
-        }
-
-        // 跨书过滤（源可配置 ruleToc.chapterScope = "bookDir"）：
-        // 某些站点（如笔趣阁移动站）的目录页混入了"最新章节预览"等栏，
-        // 其中包含指向【其他书籍】的章节链接。仅当章节 URL 与目录页同属一个
-        // 书籍目录（前缀一致，含结尾斜线以区分 book_123 与 book_1234567）时
-        // 才保留，剔除跨书链接。此为通用引擎能力，仅在源显式开启时生效，
-        // 不影响其他源。
-        //
-        // 同时兼容绝对 URL（https://...）与相对路径（/book_N/...）两种格式：
-        // getStringFromRules(isUrl:true) 通常会解析为绝对 URL，但某些解析路径
-        // 可能返回相对路径，需双重校验。
-        if (tocRule.chapterScope == 'bookDir' && baseUrl.isNotEmpty) {
-          final prefix = _bookDirPrefix(baseUrl);
-          if (prefix != null) {
-            final absPrefix = '$prefix/';
-            // 绝对 URL 前缀匹配
-            if (bookChapter.url.startsWith(absPrefix)) {
-              // 同一书 → 保留
-            } else {
-              // 相对路径兜底：从 baseUrl 和 chapterUrl 分别提取 /book_N 段比较
-              final relMatch = _isSameBookDir(baseUrl, bookChapter.url);
-              if (!relMatch) continue;
-            }
-          }
-        }
-
-        // 对照 legado：vip/pay 仅对标题非空的条目求值（少一次规则执行）。
-        if (bookChapter.title.isNotEmpty) {
-          try {
-            if (ruleIsVip.isNotEmpty) {
-              final isVip = analyzeRule.getStringFromRules(ruleIsVip);
-              if (isVip.toLowerCase() == 'true' || isVip == '1') {
-                bookChapter.isVip = true;
-              }
-            }
-          } catch (_) {}
-
-          try {
-            if (ruleIsPay.isNotEmpty) {
-              final isPay = analyzeRule.getStringFromRules(ruleIsPay);
-              if (isPay.toLowerCase() == 'true' || isPay == '1') {
-                bookChapter.isPay = true;
-              }
-            }
-          } catch (_) {}
-
-          // URL 去重：挡掉"最新章节预览"等重复收录；baseUrl 兜底条目
-          // （无真实 URL 的卷/占位章节）不参与去重，避免多条被折叠成一条。
-          if (bookChapter.url == baseUrl || seenUrls.add(bookChapter.url)) {
-            chapters.add(bookChapter);
-          }
+          // 跳过坏条目，继续解析后续元素。
         }
       }
     } catch (_) {}
 
-    if (reverse) {
+    // legado 的 `-` 前缀翻转作用于**合并后的整章列表**（多页目录时页序
+    // 也要反转）。分页调用方传 applyReverse=false，由汇总层统一翻转。
+    if (reverse && applyReverse) {
       final reversed = chapters.reversed.toList();
       chapters.clear();
       chapters.addAll(reversed);
@@ -249,9 +251,8 @@ class BookChapterList {
           '规则=$listRule（元素存在但章节为空，多为 chapterUrl 规则未命中）');
     } else {
       final first = chapters.first;
-      final firstUrl = first.url.length > 60
-          ? '${first.url.substring(0, 60)}…'
-          : first.url;
+      final firstUrl =
+          first.url.length > 60 ? '${first.url.substring(0, 60)}…' : first.url;
       AppLog.instance.d('[书源目录] 源=${bookSource.bookSourceName} '
           '共${chapters.length}章 首章=[${first.title}] url=$firstUrl');
     }
@@ -260,13 +261,8 @@ class BookChapterList {
       chapters[i].index = i;
     }
 
-    // legado ruleToc.preUpdateJs：对解析后的整章列表做 JS 二次处理
-    // （典型如统一修正章节 URL 前缀、剔除/重排章节）。输入列表绑定为 JS 全局变量
-    // `result`，脚本可就地修改或整体重排 `result`，引擎序列化 `result` 回读重建。
-    // 仅当源显式声明时进入此分支，缺省行为完全不变。
-    if (tocRule.preUpdateJs != null && tocRule.preUpdateJs!.isNotEmpty) {
-      chapters = _applyTocJs(chapters, tocRule.preUpdateJs!);
-    }
+    // preUpdateJs 是「更新目录前」执行的脚本（legado WebBook.runPreUpdateJs），
+    // 由目录抓取方在请求目录页之前调用；解析阶段不再二次执行。
     // legado ruleToc.formatJs：逐章节执行，绑定 index/chapter/title/gInt 变量，
     // 返回值为该章节格式化后的标题（沿用通用书源规范语义，非列表级操作）。
     if (tocRule.formatJs != null && tocRule.formatJs!.isNotEmpty) {
@@ -279,10 +275,14 @@ class BookChapterList {
             bindings: <String, dynamic>{
               'gInt': 0,
               'index': i + 1,
+              // legado 绑定的是 BookChapter 实体（字段名 title/url/tag/...）；
+              // name 是旧别名，两者都提供以兼容不同写法。
               'chapter': <String, dynamic>{
                 'name': ch.title,
+                'title': ch.title,
                 'url': ch.url,
                 'tag': ch.tag,
+                'index': i,
                 'isVolume': ch.isVolume,
                 'isVip': ch.isVip,
                 'isPay': ch.isPay,
@@ -305,74 +305,6 @@ class BookChapterList {
     }
 
     return chapters;
-  }
-
-  /// 把章节列表桥入 JS 沙箱执行 [js]（legado `result` 绑定整章列表），
-  /// 再把结果序列化回 `List<XiaoshuoBookChapter>`。失败或结果为空时原样返回，
-  /// 保证任一源脚本异常都不会让目录彻底丢失。
-  static List<XiaoshuoBookChapter> _applyTocJs(
-    List<XiaoshuoBookChapter> chapters,
-    String js,
-  ) {
-    if (chapters.isEmpty) return chapters;
-    try {
-      // 用 legado 章节对象字段名（name/url/tag/isVolume/...）构造输入，
-      // 与 legado 脚本里访问的字段一致；bookUrl 单独保留源书籍地址。
-      final input = chapters.map((c) => <String, dynamic>{
-        'name': c.title,
-        'url': c.url,
-        'tag': c.tag,
-        'isVolume': c.isVolume,
-        'isVip': c.isVip,
-        'isPay': c.isPay,
-        'bookUrl': c.bookUrl,
-        'variableMap': c.variableMap,
-      }).toList();
-      // 末尾追加 JSON.stringify(result) 取出对象（而非字符串化的最后表达式），
-      // 与 legado `result` 变量返回约定一致；脚本即便只就地修改也能量化回读。
-      final out = _jsEngine.eval(
-        '$js\n;JSON.stringify(result);',
-        bindings: <String, dynamic>{'result': input},
-      );
-      if (out.isEmpty) return chapters;
-      final decoded = jsonDecode(out);
-      if (decoded is! List) return chapters;
-      final result = <XiaoshuoBookChapter>[];
-      for (final item in decoded) {
-        if (item is! Map) continue;
-        final Map<dynamic, dynamic> m = item;
-        final url = _jsStr(m['url']);
-        if (url == null || url.isEmpty) continue;
-        final ch = XiaoshuoBookChapter(bookUrl: _jsStr(m['bookUrl']) ?? '');
-        ch.title = _jsStr(m['name']) ?? '';
-        ch.url = url;
-        ch.tag = _jsStr(m['tag']);
-        ch.isVolume = _jsBool(m['isVolume']) ?? false;
-        ch.isVip = _jsBool(m['isVip']) ?? false;
-        ch.isPay = _jsBool(m['isPay']) ?? false;
-        final vm = m['variableMap'];
-        if (vm is Map) {
-          vm.forEach((k, v) => ch.variableMap[k.toString()] = v.toString());
-        }
-        result.add(ch);
-      }
-      return result;
-    } catch (_) {
-      return chapters;
-    }
-  }
-
-  static String? _jsStr(dynamic v) {
-    if (v == null) return null;
-    return v.toString();
-  }
-
-  static bool? _jsBool(dynamic v) {
-    if (v == null) return null;
-    if (v is bool) return v;
-    if (v is num) return v != 0;
-    final s = v.toString().toLowerCase();
-    return s == 'true' || s == '1';
   }
 
   /// 计算目录页 URL 所属书籍目录前缀（不含结尾斜杠）。

@@ -100,8 +100,11 @@ class ShuyuanNovelResolver
       name: sb.name,
       author: sb.author,
       coverUrl: sb.coverUrl,
+      intro: sb.intro,
       kind: sb.kind,
       lastChapter: sb.lastChapter,
+      tocUrl: sb.tocUrl,
+      wordCount: sb.wordCount,
       type: sb.type,
     );
   }
@@ -1146,11 +1149,13 @@ class ShuyuanNovelResolver
       sourceId: source.id,
       sourceType: source.type,
       author: sb.author.isNotEmpty ? sb.author : null,
+      description: sb.intro,
       tags: sb.kind
           ?.split(RegExp(r'[,\s]+'))
           .where((s) => s.trim().isNotEmpty)
           .map((s) => s.trim())
           .toList(),
+      wordCount: sb.wordCount,
     );
   }
 

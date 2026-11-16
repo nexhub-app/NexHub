@@ -11,7 +11,9 @@ import 'dart:collection';
 import 'package:html/parser.dart' as html_parser;
 
 import '../analyze/analyze_rule.dart';
+import '../analyze/html_formatter.dart';
 import '../analyze/source_context.dart';
+import '../analyze/string_utils.dart';
 import '../model/book_source.dart';
 import '../model/search_book.dart';
 import '../model/xiaoshuo_book.dart';
@@ -50,6 +52,8 @@ class BookList {
     String? bookUrlRule;
     String? kindRule;
     String? lastChapterRule;
+    String? introRule;
+    String? wordCountRule;
 
     if (isSearch) {
       final rule = bookSource.getSearchRule();
@@ -60,9 +64,13 @@ class BookList {
       bookUrlRule = rule.bookUrl;
       kindRule = rule.bookKind;
       lastChapterRule = rule.bookLastChapter;
+      introRule = rule.bookIntro;
+      wordCountRule = rule.bookWordCount;
     } else {
       final exploreRule = bookSource.getExploreRule();
-      if (exploreRule.bookList == null || exploreRule.bookList!.isEmpty) {
+      // legado `isNullOrBlank()`：空白串（仅空格/换行）同样视为未配置。
+      if (exploreRule.bookList == null ||
+          exploreRule.bookList!.trim().isEmpty) {
         // legado 行为：绝大多数书源只配置 ruleSearch，发现/分类页直接复用
         // ruleSearch 解析（legado 官方即如此）。若 ruleExplore 未配置（空），
         // 回退到 ruleSearch，避免发现页因空规则而解析不到任何内容——
@@ -75,6 +83,8 @@ class BookList {
         bookUrlRule = searchRule.bookUrl;
         kindRule = searchRule.bookKind;
         lastChapterRule = searchRule.bookLastChapter;
+        introRule = searchRule.bookIntro;
+        wordCountRule = searchRule.bookWordCount;
       } else {
         bookListRule = exploreRule.bookList;
         nameRule = exploreRule.bookName;
@@ -83,6 +93,8 @@ class BookList {
         bookUrlRule = exploreRule.bookUrl;
         kindRule = exploreRule.bookKind;
         lastChapterRule = exploreRule.bookLastChapter;
+        introRule = exploreRule.bookIntro;
+        wordCountRule = exploreRule.bookWordCount;
       }
     }
 
@@ -103,12 +115,13 @@ class BookList {
       final elements = analyzeRule.getElements(listRule);
 
       // legado 语义（isSearch）：baseUrl 命中 bookUrlPattern → 整页按详情
-      // 页解析（搜索直达详情页的源）。
+      // 页解析（搜索直达详情页的源）。legado 用 `String.matches`（整串匹配），
+      // 部分匹配会把普通列表页误判成详情页，解析出「错误的书」。
       if (isSearch) {
         final pattern = bookSource.bookUrlPattern;
         if (pattern != null && pattern.isNotEmpty) {
           try {
-            if (RegExp(pattern).hasMatch(baseUrl)) {
+            if (_fullMatch(pattern, baseUrl)) {
               final detail = _detailPageAsSearchBook(bookSource, body, baseUrl);
               return detail == null ? const <SearchBook>[] : [detail];
             }
@@ -132,6 +145,8 @@ class BookList {
       final ruleCoverUrl = analyzeRule.splitSourceRule(coverUrlRule ?? '');
       final ruleKind = analyzeRule.splitSourceRule(kindRule ?? '');
       final ruleLastChapter = analyzeRule.splitSourceRule(lastChapterRule ?? '');
+      final ruleIntro = analyzeRule.splitSourceRule(introRule ?? '');
+      final ruleWordCount = analyzeRule.splitSourceRule(wordCountRule ?? '');
 
       for (final element in elements) {
         analyzeRule.setContent(element);
@@ -145,6 +160,8 @@ class BookList {
           ruleBookUrl,
           ruleKind,
           ruleLastChapter,
+          ruleIntro,
+          ruleWordCount,
         );
         if (book != null && book.name.isNotEmpty) {
           books.add(book);
@@ -181,108 +198,141 @@ class BookList {
     List<dynamic> ruleBookUrl,
     List<dynamic> ruleKind,
     List<dynamic> ruleLastChapter,
+    List<dynamic> ruleIntro,
+    List<dynamic> ruleWordCount,
   ) {
-    String name = '';
-    String author = '';
-    String coverUrl = '';
-    String bookUrl = '';
-    String kind = '';
-    String lastChapter = '';
-
+    // legado getSearchItem：先 setRuleData(searchBook) 再逐字段求值，规则里
+    // 的 `{{$.field}}`/`{{book.field}}` 读到的是**当前条目**已解析字段
+    //（旧实现只在求 bookUrl 时绑定，书名/简介阶段的模板读不到）。
+    final itemBook = XiaoshuoBook(bookUrl: '', name: '')
+      ..type = bookSource.bookSourceType;
+    final prevBook = analyzeRule.book;
+    analyzeRule.book = itemBook;
     try {
-      if (ruleName.isNotEmpty) {
-        // 规则路径书名只做轻量清洗（对齐通用书源引擎语义）：去「作者:xxx /
-        // xxx 著」尾缀 + 首尾分隔符。此前误用通用兜底的激进过滤（含
-        // 「推荐/新书/热门/连载…」等子串即整条丢弃），会把正常书名错误过滤。
-        name = formatBookNameLight(analyzeRule.getStringFromRules(ruleName));
-      }
-    } catch (_) {}
-
-    if (name.isEmpty) {
-      return null;
-    }
-
-    try {
-      if (ruleAuthor.isNotEmpty) {
-        author = formatBookAuthor(analyzeRule.getStringFromRules(ruleAuthor));
-      }
-    } catch (_) {}
-
-    try {
-      if (ruleKind.isNotEmpty) {
-        final kinds = analyzeRule.getStringListFromRules(ruleKind);
-        kind = kinds.join(',');
-        if (kind.length > 1000) kind = kind.substring(0, 1000);
-      }
-    } catch (_) {}
-
-    try {
-      if (ruleLastChapter.isNotEmpty) {
-        lastChapter = analyzeRule.getStringFromRules(ruleLastChapter);
-      }
-    } catch (_) {}
-
-    try {
-      if (ruleCoverUrl.isNotEmpty) {
-        coverUrl = analyzeRule.getStringFromRules(ruleCoverUrl);
-      }
-    } catch (_) {}
-
-    if (coverUrl.isNotEmpty) {
-      // 处理协议相对 URL（如 //example.com/img.jpg）
-      if (coverUrl.startsWith('//')) {
-        coverUrl = 'https:$coverUrl';
-      } else if (!coverUrl.startsWith('http')) {
-        coverUrl = _getAbsoluteUrl(coverUrl, baseUrl);
-      }
-    }
-
-    try {
-      if (ruleBookUrl.isNotEmpty) {
-        // legado getSearchItem：先 setRuleData(searchBook) 再求 bookUrl，
-        // 使 URL 模板里的 `{{book.kind}}` 等读到当前条目已解析字段
-        // （企鹅浏览 resourceId={{book.kind}}；无此绑定时模板展开为空）。
-        final itemBook = XiaoshuoBook(bookUrl: '', name: name)
-          ..author = author
-          ..kind = kind
-          ..coverUrl = coverUrl
-          ..lastChapter = lastChapter;
-        final prevBook = analyzeRule.book;
-        analyzeRule.book = itemBook;
-        try {
-          bookUrl = analyzeRule.getStringFromRules(ruleBookUrl, isUrl: true);
-        } finally {
-          analyzeRule.book = prevBook;
+      var name = '';
+      try {
+        if (ruleName.isNotEmpty) {
+          // 规则路径书名只做轻量清洗（对齐通用书源引擎语义）：去「作者:xxx /
+          // xxx 著」尾缀 + 首尾分隔符。此前误用通用兜底的激进过滤（含
+          // 「推荐/新书/热门/连载…」等子串即整条丢弃），会把正常书名错误过滤。
+          name = formatBookNameLight(analyzeRule.getStringFromRules(ruleName));
         }
+      } catch (_) {}
+
+      if (name.isEmpty) {
+        return null;
       }
-    } catch (_) {}
+      itemBook.name = name;
 
-    if (bookUrl.isEmpty) {
-      bookUrl = baseUrl;
-    } else if (!bookUrl.startsWith('http')) {
-      bookUrl = _getAbsoluteUrl(bookUrl, baseUrl);
+      var author = '';
+      try {
+        if (ruleAuthor.isNotEmpty) {
+          author = formatBookAuthor(analyzeRule.getStringFromRules(ruleAuthor));
+          itemBook.author = author;
+        }
+      } catch (_) {}
+
+      var kind = '';
+      try {
+        if (ruleKind.isNotEmpty) {
+          kind = analyzeRule.getStringListFromRules(ruleKind).join(',');
+          if (kind.length > 1000) kind = kind.substring(0, 1000);
+          itemBook.kind = kind;
+        }
+      } catch (_) {}
+
+      // 与 legado getSearchItem 求值顺序一致：
+      // name → author → kind → wordCount → lastChapter → intro → cover → url。
+      var wordCount = '';
+      try {
+        if (ruleWordCount.isNotEmpty) {
+          wordCount =
+              StringUtils.wordCountFormat(analyzeRule.getStringFromRules(ruleWordCount));
+          itemBook.wordCount = wordCount;
+        }
+      } catch (_) {}
+
+      var lastChapter = '';
+      try {
+        if (ruleLastChapter.isNotEmpty) {
+          lastChapter = analyzeRule.getStringFromRules(ruleLastChapter);
+          // legado SearchBook.init：最新章标题截断 200。
+          if (lastChapter.length > 200) {
+            lastChapter = lastChapter.substring(0, 200);
+          }
+          itemBook.lastChapter = lastChapter;
+        }
+      } catch (_) {}
+
+      var intro = '';
+      try {
+        if (ruleIntro.isNotEmpty) {
+          // legado：HtmlFormatter.format(getString(ruleIntro)).take(5000)
+          intro =
+              HtmlFormatter.formatIntro(analyzeRule.getStringFromRules(ruleIntro));
+          itemBook.intro = intro;
+        }
+      } catch (_) {}
+
+      var coverUrl = '';
+      try {
+        if (ruleCoverUrl.isNotEmpty) {
+          coverUrl = analyzeRule.getStringFromRules(ruleCoverUrl).trim();
+          if (coverUrl.isNotEmpty) {
+            // legado NetworkUtils.getAbsoluteURL(baseUrl, it)：按页面协议
+            // 解析协议相对地址（//host/x 在 http 页保持 http，不再硬编码 https）。
+            coverUrl = _getAbsoluteUrl(coverUrl, baseUrl);
+            itemBook.coverUrl = coverUrl;
+          }
+        }
+      } catch (_) {}
+
+      var bookUrl = '';
+      try {
+        if (ruleBookUrl.isNotEmpty) {
+          // legado getString(urlRule, isUrl=true)：空结果回落 baseUrl。
+          bookUrl =
+              analyzeRule.getStringFromRules(ruleBookUrl, isUrl: true).trim();
+        }
+      } catch (_) {}
+      if (bookUrl.isEmpty) {
+        bookUrl = baseUrl;
+      } else {
+        bookUrl = _getAbsoluteUrl(bookUrl, baseUrl);
+      }
+      itemBook.bookUrl = bookUrl;
+
+      // 变量贯通：把本条 @put/java.put 写入的变量按书暂存，详情/目录/正文
+      // 阶段注入 variableMap 后 @get/java.get 可读（legado 书对象随书携带
+      // variableMap；本应用阶段间只传 bookUrl）。
+      final ctx = ShuyuanSourceContext.current;
+      if (ctx != null && bookUrl.isNotEmpty && analyzeRule.variables.isNotEmpty) {
+        ctx.bookItemVars[bookUrl] =
+            Map<String, String>.from(analyzeRule.variables);
+      }
+
+      return SearchBook(
+        bookUrl: bookUrl,
+        name: name,
+        author: author,
+        coverUrl: coverUrl,
+        kind: kind,
+        lastChapter: lastChapter,
+        intro: intro.isEmpty ? null : intro,
+        wordCount: wordCount.isEmpty ? null : wordCount,
+        bookSourceUrl: bookSource.bookSourceUrl,
+        bookSourceName: bookSource.bookSourceName,
+        type: bookSource.bookSourceType,
+      );
+    } finally {
+      analyzeRule.book = prevBook;
     }
+  }
 
-    // 变量贯通：把本条 @put/java.put 写入的变量按书暂存，详情/目录/正文
-    // 阶段注入 variableMap 后 @get/java.get 可读（legado 书对象随书携带
-    // variableMap；本应用阶段间只传 bookUrl）。
-    final ctx = ShuyuanSourceContext.current;
-    if (ctx != null && bookUrl.isNotEmpty && analyzeRule.variables.isNotEmpty) {
-      ctx.bookItemVars[bookUrl] =
-          Map<String, String>.from(analyzeRule.variables);
-    }
-
-    return SearchBook(
-      bookUrl: bookUrl,
-      name: name,
-      author: author,
-      coverUrl: coverUrl,
-      kind: kind,
-      lastChapter: lastChapter,
-      bookSourceUrl: bookSource.bookSourceUrl,
-      bookSourceName: bookSource.bookSourceName,
-      type: bookSource.bookSourceType,
-    );
+  /// legado `String.matches`：整串匹配（而非任意位置命中）。
+  static bool _fullMatch(String pattern, String input) {
+    final match = RegExp(pattern).matchAsPrefix(input);
+    return match != null && match.end == input.length;
   }
 
   /// 规则路径书名清洗（对齐 legado BookHelp.formatBookName）：
@@ -349,14 +399,23 @@ class BookList {
     return hasPassword || hasCaptcha;
   }
 
+  /// 对齐 legado `NetworkUtils.getAbsoluteURL(baseUrl, url)`：
+  /// 空串回落 baseUrl；http(s) 原样；javascript 链接返回空；其余（含
+  /// `//host/path` 协议相对地址）按 baseUrl 解析（保留页面协议）。
   static String _getAbsoluteUrl(String url, String baseUrl) {
-    if (url.startsWith('http')) return url;
-    if (baseUrl.isEmpty) return url;
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return baseUrl;
+    final lower = trimmed.toLowerCase();
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
+      return trimmed;
+    }
+    if (lower.startsWith('javascript')) return '';
+    if (baseUrl.isEmpty) return trimmed;
     try {
       final base = Uri.parse(baseUrl);
-      return base.resolve(url).toString();
+      return base.resolve(trimmed).toString();
     } catch (_) {
-      return url;
+      return trimmed;
     }
   }
 
@@ -383,8 +442,12 @@ class BookList {
       coverUrl: book.coverUrl,
       kind: book.kind,
       lastChapter: book.lastChapter,
+      intro: book.intro,
+      tocUrl: book.tocUrl,
+      wordCount: book.wordCount,
       bookSourceUrl: bookSource.bookSourceUrl,
       bookSourceName: bookSource.bookSourceName,
+      type: bookSource.bookSourceType,
     );
   }
 }

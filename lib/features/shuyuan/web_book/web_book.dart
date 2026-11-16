@@ -126,8 +126,6 @@ class WebBook {
             ))
         .toList();
   }
-
-
   /// 当前源上下文中 bookUrl 对应的搜索条目（{{\$.field}} 模板求值根）。
   Object? _bookItemContext(String bookUrl) =>
       ShuyuanSourceContext.current?.bookItemContext[bookUrl];
@@ -166,8 +164,10 @@ class WebBook {
           page: page,
         );
         for (final book in books) {
-          // 发现页分类名附加到 intro 以便展示来源分类
-          if (entry.name.isNotEmpty) {
+          // 发现页分类名附加到 intro 以便展示来源分类；列表规则已解析出
+          // 真实简介时保留简介（legado 不注入分类名，简介优先）。
+          if (entry.name.isNotEmpty &&
+              (book.intro == null || book.intro!.isEmpty)) {
             book.intro = entry.name;
           }
           allBooks.add(book);
@@ -208,8 +208,11 @@ class WebBook {
               name: sb.name,
               author: sb.author,
               coverUrl: sb.coverUrl,
+              intro: sb.intro,
               kind: sb.kind,
               lastChapter: sb.lastChapter,
+              tocUrl: sb.tocUrl,
+              wordCount: sb.wordCount,
               type: sb.type,
             ))
         .toList();
@@ -274,6 +277,22 @@ class WebBook {
     if (stagedVars != null && stagedVars.isNotEmpty) {
       stagedVars.forEach((k, v) => book.variableMap.putIfAbsent(k, () => v));
     }
+    final tocRule = source.getTocRule();
+    // legado WebBook.runPreUpdateJs：**更新目录前**执行 preUpdateJs（可刷新
+    // cookie / 通过 java.put 写入变量 / 修改 book.tocUrl），随后目录抓取与
+    // 规则求值才能读到这些准备工作。旧实现把它放在目录解析之后当列表后处理，
+    // 依赖它准备变量的源目录恒为空。失败不阻断目录流程。
+    final preUpdateJs = tocRule.preUpdateJs;
+    if (preUpdateJs != null && preUpdateJs.isNotEmpty) {
+      try {
+        final preRule = AnalyzeRule(book: book);
+        preRule.evalJs(preUpdateJs, null);
+        preRule.variables.forEach(book.putVariable);
+      } catch (_) {}
+    }
+    // legado：`-` 前缀表示整张目录需反转（多页时页序一并反转），
+    // 由本方法在合并去重后统一处理，分页解析本身不再翻转。
+    final reverseToc = (tocRule.chapterList ?? '').startsWith('-');
     var tocUrl = (book.tocUrl != null && book.tocUrl!.isNotEmpty)
         ? book.tocUrl!
         : book.bookUrl;
@@ -293,7 +312,9 @@ class WebBook {
         if (detailBook.tocUrl != null && detailBook.tocUrl!.isNotEmpty) {
           tocUrl = detailBook.tocUrl!;
           // 回填书对象：后续目录阶段复用 tocHtml / strict 条件依赖 tocUrl。
-          book.tocUrl ??= detailBook.tocUrl;
+          if (book.tocUrl == null || book.tocUrl!.isEmpty) {
+            book.tocUrl = detailBook.tocUrl;
+          }
         }
         if (detailBook.tocHtml != null && detailBook.tocHtml!.isNotEmpty) {
           book.tocHtml ??= detailBook.tocHtml;
@@ -352,6 +373,7 @@ class WebBook {
       redirectUrl: tocBaseUrl,
       body: body,
       nextUrlsOut: firstNextUrls,
+      applyReverse: false,
     );
 
     void appendBatch(List<XiaoshuoBookChapter> pageChapters) {
@@ -414,6 +436,7 @@ class WebBook {
           redirectUrl: pageAnalyze.url,
           body: pageBody,
           nextUrlsOut: pageNextUrls,
+          applyReverse: false,
         );
         if (pageChapters.isEmpty && pageNextUrls.isEmpty) break;
         appendBatch(pageChapters);
@@ -444,6 +467,7 @@ class WebBook {
             redirectUrl: pageAnalyze.url,
             body: pageBody,
             getNextUrl: false,
+            applyReverse: false,
           );
         },
       );
@@ -461,11 +485,12 @@ class WebBook {
           deduped.add(chapter);
         }
       }
-      // 兜底重编号（增量批次已保证连续，此处仅为安全网）。
-      for (var i = 0; i < deduped.length; i++) {
-        deduped[i].index = i;
+      // legado `-` 前缀：合并、去重后整列表反转（页序与页内顺序一并反转）。
+      final ordered = reverseToc ? deduped.reversed.toList() : deduped;
+      for (var i = 0; i < ordered.length; i++) {
+        ordered[i].index = i;
       }
-      return deduped;
+      return ordered;
     }
 
     return allChapters;
