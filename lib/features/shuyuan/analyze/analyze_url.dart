@@ -685,12 +685,14 @@ class AnalyzeUrl {
     // 无论哪种 UA，都按 host 注册到 HttpFetcher，保证 WebView 验证与后续重试
     // 复用同一 UA → 会话 Cookie 绑定一致，避免验证死循环。
     final effectiveUa = HttpFetcher.instance.userAgentForUrl(url);
+    // 默认头不注入 Referer（legado AnalyzeUrl 同样只补 UA/Accept）；源要用
+    // 参考来源须在 header 里显式声明。bookSourceUrl 允许携带 `##备注` 后缀
+    // 且原样保存，把整串当默认 Referer 会因非 ASCII 头值让请求发送失败。
     final requestHeaders = <String, String>{
       'User-Agent': effectiveUa,
       'Accept':
           'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-      'Referer': source?.bookSourceUrl ?? baseUrl ?? url,
     };
 
     if (source?.header != null && source!.header!.isNotEmpty) {
