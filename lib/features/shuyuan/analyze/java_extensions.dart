@@ -1828,6 +1828,445 @@ const String javaExtensionsJsPrelude = r'''
     };
   }
 
+  // ── AsymmetricCrypto（legado java.createAsymmetricCrypto） ──
+  // 常用族：RSA + PKCS#1 v1.5（"RSA" / "RSA/ECB/PKCS1Padding"）与 NoPadding。
+  // 密钥编码对齐 JCE：公钥 X.509 SPKI（X509EncodedKeySpec）、私钥 PKCS#8
+  // （PKCS8EncodedKeySpec），另宽容接受裸 PKCS#1 DER。QuickJS 无 BigInt，
+  // 本节自带 2^16 limb 大数与 Montgomery 模幂；OAEP/EC/DSA 返回空对象，
+  // 避免给出错误明文。
+  function bnTrim(a) {
+    var n = a.length;
+    while (n > 1 && a[n - 1] === 0) n--;
+    if (n !== a.length) a.length = n;
+    return a;
+  }
+
+  // 无符号大端字节 → 小端 2^16 limb。
+  function bnFromBytes(bytes) {
+    var limbs = [];
+    var i = bytes.length;
+    while (i > 0) {
+      var lo = bytes[--i] & 0xff;
+      var hi = i > 0 ? (bytes[--i] & 0xff) : 0;
+      limbs.push((hi << 8) | lo);
+    }
+    if (limbs.length === 0) limbs.push(0);
+    return bnTrim(limbs);
+  }
+
+  // limb → 定长大端无符号字节（RSA 块长度）。
+  function bnToBytes(bn, len) {
+    var le = [];
+    for (var i = 0; i < bn.length; i++) {
+      le.push(bn[i] & 0xff);
+      le.push((bn[i] >>> 8) & 0xff);
+    }
+    if (len == null) len = le.length;
+    if (le.length > len) throw new Error('Integer too large');
+    var out = [];
+    for (var j = len - 1; j >= 0; j--) {
+      out.push(j < le.length ? le[j] : 0);
+    }
+    return out;
+  }
+
+  function bnBitLength(a) {
+    return (a.length - 1) * 16 + (32 - Math.clz32(a[a.length - 1]));
+  }
+
+  function bnCmp(a, b) {
+    var la = a.length, lb = b.length;
+    while (la > 1 && a[la - 1] === 0) la--;
+    while (lb > 1 && b[lb - 1] === 0) lb--;
+    if (la !== lb) return la < lb ? -1 : 1;
+    for (var i = la - 1; i >= 0; i--) {
+      if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+    }
+    return 0;
+  }
+
+  function bnSub(a, b) {
+    var r = [];
+    var borrow = 0;
+    for (var i = 0; i < a.length; i++) {
+      var v = a[i] - (i < b.length ? b[i] : 0) - borrow;
+      if (v < 0) {
+        v += 65536;
+        borrow = 1;
+      } else {
+        borrow = 0;
+      }
+      r.push(v);
+    }
+    return bnTrim(r);
+  }
+
+  function bnDoubleMod(a, n) {
+    var r = [];
+    var carry = 0;
+    for (var i = 0; i < a.length; i++) {
+      var v = a[i] * 2 + carry;
+      r.push(v & 0xffff);
+      carry = v >>> 16;
+    }
+    if (carry) r.push(carry);
+    bnTrim(r);
+    if (bnCmp(r, n) >= 0) r = bnSub(r, n);
+    return r;
+  }
+
+  function bnModInverse16(a) {
+    var t = 0, newT = 1, r = 65536, newR = a;
+    while (newR !== 0) {
+      var q = Math.floor(r / newR);
+      var tmp = t - q * newT;
+      t = newT;
+      newT = tmp;
+      tmp = r - q * newR;
+      r = newR;
+      newR = tmp;
+    }
+    return t < 0 ? t + 65536 : t;
+  }
+
+  // Montgomery 上下文：R = 2^(16k) mod n，R2 = R^2 mod n（32k 次翻倍，
+  // 每个密钥只建一次）。
+  function montContext(n) {
+    if ((n[0] & 1) === 0) throw new Error('RSA modulus must be odd');
+    var k = n.length;
+    var n0inv = (65536 - bnModInverse16(n[0])) & 0xffff;
+    var r = [1];
+    for (var i = 0; i < 16 * k; i++) r = bnDoubleMod(r, n);
+    var r2 = r;
+    for (var i = 0; i < 16 * k; i++) r2 = bnDoubleMod(r2, n);
+    return { n: n, n0inv: n0inv, R: r, R2: r2 };
+  }
+
+  // CIOS Montgomery 乘法（HAC 14.36，结果 < 2n，减一次）。
+  function montMul(a, b, n, n0inv) {
+    var k = n.length;
+    var t = new Array(k + 2);
+    for (var i = 0; i < t.length; i++) t[i] = 0;
+    for (var i = 0; i < k; i++) {
+      var bi = i < b.length ? b[i] : 0;
+      var carry = 0;
+      for (var j = 0; j < k; j++) {
+        var aj = j < a.length ? a[j] : 0;
+        var uv = t[j] + aj * bi + carry;
+        t[j] = uv & 0xffff;
+        carry = Math.floor(uv / 65536);
+      }
+      var sum = t[k] + carry;
+      t[k] = sum & 0xffff;
+      t[k + 1] = Math.floor(sum / 65536);
+
+      var m = (t[0] * n0inv) & 0xffff;
+      var uv0 = t[0] + m * n[0];
+      var c = Math.floor(uv0 / 65536);
+      for (var j = 1; j < k; j++) {
+        var uv2 = t[j] + m * n[j] + c;
+        t[j - 1] = uv2 & 0xffff;
+        c = Math.floor(uv2 / 65536);
+      }
+      var s2 = t[k] + c;
+      t[k - 1] = s2 & 0xffff;
+      t[k] = t[k + 1] + Math.floor(s2 / 65536);
+    }
+    var r = [];
+    for (var idx = 0; idx <= k; idx++) r.push(t[idx]);
+    if (r[k] !== 0 || bnCmp(r, n) >= 0) r = bnSub(r, n);
+    return bnTrim(r);
+  }
+
+  function bnModPow(base, exp, ctx) {
+    var n = ctx.n, n0inv = ctx.n0inv;
+    if (bnCmp(base, n) >= 0) {
+      throw new Error('Message is larger than modulus');
+    }
+    if (bnCmp(exp, [0]) === 0) return [1];
+    var x = montMul(base, ctx.R2, n, n0inv);
+    var acc = ctx.R.slice();
+    for (var i = exp.length - 1; i >= 0; i--) {
+      var limb = exp[i];
+      for (var b = 15; b >= 0; b--) {
+        acc = montMul(acc, acc, n, n0inv);
+        if ((limb >>> b) & 1) acc = montMul(acc, x, n, n0inv);
+      }
+    }
+    return montMul(acc, [1], n, n0inv);
+  }
+
+  // ── DER（X.509 SPKI / PKCS#8 / 裸 PKCS#1） ──
+  function derRead(bytes, pos) {
+    if (pos < 0 || pos + 2 > bytes.length) return null;
+    var tag = bytes[pos] & 0xff;
+    var len = bytes[pos + 1] & 0xff;
+    var p = pos + 2;
+    if (len & 0x80) {
+      var cnt = len & 0x7f;
+      if (cnt === 0 || cnt > 4 || p + cnt > bytes.length) return null;
+      len = 0;
+      for (var i = 0; i < cnt; i++) len = len * 256 + (bytes[p++] & 0xff);
+    }
+    if (p + len > bytes.length) return null;
+    return { tag: tag, start: p, end: p + len, next: p + len };
+  }
+
+  function derChildren(bytes, node) {
+    var out = [];
+    var p = node.start;
+    while (p < node.end) {
+      var child = derRead(bytes, p);
+      if (!child || child.next > node.end) return null;
+      out.push(child);
+      p = child.next;
+    }
+    return out;
+  }
+
+  function derIntBytes(bytes, node) {
+    if (!node || node.tag !== 0x02) return null;
+    var out = [];
+    for (var i = node.start; i < node.end; i++) out.push(bytes[i] & 0xff);
+    while (out.length > 1 && out[0] === 0) out.shift();
+    return out.length ? out : null;
+  }
+
+  function rsaPublicFromSeq(bytes, seq) {
+    var kids = derChildren(bytes, seq);
+    if (!kids || kids.length < 2) return null;
+    var n = derIntBytes(bytes, kids[0]);
+    var e = derIntBytes(bytes, kids[1]);
+    return (n && e) ? { n: n, e: e } : null;
+  }
+
+  function rsaParsePublicKey(bytes) {
+    var top = derRead(bytes, 0);
+    if (!top || top.tag !== 0x30) return null;
+    var kids = derChildren(bytes, top);
+    if (!kids || kids.length === 0) return null;
+    // 裸 PKCS#1 RSAPublicKey：SEQUENCE { INTEGER n, INTEGER e }。
+    if (kids[0].tag === 0x02) return rsaPublicFromSeq(bytes, top);
+    // X.509 SPKI：SEQUENCE { AlgorithmIdentifier, BIT STRING }。
+    if (kids[0].tag !== 0x30) return null;
+    var bit = null;
+    for (var i = 1; i < kids.length; i++) {
+      if (kids[i].tag === 0x03) { bit = kids[i]; break; }
+    }
+    if (!bit || bit.start >= bit.end || (bytes[bit.start] & 0xff) !== 0) {
+      return null;
+    }
+    var inner = derRead(bytes, bit.start + 1);
+    if (!inner || inner.tag !== 0x30) return null;
+    return rsaPublicFromSeq(bytes, inner);
+  }
+
+  function rsaPrivateFromSeq(bytes, seq) {
+    var kids = derChildren(bytes, seq);
+    if (!kids || kids.length < 4 || kids[0].tag !== 0x02) return null;
+    var n = derIntBytes(bytes, kids[1]);
+    var e = derIntBytes(bytes, kids[2]);
+    var d = derIntBytes(bytes, kids[3]);
+    return (n && e && d) ? { n: n, e: e, d: d } : null;
+  }
+
+  function rsaParsePrivateKey(bytes) {
+    var top = derRead(bytes, 0);
+    if (!top || top.tag !== 0x30) return null;
+    var kids = derChildren(bytes, top);
+    if (!kids || kids.length === 0) return null;
+    // 裸 PKCS#1 RSAPrivateKey：version INTEGER 后紧跟 modulus INTEGER；
+    // PKCS#8 的第二项是 AlgorithmIdentifier SEQUENCE。
+    if (kids[0].tag === 0x02 && kids.length >= 2 && kids[1].tag === 0x02) {
+      return rsaPrivateFromSeq(bytes, top);
+    }
+    var oct = null;
+    for (var i = 1; i < kids.length; i++) {
+      if (kids[i].tag === 0x04) { oct = kids[i]; break; }
+    }
+    if (!oct) return null;
+    var inner = derRead(bytes, oct.start);
+    if (!inner || inner.tag !== 0x30) return null;
+    return rsaPrivateFromSeq(bytes, inner);
+  }
+
+  // ── PKCS#1 v1.5（JCE 口径：公钥加密/私钥解密为 type 2，私钥加密/
+  // 公钥解密为 type 1） ──
+  function rsaPkcs1Pad(data, k, blockType) {
+    if (data.length > k - 11) {
+      throw new Error('Data must not be longer than ' + (k - 11) + ' bytes');
+    }
+    var em = [0x00, blockType];
+    var psLen = k - 3 - data.length;
+    for (var i = 0; i < psLen; i++) {
+      em.push(blockType === 1
+          ? 0xff : 1 + Math.floor(Math.random() * 255));
+    }
+    em.push(0x00);
+    for (var j = 0; j < data.length; j++) em.push(data[j] & 0xff);
+    return em;
+  }
+
+  function rsaPkcs1Unpad(em, blockType) {
+    if (!em || em.length < 11 || em[0] !== 0x00 || em[1] !== blockType) {
+      throw new Error('BadPaddingException: Decryption error');
+    }
+    var i = 2;
+    while (i < em.length && em[i] !== 0) i++;
+    if (i >= em.length || i - 2 < 8) {
+      throw new Error('BadPaddingException: Decryption error');
+    }
+    return em.slice(i + 1);
+  }
+
+  function makeAsymmetricCrypto(transformation) {
+    var empty = {
+      setPublicKey: function () { return empty; },
+      setPrivateKey: function () { return empty; },
+      decrypt: function () { return []; },
+      decryptStr: function () { return ''; },
+      decryptHex: function () { return []; },
+      decryptBase64: function () { return []; },
+      encrypt: function () { return []; },
+      encryptHex: function () { return ''; },
+      encryptBase64: function () { return ''; },
+    };
+    var name = String(transformation == null || transformation === ''
+        ? 'RSA' : transformation);
+    var segs = name.toUpperCase().split('/');
+    if (segs[0] !== 'RSA') return empty;
+    var padName = segs.length > 1 ? segs[segs.length - 1] : 'PKCS1PADDING';
+    if (padName !== 'PKCS1PADDING' && padName !== 'PKCS1' &&
+        padName !== 'NOPADDING') {
+      return empty;
+    }
+    var pad = padName === 'NOPADDING' ? 'NONE' : 'PKCS1';
+
+    var publicKey = null;
+    var privateKey = null;
+    var cachedKey = null;
+    var cachedCtx = null;
+
+    function contextFor(key) {
+      if (cachedKey !== key) {
+        var n = bnFromBytes(key.n);
+        var ctx = montContext(n);
+        ctx.keySize = Math.ceil(bnBitLength(n) / 8);
+        cachedKey = key;
+        cachedCtx = ctx;
+      }
+      return cachedCtx;
+    }
+
+    function rsaBlock(key, usePublicKey, encrypt, block) {
+      var ctx = contextFor(key);
+      var k = ctx.keySize;
+      var exp = bnFromBytes(usePublicKey ? key.e : key.d);
+      if (encrypt) {
+        var em;
+        if (pad === 'NONE') {
+          em = block.slice();
+          if (em.length > k) {
+            throw new Error('Data must not be longer than ' + k + ' bytes');
+          }
+          while (em.length < k) em.unshift(0);
+        } else {
+          em = rsaPkcs1Pad(block, k, usePublicKey ? 2 : 1);
+        }
+        var c = bnModPow(bnFromBytes(em), exp, ctx);
+        return bnToBytes(c, k);
+      }
+      if (pad !== 'NONE' && block.length !== k) {
+        throw new Error('RSA decrypt block size must be ' + k);
+      }
+      var m = bnModPow(bnFromBytes(block), exp, ctx);
+      var out = bnToBytes(m, k);
+      if (pad === 'NONE') return out;
+      return rsaPkcs1Unpad(out, usePublicKey ? 1 : 2);
+    }
+
+    function cryptData(usePublicKey, encrypt, data) {
+      var key = usePublicKey ? publicKey : privateKey;
+      if (!key) throw new Error('RSA key not set');
+      var ctx = contextFor(key);
+      var k = ctx.keySize;
+      var blockSize = encrypt
+          ? (pad === 'NONE' ? k : k - 11)
+          : k;
+      if (!encrypt && data.length === 0) return [];
+      var out = [];
+      if (data.length <= blockSize) {
+        var one = rsaBlock(key, usePublicKey, encrypt, data);
+        return one.map(signedByte);
+      }
+      for (var off = 0; off < data.length; off += blockSize) {
+        var chunk = data.slice(off, Math.min(off + blockSize, data.length));
+        var part = rsaBlock(key, usePublicKey, encrypt, chunk);
+        for (var i = 0; i < part.length; i++) out.push(part[i]);
+      }
+      return out.map(signedByte);
+    }
+
+    // Kotlin `usePublicKey: Boolean? = true`：仅显式 false/null 走私钥。
+    function usePubFlag(v) {
+      return v === undefined || v === true;
+    }
+
+    // legado decode(String)：偶数长度且全 hex → hex，其余 base64。
+    function decodeInput(data) {
+      if (data && typeof data === 'object' && typeof data.length === 'number') {
+        return anyToBytes(data);
+      }
+      var s = String(data == null ? '' : data);
+      var isHex = s.length % 2 === 0 && /^[0-9a-fA-F]*$/.test(s);
+      return isHex
+          ? hexToBytes(s).map(function (b) { return b & 0xff; })
+          : bytesFromB64(s).map(function (b) { return b & 0xff; });
+    }
+
+    var api = {
+      setPublicKey: function (key) {
+        publicKey = rsaParsePublicKey(anyToBytes(key));
+        if (!publicKey) throw new Error('Invalid RSA public key');
+        return api;
+      },
+      setPrivateKey: function (key) {
+        privateKey = rsaParsePrivateKey(anyToBytes(key));
+        if (!privateKey) throw new Error('Invalid RSA private key');
+        return api;
+      },
+      decrypt: function (data, usePublicKey) {
+        return cryptData(usePubFlag(usePublicKey), false, decodeInput(data));
+      },
+      decryptStr: function (data, usePublicKey) {
+        return utf8Decode(
+            cryptData(usePubFlag(usePublicKey), false, decodeInput(data)));
+      },
+      decryptHex: function (data, usePublicKey) {
+        return cryptData(usePubFlag(usePublicKey), false,
+            hexToBytes(String(data == null ? '' : data))
+                .map(function (b) { return b & 0xff; }));
+      },
+      decryptBase64: function (data, usePublicKey) {
+        return cryptData(usePubFlag(usePublicKey), false,
+            bytesFromB64(String(data == null ? '' : data))
+                .map(function (b) { return b & 0xff; }));
+      },
+      encrypt: function (data, usePublicKey) {
+        return cryptData(usePubFlag(usePublicKey), true, anyToBytes(data));
+      },
+      encryptHex: function (data, usePublicKey) {
+        return bytesToHex(cryptData(usePubFlag(usePublicKey), true,
+            anyToBytes(data)));
+      },
+      encryptBase64: function (data, usePublicKey) {
+        return b64FromBytes(cryptData(usePubFlag(usePublicKey), true,
+            anyToBytes(data)).map(function (b) { return b & 0xff; }));
+      },
+    };
+    return api;
+  }
+
   // ── 规则求值桥（java.getString/getStringList/getElement/getElements/setContent）──
   // legado 的 java 就是 AnalyzeRule 本身，JS 内同步回调宿主求值；QuickJS 沙箱
   // 不能同步回宿主，改为「确定性重放」协议：首轮把这些调用按序记入
@@ -2181,6 +2620,8 @@ const String javaExtensionsJsPrelude = r'''
     },
     // legado SymmetricCrypto 对象形态（百度小说等用链式 decryptStr）。
     createSymmetricCrypto: makeSymmetricCrypto,
+    // legado AsymmetricCrypto 对象形态（乐读小说用 setPublicKey + decryptStr）。
+    createAsymmetricCrypto: makeAsymmetricCrypto,
     // 字体反爬：解析 TTF（base64 / 字节数组），返回可查询字形轮廓的字体对象。
     queryTTF: function (data, useCache) {
       try {
