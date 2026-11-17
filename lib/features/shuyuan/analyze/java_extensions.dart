@@ -2492,6 +2492,1342 @@ const String javaExtensionsJsPrelude = r'''
     return hash(opad.concat(inner));
   }
 
+  // ── Rhino Java 互操作（Packages / JavaImporter）──
+  //
+  // legado 用 Rhino 执行书源脚本，脚本可直接 `new JavaImporter()` 导入
+  // `Packages.javax.crypto` 等 Java 类。QuickJS 没有 Java 运行时，这里按
+  // 语料实际用到的类提供纯 JS 等价物：
+  // - javax.crypto.Cipher / SecretKeySpec / IvParameterSpec → 复用下方 AES/DES
+  // - java.util.Base64 / Arrays / UUID / LinkedHashMap · java.lang.String
+  // - java.io 字节流、java.util.zip.GZIPInputStream（纯 JS inflate）
+  // - android.util.Base64 / TextUtils / Build、hutool Base64/DigestUtil/…
+  // - okhttp3（Request/OkHttpClient/Response）→ java.connect 确定性重放
+  // - org.jsoup.Jsoup（转发 sourceContext 预置的 connect 链）、StrResponse
+  // 未注册的类保持不存在（调用抛 TypeError 进运行日志），不伪造成功结果。
+
+  // 字节数组统一转换成无符号（Java 内部运算口径）；对外返回有符号。
+  function juBytes(v) {
+    if (v && typeof v === 'object' && typeof v.length === 'number') {
+      var out = [];
+      for (var i = 0; i < v.length; i++) out.push(v[i] & 0xff);
+      return out;
+    }
+    return utf8Encode(String(v == null ? '' : v));
+  }
+  function jsBytes(v) { return juBytes(v).map(signedByte); }
+
+  function jmark(cls, name) {
+    try {
+      Object.defineProperty(cls, '__javaClass', { value: true });
+      Object.defineProperty(cls, '__javaName', { value: name });
+    } catch (e) {}
+    return cls;
+  }
+  function jpkg(classes, subs) {
+    var o = {};
+    var list = {};
+    var k;
+    if (classes) {
+      for (k in classes) { o[k] = classes[k]; list[k] = classes[k]; }
+    }
+    if (subs) {
+      for (k in subs) o[k] = subs[k];
+    }
+    Object.defineProperty(o, '__classes', { value: list });
+    return o;
+  }
+  function jcopyInto(target, pkg) {
+    var list = pkg && pkg.__classes;
+    if (!list) return;
+    for (var k in list) target[k] = list[k];
+  }
+
+  // java.lang.String：`String(byte[])` 按 UTF-8 解码（legado 恒 UTF-8）；
+  // 无 new 时返回 JS 字符串原语，new 时返回带 toString/getBytes 的对象。
+  function jStringOf(v) {
+    if (v == null) return String(v);
+    if (typeof v === 'object') {
+      if (v.__jstr != null) return String(v.__jstr);
+      if (typeof v.length === 'number' && typeof v !== 'function') {
+        return utf8Decode(v);
+      }
+    }
+    return String(v);
+  }
+  function JavaString(v) {
+    if (this instanceof JavaString) {
+      this.__jstr = jStringOf(v);
+      return;
+    }
+    return jStringOf(v);
+  }
+  jmark(JavaString, 'java.lang.String');
+  JavaString.prototype.toString = function () { return this.__jstr; };
+  JavaString.prototype.valueOf = function () { return this.__jstr; };
+  JavaString.prototype.getBytes = function (charset) {
+    return jsBytes(this.__jstr);
+  };
+  JavaString.prototype.length = function () { return this.__jstr.length; };
+  JavaString.prototype.equals = function (o) {
+    return this.__jstr === String(o == null ? '' : o);
+  };
+  JavaString.prototype.equalsIgnoreCase = function (o) {
+    return this.__jstr.toLowerCase() ===
+        String(o == null ? '' : o).toLowerCase();
+  };
+  JavaString.prototype.contains = function (o) {
+    return this.__jstr.indexOf(String(o == null ? '' : o)) >= 0;
+  };
+  JavaString.prototype.indexOf = function (o) {
+    return this.__jstr.indexOf(String(o == null ? '' : o));
+  };
+  JavaString.prototype.substring = function (a, b) {
+    return b == null ? this.__jstr.substring(a) : this.__jstr.substring(a, b);
+  };
+  JavaString.prototype.trim = function () { return this.__jstr.trim(); };
+  JavaString.prototype.toLowerCase = function () {
+    return this.__jstr.toLowerCase();
+  };
+  JavaString.prototype.toUpperCase = function () {
+    return this.__jstr.toUpperCase();
+  };
+  JavaString.prototype.replace = function (a, b) {
+    return this.__jstr.split(String(a)).join(String(b));
+  };
+  // 原语字符串也要支持 `.getBytes()`（`String("x").getBytes()` 经 with 作用域
+  // 解到 JavaString 后返回原语）。仅新增方法，不改既有行为。
+  try {
+    if (!String.prototype.getBytes) {
+      Object.defineProperty(String.prototype, 'getBytes', {
+        value: function (charset) { return jsBytes(String(this)); },
+        enumerable: false,
+        configurable: true,
+        writable: true,
+      });
+    }
+  } catch (e) {}
+
+  // ── java.util.Base64（Java 8）与 android.util.Base64 ──
+  function jB64Decoder(urlSafe) {
+    return {
+      decode: function (s) {
+        var str = String(s == null ? '' : s);
+        if (urlSafe) str = str.replace(/-/g, '+').replace(/_/g, '/');
+        return bytesFromB64(str);
+      },
+    };
+  }
+  function jB64Encoder(urlSafe) {
+    var enc = {
+      encodeToString: function (b) {
+        var s = b64FromBytes(juBytes(b));
+        if (urlSafe) {
+          s = s.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        }
+        return s;
+      },
+      withoutPadding: function () { return enc; },
+    };
+    enc.encode = function (b) { return jsBytes(enc.encodeToString(b)); };
+    return enc;
+  }
+  var JavaBase64 = jmark(function JavaBase64() {},
+      'java.util.Base64');
+  JavaBase64.getDecoder = function () { return jB64Decoder(false); };
+  JavaBase64.getEncoder = function () { return jB64Encoder(false); };
+  JavaBase64.getUrlDecoder = function () { return jB64Decoder(true); };
+  JavaBase64.getUrlEncoder = function () { return jB64Encoder(true); };
+  JavaBase64.getMimeDecoder = function () { return jB64Decoder(false); };
+  JavaBase64.getMimeEncoder = function () { return jB64Encoder(false); };
+
+  var AndroidBase64 = jmark(function AndroidBase64() {},
+      'android.util.Base64');
+  AndroidBase64.DEFAULT = 0;
+  AndroidBase64.NO_PADDING = 1;
+  AndroidBase64.NO_WRAP = 2;
+  AndroidBase64.URL_SAFE = 8;
+  AndroidBase64.NO_CLOSE = 16;
+  AndroidBase64.decode = function (s, flags) {
+    var str = String(s == null ? '' : s);
+    if ((flags || 0) & 8) str = str.replace(/-/g, '+').replace(/_/g, '/');
+    return bytesFromB64(str);
+  };
+  AndroidBase64.encodeToString = function (b, flags) {
+    var out = b64FromBytes(juBytes(b));
+    if ((flags || 0) & 8) {
+      out = out.replace(/\+/g, '-').replace(/\//g, '_');
+    }
+    if ((flags || 0) & 1) out = out.replace(/=+$/, '');
+    return out;
+  };
+  AndroidBase64.encode = function (b, flags) {
+    return jsBytes(AndroidBase64.encodeToString(b, flags));
+  };
+
+  // ── java.util.Arrays ──
+  var JavaArrays = jmark(function JavaArrays() {}, 'java.util.Arrays');
+  JavaArrays.copyOfRange = function (src, from, to) {
+    var a = juBytes(src);
+    var out = [];
+    for (var i = from; i < to; i++) {
+      out.push(i >= 0 && i < a.length ? signedByte(a[i]) : 0);
+    }
+    return out;
+  };
+  JavaArrays.copyOf = function (src, len) {
+    var a = juBytes(src);
+    var out = [];
+    for (var i = 0; i < len; i++) {
+      out.push(i < a.length ? signedByte(a[i]) : 0);
+    }
+    return out;
+  };
+  JavaArrays.fill = function (arr, v) {
+    if (arr && typeof arr.length === 'number') {
+      for (var i = 0; i < arr.length; i++) arr[i] = v;
+    }
+    return arr;
+  };
+  JavaArrays.equals = function (a, b) {
+    var x = juBytes(a), y = juBytes(b);
+    if (x.length !== y.length) return false;
+    for (var i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+    return true;
+  };
+  JavaArrays.toString = function (a) {
+    var arr = [];
+    for (var i = 0; a && i < a.length; i++) arr.push(String(a[i]));
+    return '[' + arr.join(', ') + ']';
+  };
+  JavaArrays.sort = function (a) {
+    if (a && typeof a.sort === 'function') {
+      a.sort(function (x, y) { return x - y; });
+    }
+    return a;
+  };
+  JavaArrays.asList = function () {
+    return Array.prototype.slice.call(arguments);
+  };
+
+  // ── java.util.UUID / Map / List ──
+  var JavaUUID = jmark(function JavaUUID(v) {
+    if (this instanceof JavaUUID) {
+      this.__u = v == null ? randomUUID() : String(v);
+    }
+  }, 'java.util.UUID');
+  JavaUUID.randomUUID = function () { return new JavaUUID(null); };
+  JavaUUID.fromString = function (s) { return new JavaUUID(s); };
+  JavaUUID.prototype.toString = function () { return this.__u; };
+  JavaUUID.prototype.valueOf = function () { return this.__u; };
+
+  function JavaMap(init) {
+    if (!(this instanceof JavaMap)) return new JavaMap(init);
+    this.__m = {};
+    if (init && typeof init === 'object') {
+      if (init instanceof JavaMap) {
+        for (var k in init.__m) this.__m[k] = init.__m[k];
+      } else if (typeof init.length !== 'number') {
+        for (var j in init) this.__m[j] = init[j];
+      }
+    }
+  }
+  jmark(JavaMap, 'java.util.LinkedHashMap');
+  JavaMap.prototype.put = function (k, v) { this.__m[String(k)] = v; return v; };
+  JavaMap.prototype.get = function (k) {
+    var v = this.__m[String(k)];
+    return v == null ? null : v;
+  };
+  JavaMap.prototype.getOrDefault = function (k, d) {
+    var v = this.__m[String(k)];
+    return v == null ? d : v;
+  };
+  JavaMap.prototype.containsKey = function (k) {
+    return Object.prototype.hasOwnProperty.call(this.__m, String(k));
+  };
+  JavaMap.prototype.remove = function (k) {
+    var v = this.__m[String(k)];
+    delete this.__m[String(k)];
+    return v == null ? null : v;
+  };
+  JavaMap.prototype.clear = function () { this.__m = {}; };
+  JavaMap.prototype.size = function () { return Object.keys(this.__m).length; };
+  JavaMap.prototype.isEmpty = function () {
+    return Object.keys(this.__m).length === 0;
+  };
+  JavaMap.prototype.keySet = function () { return Object.keys(this.__m); };
+  JavaMap.prototype.values = function () {
+    return Object.keys(this.__m).map(function (k) {
+      return this.__m[k];
+    }, this);
+  };
+  JavaMap.prototype.entrySet = function () {
+    var m = this.__m;
+    return Object.keys(m).map(function (k) {
+      return { getKey: function () { return k; }, getValue: function () { return m[k]; } };
+    });
+  };
+  JavaMap.prototype.toString = function () {
+    var parts = [];
+    for (var k in this.__m) parts.push(k + '=' + this.__m[k]);
+    return '{' + parts.join(', ') + '}';
+  };
+  JavaMap.prototype.toJSON = function () {
+    var o = {};
+    for (var k in this.__m) o[k] = this.__m[k];
+    return o;
+  };
+
+  function JavaList(init) {
+    if (!(this instanceof JavaList)) return new JavaList(init);
+    this.__a = [];
+    if (init && typeof init.length === 'number') {
+      for (var i = 0; i < init.length; i++) this.__a.push(init[i]);
+    }
+  }
+  jmark(JavaList, 'java.util.ArrayList');
+  JavaList.prototype.add = function (v) { this.__a.push(v); return true; };
+  JavaList.prototype.get = function (i) { return this.__a[i]; };
+  JavaList.prototype.size = function () { return this.__a.length; };
+  JavaList.prototype.isEmpty = function () { return this.__a.length === 0; };
+  JavaList.prototype.toArray = function () { return this.__a.slice(); };
+  JavaList.prototype.toJSON = function () { return this.__a.slice(); };
+  JavaList.prototype.toString = function () {
+    return '[' + this.__a.join(', ') + ']';
+  };
+
+  // ── java.lang.System / Thread ──
+  var JavaSystem = jmark({
+    currentTimeMillis: function () { return Date.now(); },
+    nanoTime: function () { return Date.now() * 1e6; },
+    getProperty: function (k) {
+      return String(k == null ? '' : k) === 'line.separator' ? '\n' : '';
+    },
+    getenv: function () { return ''; },
+    arraycopy: function (src, sp, dst, dp, len) {
+      for (var i = 0; i < len; i++) dst[dp + i] = src[sp + i];
+      return null;
+    },
+    exit: function () { return null; },
+    gc: function () { return null; },
+  }, 'java.lang.System');
+  var JavaThread = jmark({
+    sleep: function (ms) { return null; },
+    yield: function () { return null; },
+    currentThread: function () {
+      return { getName: function () { return 'main'; } };
+    },
+  }, 'java.lang.Thread');
+
+  // ── android.text.TextUtils / android.os.Build ──
+  var AndroidTextUtils = jmark({
+    isEmpty: function (s) { return s == null || String(s).length === 0; },
+    isNotEmpty: function (s) { return s != null && String(s).length > 0; },
+    equals: function (a, b) { return String(a == null ? '' : a) === String(b == null ? '' : b); },
+    join: function (sep, items) {
+      var arr = [];
+      for (var i = 1; i < arguments.length; i++) {
+        var x = arguments[i];
+        if (x && typeof x.length === 'number') {
+          for (var j = 0; j < x.length; j++) arr.push(String(x[j]));
+        } else {
+          arr.push(String(x));
+        }
+      }
+      return arr.join(String(sep));
+    },
+  }, 'android.text.TextUtils');
+  var AndroidBuildVersion = {
+    RELEASE: '14',
+    SDK_INT: 34,
+    CODENAME: 'REL',
+  };
+  var AndroidBuild = jmark({
+    MODEL: 'Pixel 7',
+    MANUFACTURER: 'Google',
+    BRAND: 'google',
+    DEVICE: 'panther',
+    PRODUCT: 'panther',
+    HARDWARE: 'panther',
+    ID: 'AP1A.240505.004',
+    FINGERPRINT: 'google/panther/panther:14/AP1A.240505.004/1:user/release-keys',
+    VERSION: AndroidBuildVersion,
+  }, 'android.os.Build');
+
+  // ── java.io 字节流 ──
+  function ByteArrayOutputStream(size) {
+    if (!(this instanceof ByteArrayOutputStream)) {
+      return new ByteArrayOutputStream(size);
+    }
+    this.__a = [];
+  }
+  jmark(ByteArrayOutputStream, 'java.io.ByteArrayOutputStream');
+  ByteArrayOutputStream.prototype.write = function (b, off, len) {
+    if (b == null) return null;
+    if (typeof b === 'number') { this.__a.push(b & 0xff); return null; }
+    var o = off == null ? 0 : off;
+    var n = len == null ? b.length - o : len;
+    for (var i = 0; i < n; i++) {
+      var idx = o + i;
+      if (idx >= 0 && idx < b.length) this.__a.push(b[idx] & 0xff);
+    }
+    return null;
+  };
+  ByteArrayOutputStream.prototype.toByteArray = function () {
+    return this.__a.map(signedByte);
+  };
+  ByteArrayOutputStream.prototype.toString = function (charset) {
+    return utf8Decode(this.__a);
+  };
+  ByteArrayOutputStream.prototype.size = function () { return this.__a.length; };
+  ByteArrayOutputStream.prototype.reset = function () { this.__a = []; };
+  ByteArrayOutputStream.prototype.flush = function () { return null; };
+  ByteArrayOutputStream.prototype.close = function () { return null; };
+
+  function ByteArrayInputStream(bytes) {
+    if (!(this instanceof ByteArrayInputStream)) {
+      return new ByteArrayInputStream(bytes);
+    }
+    this.__a = juBytes(bytes);
+    this.__p = 0;
+  }
+  jmark(ByteArrayInputStream, 'java.io.ByteArrayInputStream');
+  ByteArrayInputStream.prototype.read = function (b, off, len) {
+    if (b == null) {
+      return this.__p < this.__a.length ? signedByte(this.__a[this.__p++]) : -1;
+    }
+    var o = off == null ? 0 : off;
+    var n = len == null ? b.length - o : len;
+    var avail = this.__a.length - this.__p;
+    if (avail <= 0) return -1;
+    if (n > avail) n = avail;
+    for (var i = 0; i < n; i++) {
+      b[o + i] = signedByte(this.__a[this.__p + i]);
+    }
+    this.__p += n;
+    return n;
+  };
+  ByteArrayInputStream.prototype.available = function () {
+    return this.__a.length - this.__p;
+  };
+  ByteArrayInputStream.prototype.close = function () { return null; };
+
+  // ── DEFLATE（RFC 1951）/ GZIP（RFC 1952）纯 JS 解压 ──
+  function inflateRaw(data) {
+    var pos = 0;
+    var bitBuf = 0;
+    var bitCnt = 0;
+    function bits(n) {
+      while (bitCnt < n) {
+        if (pos >= data.length) throw new Error('deflate: unexpected end');
+        bitBuf |= (data[pos++] & 0xff) << bitCnt;
+        bitCnt += 8;
+      }
+      var v = bitBuf & ((1 << n) - 1);
+      bitBuf >>>= n;
+      bitCnt -= n;
+      return v;
+    }
+    function buildTree(lengths) {
+      var blCount = [];
+      var i, l;
+      for (i = 0; i <= 15; i++) blCount[i] = 0;
+      for (i = 0; i < lengths.length; i++) {
+        if (lengths[i] > 0) blCount[lengths[i]]++;
+      }
+      var nextCode = [];
+      var code = 0;
+      for (l = 1; l <= 15; l++) {
+        code = (code + blCount[l - 1]) << 1;
+        nextCode[l] = code;
+      }
+      var table = [];
+      var maxLen = 0;
+      for (l = 1; l <= 15; l++) {
+        table[l] = {};
+        if (blCount[l] > 0) maxLen = l;
+      }
+      for (var sym = 0; sym < lengths.length; sym++) {
+        var ln = lengths[sym];
+        if (!ln) continue;
+        table[ln][nextCode[ln]++] = sym;
+      }
+      return { t: table, max: maxLen };
+    }
+    function decodeSym(tree) {
+      var code = 0;
+      for (var l = 1; l <= tree.max; l++) {
+        code = (code << 1) | bits(1);
+        var s = tree.t[l][code];
+        if (s !== undefined) return s;
+      }
+      throw new Error('deflate: bad huffman code');
+    }
+    var LEN_BASE = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31,
+      35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
+    var LEN_EXTRA = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2,
+      3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+    var DIST_BASE = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129,
+      193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193,
+      12289, 16385, 24577];
+    var DIST_EXTRA = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6,
+      7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+    var out = [];
+    function inflateBlock(litTree, distTree) {
+      for (;;) {
+        var sym = decodeSym(litTree);
+        if (sym < 256) {
+          out.push(sym);
+        } else if (sym === 256) {
+          return;
+        } else {
+          var li = sym - 257;
+          if (li < 0 || li >= LEN_BASE.length) {
+            throw new Error('deflate: bad length code');
+          }
+          var len = LEN_BASE[li] +
+              (LEN_EXTRA[li] ? bits(LEN_EXTRA[li]) : 0);
+          var ds = decodeSym(distTree);
+          if (ds < 0 || ds >= DIST_BASE.length) {
+            throw new Error('deflate: bad distance code');
+          }
+          var dist = DIST_BASE[ds] +
+              (DIST_EXTRA[ds] ? bits(DIST_EXTRA[ds]) : 0);
+          if (dist > out.length) throw new Error('deflate: distance too far');
+          for (var k = 0; k < len; k++) out.push(out[out.length - dist]);
+        }
+      }
+    }
+    var fixedLit = null;
+    var fixedDist = null;
+    var last = 0;
+    while (!last) {
+      last = bits(1);
+      var type = bits(2);
+      if (type === 0) {
+        bitBuf = 0;
+        bitCnt = 0;
+        var rawLen = (data[pos] & 0xff) | ((data[pos + 1] & 0xff) << 8);
+        pos += 4;
+        for (var i = 0; i < rawLen; i++) out.push(data[pos++] & 0xff);
+      } else if (type === 1) {
+        if (!fixedLit) {
+          var fl = [];
+          for (var s = 0; s < 288; s++) {
+            fl.push(s < 144 ? 8 : (s < 256 ? 9 : (s < 280 ? 7 : 8)));
+          }
+          var fd = [];
+          for (var d = 0; d < 32; d++) fd.push(5);
+          fixedLit = buildTree(fl);
+          fixedDist = buildTree(fd);
+        }
+        inflateBlock(fixedLit, fixedDist);
+      } else if (type === 2) {
+        var hlit = bits(5) + 257;
+        var hdist = bits(5) + 1;
+        var hclen = bits(4) + 4;
+        var order = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
+        var clLen = [];
+        for (var ci = 0; ci < 19; ci++) clLen.push(0);
+        for (var cj = 0; cj < hclen; cj++) clLen[order[cj]] = bits(3);
+        var clTree = buildTree(clLen);
+        var lens = [];
+        while (lens.length < hlit + hdist) {
+          var cs = decodeSym(clTree);
+          if (cs < 16) {
+            lens.push(cs);
+          } else if (cs === 16) {
+            var prev = lens.length ? lens[lens.length - 1] : 0;
+            var rep = 3 + bits(2);
+            while (rep-- > 0) lens.push(prev);
+          } else if (cs === 17) {
+            var rep2 = 3 + bits(3);
+            while (rep2-- > 0) lens.push(0);
+          } else {
+            var rep3 = 11 + bits(7);
+            while (rep3-- > 0) lens.push(0);
+          }
+        }
+        if (lens.length !== hlit + hdist) {
+          throw new Error('deflate: bad code lengths');
+        }
+        inflateBlock(buildTree(lens.slice(0, hlit)),
+            buildTree(lens.slice(hlit, hlit + hdist)));
+      } else {
+        throw new Error('deflate: invalid block type');
+      }
+    }
+    return out;
+  }
+
+  function gzipDecompress(data) {
+    var b = juBytes(data);
+    if (b.length < 18 || b[0] !== 0x1f || b[1] !== 0x8b || b[2] !== 8) {
+      throw new Error('GZIPInputStream: not in gzip format');
+    }
+    var flags = b[3];
+    var p = 10;
+    if (flags & 4) {
+      var xlen = (b[p] & 0xff) | ((b[p + 1] & 0xff) << 8);
+      p += 2 + xlen;
+    }
+    if (flags & 8) { while (p < b.length && b[p] !== 0) p++; p++; }
+    if (flags & 16) { while (p < b.length && b[p] !== 0) p++; p++; }
+    if (flags & 2) p += 2;
+    return inflateRaw(b.slice(p, b.length - 8));
+  }
+
+  var __crc32Table = null;
+  function crc32Bytes(bytes) {
+    if (!__crc32Table) {
+      __crc32Table = [];
+      for (var n = 0; n < 256; n++) {
+        var c = n;
+        for (var k = 0; k < 8; k++) {
+          c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        }
+        __crc32Table[n] = c >>> 0;
+      }
+    }
+    var crc = 0xffffffff;
+    for (var i = 0; i < bytes.length; i++) {
+      crc = (crc >>> 8) ^ __crc32Table[(crc ^ bytes[i]) & 0xff];
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  // 只用 stored（不压缩）块封装 gzip：无需压缩算法，输出仍满足 RFC 1952，
+  // 服务器与 GZIPInputStream 都能正常解压（hutool ZipUtil.gzip 语义）。
+  function gzipBytes(data) {
+    var b = juBytes(data);
+    var out = [0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+    var p = 0;
+    do {
+      var n = Math.min(65535, b.length - p);
+      var finalBlock = (p + n >= b.length) ? 1 : 0;
+      out.push(finalBlock, n & 0xff, (n >> 8) & 0xff,
+          (~n) & 0xff, ((~n) >> 8) & 0xff);
+      for (var i = 0; i < n; i++) out.push(b[p + i] & 0xff);
+      p += n;
+    } while (p < b.length);
+    var crc = crc32Bytes(b);
+    var len = b.length;
+    out.push(crc & 0xff, (crc >>> 8) & 0xff, (crc >>> 16) & 0xff,
+        (crc >>> 24) & 0xff);
+    out.push(len & 0xff, (len >>> 8) & 0xff, (len >>> 16) & 0xff,
+        (len >>> 24) & 0xff);
+    return out.map(signedByte);
+  }
+
+  function GZIPInputStream(inp) {
+    if (!(this instanceof GZIPInputStream)) return new GZIPInputStream(inp);
+    this.__in = inp;
+    this.__buf = null;
+    this.__p = 0;
+  }
+  jmark(GZIPInputStream, 'java.util.zip.GZIPInputStream');
+  GZIPInputStream.prototype.__load = function () {
+    if (this.__buf) return;
+    var inp = this.__in;
+    var all = [];
+    if (inp && inp.__a && inp.__p != null) {
+      all = inp.__a.slice(inp.__p);
+    } else if (inp && typeof inp.read === 'function') {
+      var chunk = [];
+      for (;;) {
+        var n = inp.read(chunk, 0, 8192);
+        if (n <= 0) break;
+        for (var i = 0; i < n; i++) all.push(chunk[i] & 0xff);
+      }
+    } else {
+      all = juBytes(inp);
+    }
+    this.__buf = gzipDecompress(all);
+  };
+  GZIPInputStream.prototype.read = function (b, off, len) {
+    this.__load();
+    if (b == null) {
+      return this.__p < this.__buf.length
+          ? signedByte(this.__buf[this.__p++]) : -1;
+    }
+    var o = off == null ? 0 : off;
+    var n = len == null ? b.length - o : len;
+    var avail = this.__buf.length - this.__p;
+    if (avail <= 0) return -1;
+    if (n > avail) n = avail;
+    for (var i = 0; i < n; i++) b[o + i] = signedByte(this.__buf[this.__p + i]);
+    this.__p += n;
+    return n;
+  };
+  GZIPInputStream.prototype.available = function () {
+    if (!this.__buf) return 1;
+    return this.__buf.length - this.__p;
+  };
+  GZIPInputStream.prototype.close = function () { return null; };
+
+  // ── hutool（书源实际导入的包：core.util / core.codec / crypto.digest）──
+  var HutoolBase64 = jmark(function HutoolBase64() {},
+      'cn.hutool.core.codec.Base64');
+  HutoolBase64.encode = function (s) {
+    return b64FromBytes(juBytes(s));
+  };
+  HutoolBase64.decodeStr = function (s) {
+    var str = s && typeof s === 'object' && typeof s.length === 'number'
+        ? String.fromCharCode.apply(null, juBytes(s)) : String(s == null ? '' : s);
+    return utf8Decode(bytesFromB64(str));
+  };
+  HutoolBase64.decode = HutoolBase64.decodeStr;
+
+  var HutoolDigestUtil = jmark(function HutoolDigestUtil() {},
+      'cn.hutool.crypto.digest.DigestUtil');
+  function hutoolDigest(algo, data) {
+    var bytes = data && typeof data === 'object' && typeof data.length === 'number'
+        ? juBytes(data) : utf8Encode(String(data == null ? '' : data));
+    return digestBytes(algo, bytes);
+  }
+  HutoolDigestUtil.md5Hex = function (s) {
+    var o = hutoolDigest('MD5', s);
+    return o == null ? '' : bytesToHex(o);
+  };
+  HutoolDigestUtil.sha1Hex = function (s) {
+    var o = hutoolDigest('SHA1', s);
+    return o == null ? '' : bytesToHex(o);
+  };
+  HutoolDigestUtil.sha256Hex = function (s) {
+    var o = hutoolDigest('SHA256', s);
+    return o == null ? '' : bytesToHex(o);
+  };
+  HutoolDigestUtil.md5 = function (s) {
+    var o = hutoolDigest('MD5', s);
+    return o == null ? [] : o.map(signedByte);
+  };
+  HutoolDigestUtil.sha256 = function (s) {
+    var o = hutoolDigest('SHA256', s);
+    return o == null ? [] : o.map(signedByte);
+  };
+
+  var HutoolStrUtil = jmark(function HutoolStrUtil() {},
+      'cn.hutool.core.util.StrUtil');
+  HutoolStrUtil.isEmpty = function (s) {
+    return s == null || String(s).length === 0;
+  };
+  HutoolStrUtil.isNotEmpty = function (s) {
+    return s != null && String(s).length > 0;
+  };
+  HutoolStrUtil.isBlank = function (s) {
+    return s == null || String(s).trim().length === 0;
+  };
+  HutoolStrUtil.isNotBlank = function (s) {
+    return s != null && String(s).trim().length > 0;
+  };
+  HutoolStrUtil.reverse = function (s) {
+    return String(s == null ? '' : s).split('').reverse().join('');
+  };
+  HutoolStrUtil.utf8Str = function (b) { return utf8Decode(juBytes(b)); };
+  HutoolStrUtil.equal = function (a, b, ignoreCase) {
+    var x = String(a == null ? '' : a), y = String(b == null ? '' : b);
+    return ignoreCase ? x.toLowerCase() === y.toLowerCase() : x === y;
+  };
+  HutoolStrUtil.format = function (pattern) {
+    var args = Array.prototype.slice.call(arguments);
+    var i = 1;
+    return String(pattern == null ? '' : pattern).replace(/\{\}/g, function () {
+      return i < args.length ? String(args[i++]) : '{}';
+    });
+  };
+
+  var HutoolZipUtil = jmark(function HutoolZipUtil() {},
+      'cn.hutool.core.util.ZipUtil');
+  HutoolZipUtil.gzip = function (data, charset) {
+    return gzipBytes(data);
+  };
+  HutoolZipUtil.unGzip = function (data) {
+    return gzipDecompress(data).map(signedByte);
+  };
+
+  // ── javax.crypto（Cipher 复用既有 AES/DES 纯 JS 实现）──
+  function SecretKeySpec(key, algo) {
+    if (!(this instanceof SecretKeySpec)) {
+      return new SecretKeySpec(key, algo);
+    }
+    this.__k = juBytes(key);
+    this.__algo = String(algo == null ? '' : algo);
+  }
+  jmark(SecretKeySpec, 'javax.crypto.spec.SecretKeySpec');
+  SecretKeySpec.prototype.getEncoded = function () {
+    return this.__k.map(signedByte);
+  };
+  SecretKeySpec.prototype.getAlgorithm = function () { return this.__algo; };
+
+  function IvParameterSpec(iv) {
+    if (!(this instanceof IvParameterSpec)) return new IvParameterSpec(iv);
+    this.__iv = juBytes(iv);
+  }
+  jmark(IvParameterSpec, 'javax.crypto.spec.IvParameterSpec');
+  IvParameterSpec.prototype.getIV = function () {
+    return this.__iv.map(signedByte);
+  };
+
+  function Cipher() {
+    this.__tf = '';
+    this.__mode = 0;
+    this.__key = null;
+    this.__iv = null;
+  }
+  jmark(Cipher, 'javax.crypto.Cipher');
+  Cipher.ENCRYPT_MODE = 1;
+  Cipher.DECRYPT_MODE = 2;
+  Cipher.getInstance = function (tf) {
+    var c = new Cipher();
+    c.__tf = String(tf == null ? '' : tf);
+    return c;
+  };
+  Cipher.prototype.init = function (mode, key, iv) {
+    this.__mode = Number(mode);
+    if (key && key.__k != null) {
+      this.__key = key.__k;
+    } else {
+      this.__key = juBytes(key);
+    }
+    if (iv == null) {
+      this.__iv = null;
+    } else if (iv.__iv != null) {
+      this.__iv = iv.__iv;
+    } else {
+      this.__iv = juBytes(iv);
+    }
+    return null;
+  };
+  Cipher.prototype.getBlockSize = function () {
+    var algo = this.__tf.split('/')[0].toUpperCase();
+    return (algo === 'DES' || algo === 'DESEDE' || algo === 'TRIPLEDES')
+        ? 8 : 16;
+  };
+  Cipher.prototype.getAlgorithm = function () { return this.__tf; };
+  Cipher.prototype.doFinal = function (data) {
+    var tf = aesParseTf(this.__tf, this.__iv != null);
+    if (!tf) throw new Error('Cipher: unsupported transformation ' + this.__tf);
+    var algo = this.__tf.split('/')[0].toUpperCase();
+    var input = juBytes(data);
+    var out;
+    if (algo === 'AES') {
+      out = aesRun(this.__mode === 1, input, this.__key, tf.mode, tf.pad,
+          this.__iv);
+    } else if (algo === 'DES' || algo === 'DESEDE' ||
+        algo === 'TRIPLEDES') {
+      out = desRun(this.__mode === 1, input, this.__key, tf.mode, tf.pad,
+          this.__iv, algo !== 'DES');
+    } else {
+      throw new Error('Cipher: unsupported algorithm ' + algo);
+    }
+    if (out == null) throw new Error('Cipher: bad block size or padding');
+    return out.map(signedByte);
+  };
+
+  // ── java.security（RSA 签名：SHA256withRSA）──
+  function X509EncodedKeySpec(bytes) {
+    if (!(this instanceof X509EncodedKeySpec)) {
+      return new X509EncodedKeySpec(bytes);
+    }
+    this.__b = juBytes(bytes);
+  }
+  jmark(X509EncodedKeySpec, 'java.security.spec.X509EncodedKeySpec');
+  X509EncodedKeySpec.prototype.getEncoded = function () {
+    return this.__b.map(signedByte);
+  };
+
+  function PKCS8EncodedKeySpec(bytes) {
+    if (!(this instanceof PKCS8EncodedKeySpec)) {
+      return new PKCS8EncodedKeySpec(bytes);
+    }
+    this.__b = juBytes(bytes);
+  }
+  jmark(PKCS8EncodedKeySpec, 'java.security.spec.PKCS8EncodedKeySpec');
+  PKCS8EncodedKeySpec.prototype.getEncoded = function () {
+    return this.__b.map(signedByte);
+  };
+
+  var JavaKeyFactory = jmark(function JavaKeyFactory() {},
+      'java.security.KeyFactory');
+  JavaKeyFactory.getInstance = function (algo) {
+    return {
+      generatePublic: function (spec) {
+        var key = rsaParsePublicKey(juBytes(spec.__b));
+        if (!key) throw new Error('Invalid RSA public key');
+        return { __rsaPub: key };
+      },
+      generatePrivate: function (spec) {
+        var key = rsaParsePrivateKey(juBytes(spec.__b));
+        if (!key) throw new Error('Invalid RSA private key');
+        return { __rsaPriv: key };
+      },
+    };
+  };
+
+  function rsaSignSha256(key, data) {
+    if (!key || !key.n || !key.d) throw new Error('RSA private key not set');
+    var n = bnFromBytes(key.n);
+    var ctx = montContext(n);
+    var k = Math.ceil(bnBitLength(n) / 8);
+    var hash = sha256Bytes(juBytes(data));
+    var di = [0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01,
+      0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20].concat(hash);
+    var em = rsaPkcs1Pad(di, k, 1);
+    var s = bnModPow(bnFromBytes(em), bnFromBytes(key.d), ctx);
+    return bnToBytes(s, k).map(signedByte);
+  }
+
+  var JavaSignature = jmark(function JavaSignature() {},
+      'java.security.Signature');
+  JavaSignature.getInstance = function (algo) {
+    var name = String(algo == null ? '' : algo).toUpperCase()
+        .replace(/-/g, '');
+    var sig = {
+      __parts: [],
+      initSign: function (key) {
+        if (!key || !key.__rsaPriv) throw new Error('Signature: private key required');
+        sig.__key = key;
+        sig.__parts = [];
+        return null;
+      },
+      initVerify: function (key) {
+        sig.__key = key;
+        sig.__parts = [];
+        return null;
+      },
+      update: function (b, off, len) {
+        var arr = juBytes(b);
+        if (len != null) arr = arr.slice(off || 0, (off || 0) + len);
+        for (var i = 0; i < arr.length; i++) sig.__parts.push(arr[i]);
+        return null;
+      },
+      sign: function () {
+        if (name !== 'SHA256WITHRSA') {
+          throw new Error('Signature: unsupported algorithm ' + algo);
+        }
+        return rsaSignSha256(sig.__key.__rsaPriv, sig.__parts);
+      },
+      verify: function (sigBytes) {
+        throw new Error('Signature: verify not implemented');
+      },
+    };
+    return sig;
+  };
+
+  var JavaMessageDigest = jmark(function JavaMessageDigest() {},
+      'java.security.MessageDigest');
+  JavaMessageDigest.getInstance = function (algo) {
+    var md = {
+      __parts: [],
+      update: function (b, off, len) {
+        var arr = juBytes(b);
+        if (len != null) arr = arr.slice(off || 0, (off || 0) + len);
+        for (var i = 0; i < arr.length; i++) md.__parts.push(arr[i]);
+        return null;
+      },
+      digest: function () {
+        var out = digestBytes(String(algo == null ? '' : algo), md.__parts);
+        md.__parts = [];
+        return out == null ? [] : out.map(signedByte);
+      },
+      getAlgorithm: function () { return String(algo == null ? '' : algo); },
+      reset: function () { md.__parts = []; return null; },
+    };
+    return md;
+  };
+
+  // ── okhttp3（网络走 java.connect 的确定性重放）──
+  function OkHttpMediaType(s) {
+    if (!(this instanceof OkHttpMediaType)) return new OkHttpMediaType(s);
+    this.__s = String(s == null ? '' : s);
+  }
+  jmark(OkHttpMediaType, 'okhttp3.MediaType');
+  OkHttpMediaType.parse = function (s) { return new OkHttpMediaType(s); };
+  OkHttpMediaType.get = OkHttpMediaType.parse;
+  OkHttpMediaType.prototype.toString = function () { return this.__s; };
+
+  function OkHttpRequestBody(body, mt) {
+    if (!(this instanceof OkHttpRequestBody)) {
+      return new OkHttpRequestBody(body, mt);
+    }
+    if (body && body.length != null && typeof body !== 'string') {
+      this.__text = utf8Decode(juBytes(body));
+    } else {
+      this.__text = String(body == null ? '' : body);
+    }
+    this.__mt = mt;
+  }
+  jmark(OkHttpRequestBody, 'okhttp3.RequestBody');
+  OkHttpRequestBody.create = function (a, b) {
+    var body = a, mt = b;
+    if (a instanceof OkHttpMediaType) { mt = a; body = b; }
+    return new OkHttpRequestBody(body, mt);
+  };
+  OkHttpRequestBody.prototype.toString = function () { return this.__text; };
+
+  function OkHttpRequest() {
+    this.__url = '';
+    this.__method = 'GET';
+    this.__body = null;
+    this.__headers = {};
+  }
+  jmark(OkHttpRequest, 'okhttp3.Request');
+  OkHttpRequest.prototype.url = function () { return this.__url; };
+
+  function OkHttpRequestBuilder() {
+    if (!(this instanceof OkHttpRequestBuilder)) return new OkHttpRequestBuilder();
+    this.__r = new OkHttpRequest();
+  }
+  jmark(OkHttpRequestBuilder, 'okhttp3.Request.Builder');
+  OkHttpRequest.Builder = OkHttpRequestBuilder;
+  OkHttpRequestBuilder.prototype.url = function (u) {
+    this.__r.__url = String(u == null ? '' : u);
+    return this;
+  };
+  OkHttpRequestBuilder.prototype.addHeader = function (k, v) {
+    this.__r.__headers[String(k)] = String(v == null ? '' : v);
+    return this;
+  };
+  OkHttpRequestBuilder.prototype.header = function (k, v) {
+    this.__r.__headers[String(k)] = String(v == null ? '' : v);
+    return this;
+  };
+  OkHttpRequestBuilder.prototype.removeHeader = function (k) {
+    delete this.__r.__headers[String(k)];
+    return this;
+  };
+  OkHttpRequestBuilder.prototype.headers = function (m) {
+    if (m && typeof m === 'object') {
+      for (var k in m) this.__r.__headers[String(k)] = String(m[k]);
+    }
+    return this;
+  };
+  OkHttpRequestBuilder.prototype.get = function () {
+    this.__r.__method = 'GET';
+    return this;
+  };
+  OkHttpRequestBuilder.prototype.head = function () {
+    this.__r.__method = 'HEAD';
+    return this;
+  };
+  OkHttpRequestBuilder.prototype.post = function (body) {
+    this.__r.__method = 'POST';
+    this.__r.__body = body;
+    return this;
+  };
+  OkHttpRequestBuilder.prototype.put = function (body) {
+    this.__r.__method = 'PUT';
+    this.__r.__body = body;
+    return this;
+  };
+  OkHttpRequestBuilder.prototype.delete = function (body) {
+    this.__r.__method = 'DELETE';
+    this.__r.__body = body == null ? null : body;
+    return this;
+  };
+  OkHttpRequestBuilder.prototype.method = function (m, body) {
+    this.__r.__method = String(m == null ? 'GET' : m).toUpperCase();
+    this.__r.__body = body == null ? null : body;
+    return this;
+  };
+  OkHttpRequestBuilder.prototype.build = function () { return this.__r; };
+
+  function jMergeUrlOpts(url, opts) {
+    var u = String(url == null ? '' : url);
+    var idx = u.indexOf(',{');
+    if (idx >= 0) {
+      var merged = null;
+      try { merged = JSON.parse(u.substring(idx + 1)); } catch (e) { merged = null; }
+      if (!merged || typeof merged !== 'object') return u;
+      for (var k in opts) merged[k] = opts[k];
+      return u.substring(0, idx) + ',' + JSON.stringify(merged);
+    }
+    for (var ck in opts) return u + ',' + JSON.stringify(opts);
+    return u;
+  }
+
+  function okExecute(req) {
+    var url = String(req.__url || '');
+    if (!url) throw new Error('okhttp: Request.url must be set');
+    var method = String(req.__method || 'GET').toUpperCase();
+    var body = null;
+    if (req.__body != null) {
+      body = req.__body instanceof OkHttpRequestBody
+          ? req.__body.__text : String(req.__body);
+    }
+    var opts = {};
+    var hasHeaders = false;
+    for (var k in req.__headers) { hasHeaders = true; break; }
+    if (hasHeaders) opts.headers = req.__headers;
+    if (method !== 'GET') opts.method = method;
+    if (body != null) opts.body = body;
+    var merged = jMergeUrlOpts(url, opts);
+    // POST 沿用宿主约定的 `url||POST||body` 组合键（settle 拆分后发 POST）。
+    var key = method === 'POST' && body != null
+        ? merged + '||POST||' + body : merged;
+    var base = global.java && global.java.connect
+        ? global.java.connect(key) : null;
+    if (!base) throw new Error('okhttp: network bridge unavailable');
+    return new OkHttpResponse(key, base);
+  }
+
+  function OkHttpResponse(key, base) {
+    this.__key = key;
+    this.__r = base;
+  }
+  jmark(OkHttpResponse, 'okhttp3.Response');
+  OkHttpResponse.prototype.code = function () { return this.__r.code(); };
+  OkHttpResponse.prototype.isSuccessful = function () {
+    return this.__r.isSuccessful();
+  };
+  OkHttpResponse.prototype.message = function () { return this.__r.message(); };
+  OkHttpResponse.prototype.header = function (name) {
+    return this.__r.header(name);
+  };
+  OkHttpResponse.prototype.headers = function () {
+    var m = this.__r.headers();
+    var names = [];
+    for (var k in m) names.push(k);
+    return {
+      names: function () { return names; },
+      get: function (n) {
+        return m.get ? m.get(n) : (m[n] == null ? null : m[n]);
+      },
+      values: function (n) {
+        var v = m.get ? m.get(n) : m[n];
+        return v == null ? [] : [v];
+      },
+      toString: function () { return String(m); },
+    };
+  };
+  OkHttpResponse.prototype.request = function () {
+    var u = this.__r.url ? this.__r.url() : this.__key;
+    return { url: function () { return u; }, method: function () { return ''; } };
+  };
+  OkHttpResponse.prototype.body = function () {
+    var r = this.__r;
+    return {
+      string: function () { return String(r.body()); },
+      bytes: function () {
+        return r.bodyAsBytes ? r.bodyAsBytes() : jsBytes(r.body());
+      },
+      contentLength: function () { return juBytes(r.body()).length; },
+      contentType: function () { return null; },
+      close: function () { return null; },
+      toString: function () { return String(r.body()); },
+    };
+  };
+  OkHttpResponse.prototype.toString = function () {
+    return String(this.__r.body());
+  };
+  OkHttpResponse.prototype.close = function () { return null; };
+
+  function OkHttpCall(client, req) {
+    this.__client = client;
+    this.__req = req;
+  }
+  jmark(OkHttpCall, 'okhttp3.Call');
+  OkHttpCall.prototype.execute = function () { return okExecute(this.__req); };
+  OkHttpCall.prototype.isExecuted = function () { return true; };
+  OkHttpCall.prototype.cancel = function () { return null; };
+
+  function OkHttpClient() {}
+  jmark(OkHttpClient, 'okhttp3.OkHttpClient');
+  OkHttpClient.prototype.newCall = function (req) {
+    return new OkHttpCall(this, req);
+  };
+  OkHttpClient.prototype.newBuilder = function () { return this; };
+
+  // ── org.jsoup / StrResponse ──
+  var JsoupShim = jmark(function JsoupShim() {}, 'org.jsoup.Jsoup');
+  JsoupShim.connect = function (url) {
+    if (global.org && global.org.jsoup && global.org.jsoup.Jsoup) {
+      return global.org.jsoup.Jsoup.connect(url);
+    }
+    throw new Error('Jsoup.connect: 需要在书源上下文中运行');
+  };
+  var JsoupConnection = {
+    Method: {
+      GET: 'GET', POST: 'POST', PUT: 'PUT', DELETE: 'DELETE',
+      PATCH: 'PATCH', HEAD: 'HEAD', OPTIONS: 'OPTIONS', TRACE: 'TRACE',
+    },
+  };
+  jmark(JsoupConnection, 'org.jsoup.Connection');
+
+  function LegadoStrResponse(url, body) {
+    if (!(this instanceof LegadoStrResponse)) {
+      return new LegadoStrResponse(url, body);
+    }
+    this.__u = String(url == null ? '' : url);
+    this.__b = String(body == null ? '' : body);
+  }
+  jmark(LegadoStrResponse, 'io.legado.app.help.http.StrResponse');
+  LegadoStrResponse.prototype.body = function () { return this.__b; };
+  LegadoStrResponse.prototype.bodyAsBytes = function () {
+    return jsBytes(this.__b);
+  };
+  LegadoStrResponse.prototype.code = function () { return 200; };
+  LegadoStrResponse.prototype.message = function () { return 'OK'; };
+  LegadoStrResponse.prototype.isSuccessful = function () { return true; };
+  LegadoStrResponse.prototype.url = function () { return this.__u; };
+  LegadoStrResponse.prototype.charset = function () { return 'UTF-8'; };
+  LegadoStrResponse.prototype.header = function (name) { return ''; };
+  LegadoStrResponse.prototype.headers = function () {
+    var m = {};
+    Object.defineProperty(m, 'get', {
+      value: function (n) { return null; },
+      enumerable: false,
+    });
+    return m;
+  };
+  LegadoStrResponse.prototype.cookies = function () {
+    var m = {};
+    Object.defineProperty(m, 'get', {
+      value: function (n) { return null; },
+      enumerable: false,
+    });
+    return m;
+  };
+  LegadoStrResponse.prototype.raw = function () {
+    var u = this.__u;
+    return {
+      request: function () { return { url: function () { return u; } }; },
+      code: function () { return 200; },
+      headers: function () { return {}; },
+    };
+  };
+  LegadoStrResponse.prototype.toString = function () { return this.__b; };
+
+  // ── 包树 ──
+  var P_java_util_zip = jpkg({ GZIPInputStream: GZIPInputStream });
+  var P_java_lang = jpkg({
+    String: JavaString,
+    System: JavaSystem,
+    Thread: JavaThread,
+  });
+  var P_java_util = jpkg({
+    Base64: JavaBase64,
+    Arrays: JavaArrays,
+    UUID: JavaUUID,
+    LinkedHashMap: JavaMap,
+    HashMap: JavaMap,
+    Map: JavaMap,
+    ArrayList: JavaList,
+    LinkedList: JavaList,
+    List: JavaList,
+    HashSet: JavaList,
+    Set: JavaList,
+  }, { zip: P_java_util_zip });
+  var P_java_io = jpkg({
+    ByteArrayOutputStream: ByteArrayOutputStream,
+    ByteArrayInputStream: ByteArrayInputStream,
+  });
+  var P_java_security_spec = jpkg({
+    X509EncodedKeySpec: X509EncodedKeySpec,
+    PKCS8EncodedKeySpec: PKCS8EncodedKeySpec,
+  });
+  var P_java_security = jpkg({
+    KeyFactory: JavaKeyFactory,
+    Signature: JavaSignature,
+    MessageDigest: JavaMessageDigest,
+  }, { spec: P_java_security_spec });
+  var P_javax_crypto_spec = jpkg({
+    SecretKeySpec: SecretKeySpec,
+    IvParameterSpec: IvParameterSpec,
+  });
+  var P_javax_crypto = jpkg({ Cipher: Cipher },
+      { spec: P_javax_crypto_spec });
+  var P_android_os = jpkg({ Build: AndroidBuild });
+  var P_android_text = jpkg({ TextUtils: AndroidTextUtils });
+  var P_android_util = jpkg({ Base64: AndroidBase64 });
+  var P_okhttp3 = jpkg({
+    Request: OkHttpRequest,
+    RequestBody: OkHttpRequestBody,
+    MediaType: OkHttpMediaType,
+    OkHttpClient: OkHttpClient,
+    Response: OkHttpResponse,
+    Call: OkHttpCall,
+  });
+  var P_hutool_util = jpkg({
+    StrUtil: HutoolStrUtil,
+    ZipUtil: HutoolZipUtil,
+  });
+  var P_hutool_codec = jpkg({ Base64: HutoolBase64 });
+  var P_hutool_digest = jpkg({ DigestUtil: HutoolDigestUtil });
+  var P_org_jsoup = jpkg({
+    Jsoup: JsoupShim,
+    Connection: JsoupConnection,
+  });
+  var P_legado_http = jpkg({ StrResponse: LegadoStrResponse });
+
+  var Packages = {
+    java: {
+      lang: P_java_lang,
+      util: P_java_util,
+      io: P_java_io,
+      security: P_java_security,
+    },
+    javax: { crypto: P_javax_crypto },
+    android: {
+      os: P_android_os,
+      text: P_android_text,
+      util: P_android_util,
+    },
+    okhttp3: P_okhttp3,
+    cn: {
+      hutool: {
+        core: { util: P_hutool_util, codec: P_hutool_codec },
+        crypto: { digest: P_hutool_digest },
+      },
+    },
+    org: { jsoup: P_org_jsoup },
+    io: {
+      legado: { app: { help: { http: P_legado_http } } },
+    },
+  };
+
+  function JavaImporter() {
+    if (!(this instanceof JavaImporter)) {
+      var obj = Object.create(JavaImporter.prototype);
+      JavaImporter.apply(obj, arguments);
+      return obj;
+    }
+    if (arguments.length > 0) this.importPackage.apply(this, arguments);
+  }
+  JavaImporter.prototype.importPackage = function () {
+    for (var i = 0; i < arguments.length; i++) {
+      jcopyInto(this, arguments[i]);
+    }
+    return this;
+  };
+  JavaImporter.prototype.importClass = function (cls) {
+    if (cls && cls.__javaName) {
+      this[cls.__javaName.split('.').pop()] = cls;
+    }
+    return this;
+  };
+
+  global.Packages = Packages;
+  global.JavaImporter = JavaImporter;
+  // Rhino 顶层 importPackage/importClass（语料中基本用 JavaImporter，这里
+  // 保留兼容；不覆盖已存在的同名全局，避免把 String 等 JS 内建顶掉）。
+  global.importPackage = function () {
+    for (var i = 0; i < arguments.length; i++) {
+      var list = arguments[i] && arguments[i].__classes;
+      if (!list) continue;
+      for (var k in list) {
+        if (global[k] === undefined) global[k] = list[k];
+      }
+    }
+    return null;
+  };
+  global.importClass = function (cls) {
+    if (cls && cls.__javaName) {
+      var simple = cls.__javaName.split('.').pop();
+      if (global[simple] === undefined) global[simple] = cls;
+    }
+    return null;
+  };
+
   var java = {
     // 加密/编码
     md5Encode: function (s) { return bytesToHex(md5Bytes(utf8Encode(String(s == null ? '' : s)))); },
