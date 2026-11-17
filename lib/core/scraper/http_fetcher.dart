@@ -578,6 +578,23 @@ class HttpFetcher {
     final host = Uri.tryParse(url ?? '')?.host;
     final profile = _profiles[_profileIndexFor(host)];
     final customUa = _customUa();
+    // 请求级显式 UA（源 header / __fetchHeaders / 图片防盗链头）：头名大小写
+    // 不敏感，统一归一为规范键，避免同一请求同时发出 `user-agent` 与
+    // `User-Agent` 两份值（服务端取哪份不可控，会话可能绑到错误的那份）。
+    String? explicitUa;
+    Map<String, String>? extraHeaders;
+    if (extra != null && extra.isNotEmpty) {
+      for (final entry in extra.entries) {
+        if (entry.key.toLowerCase() == 'user-agent') {
+          if (entry.value.trim().isNotEmpty) explicitUa = entry.value;
+        } else {
+          (extraHeaders ??= <String, String>{})[entry.key] = entry.value;
+        }
+      }
+      if (explicitUa != null) {
+        (extraHeaders ??= <String, String>{})['User-Agent'] = explicitUa;
+      }
+    }
     // 宿主级 UA 覆盖（验证屏/登录屏经 [registerHostUserAgent] 注册的完整浏览器
     // UA）必须与 WebView 保持一致：Cloudflare 的 cf_clearance 与 turnstile 通过态
     // 绑定「验证时那个 UA」，一旦抓取请求改用指纹档案 UA，该会话对抓取请求即失效
@@ -587,17 +604,22 @@ class HttpFetcher {
     final hostUa = host == null ? null : _hostUaOverrides[host];
     final overrideUa = (hostUa != null && hostUa.isNotEmpty) ? hostUa : null;
     final uaIsHostOverride = customUa.isEmpty && overrideUa != null;
+    // 客户端提示（Sec-Ch-Ua 三家头）描述的只是指纹档案那个桌面浏览器。
+    // 最终 UA 一旦偏离档案（宿主覆盖 / 源显式声明的移动端 UA），这套品牌
+    // 声明就与 UA 自相矛盾——本身是显眼的自动化特征，严格的图片 CDN 会直接
+    // 403；页面/API 请求走 AnalyzeUrl 本就不带客户端提示，图片请求却带，
+    // 同一源两套指纹也会被按「伪装请求」拒绝（列表正常、封面全灰）。此时撤下。
+    // 全局自定义 UA（高级设置）维持历史行为：保留档案的客户端提示。
+    final uaIsExplicitMismatch = customUa.isEmpty &&
+        explicitUa != null &&
+        explicitUa != profile.ua;
+    final suppressClientHints = uaIsHostOverride || uaIsExplicitMismatch;
     final merged = <String, String>{
       // 浏览器指纹：UA 与 Sec-Ch-Ua 品牌配套，避免自爆。
-      // 「默认 UA」非空时用户指定固定 UA，指纹档案的 Sec-Ch-Ua 仍保留
-      // （作为配套品牌声明，尽力避免因缺头被 WAF 拦截）。
-      // 覆盖 UA 来自 WebView（移动端 Android/桌面 Chromium），与指纹档案的品牌
-      // 通常不符；UA 与客户端提示自相矛盾本身就是显眼的自动化特征，故此时
-      // 不再声明 Sec-Ch-Ua 三家头。
       'User-Agent': customUa.isNotEmpty
           ? customUa
           : (overrideUa ?? profile.ua),
-      if (!uaIsHostOverride) ...<String, String>{
+      if (!suppressClientHints) ...<String, String>{
         'Sec-Ch-Ua': profile.secChUa,
         'Sec-Ch-Ua-Mobile': profile.secChUaMobile,
         'Sec-Ch-Ua-Platform': profile.secChUaPlatform,
@@ -622,7 +644,7 @@ class HttpFetcher {
       if (host != null && host.isNotEmpty)
         'Host': _hostHeaderValue(Uri.parse(url!)),
       if (referer != null) 'Referer': referer,
-      ...?extra,
+      ...?extraHeaders,
     };
     // 回带 Cookie（对齐旧版可解析版本）：站点下发的会话 Cookie 需在后续请求带回，
     // 否则部分 MacCMS/源会拒绝（400）或要求验证。匹配父域/子域。

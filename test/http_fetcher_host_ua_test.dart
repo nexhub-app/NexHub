@@ -86,4 +86,43 @@ void main() {
     expect(merged['User-Agent'], 'Custom/1.0',
         reason: '这是 v27 前 bot UA 覆盖基础头的机制，源侧已移除该声明');
   });
+
+  test('请求级显式 UA 偏离指纹档案（源声明移动端 UA）时撤下 Sec-Ch-Ua 三家头', () {
+    const sourceUa = 'Mozilla/5.0 (Android)';
+    final merged = hf().debugMergedHeaders(
+      extra: const <String, String>{'User-Agent': sourceUa},
+      url: 'https://img.example-cdn.test/thumbs/1/a_webp',
+    );
+    expect(merged['User-Agent'], sourceUa);
+    expect(merged.containsKey('Sec-Ch-Ua'), isFalse);
+    expect(merged.containsKey('Sec-Ch-Ua-Mobile'), isFalse);
+    expect(merged.containsKey('Sec-Ch-Ua-Platform'), isFalse,
+        reason: 'UA 与客户端提示品牌自相矛盾是显眼的自动化特征，严格 CDN 会按伪装请求拒绝');
+  });
+
+  test('请求级 UA 与指纹档案一致（图片兜底 UA）时保留客户端提示', () {
+    final profileUa = hf().userAgentForUrl(url);
+    final merged = hf().debugMergedHeaders(
+      extra: <String, String>{'User-Agent': profileUa},
+      url: url,
+    );
+    expect(merged['User-Agent'], profileUa);
+    expect(merged['Sec-Ch-Ua'], isNotNull);
+    expect(merged['Sec-Ch-Ua-Mobile'], isNotNull);
+    expect(merged['Sec-Ch-Ua-Platform'], isNotNull,
+        reason: '无源 UA 的常规图片请求不能因本次修复丢头');
+  });
+
+  test('user-agent 头名大小写不敏感：归一为单一 User-Agent 头', () {
+    final merged = hf().debugMergedHeaders(
+      extra: const <String, String>{'user-agent': 'Source/1.0 (Linux; Android)'},
+      url: url,
+    );
+    final uaKeys = merged.keys
+        .where((k) => k.toLowerCase() == 'user-agent')
+        .toList();
+    expect(uaKeys, <String>['User-Agent'], reason: '同一请求不能发出两份 UA 头');
+    expect(merged['User-Agent'], 'Source/1.0 (Linux; Android)');
+    expect(merged.containsKey('Sec-Ch-Ua'), isFalse);
+  });
 }

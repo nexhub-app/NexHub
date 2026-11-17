@@ -508,9 +508,17 @@ class SourceRepository extends ChangeNotifier {
     if (raw != null) {
       try {
         final list = jsonDecode(raw) as List<dynamic>;
+        var migrated = false;
         for (final e in list) {
-          _imported.add(PluginConfig.fromJson(e as Map<String, dynamic>));
+          final configJson = e as Map<String, dynamic>;
+          // 旧版适配器注入的默认 Referer 会随配置持久化，导致图片请求被
+          // 签名 CDN 拒绝（封面全灰）。载入时清理并回写一次。
+          if (ShuyuanAdapter.migrateLegacyInjectedReferer(configJson)) {
+            migrated = true;
+          }
+          _imported.add(PluginConfig.fromJson(configJson));
         }
+        if (migrated) await _persistImported();
       } catch (_) {
         // 损坏数据忽略
       }

@@ -9,6 +9,8 @@
 /// - 不再把书源规则强制降级为 CSS 选择器，而是原样保留完整规则
 library;
 
+import 'dart:convert';
+
 import '../../core/models/plugin_config.dart';
 import 'analyze/analyze_url.dart';
 import 'shuyuan_source_service.dart';
@@ -184,6 +186,64 @@ class ShuyuanAdapter {
   /// 判断 PluginConfig 是否为书源（ShuyuanNovelResolver 应处理）。
   static bool isShuyuanSource(PluginConfig config) {
     return config.selectors?['xiaoshuo'] is Map<String, dynamic>;
+  }
+
+  /// 历史迁移：旧版适配器在源未声明 Referer 时把 `bookSourceUrl` 兜底写入
+  /// `antiHotlinking.referer`，该值随配置持久化。这与 legado 语义（只透传
+  /// 源声明的 header，不注入任何默认 Referer）不符：携带来源头的图片/播放
+  /// 请求会被签名 CDN 按「来源不一致」拒绝——列表与 API 正常，封面/播放却
+  /// 全部失败。适配器修复只作用于新导入，已入库配置必须在载入时清理一次。
+  ///
+  /// 判定条件（全部满足才清理，避免误伤手工配置）：
+  /// - 是书源（`selectors['xiaoshuo']` 存在）；
+  /// - 存量 Referer 等于 `bookSourceUrl` 或 `site.baseUrl`（旧适配器注入值）；
+  /// - 原始源 JSON 的 header 未声明 Referer（脚本式 header 无法静态判定，保留）。
+  ///
+  /// 原地修改 [configJson]，返回是否发生变更（调用方据此决定回写持久层）。
+  static bool migrateLegacyInjectedReferer(Map<String, dynamic> configJson) {
+    final selectors = configJson['selectors'];
+    if (selectors is! Map) return false;
+    final xiaoshuo = selectors['xiaoshuo'];
+    if (xiaoshuo is! Map) return false;
+    final anti = configJson['antiHotlinking'];
+    if (anti is! Map) return false;
+    final referer = anti['referer'];
+    if (referer is! String || referer.trim().isEmpty) return false;
+
+    String trimSlash(Object? v) =>
+        v is String ? v.trim().replaceAll(RegExp(r'/+$'), '') : '';
+    final target = trimSlash(referer);
+    if (target.isEmpty) return false;
+    final bookUrl = trimSlash(xiaoshuo['bookSourceUrl']);
+    final site = configJson['site'];
+    final baseUrl = site is Map ? trimSlash(site['baseUrl']) : '';
+    final isInjected = (bookUrl.isNotEmpty && bookUrl == target) ||
+        (baseUrl.isNotEmpty && baseUrl == target);
+    if (!isInjected) return false;
+
+    final header = xiaoshuo['header'];
+    if (header != null) {
+      var text = '';
+      if (header is String) {
+        text = header;
+      } else if (header is Map || header is List) {
+        try {
+          text = json.encode(header);
+        } catch (_) {
+          text = header.toString();
+        }
+      } else {
+        text = header.toString();
+      }
+      final lower = text.trim().toLowerCase();
+      // 脚本式 header 可能在运行期算出 Referer，无法静态判定 → 保留。
+      if (lower.startsWith('@js:') || lower.startsWith('<js>')) return false;
+      // 源自己声明了 Referer → 保留。
+      if (lower.contains('referer') || lower.contains('referrer')) return false;
+    }
+
+    anti.remove('referer');
+    return true;
   }
 
   /// 解析书源声明的 header（legado 的 JSON 字符串，宽松接受单引号/裸键）。
