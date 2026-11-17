@@ -118,9 +118,12 @@ class ShuyuanAdapter {
           entry.key: entry.value,
     };
 
-    // 反盗链：优先使用书源声明的 Referer，缺省用 baseUrl（既有行为）。
+    // 反盗链：只透传书源声明的 Referer。legado BaseSource.getHeaderMap 只补
+    // UA、不补 Referer；页面请求已按同语义不带默认 Referer，图片/播放若在此
+    // 兜底注入 baseUrl 会重新造成指纹割裂——签名图片 CDN（secure= 参数）按
+    // 「无 Referer」设计，带 Referer 反而 403，封面（列表/详情）灰屏。
     final antiHotlinking = AntiHotlinkingConfig(
-      referer: declaredReferer ?? baseUrl,
+      referer: declaredReferer,
       userAgent: declaredUa,
     );
 

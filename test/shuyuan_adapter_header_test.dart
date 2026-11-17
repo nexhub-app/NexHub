@@ -3,7 +3,8 @@
 /// legado 源的 `header` 同时作用于页面请求（AnalyzeUrl）与图片请求
 /// （Glide fetcher 全量带头）。NexHub 的图片通道是 SourceImage，
 /// 它只读 PluginConfig.site / antiHotlinking——若适配器不映射 header，
-/// 图片请求会丢 UA/Referer/Cookie/自定义头，被 CDN 按指纹拦截（封面 403）。
+/// 图片请求会丢声明的 UA/Referer/Cookie/自定义头，被 CDN 按指纹拦截（封面 403）。
+/// 反向约束：legado 只补默认 UA、不补默认 Referer，适配器不得注入 baseUrl。
 library;
 
 import 'package:flutter_test/flutter_test.dart';
@@ -59,15 +60,18 @@ void main() {
       expect(h['Authorization'], 'Bearer x');
     });
 
-    test('未声明 Referer 时回落 baseUrl（既有行为）', () {
+    test('未声明 Referer 时不注入（对齐 legado 只补 UA）', () {
       final cfg = ShuyuanAdapter.toPluginConfig(_source({
         'header': '{"User-Agent":"okhttp/4.9.2"}',
       }));
+      expect(cfg.antiHotlinking.referer, isNull);
       final h = SourceImage.buildHeaders(
         url: 'http://img.example/1s.jpg',
         source: cfg,
       )!;
-      expect(h['Referer'], 'http://src.example');
+      expect(h['User-Agent'], 'okhttp/4.9.2');
+      expect(h.containsKey('Referer'), isFalse,
+          reason: '签名 CDN 按无 Referer 设计，注入 baseUrl 会 403（封面灰屏）');
     });
 
     test('宽松 JSON（单引号）也能解析', () {
@@ -87,13 +91,15 @@ void main() {
       expect(cfg.site.headers ?? const {}, isEmpty);
     });
 
-    test('无 header 声明时图片头仍带 baseUrl Referer', () {
+    test('无 header 声明时图片请求不带 Referer（UA 仍兜底）', () {
       final cfg = ShuyuanAdapter.toPluginConfig(_source({}));
+      expect(cfg.antiHotlinking.referer, isNull);
       final h = SourceImage.buildHeaders(
         url: 'http://img.example/1s.jpg',
         source: cfg,
       )!;
-      expect(h['Referer'], 'http://src.example');
+      expect(h.containsKey('Referer'), isFalse);
+      expect(h['User-Agent'], isNotEmpty);
     });
   });
 }
