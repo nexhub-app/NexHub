@@ -186,13 +186,45 @@ String _evalExploreJsRaw(
   final ctx = ShuyuanSourceContext.current;
   final jsEngine = JsEngine.forSource(ctx?.sourceId);
   try {
+    // legado 的 infoMap 是 InfoMap（MutableMap）：脚本会调 get/put/remove/
+    // containsKey/save。纯对象只有下标访问，`infoMap.save()` 之类的调用会
+    // TypeError 中断整个发现页脚本（分类全空）。方法以非枚举属性挂上，
+    // JSON.stringify(infoMap) 仍只输出数据键；脚本结束再快照回传宿主，
+    // 让 save/put/下标写入像 legado 一样持久化。
     final wrapped = '(function () {\n'
+        '  globalThis.__shuyuanInfoOut = "";\n'
+        '  if (typeof infoMap !== "undefined" && infoMap) {\n'
+        '    var __def = function (n, f) {\n'
+        '      try { Object.defineProperty(infoMap, n, {value: f,'
+        ' enumerable: false, configurable: true, writable: true}); } catch (e) {}\n'
+        '    };\n'
+        '    if (typeof infoMap.get !== "function") __def("get", function (k) {'
+        ' var v = infoMap[String(k)]; return v == null ? null : v; });\n'
+        '    if (typeof infoMap.put !== "function") __def("put", function (k, v) {'
+        ' var key = String(k); var prev = infoMap[key];'
+        ' infoMap[key] = v == null ? "" : String(v);'
+        ' return prev == null ? null : prev; });\n'
+        '    if (typeof infoMap.set !== "function") __def("set", function (k, v) {'
+        ' return infoMap.put(k, v); });\n'
+        '    if (typeof infoMap.remove !== "function") __def("remove", function (k) {'
+        ' var key = String(k); var prev = infoMap[key]; delete infoMap[key];'
+        ' return prev == null ? null : prev; });\n'
+        '    if (typeof infoMap.containsKey !== "function")'
+        ' __def("containsKey", function (k) {'
+        ' return Object.prototype.hasOwnProperty.call(infoMap, String(k)); });\n'
+        '    if (typeof infoMap.save !== "function")'
+        ' __def("save", function () { return null; });\n'
+        '    if (typeof infoMap.saveNow !== "function")'
+        ' __def("saveNow", function () { return null; });\n'
+        '  }\n'
         '  var __v = eval(${jsonEncode(_applyRhinoSyntaxCompat(jsCode))});\n'
         '  if (__v === undefined || __v === null) {\n'
         '    __v = (typeof result !== "undefined") ? result : "";\n'
         '  }\n'
-        '  if (typeof __v === "string") return __v;\n'
-        '  return JSON.stringify(__v);\n'
+        '  var __out = typeof __v === "string" ? __v : JSON.stringify(__v);\n'
+        '  try { if (typeof infoMap !== "undefined" && infoMap)'
+        ' globalThis.__shuyuanInfoOut = JSON.stringify(infoMap); } catch (e) {}\n'
+        '  return __out;\n'
         '})()';
     final bindings = <String, dynamic>{
       // legado 的 baseUrl 恒有定义（书源 getKey()），未提供时绑定空串，
@@ -200,7 +232,24 @@ String _evalExploreJsRaw(
       'baseUrl': baseUrl ?? '',
       if (infoMap != null) 'infoMap': Map<String, String>.from(infoMap),
     };
-    return jsEngine.eval(wrapped, bindings: bindings).trim();
+    final out = jsEngine.eval(wrapped, bindings: bindings).trim();
+    if (infoMap != null) {
+      final snapshot = jsEngine.eval('globalThis.__shuyuanInfoOut || ""');
+      if (snapshot.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(snapshot);
+          if (decoded is Map) {
+            infoMap
+              ..clear()
+              ..addAll(<String, String>{
+                for (final e in decoded.entries)
+                  e.key.toString(): e.value?.toString() ?? '',
+              });
+          }
+        } catch (_) {}
+      }
+    }
+    return out;
   } catch (_) {
     return '';
   } finally {

@@ -164,6 +164,19 @@ const String sourceContextJsPrelude = r'''
 
   var source = {
     getKey: function () { return syCtx().sourceKey || syCtx().sourceId; },
+    // legado BaseSource.get/put：CacheManager 持久化的键值对
+    // （`v_<getKey()>_<key>`）。get 缺省返回空串；put 返回写入值。
+    // 键加 `__v:` 前缀与 putVariable 的源变量命名空间隔离。
+    get: function (k) {
+      var v = syCtx().sourceVars['__v:' + String(k)];
+      return v == null ? '' : v;
+    },
+    put: function (k, v) {
+      var s = String(v == null ? '' : v);
+      syCtx().sourceVars['__v:' + String(k)] = s;
+      syOp('sourceVar', '__v:' + k, s);
+      return s;
+    },
     getVariable: function (k) {
       var c = syCtx();
       if (k == null || k === '') return c.sourceVars['__variable'] || '';
@@ -251,7 +264,10 @@ const String sourceContextJsPrelude = r'''
     },
     get: function (k) {
       var v = syCtx().cache[String(k)];
-      return v == null ? '' : v;
+      // legado CacheManager.get 返回 String?（缺省 null）：源脚本用
+      // `obj === undefined` / `JSON.parse(cache.get(...))` 探测缓存，
+      // 返回空串会让 JSON.parse('') 抛 SyntaxError 中断整个发现页脚本。
+      return v == null ? null : v;
     },
     delete: function (k) {
       delete syCtx().cache[String(k)];
@@ -1094,7 +1110,7 @@ const String javaExtensionsJsPrelude = r'''
 
   global.__javaElements = __javaElements;
 
-  // ── AES（ECB / CBC；PKCS5/7 或 NoPadding） ──
+  // ── AES（ECB / CBC / GCM；PKCS5/7 或 NoPadding；GCM 自带 tag） ──
   // 纯 JS 实现：同步沙箱内无法回调宿主做加解密，且 QuickJS 没有 WebCrypto。
   // S-box 由 GF(2^8) 逆元 + 仿射变换程序生成（比手抄 256 项可靠），
   // 算法按 FIPS-197 实现，测试用 NIST SP 800-38A / FIPS-197 向量锁定。
@@ -1228,8 +1244,111 @@ const String javaExtensionsJsPrelude = r'''
     return s;
   }
 
+  /// GCM 末块：[0]64 || [lenBits]64（AAD 恒为空，SunJCE 常见用法）。
+  function gcmLenBlock(bits) {
+    var hi = Math.floor(bits / 4294967296);
+    var lo = bits % 4294967296;
+    return [0, 0, 0, 0, 0, 0, 0, 0,
+      (hi >>> 24) & 255, (hi >>> 16) & 255, (hi >>> 8) & 255, hi & 255,
+      (lo >>> 24) & 255, (lo >>> 16) & 255, (lo >>> 8) & 255, lo & 255];
+  }
+
+  /// GHASH 的 128 位 GF(2) 乘法（NIST SP 800-38D 4.1，MSB-first）。
+  function gcmGhashMul(x, y) {
+    var z = new Array(16);
+    var v = y.slice();
+    var i, j;
+    for (i = 0; i < 16; i++) z[i] = 0;
+    for (i = 0; i < 128; i++) {
+      if ((x[i >> 3] >>> (7 - (i & 7))) & 1) {
+        for (j = 0; j < 16; j++) z[j] ^= v[j];
+      }
+      var lsb = v[15] & 1;
+      for (j = 15; j > 0; j--) {
+        v[j] = ((v[j] >>> 1) | ((v[j - 1] & 1) << 7)) & 0xff;
+      }
+      v[0] = (v[0] >>> 1) & 0xff;
+      if (lsb) v[0] ^= 0xe1;
+    }
+    return z;
+  }
+
+  function gcmGhash(h, data) {
+    var y = new Array(16);
+    var i, j;
+    for (i = 0; i < 16; i++) y[i] = 0;
+    for (i = 0; i < data.length; i += 16) {
+      var blk = data.slice(i, i + 16);
+      for (j = blk.length; j < 16; j++) blk.push(0);
+      for (j = 0; j < 16; j++) y[j] ^= blk[j] & 0xff;
+      y = gcmGhashMul(y, h);
+    }
+    return y;
+  }
+
+  /// AES-GCM：加密输出 ciphertext||tag，解密校验 tag（不符返回 null）。
+  /// 96 位 IV 走 J0=IV||0^31||1；其余长度按 800-38D 用 GHASH 派生。
+  function gcmRun(encrypt, data, key, iv, tagLenBits) {
+    var ks = aesKeyExpand(key);
+    if (!ks) return null;
+    var tagLen = Math.floor((tagLenBits == null ? 128 : tagLenBits) / 8);
+    if (tagLen < 4 || tagLen > 16) return null;
+    if (!iv || iv.length === 0) return null;
+    var i, j;
+    var zero = new Array(16);
+    for (i = 0; i < 16; i++) zero[i] = 0;
+    var h = aesCryptBlock(zero, ks.w, ks.nr, true);
+    var j0;
+    if (iv.length === 12) {
+      j0 = [];
+      for (i = 0; i < 12; i++) j0.push(iv[i] & 0xff);
+      j0.push(0, 0, 0, 1);
+    } else {
+      var ivb = [];
+      for (i = 0; i < iv.length; i++) ivb.push(iv[i] & 0xff);
+      while (ivb.length % 16 !== 0) ivb.push(0);
+      j0 = gcmGhash(h, ivb.concat(gcmLenBlock(iv.length * 8)));
+    }
+    var body = [];
+    for (i = 0; i < data.length; i++) body.push(data[i] & 0xff);
+    var tag = null;
+    if (!encrypt) {
+      if (body.length < tagLen) return null;
+      tag = body.slice(body.length - tagLen);
+      body = body.slice(0, body.length - tagLen);
+    }
+    var ctr = j0.slice();
+    var out = [];
+    for (i = 0; i < body.length; i += 16) {
+      // inc32：只递增末 4 字节。
+      for (j = 15; j >= 12; j--) {
+        ctr[j] = (ctr[j] + 1) & 0xff;
+        if (ctr[j] !== 0) break;
+      }
+      var ek = aesCryptBlock(ctr, ks.w, ks.nr, true);
+      var blk = body.slice(i, i + 16);
+      for (j = 0; j < blk.length; j++) out.push(blk[j] ^ ek[j]);
+    }
+    var ct = encrypt ? out : body;
+    var gd = ct.slice();
+    while (gd.length % 16 !== 0) gd.push(0);
+    var s = gcmGhash(h, gd.concat(gcmLenBlock(ct.length * 8)));
+    var ej0 = aesCryptBlock(j0.slice(), ks.w, ks.nr, true);
+    var full = [];
+    for (i = 0; i < 16; i++) full.push((s[i] ^ ej0[i]) & 0xff);
+    if (!encrypt) {
+      var diff = 0;
+      for (i = 0; i < tagLen; i++) diff |= tag[i] ^ full[i];
+      if (diff !== 0) return null;
+      return out.map(signedByte);
+    }
+    for (i = 0; i < tagLen; i++) out.push(full[i]);
+    return out.map(signedByte);
+  }
+
   /// AES 主流程：返回字节数组（有符号口径），参数非法返回 null。
   function aesRun(encrypt, data, key, mode, pad, iv) {
+    if (mode === 'GCM') return gcmRun(encrypt, data, key, iv, 128);
     var ks = aesKeyExpand(key);
     if (!ks) return null;
     var out = [];
@@ -1274,14 +1393,18 @@ const String javaExtensionsJsPrelude = r'''
     return plain.map(signedByte);
   }
 
-  /// transformation 解析：不支持的模式（CTR/GCM/CFB/OFB）返回 null。
+  /// transformation 解析：GCM 走独立分支；CTR/CFB/OFB 不支持返回 null。
   /// 与 legado SymmetricCryptoAndroid 一致：无 `/` 的算法名补
   /// ECB/PKCS5Padding（`"DES"` 即 `"DES/ECB/PKCS5Padding"`）。
   function aesParseTf(transformation, hasIv) {
     var raw = String(transformation || '');
     var t = raw.toUpperCase();
-    if (t.indexOf('/CTR') >= 0 || t.indexOf('/GCM') >= 0 ||
-        t.indexOf('/CFB') >= 0 || t.indexOf('/OFB') >= 0) {
+    if (t.indexOf('/GCM') >= 0) {
+      // Java GCM 无填充，tag 长度由 GCMParameterSpec 决定（缺省 128）。
+      return { mode: 'GCM', pad: false };
+    }
+    if (t.indexOf('/CTR') >= 0 || t.indexOf('/CFB') >= 0 ||
+        t.indexOf('/OFB') >= 0) {
       return null;
     }
     var mode = t.indexOf('/ECB') >= 0 ? 'ECB'
@@ -1352,6 +1475,15 @@ const String javaExtensionsJsPrelude = r'''
     var data = hexToBytes(dataHex).map(function (b) { return b & 0xff; });
     var iv = ivHex ? hexToBytes(ivHex).map(function (b) { return b & 0xff; }) : null;
     var out = aesRun(!!encrypt, data, key, iv ? 'CBC' : 'ECB', false, iv);
+    return out == null ? '' : bytesToHex(out);
+  };
+
+  global.__aesGcmHexTest = function (keyHex, ivHex, dataHex, encrypt,
+      tagBits) {
+    var key = hexToBytes(keyHex).map(function (b) { return b & 0xff; });
+    var iv = hexToBytes(ivHex).map(function (b) { return b & 0xff; });
+    var data = hexToBytes(dataHex).map(function (b) { return b & 0xff; });
+    var out = gcmRun(!!encrypt, data, key, iv, tagBits || 128);
     return out == null ? '' : bytesToHex(out);
   };
 
@@ -3267,11 +3399,25 @@ const String javaExtensionsJsPrelude = r'''
     return this.__iv.map(signedByte);
   };
 
+  function GCMParameterSpec(tLen, iv) {
+    if (!(this instanceof GCMParameterSpec)) {
+      return new GCMParameterSpec(tLen, iv);
+    }
+    this.__tlen = Number(tLen == null ? 128 : tLen);
+    this.__iv = juBytes(iv);
+  }
+  jmark(GCMParameterSpec, 'javax.crypto.spec.GCMParameterSpec');
+  GCMParameterSpec.prototype.getTLen = function () { return this.__tlen; };
+  GCMParameterSpec.prototype.getIV = function () {
+    return this.__iv.map(signedByte);
+  };
+
   function Cipher() {
     this.__tf = '';
     this.__mode = 0;
     this.__key = null;
     this.__iv = null;
+    this.__tagBits = 128;
   }
   jmark(Cipher, 'javax.crypto.Cipher');
   Cipher.ENCRYPT_MODE = 1;
@@ -3290,6 +3436,9 @@ const String javaExtensionsJsPrelude = r'''
     }
     if (iv == null) {
       this.__iv = null;
+    } else if (iv.__tlen != null) {
+      this.__iv = iv.__iv;
+      this.__tagBits = iv.__tlen;
     } else if (iv.__iv != null) {
       this.__iv = iv.__iv;
     } else {
@@ -3310,8 +3459,11 @@ const String javaExtensionsJsPrelude = r'''
     var input = juBytes(data);
     var out;
     if (algo === 'AES') {
-      out = aesRun(this.__mode === 1, input, this.__key, tf.mode, tf.pad,
-          this.__iv);
+      out = tf.mode === 'GCM'
+          ? gcmRun(this.__mode === 1, input, this.__key, this.__iv,
+              this.__tagBits)
+          : aesRun(this.__mode === 1, input, this.__key, tf.mode, tf.pad,
+              this.__iv);
     } else if (algo === 'DES' || algo === 'DESEDE' ||
         algo === 'TRIPLEDES') {
       out = desRun(this.__mode === 1, input, this.__key, tf.mode, tf.pad,
@@ -3733,6 +3885,7 @@ const String javaExtensionsJsPrelude = r'''
   var P_javax_crypto_spec = jpkg({
     SecretKeySpec: SecretKeySpec,
     IvParameterSpec: IvParameterSpec,
+    GCMParameterSpec: GCMParameterSpec,
   });
   var P_javax_crypto = jpkg({ Cipher: Cipher },
       { spec: P_javax_crypto_spec });

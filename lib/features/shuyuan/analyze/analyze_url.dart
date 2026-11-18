@@ -1118,8 +1118,17 @@ class AnalyzeUrl {
       final c = s[i];
       if (inStr) {
         if (c == '\\' && i + 1 < s.length) {
-          out.write(c);
-          out.write(s[i + 1]);
+          final next = s[i + 1];
+          // GSON 宽松模式对单/双引号字符串都接受 `\'` 转义（社区源把嵌套
+          // JSON 写成 `{\'headers\':\'{\"UA\":\"...\"}\'}`）。JSON 里单引号
+          // 无需转义，必须丢掉反斜杠，否则严格 jsonDecode 报
+          // "Unrecognized string escape" 导致整页发现页不可用。
+          if (next == "'") {
+            out.write("'");
+          } else {
+            out.write(c);
+            out.write(next);
+          }
           i += 2;
           continue;
         }

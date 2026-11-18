@@ -224,6 +224,52 @@ void main() {
     });
   });
 
+  group('source.* / cache.* 变量语义', () {
+    test('source.get 缺省返回空串，put 后同轮可读（legado BaseSource）', () {
+      final e = engine();
+      expect(e.eval("source.get('missing')"), '');
+      expect(
+        e.eval("source.put('explore_mode', 'novel'); "
+            "source.get('explore_mode')"),
+        'novel',
+      );
+      // put 返回写入值（legado `fun put(key, value): String`）。
+      expect(e.eval("source.put('k', 'v')"), 'v');
+    });
+
+    test('source.put 经排空落源变量，下一轮种子可见', () {
+      final ctx = ShuyuanSourceContext('src-put');
+      final e = engine();
+      ShuyuanSourceContext.run(
+          ctx, () => e.eval("source.put('mode', 'ai')"));
+      expect(ctx.sourceVars['__v:mode'], 'ai');
+      final out = ShuyuanSourceContext.run(
+          ctx, () => e.eval("source.get('mode')"));
+      expect(out, 'ai');
+      // put/get 与 putVariable/getVariable 命名空间隔离。
+      expect(
+        ShuyuanSourceContext.run(
+            ctx, () => e.eval("source.putVariable('mode', 'var'); "
+                "source.get('mode') + '|' + source.getVariable('mode')")),
+        'ai|var',
+      );
+    });
+
+    test('cache.get/getFile/getMemory 缺失返回 null（legado CacheManager）', () {
+      final e = engine();
+      expect(e.eval("cache.get('nope') === null ? 'NULL' : 'OTHER'"), 'NULL');
+      expect(
+          e.eval("cache.getFile('nope') === null ? 'NULL' : 'OTHER'"), 'NULL');
+      expect(
+          e.eval("cache.getMemory('nope') === null ? 'NULL' : 'OTHER'"),
+          'NULL');
+      // JSON.parse(null) 合法（源脚本用它探测缓存），JSON.parse('') 抛错。
+      expect(e.eval("JSON.parse(cache.getFile('nope')) === null ? 'OK' : 'NO'"),
+          'OK');
+      expect(e.eval("cache.put('k', 'v'); cache.get('k')"), 'v');
+    });
+  });
+
   group('java.* AES', () {
     test('FIPS-197 AES-128 ECB 向量', () {
       final e = engine();
@@ -259,12 +305,84 @@ void main() {
           '中文abc123');
     });
 
-    test('不支持的 transformation 返回空，不给错误结果', () {
+    test('不支持的 transformation（CTR）与非法 GCM 输入返回空', () {
       final e = engine();
+      expect(
+          e.eval("java.aesDecodeToString('AAAA', '0123456789abcdef', "
+              "'AES/CTR/NoPadding', 'abcdef0123456789')"),
+          '');
+      // GCM 密文须含 16 字节 tag；'AAAA' 解出 3 字节，按坏输入返回空。
       expect(
           e.eval("java.aesDecodeToString('AAAA', '0123456789abcdef', "
               "'AES/GCM/NoPadding', 'abcdef0123456789')"),
           '');
+    });
+  });
+
+  group('java.* AES-GCM', () {
+    const nistKey = 'feffe9928665731c6d6a8f9467308308';
+    const nistIv = 'cafebabefacedbaddecaf888';
+    const nistPlain = 'd9313225f88406e5a55909c5aff5269a'
+        '86a7a9531534f7da2e4c303d8a318a72'
+        '1c3c0c95956809532fcf0e2449a6b525'
+        'b16aedf5aa0de657ba637b391aafd255';
+    const nistCipherWithTag = '42831ec2217774244b7221b784d0d49c'
+        'e3aa212f2c02a4e035c17e2329aca12e'
+        '21d514b25466931c7d8f6a5aac84aa05'
+        '1ba30b396a0aac973d58e091473f5985'
+        '4d5c2af327cd64a62cf35abd2ba6fab4';
+
+    test('NIST SP 800-38D Test Case 2（单块零明文）', () {
+      final e = engine();
+      const key = '00000000000000000000000000000000';
+      const iv = '000000000000000000000000';
+      const ctTag = '0388dace60b6a392f328c2b971b2fe78'
+          'ab6e47d42cec13bdf53a67b21257bddf';
+      expect(
+          e.eval("__aesGcmHexTest('$key', '$iv', "
+              "'00000000000000000000000000000000', true)"),
+          ctTag);
+      expect(
+          e.eval("__aesGcmHexTest('$key', '$iv', '$ctTag', false)"),
+          '00000000000000000000000000000000');
+    });
+
+    test('NIST SP 800-38D Test Case 3（60 字节明文，非整块尾部）', () {
+      final e = engine();
+      expect(
+          e.eval("__aesGcmHexTest('$nistKey', '$nistIv', '$nistPlain', true)"),
+          nistCipherWithTag);
+      expect(
+          e.eval(
+              "__aesGcmHexTest('$nistKey', '$nistIv', '$nistCipherWithTag', false)"),
+          nistPlain);
+    });
+
+    test('tag 被篡改时解密返回空（不做无校验解密）', () {
+      final e = engine();
+      final bad = '${nistCipherWithTag.substring(0, nistCipherWithTag.length - 1)}0';
+      expect(
+          e.eval("__aesGcmHexTest('$nistKey', '$nistIv', '$bad', false)"), '');
+    });
+
+    test('Cipher + SecretKeySpec + GCMParameterSpec（Java 互操作路径）', () {
+      final e = engine();
+      String cipher({required bool encrypt, required String input}) {
+        final mode = encrypt ? 1 : 2;
+        return e.eval(
+            "var c = Packages.javax.crypto.Cipher.getInstance("
+            "'AES/GCM/NoPadding');"
+            "c.init($mode, new Packages.javax.crypto.spec.SecretKeySpec("
+            "java.hexDecodeToByteArray('$nistKey'), 'AES'),"
+            " new Packages.javax.crypto.spec.GCMParameterSpec(128, "
+            "java.hexDecodeToByteArray('$nistIv')));"
+            "java.hexEncodeToString(c.doFinal("
+            "java.hexDecodeToByteArray('$input')))");
+      }
+
+      expect(cipher(encrypt: true, input: nistPlain), nistCipherWithTag);
+      expect(
+          cipher(encrypt: false, input: nistCipherWithTag), nistPlain);
     });
   });
 

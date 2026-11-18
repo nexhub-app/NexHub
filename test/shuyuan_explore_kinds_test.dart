@@ -87,6 +87,53 @@ JSON.stringify(sort);
     });
   });
 
+  group('infoMap Java Map 兼容（@js: 脚本内读写与保存）', () {
+    test('infoMap.get/save 可调用，返回值照常解析', () {
+      const js = '''
+const list = [];
+const selected = infoMap.get("频道") || "男生";
+list.push({title: selected, url: "/m"});
+infoMap.save();
+JSON.stringify(list);
+''';
+      final kinds = parseExploreKinds('@js:$js', infoMap: {'频道': '女生'});
+      expect(kinds.single.title, '女生');
+      expect(kinds.single.url, '/m');
+    });
+
+    test('infoMap 下标缺省为 undefined，get 缺省为 null', () {
+      const js = '''
+var a = infoMap["不存在"];
+var b = infoMap.get("不存在");
+JSON.stringify([{title: typeof a + "|" + String(b), url: "/u"}]);
+''';
+      final kinds = parseExploreKinds('@js:$js', infoMap: const {});
+      expect(kinds.single.title, 'undefined|null');
+    });
+
+    test('infoMap.put/remove/saveNow 与下标写入回写宿主表', () {
+      final infoMap = <String, String>{'已有': 'v'};
+      const js = '''
+infoMap.put("新增", "x");
+infoMap["下标"] = "y";
+infoMap.remove("已有");
+infoMap.saveNow();
+JSON.stringify([{title: "t", url: "/u"}]);
+''';
+      final kinds = parseExploreKinds('@js:$js', infoMap: infoMap);
+      expect(kinds.single.url, '/u');
+      expect(infoMap, {'新增': 'x', '下标': 'y'});
+    });
+
+    test('脚本抛错时宿主 infoMap 不被改写', () {
+      final infoMap = <String, String>{'保留': '1'};
+      const js = 'infoMap.put("bad", "x"); notAFunction(); JSON.stringify([]);';
+      final kinds = parseExploreKinds('@js:$js', infoMap: infoMap);
+      expect(kinds, isEmpty);
+      expect(infoMap, {'保留': '1'});
+    });
+  });
+
   group('parseExploreKinds', () {
     test('JSON 保留 type/action/chars/default/viewName/style', () {
       const json = '''
@@ -199,6 +246,24 @@ time=Date.now();
           ']';
       final kinds = parseExploreKinds(json);
       expect(kinds.single.title, '周榜');
+    });
+
+    test('GSON 宽松：单引号字符串内的 \\\' 转义（嵌套 JSON 参数）', () {
+      // 社区源把 URL 里的嵌套 JSON 头整段转义：{\'headers\':\'{\"UA\":...}\'}。
+      const json = r'''[
+{'title':'分类一','url':'/list?q={\'headers\':\'{\"User-Agent\": \"Mozilla/5.0\"}\'}'},
+{'title':'分类二','url':'/x2'}
+]''';
+      final kinds = parseExploreKinds(json);
+      expect(kinds.map((k) => k.title).toList(), ['分类一', '分类二']);
+      expect(kinds[0].url,
+          r'''/list?q={'headers':'{"User-Agent": "Mozilla/5.0"}'}''');
+    });
+
+    test('GSON 宽松：双引号字符串内的 \\\' 转义（GSON 同样接受）', () {
+      const json = r'''[{"title":"it\'s","url":"/x"}]''';
+      final kinds = parseExploreKinds(json);
+      expect(kinds.single.title, "it's");
     });
 
     test('非法 JSON 抛 FormatException', () {

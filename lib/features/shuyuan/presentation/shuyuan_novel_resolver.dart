@@ -710,6 +710,8 @@ class ShuyuanNovelResolver
         ' var v = this[String(k)]; delete this[String(k)]; return v == null ? null : v; };\n'
         '    if (typeof infoMap.containsKey !== "function") infoMap.containsKey = function (k) {'
         ' return Object.prototype.hasOwnProperty.call(this, String(k)); };\n'
+        '    if (typeof infoMap.save !== "function") infoMap.save = function () { return null; };\n'
+        '    if (typeof infoMap.saveNow !== "function") infoMap.saveNow = function () { return null; };\n'
         '  }\n'
         '  return eval(${jsonEncode(action)});\n'
         '})()';
