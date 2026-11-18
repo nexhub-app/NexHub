@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -361,6 +362,7 @@ class SourceRepository extends ChangeNotifier {
   /// - 新版本 **<** 已安装版本 → 跳过，**不覆盖**（防止误装旧版把新源冲掉）。
   /// 源作者发新版只需把 JSON 里的 `version` 调大，用户重新导入即自动升级。
   void addSource(PluginConfig config) {
+    config = _withLegadoIdentity(config);
     // 重新导入一个「曾被屏蔽的内置源」时，取消屏蔽使其重新出现。
     if (_configs.any((c) => c.id == config.id) &&
         _suppressedBuiltins.contains(config.id)) {
@@ -390,6 +392,67 @@ class SourceRepository extends ChangeNotifier {
     _persistImported();
     notifyListeners();
   }
+
+  /// 书源身份对齐 legado：`bookSourceUrl` 精确字符串即主键
+  /// （BookSource @PrimaryKey + BookSourceDao REPLACE）。
+  ///
+  /// 旧 id 由 URL 归一化生成（去 scheme、非字母数字折叠、截断 60 字符），
+  /// 仅尾斜杠/`#` 片段/非 ASCII 字符不同的源会撞成同一 id，被 [addSource]
+  /// 按 id 覆盖而在在线列表中消失。入库时校正：
+  /// - 同 URL 已入库 → 复用其 id（历史/进度中的 sourceId 引用不变）；
+  /// - id 被另一个书源占用 → 确定性追加 URL 哈希后缀，重复导入收敛到同 id。
+  PluginConfig _withLegadoIdentity(PluginConfig config) {
+    final url = _shuyuanUrlOf(config);
+    if (url == null) return config;
+
+    for (final c in _imported) {
+      if (c.id != config.id && _shuyuanUrlOf(c) == url) {
+        return config.copyWith(id: c.id);
+      }
+    }
+    for (final c in _configs) {
+      if (c.id != config.id && _shuyuanUrlOf(c) == url) {
+        return config.copyWith(id: c.id);
+      }
+    }
+
+    final owner = _findByIdInRepo(config.id);
+    if (owner == null) return config;
+    final ownerUrl = _shuyuanUrlOf(owner);
+    // 非书源占用或同一源：维持既有按 id 覆盖语义。
+    if (ownerUrl == null || ownerUrl == url) return config;
+
+    final suffixed = '${config.id}_${_shortUrlHash(url)}';
+    final suffixedOwner = _findByIdInRepo(suffixed);
+    if (suffixedOwner == null || _shuyuanUrlOf(suffixedOwner) == url) {
+      return config.copyWith(id: suffixed);
+    }
+    return config.copyWith(id: '${config.id}_${_fullUrlHash(url)}');
+  }
+
+  PluginConfig? _findByIdInRepo(String id) {
+    for (final c in _imported) {
+      if (c.id == id) return c;
+    }
+    for (final c in _configs) {
+      if (c.id == id) return c;
+    }
+    return null;
+  }
+
+  /// 书源原始 `bookSourceUrl`（legado 身份键）；非书源返回 null。
+  static String? _shuyuanUrlOf(PluginConfig config) {
+    final xiaoshuo = config.selectors?['xiaoshuo'];
+    if (xiaoshuo is! Map) return null;
+    final url = xiaoshuo['bookSourceUrl'];
+    return url is String && url.isNotEmpty ? url : null;
+  }
+
+  static String _shortUrlHash(String url) =>
+      crypto.md5.convert(utf8.encode(url)).toString().substring(0, 8);
+
+  static String _fullUrlHash(String url) =>
+      crypto.md5.convert(utf8.encode(url)).toString();
 
   /// 用一份完整的新配置替换同名源（源编辑页保存入口）。
   ///
