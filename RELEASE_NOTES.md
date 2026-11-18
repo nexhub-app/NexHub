@@ -1,14 +1,14 @@
-# NexHub v3.6.0
+# NexHub v4.0.0-beta.1
 
 > 四合一媒体聚合客户端（动漫 / 漫画 / 小说 / 影视）—— 源即插件 · 共创社区。
 
 这是 NexHub 的四合一媒体聚合客户端（动漫 / 漫画 / 小说 / 影视）。NexHub **不内置任何内容源**，所有内容都来自你自行导入的「源」。
 
-> ⚠️ **这是 3.6.0 正式版**：小说阅读 / 朗读与播放器体验的集中升级版——滚动模式章末无缝连排、章末续读默认开启（含存档迁移）、朗读位置单独记忆，并系统性修复连排进度、高亮跟随、暂停与句首丢音；播放器新增「跟随视频」自动横竖屏与竖屏页；源库改为分类页签 + 清单 / 源文件三源阶梯兜底；全局补齐 MD3 触感反馈。**基础功能完整、可安全升级**。相对 v3.5.0 共 16 个提交。
+> ⚠️ **这是 4.0.0 的第一个公开测试版（来自 `feature/legado-booksource-compat` 分支，尚未合并主分支）**：相对 v3.6.0 共 42 个提交，集中打通 Legado 风格书源的兼容层——导入保真、`java.*` 规则桥（含加密 / 字体 / 网络族）、规则语法对齐、发现页选项栏与动态分类、书源类型分发、登录与 WebView 取数。现有源与用户数据不受影响；少数未覆盖的 Java API 明确降级。**基础功能完整、可安全升级**。
 >
-> - **数据兼容**：经代码核查，本版**无破坏性数据变更**——书架、收藏、进度、书签、历史、分组直接沿用；阅读器偏好新增 schema 版本，旧存档中「章末续读 = 关」按历史默认值切为开启，用户后续选择照常保留；旧源 JSON 无需修改、无需重新导入；沿用同一签名密钥可直接覆盖安装。
-> - **平台产物**：Android / Windows / Linux / macOS / iOS / 鸿蒙 HAP 统一发布在同一个 Release；鸿蒙 HAP 不带签名，需自行签名后侧载。
-> - **建议**：v3.5.0 用户直接覆盖安装；系统语音（flutter_tts）句首丢音仍有残留，介意者建议改用在线朗读链路。
+> - **数据兼容**：经代码核查，**无破坏性数据变更**——书架、收藏、进度、书签、历史、分组直接沿用；书源新增字段按宽松语义解析，旧源 JSON 无需修改；沿用同一签名密钥可直接覆盖安装。
+> - **平台产物**：Android / Windows / Linux / macOS / iOS / 鸿蒙 HAP 统一发布在同一个预发布 Release；鸿蒙 HAP 不带签名，需自行签名后侧载。
+> - **建议**：这是 beta，非常规源若解析失败请附应用内「运行日志」反馈。
 
 ## ✨ 核心特性
 
@@ -26,6 +26,7 @@
 - **桌面卡片**（v3.4.0 新增）：Android 小组件与鸿蒙服务卡片，继续观看 / 追更 / 下载 / 统计 / 热力图 / 大数字 / 分模块 / 连续打卡 8 类，显示真实进度与当月打卡，深浅色跟随系统。
 - **宽屏双栏**（v3.5.0 新增）：宽窗口下一屏同看列表与详情，宽度可拖拽、可开关；鸿蒙平板原生全屏，漫画支持宽屏自动双页。
 - **小说连排与朗读**（v3.6.0 新增）：滚动章末无缝接续下一章、朗读位置单独记忆、章末续读默认开启；播放器支持跟随视频自动横竖屏与竖屏页。
+- **书源兼容层**（v4.0.0-beta.1 新增）：Legado 风格书源导入保真、`java.*` 规则桥与加密/字体/网络能力、动态规则重放、发现页选项栏与多类型分发。
 - **下载管理 / 历史与更新追踪 / Material 3 动态配色 / 多语言 / 跨平台**。
 
 ## 📌 通用升级说明
@@ -35,6 +36,25 @@
 **签名密钥**：自 v0.3.0 起使用同一固定签名密钥（经 CI Secret 注入，不入库），可直接覆盖安装；更早的随机签名旧包需先卸载一次再装。v0.2.12 曾引入固定签名，v0.3.1 起改为 CI 注入（密钥本体一致）。
 
 ## 📝 更新日志（倒序 · 最新在前）
+
+### 📝 更新日志（v3.6.0 → v4.0.0-beta.1）
+
+> 🧪 **预发布测试版**。42 个提交，来自尚未合并的 `feature/legado-booksource-compat` 分支；主线是 Legado 书源兼容层。现有源与用户数据无破坏性变更。
+
+- **导入保真**：`ruleData` / `jsLib` 等书源字段不再在导入时丢失；源变量并入源管理并持久化（重启保留），脚本 `source.putVariable` 落盘。
+- **规则语法**：对齐 ElementsSingle（下标 / 排除 / 区间步长 / 负索引 / `tag.` `class.` `id.` `text.` `children.` 前缀，CSS 仅 `@css:` 时使用）、XPath（td/tr 补壳 / 谓词 / 并集 / 复合）、JSONPath 全集、`textNodes` 逐节点语义、`replaceRegex` 多形态、`@js:` 内嵌规则、`@put` 无括号、`bookUrlPattern`；RegexCompat 翻译内联标志 / `\Q..\E` / 占有量词 / 原子分组 / `\p{In…}`；allInOne 正则不再默认 dotAll。
+- **java.* 桥 · 互操作**：纯 JS 实现 `Packages` / `JavaImporter`，按语料补齐 Cipher / Base64 / Arrays / String / hutool / GZIP / okhttp3 / Jsoup connect / RSA 签名等高频类；未注册类保留 TypeError。
+- **java.* 桥 · 加密**：`createAsymmetricCrypto('RSA')`（SPKI/PKCS#8/裸 PKCS#1、PKCS#1 v1.5 type1/type2 与 NoPadding、按密钥长度分块、自带 2^16 limb + Montgomery 模幂）；AES ECB/CBC + PKCS5/7、DES/3DES、SHA/HMAC、变量链；OAEP/EC/CTR/GCM/CFB/OFB 明确返回空。
+- **java.* 桥 · 字体与元素**：`queryTTF`/`replaceFont` 纯 JS 解析 sfnt（cmap format 4/12、loca/glyf）还原混淆字符；`getElements`/`getElement`/`getStringList` 宿主内联求值 + jsoup 风格包装；`timeFormat` 对齐 legado。
+- **java.* 桥 · 网络族**：`java.ajax/get/post/head` 支持 headers 合入与 `followRedirects:false`；`StrResponse` 超集（body/code/statusCode/headers/header/cookies/url/isSuccessful/bodyAsBytes/raw）；AnalyzeUrl 暴露 lastStatusCode/lastResponseHeaders/lastFinalUrl；`syResp` 与 `String(body)` 语义。
+- **动态规则重放**：`java.*` 由「记录调用 → 宿主求值 → 回填缓存 → 重跑」确定性协议支撑（≤4 轮）；settle 上限 4 → 16 轮 / 120s / 零新抓取即停，ajax 与 webview 并入同一轮调度；重放缓存增量推送 JS 全局，长目录不再整表重灌。
+- **发现页**：ExploreKind 结构化解析（type/action/chars/default/viewName/style）与 6 类内嵌选项栏（url/text/button/toggle/select），值按源持久化；动态分类占位符宿主抓取后重放，跨页去重、空页自动连翻、首个分类失效兜底；GSON 宽松 kinds JSON 解析修复 29 源分类缺失。
+- **书源类型分发**：`bookSourceType=2` → mangaSource + `images` 适配（正文管线收图片 URL，纯 URL 行兜底，Episode.id 存章节 URL）；type=1/4 → 媒体栏 + 小说阅读器媒体章节播放卡片，直链确定性解析优先；`bookSourceType` 从 selectors 读取。
+- **登录与 WebView**：`loginCheckJs` / `loginUi` / WebView 登录三件套，登录作用域内表单值可读；无头 WebView 取源器（`java.webView`、`webView:true` 选项），`webJs` 在 WebView 内执行后回灌；登录态不再在分类解析中丢失。
+- **上下文与隔离**：`run()` 改 Zone 传递，修复 async 首帧出栈导致 await 后上下文为 null 与多源并发串上下文；cookie domain-match 收紧；按源 JS 引擎池化（上限 8，淘汰释放）；删除源清理 cookie / 变量与池化引擎。
+- **请求头与 Cookie**：响应 Set-Cookie 按源落库自动回放；默认与图片请求不再兜底注入 baseUrl Referer（对齐 legado 只补 UA），存量 Referer 迁移；带 `##` 后缀源全链路请求修复；java.get 按参数个数双语义分派。
+- **规则细节修复**：列表 / 详情 / 目录规则语义、简介缺失、目录错序、发现 URL 编码与选项消费、baseUrl 分工与后处理时序、`source.key` 返回书源 URL、discover 限定与去重等一批对齐修复。
+- **测试与工程**：shuyuan 套件 84/84；桥 / 上下文 / 正则兼容层测试与独立校验脚本；本地化补音频 / 视频章节文案；提交信息中的内部代号已中性化；未覆盖的 Java API 约 2.6% 调用 / 3% 源，明确降级不伪造结果。
 
 ### 📝 更新日志（v3.5.0 → v3.6.0）
 

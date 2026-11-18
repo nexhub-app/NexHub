@@ -1,5 +1,16 @@
 [
   {
+    "id": "v4.0.0-beta.1-announce",
+    "date": "2026-11-18",
+    "title": "NexHub 4.0.0 预发布测试版",
+    "titleEn": "NexHub 4.0.0 (pre-release beta)",
+    "body": "NexHub 4.0 beta 来了！这是书源兼容分支的首次公开测试版（尚未合并主分支）：Legado 风格书源导入保真、java.* 规则桥补齐加密 / 字体还原 / 网络族、动态规则确定性重放、发现页选项栏与动态分类、漫画 / 音视频书源自动分发到对应模块、登录与 WebView 取数打通。现有源和阅读数据不受影响。少数未覆盖的 Java API 会明确降级；遇到问题请附应用内「运行日志」反馈。",
+    "bodyEn": "NexHub 4.0 beta is here! First public test build from the source-compatibility branch (not merged into main yet): Legado-style sources import without losing fields, the java.* bridge covers crypto / font restoration / networking, dynamic rules run through a deterministic replay protocol, discovery gains option bars and dynamic categories, comic and audio/video sources dispatch to the right modules, and login plus WebView fetching are wired up. Existing sources and reading data are unaffected. Uncovered Java APIs degrade explicitly; please include the in-app run log when reporting issues.",
+    "url": "",
+    "urlText": "",
+    "urlTextEn": ""
+  },
+  {
     "id": "v3.6.0-announce",
     "date": "2026-11-14",
     "title": "NexHub 3.6.0 正式版",
