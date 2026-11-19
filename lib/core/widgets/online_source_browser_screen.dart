@@ -72,6 +72,9 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
   /// 正在加载选项栏的源 id。
   final Set<String> _loading = <String>{};
 
+  /// 加载期间被合并的刷新请求（见 [_loadKinds]）。
+  final Set<String> _reloadQueued = <String>{};
+
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
@@ -240,7 +243,12 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
   }
 
   Future<void> _loadKinds(PluginConfig source, {bool refresh = false}) async {
-    if (_loading.contains(source.id)) return;
+    if (_loading.contains(source.id)) {
+      // 加载期间到达的刷新请求不能丢：置位后由本次加载结束时补跑，
+      // 否则「选择后紧接着再改」的第二次刷新被静默丢弃，界面停在旧值。
+      if (refresh) _reloadQueued.add(source.id);
+      return;
+    }
     final service = context.read<MediaApiService>();
     setState(() {
       _loading.add(source.id);
@@ -252,7 +260,12 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
       if (!mounted) return;
       setState(() => _kinds[source.id] = result);
     } finally {
-      if (mounted) setState(() => _loading.remove(source.id));
+      if (mounted) {
+        setState(() => _loading.remove(source.id));
+        if (_reloadQueued.remove(source.id)) {
+          unawaited(_loadKinds(source, refresh: true));
+        }
+      }
     }
   }
 
@@ -297,7 +310,14 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
 
   Future<void> _runKindAction(PluginConfig source, ExploreKind kind) async {
     final service = context.read<MediaApiService>();
-    final result = await service.executeExploreKindAction(source, kind);
+    final ExploreKindActionResult result;
+    try {
+      result = await service.executeExploreKindAction(source, kind);
+    } catch (_) {
+      // 对齐 legado evalButtonClick：action 脚本异常只记日志、不向界面抛出；
+      // 这里静默返回，后续改选/展开等操作不受影响。
+      return;
+    }
     if (!mounted) return;
     for (final open in result.openRequests) {
       if (open.url.isEmpty) continue;

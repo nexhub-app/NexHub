@@ -4,17 +4,16 @@ library;
 import '../../../core/utils/app_log.dart';
 import '../analyze/js_engine.dart';
 import '../analyze/analyze_rule.dart';
+import '../analyze/source_context.dart';
 import '../model/book_source.dart';
 import '../model/xiaoshuo_book.dart';
 import '../model/xiaoshuo_book_chapter.dart';
 
 class BookChapterList {
-  // 复用同一 QuickJS 运行时（按需创建），避免每次解析目录都重建运行时。
-  static JsEngine? _jsEngineHolder;
-  static JsEngine get _jsEngine {
-    _jsEngineHolder ??= JsEngine();
-    return _jsEngineHolder!;
-  }
+  // 对齐 legado AnalyzeRule：formatJs 与其余规则共用「按源池化」的 JS 运行时
+  // （jsLib 全局可用、同源跨阶段复用），无活动上下文时退化为独立实例。
+  static JsEngine get _jsEngine =>
+      JsEngine.forSource(ShuyuanSourceContext.current?.sourceId);
 
   /// [nextUrlsOut] 非空时回填本页 `ruleToc.nextTocUrl` 解析出的后续目录页
   /// 绝对 URL（对齐 legado：先取下一页列表，再解析章节；首页/串行跟随页

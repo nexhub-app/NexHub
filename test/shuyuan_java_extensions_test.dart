@@ -553,7 +553,7 @@ void main() {
       expect(e.eval('java.getUserAgent()'), ua);
     });
 
-    test('refresh* / sleep / showBrowser 无操作可调用', () {
+    test('refresh* / sleep / showBrowser 可调用', () {
       final e = engine();
       final logs = <String>[];
       final prev = JavaFeedback.onLog;
@@ -566,8 +566,12 @@ void main() {
       } finally {
         JavaFeedback.onLog = prev;
       }
-      // 不支持的宿主动作各记一次运行日志，便于真机排查。
-      expect(logs, contains('[java.refreshTocUrl] 当前运行时不支持该操作，已忽略'));
+      // refreshTocUrl/refreshContent 已是可执行语义（宿主排空 / 忽略），
+      // 不再记「不支持」；showBrowser 仍无宿主动作，记一次运行日志。
+      expect(
+          logs, contains('[java.showBrowser] 当前运行时不支持该操作，已忽略'));
+      expect(logs,
+          isNot(contains('[java.refreshTocUrl] 当前运行时不支持该操作，已忽略')));
     });
 
     test('toURL 解析 host/origin/pathname/searchParams', () {

@@ -126,6 +126,10 @@ class ShuyuanSourceContext {
   /// 发现页选项 action 请求刷新选项栏（java.refreshExplore/reLoginView）。
   bool kindRefreshRequested = false;
 
+  /// 目录抓取前的 preUpdateJs 请求重新解析详情页以更新 tocUrl
+  /// （legado AnalyzeRule.refreshTocUrl；目录地址定期更新的源依赖）。
+  bool bookInfoRefreshRequested = false;
+
   /// 发现页选项 action 请求复制文本（java.copyText）。
   final List<String> copiedTexts = <String>[];
 
@@ -312,6 +316,8 @@ class ShuyuanSourceContext {
           }
         case 'refreshKinds':
           kindRefreshRequested = true;
+        case 'refreshTocUrl':
+          bookInfoRefreshRequested = true;
         case 'copyText':
           copiedTexts.add(a);
         case 'webview':

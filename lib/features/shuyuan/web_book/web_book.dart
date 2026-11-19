@@ -296,11 +296,27 @@ class WebBook {
     // 依赖它准备变量的源目录恒为空。失败不阻断目录流程。
     final preUpdateJs = tocRule.preUpdateJs;
     if (preUpdateJs != null && preUpdateJs.isNotEmpty) {
+      final ctx = ShuyuanSourceContext.current;
+      ctx?.bookInfoRefreshRequested = false;
       try {
         final preRule = AnalyzeRule(book: book);
         preRule.evalJs(preUpdateJs, null);
         preRule.variables.forEach(book.putVariable);
       } catch (_) {}
+      // legado AnalyzeRule.refreshTocUrl：preUpdateJs 内调用时重新解析详情页，
+      // 更新 book.tocUrl（「目录地址定期更新」的源靠它在抓目录前换新地址）。
+      if (ctx != null && ctx.bookInfoRefreshRequested) {
+        ctx.bookInfoRefreshRequested = false;
+        try {
+          await getBookInfo(
+            source: source,
+            bookUrl: book.bookUrl,
+            seedBook: book,
+          );
+        } catch (_) {
+          // 刷新失败保留原 tocUrl，不阻断目录流程（legado 同样仅记日志）。
+        }
+      }
     }
     // legado：`-` 前缀表示整张目录需反转（多页时页序一并反转），
     // 由本方法在合并去重后统一处理，分页解析本身不再翻转。

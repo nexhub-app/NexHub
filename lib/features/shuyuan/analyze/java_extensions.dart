@@ -399,6 +399,52 @@ const String sourceContextJsPrelude = r'''
   global.book = book;
   global.cache = cache;
 
+  // ── 家族式书源的顶层助手函数 ──
+  // 这批书源的 jsLib 历史上在共享作用域里声明 put/login/name/n/k/l 等全局
+  // 助手，loginUrl / exploreUrl 脚本直接调用（例如登录数据初始化 catch
+  // 分支里的 put($$$)）。现行部分远端 jsLib 已不再声明这些助手，脚本在
+  // 初始化处即抛 ReferenceError，源变量永不写入，发现页分类/选项解析为 0。
+  // 仅在未定义时兜底；jsLib/脚本自带的同名声明（后加载）始终覆盖。
+  if (typeof global.put === 'undefined') {
+    global.put = function (data) {
+      return global.source.setVariable(JSON.stringify(data, null, '\t'));
+    };
+  }
+  if (typeof global.login === 'undefined') {
+    global.login = function (e) {
+      if (e === undefined) { return; }
+      global.java.longToast(e);
+    };
+  }
+  if (typeof global.name === 'undefined') {
+    global.name = function (e) {
+      if (typeof global.n !== 'function') { e = 0; }
+      return String(global.x[e]) + ' ' + String(global.$$$.urls[e]);
+    };
+  }
+  // n/k/l：生成 n 个换行 / 空格 / 空串（家族式源排版提示文案用）。
+  if (typeof global.n === 'undefined') {
+    global.n = function (e) {
+      var s = '\n';
+      for (var i = 1; i < e; i++) { s += '\n'; }
+      return s;
+    };
+  }
+  if (typeof global.k === 'undefined') {
+    global.k = function (e) {
+      var s = ' ';
+      for (var i = 1; i < e; i++) { s += ' '; }
+      return s;
+    };
+  }
+  if (typeof global.l === 'undefined') {
+    global.l = function (e) {
+      var s = '';
+      for (var i = 1; i < e; i++) { s += ''; }
+      return s;
+    };
+  }
+
   // ── java.* 网络族（N 阶段确定性重放协议）——挂到 javaExtensions 预置的
   // java 对象上（本预置库后注入，syOp/syCtx 在本 IIFE 作用域内可用）。
   // 同步沙箱内无法真发请求：ajax 记录请求（op 'ajax' → 宿主 settle 循环
@@ -839,6 +885,28 @@ const String sourceContextJsPrelude = r'''
     global.java.refreshExplore = function () {
       syOp('refreshKinds', '', '');
       return true;
+    };
+    // legado SourceLoginJsExtensions（登录/发现页 action 的 java 对象）：
+    // - reLoginView：重载登录视图；发现页场景等价 refreshExplore（reUiView
+    //   → 选项栏整栏重取）。
+    // - upLoginData：登录数据推给界面，沙箱无登录界面，忽略。
+    // - refreshBookInfo/refreshBookToc/refreshContent：书页刷新事件，
+    //   沙箱无对应界面，忽略但保持可调用——缺失会让 action 脚本在调用处
+    //   抛 TypeError，后续的 refreshExplore 等语句永不执行。
+    global.java.reLoginView = function (deltaUp) {
+      syOp('refreshKinds', '', '');
+      return true;
+    };
+    global.java.upLoginData = function (data) { return null; };
+    global.java.refreshBookInfo = function () { return null; };
+    global.java.refreshBookToc = function () { return null; };
+    global.java.refreshContent = function () { return null; };
+    // legado AnalyzeRule.refreshTocUrl（仅 preUpdateJs 语义）：目录抓取前
+    // 重新解析详情页以更新 book.tocUrl。同步沙箱不能就地请求，记 op 由
+    // 宿主在 preUpdateJs 结束后按需重取详情。
+    global.java.refreshTocUrl = function () {
+      syOp('refreshTocUrl', '', '');
+      return null;
     };
     global.java.copyText = function (text) {
       var t = String(text == null ? '' : text);
