@@ -191,29 +191,113 @@ const String sourceContextJsPrelude = r'''
     setVariable: function (v) {
       return source.putVariable('__variable', v);
     },
-    getLoginInfoMap: function () { return syCtx().loginInfo; },
+    // legado getLoginInfoMap 返回 Java HashMap：脚本常用 .get/.put。
+    getLoginInfoMap: function () {
+      var c = syCtx();
+      var m = {};
+      for (var k in c.loginInfo) m[k] = c.loginInfo[k];
+      var emit = function () { syOp('loginInfo', JSON.stringify(m), ''); };
+      var def = function (n, f) {
+        try { Object.defineProperty(m, n, { value: f, enumerable: false }); }
+        catch (e) { m[n] = f; }
+      };
+      def('get', function (k) {
+        var v = m[String(k)];
+        return v === undefined ? null : v;
+      });
+      def('put', function (k, v) {
+        var s = String(v == null ? '' : v);
+        m[String(k)] = s;
+        c.loginInfo[String(k)] = s;
+        emit();
+        return v;
+      });
+      def('containsKey', function (k) {
+        return Object.prototype.hasOwnProperty.call(m, String(k));
+      });
+      def('remove', function (k) {
+        var s = String(k);
+        delete m[s];
+        delete c.loginInfo[s];
+        emit();
+        return null;
+      });
+      def('isEmpty', function () {
+        for (var x in m) return false;
+        return true;
+      });
+      return m;
+    },
     putLoginInfo: function (m) {
-      syOp('loginInfo', JSON.stringify(m || {}), '');
-      return null;
+      var c = syCtx();
+      var obj = m;
+      if (typeof obj === 'string') {
+        try { obj = JSON.parse(obj); } catch (e) { obj = null; }
+      }
+      if (obj && typeof obj === 'object') {
+        for (var k in c.loginInfo) delete c.loginInfo[k];
+        for (var k in obj) c.loginInfo[k] = String(obj[k] == null ? '' : obj[k]);
+      }
+      // legado putLoginInfo(String)：存整段 JSON；宿主按 JSON 落表。
+      syOp('loginInfo', JSON.stringify(m == null ? '' : m), '');
+      return true;
     },
     removeLoginInfo: function (k) {
-      syOp('loginInfoDel', String(k), '');
+      var c = syCtx();
+      if (k == null || k === '') {
+        for (var x in c.loginInfo) delete c.loginInfo[x];
+      } else {
+        delete c.loginInfo[String(k)];
+      }
+      syOp('loginInfoDel', k == null ? '' : String(k), '');
       return null;
     },
-    getLoginHeaderMap: function () { return syCtx().loginHeader; },
-    getLoginHeader: function () {
-      var parts = [];
-      for (var k in syCtx().loginHeader) {
-        parts.push(k + ': ' + syCtx().loginHeader[k]);
+    // legado getLoginHeader()：原样返回最近一次 putLoginHeader 的字符串
+    // （可能是书源私有格式，如 `#` 前缀 + JSON），由脚本自行解析。
+    getLoginHeader: function () { return syCtx().loginHeaderRaw || ''; },
+    getLoginHeaderMap: function () {
+      var c = syCtx();
+      var raw = c.loginHeaderRaw || '';
+      if (raw) {
+        try {
+          var m = JSON.parse(raw);
+          if (m && typeof m === 'object') return m;
+        } catch (e) {}
+        return {};
       }
-      return parts.join('\n');
+      return c.loginHeader;
     },
     putLoginHeader: function (m) {
-      syOp('loginHeader', JSON.stringify(m || {}), '');
+      var c = syCtx();
+      var raw;
+      if (typeof m === 'string') {
+        raw = m;
+      } else {
+        var merged = {};
+        for (var k in c.loginHeader) merged[k] = c.loginHeader[k];
+        if (m && typeof m === 'object') {
+          for (var k in m) merged[k] = String(m[k] == null ? '' : m[k]);
+        }
+        raw = JSON.stringify(merged);
+      }
+      c.loginHeaderRaw = raw;
+      for (var k in c.loginHeader) delete c.loginHeader[k];
+      try {
+        var parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          for (var k in parsed) {
+            c.loginHeader[k] = String(parsed[k] == null ? '' : parsed[k]);
+          }
+        }
+      } catch (e) {}
+      syOp('loginHeader', JSON.stringify(raw), '');
       return null;
     },
-    removeLoginHeader: function (k) {
-      syOp('loginHeaderDel', String(k), '');
+    removeLoginHeader: function () {
+      var c = syCtx();
+      c.loginHeaderRaw = '';
+      for (var k in c.loginHeader) delete c.loginHeader[k];
+      syOp('loginHeaderDel', '', '');
       return null;
     },
     refreshExplore: function () {
@@ -606,6 +690,13 @@ const String sourceContextJsPrelude = r'''
       var key = syWithHeaders(urlStr, headers,
           { followRedirects: false, method: 'HEAD' });
       return syResp(key, global.java.__ajaxReq(key));
+    };
+    // legado JsExtensions.importScript：取远端/本地脚本文本（远程 jsLib 里的
+    // Reload 等助手靠它加载发现页规则）。沿用 ajax 确定性重放：首轮返回
+    // 占位符，宿主 settle 抓取后重放得到脚本正文。
+    global.java.importScript = function (path) {
+      var key = String(path == null ? '' : path);
+      return String(global.java.__ajaxReq(key));
     };
     global.java.getStrResponse = function (urlStr) {
       return global.java.connect(urlStr);

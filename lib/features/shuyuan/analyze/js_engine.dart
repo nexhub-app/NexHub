@@ -14,6 +14,7 @@ import '../../../core/js/js_runtime_factory.dart';
 import '../../../core/novel/novel_chinese_converter.dart';
 import '../../../core/utils/app_log.dart';
 import 'java_extensions.dart';
+import 'js_syntax_compat.dart';
 import 'jsoup_dom.dart';
 import 'source_context.dart';
 
@@ -356,7 +357,7 @@ class JsEngine {
               for (final u in urls) {
                 final code = activeCtx.ajaxCache[u] ?? '';
                 if (code.isEmpty) continue;
-                final r = runtime.evaluate(code);
+                final r = _evalLibSource(code);
                 if (r.isError) {
                   AppLog.instance.w('[书源JS] jsLib 下载脚本执行失败 $u: ${r.stringResult}');
                 }
@@ -365,14 +366,14 @@ class JsEngine {
             }
           } else {
             _jsLibApplied = activeCtx.jsLib;
-            final r = runtime.evaluate(activeCtx.jsLib);
+            final r = _evalLibSource(activeCtx.jsLib);
             if (r.isError) {
               AppLog.instance.w('[书源JS] jsLib 执行失败: ${r.stringResult}');
             }
           }
         } else {
           _jsLibApplied = activeCtx.jsLib;
-          final r = runtime.evaluate(activeCtx.jsLib);
+          final r = _evalLibSource(activeCtx.jsLib);
           if (r.isError) {
             AppLog.instance.w('[书源JS] jsLib 执行失败: ${r.stringResult}');
           }
@@ -403,6 +404,20 @@ class JsEngine {
     return result;
   }
 
+  /// 执行 jsLib 源码；整段脚本解析失败（Rhino 专有语法）时按兼容写法
+  /// 重试一次。仅在 `SyntaxError` 且报错位置在脚本层（`<eval>`）时改写，
+  /// 避免把运行期嵌套 eval 的错误误判为脚本语法问题。
+  NexJsEvalResult _evalLibSource(String code) {
+    final r = runtime.evaluate(code);
+    if (!r.isError) return r;
+    final msg = r.stringResult;
+    if (!msg.contains('SyntaxError') || !msg.contains('<eval>:')) return r;
+    final adapted = adaptLegacyJs(code);
+    if (identical(adapted, code)) return r;
+    AppLog.instance.w('[书源JS] jsLib 含 Rhino 专有语法，按兼容写法重试');
+    return runtime.evaluate(adapted);
+  }
+
   /// eval 成功后统一排空 java.* 桥的三类宿主交互：
   /// toast/longToast → [JavaFeedback.onToast]（缺省运行日志）、
   /// log/logType → 运行日志、put → [_lastJavaVars]（由变量表持有方取走）。
@@ -420,11 +435,16 @@ class JsEngine {
     if (payload == null) return;
     final toasts = payload['t'];
     if (toasts is List) {
+      final activeCtx = ShuyuanSourceContext.current;
       for (final t in toasts) {
         if (t is Map) {
           final msg = t['msg']?.toString() ?? '';
           final long = t['long'] == true;
           if (msg.isEmpty) continue;
+          if (activeCtx != null && activeCtx.deferFeedback) {
+            activeCtx.deferredToasts.add((msg: msg, long: long));
+            continue;
+          }
           final sink = JavaFeedback.onToast;
           if (sink != null) {
             sink(msg, long: long);

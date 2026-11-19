@@ -120,7 +120,7 @@ void main() {
       expect(book.author, '\u3000作者甲');
     });
 
-    test('tocUrl 相对地址按原始 baseUrl 解析，空规则回落 baseUrl', () {
+    test('tocUrl 相对地址按重定向后的最终地址解析，空规则回落 baseUrl', () {
       final withToc = _source(info: <String, dynamic>{
         'tocUrl': '#toc@href',
       });
@@ -132,7 +132,9 @@ void main() {
         redirectUrl: 'http://m.orig.test/book/9.html',
         body: '<a id="toc" href="/toc/1">目录</a>',
       );
-      expect(book.tocUrl, 'http://orig.test/toc/1');
+      // legado：tocUrl 走 getString(isUrl=true) →
+      // getAbsoluteURL(redirectUrl, str)，即按响应最终地址解析。
+      expect(book.tocUrl, 'http://m.orig.test/toc/1');
 
       final noToc = _source(info: <String, dynamic>{'name': '#n@text'});
       final book2 = _book('http://orig.test/book/9.html');
@@ -264,7 +266,7 @@ void main() {
       await serverB.close(force: true);
     });
 
-    test('详情重定向：tocUrl 相对解析与 tocHtml 判定用原始 bookUrl', () async {
+    test('详情重定向：tocUrl 相对解析用最终响应地址', () async {
       serverB = await _startServer(<String, String>{
         '/m/detail.html': '<a id="toc" href="/toc">目录</a>',
       });
@@ -282,7 +284,7 @@ void main() {
         source: source,
         bookUrl: '$originA/detail.html',
       );
-      expect(book.tocUrl, '$originA/toc');
+      expect(book.tocUrl, '$originB/toc');
     });
 
     test('多页正文：同章串行跟随，nextChapterUrl 处停止，subContent 追加', () async {

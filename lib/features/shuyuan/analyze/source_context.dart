@@ -17,7 +17,9 @@ import 'dart:typed_data';
 import 'package:meta/meta.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../../core/utils/app_log.dart';
 import 'analyze_url.dart';
+import 'java_extensions.dart';
 import 'webview_fetcher.dart';
 import '../model/book_source.dart';
 import '../shuyuan_variable_store.dart';
@@ -67,6 +69,10 @@ class ShuyuanSourceContext {
 
   /// source.putLoginHeader/getLoginHeaderMap（登录请求头，随请求合并）。
   final Map<String, String> loginHeader = {};
+
+  /// legado `getLoginHeader()` 的原样字符串（书源可写入非 JSON 私有格式，
+  /// 例如以 `#` 前缀区分命名空间，由脚本自行解析）。
+  String loginHeaderRaw = '';
 
   /// source 变量（ShuyuanVariableStore 的内存镜像，排空时持久化）。
   final Map<String, String> sourceVars = {};
@@ -122,6 +128,28 @@ class ShuyuanSourceContext {
 
   /// 发现页选项 action 请求复制文本（java.copyText）。
   final List<String> copiedTexts = <String>[];
+
+  /// 补数回放期间的 toast 暂存。首轮 `java.ajax` 返回占位符会让脚本
+  /// 走 catch 提示分支；legado 的 ajax 是阻塞真实请求，不存在这种中间
+  /// 态，故中间轮提示不弹给用户，最终轮再统一放行。
+  bool deferFeedback = false;
+  final List<({String msg, bool long})> deferredToasts =
+      <({String msg, bool long})>[];
+
+  /// 结束暂存并送达最后一轮产生的 toast（中间轮的已在下一轮开始前清掉）。
+  void flushDeferredToasts() {
+    deferFeedback = false;
+    if (deferredToasts.isEmpty) return;
+    final sink = JavaFeedback.onToast;
+    for (final t in deferredToasts) {
+      if (sink != null) {
+        sink(t.msg, long: t.long);
+      } else {
+        AppLog.instance.i('[书源toast] ${t.msg}');
+      }
+    }
+    deferredToasts.clear();
+  }
 
   /// 阶段级页面响应缓存：settle 重放会整段重跑 `_dispatch`，若不缓存，
   /// 同一页会被真实重复抓取 2–4 次（长目录尤其明显）。
@@ -229,6 +257,7 @@ class ShuyuanSourceContext {
         },
         'loginInfo': Map<String, String>.from(loginInfo),
         'loginHeader': Map<String, String>.from(loginHeader),
+        'loginHeaderRaw': loginHeaderRaw,
         'cache': Map<String, String>.from(cache),
         // ajaxCache 不进种子：它随 settle 轮次单调增长，若每轮都序列化整个
         // 缓存进 JS 源码，长目录会退化成 O(n²)（几十页正文 = 每次 eval
@@ -301,22 +330,55 @@ class ShuyuanSourceContext {
           }
         case 'loginInfo':
           try {
-            final decoded = jsonDecode(a);
+            var decoded = jsonDecode(a);
+            if (decoded is String) {
+              try {
+                decoded = jsonDecode(decoded);
+              } catch (_) {}
+            }
             if (decoded is Map) {
-              decoded.forEach((k, v) => loginInfo[k.toString()] = v?.toString() ?? '');
+              loginInfo
+                ..clear()
+                ..addAll(<String, String>{
+                  for (final e in decoded.entries)
+                    e.key.toString(): e.value?.toString() ?? '',
+                });
             }
           } catch (_) {}
         case 'loginInfoDel':
-          loginInfo.remove(a);
+          if (a.isEmpty) {
+            loginInfo.clear();
+          } else {
+            loginInfo.remove(a);
+          }
         case 'loginHeader':
           try {
             final decoded = jsonDecode(a);
-            if (decoded is Map) {
-              decoded.forEach((k, v) => loginHeader[k.toString()] = v?.toString() ?? '');
+            if (decoded is String) {
+              // legado putLoginHeader(String)：原样保存；getLoginHeaderMap()
+              // 再按 JSON 解析（非 JSON 文本解析失败即视为无请求头）。
+              loginHeaderRaw = decoded;
+              loginHeader.clear();
+              try {
+                final parsed = jsonDecode(decoded);
+                if (parsed is Map) {
+                  parsed.forEach((k, v) =>
+                      loginHeader[k.toString()] = v?.toString() ?? '');
+                }
+              } catch (_) {}
+            } else if (decoded is Map) {
+              loginHeader
+                ..clear()
+                ..addAll(<String, String>{
+                  for (final e in decoded.entries)
+                    e.key.toString(): e.value?.toString() ?? '',
+                });
+              loginHeaderRaw = jsonEncode(loginHeader);
             }
           } catch (_) {}
         case 'loginHeaderDel':
-          loginHeader.remove(a);
+          loginHeaderRaw = '';
+          loginHeader.clear();
       }
     }
   }

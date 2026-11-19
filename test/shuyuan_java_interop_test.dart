@@ -56,7 +56,8 @@ with (im) {
     function b64len(s) { return String(Base64.getDecoder().decode(s).length); }
 }
 ''');
-    expect(e.eval('b64len("5Lit5paH")'), '4');
+    // 5Lit5paH = 中文，UTF-8 6 字节，Java byte[].length 为 6。
+    expect(e.eval('b64len("5Lit5paH")'), '6');
   });
 
   test('java.lang.String 字节语义与 Base64', () {

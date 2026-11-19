@@ -351,6 +351,17 @@ class AnalyzeRule {
         final analyzer = _getXPathAnalyzer(result);
         return analyzer.getString(rule);
       case Mode.defaultMode:
+        // legado AnalyzeRule 对 NativeObject/LinkedTreeMap 内容按「字段名
+        // 直读」：JS 列表规则返回对象数组时，chapterName `text` /
+        // chapterUrl `href` 等默认模式规则读的是对象字段，而非 CSS。
+        // 页面体不是 JSON（HTML 上由脚本组装对象）时规则按默认模式切分，
+        // 若落到 CSS 引擎会恒空 → 整页 0 章。`@` 开头的属性/方法写法在
+        // 对象上无意义（legado 同样取不到），保持空串。
+        if (result is Map) {
+          final key = rule.trim();
+          if (key.isEmpty || key.startsWith('@')) return '';
+          return _getJsonAnalyzer(result).getString(key);
+        }
         final analyzer = _getJsoupAnalyzer(result);
         if (isUrl) {
           return analyzer.getString0(rule);
@@ -826,7 +837,10 @@ class AnalyzeRule {
   String _getAbsoluteUrl(String url) {
     final trimmed = url.trim();
     if (trimmed.isEmpty) return baseUrl ?? '';
-    return absoluteUrl(baseUrl, trimmed);
+    // legado `NetworkUtils.getAbsoluteURL(redirectUrl, str)`：相对地址按
+    // 响应最终 URL 解析。请求被 302 到其他目录时，按请求 URL 解析会把
+    // 分页/子页链接拼到旧路径 → 404，目录只出首页。
+    return absoluteUrl(redirectUrl ?? baseUrl, trimmed);
   }
 
   /// 对照 legado `NetworkUtils.getAbsoluteURL(baseURL, relativePath)`：

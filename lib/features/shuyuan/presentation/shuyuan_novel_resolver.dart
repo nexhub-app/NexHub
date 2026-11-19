@@ -187,6 +187,8 @@ class ShuyuanNovelResolver
         for (var pass = 0; pass < _maxReplayPasses; pass++) {
           ctx.ajaxPending.clear();
           ctx.webviewPending.clear();
+          ctx.deferFeedback = true;
+          ctx.deferredToasts.clear();
           try {
             out = await _dispatch(source, bookSource, apiName, vars,
                 onProgress: onProgress);
@@ -220,6 +222,9 @@ class ShuyuanNovelResolver
           );
         }
         rethrow;
+      } finally {
+        // 中间轮的提示已在下一轮开始前清掉；此处放行最终轮的真实反馈。
+        ctx.flushDeferredToasts();
       }
     });
   }
@@ -464,20 +469,26 @@ class ShuyuanNovelResolver
       ctx.clearStageCaches();
       JsEngine.resetReplayCachesFor(source.id);
       final deadline = DateTime.now().add(_exploreCategoryBudget);
-      var entries = _toCategoryEntries(
-          _webBook.getExploreCategories(bookSource, infoMap: infoMap));
-      for (var pass = 0; pass < _maxReplayPasses; pass++) {
-        if (!_hasPendingReplay(ctx)) break;
-        if (!_replayAllowed(pass, deadline)) break;
-        final fetched = await _settleReplay(ctx, bookSource);
-        if (fetched == 0) break;
-        entries = _toCategoryEntries(
+      ctx.deferredToasts.clear();
+      ctx.deferFeedback = true;
+      try {
+        var entries = _toCategoryEntries(
             _webBook.getExploreCategories(bookSource, infoMap: infoMap));
+        for (var pass = 0; pass < _maxReplayPasses; pass++) {
+          if (!_hasPendingReplay(ctx)) break;
+          if (!_replayAllowed(pass, deadline)) break;
+          final fetched = await _settleReplay(ctx, bookSource);
+          if (fetched == 0) break;
+          entries = _toCategoryEntries(
+              _webBook.getExploreCategories(bookSource, infoMap: infoMap));
+        }
+        return entries
+            .where((e) =>
+                !e.id.contains('__AJAX_') && !e.id.contains('__WEBVIEW_'))
+            .toList(growable: false);
+      } finally {
+        ctx.flushDeferredToasts();
       }
-      return entries
-          .where((e) =>
-              !e.id.contains('__AJAX_') && !e.id.contains('__WEBVIEW_'))
-          .toList(growable: false);
     });
   }
 
@@ -520,25 +531,31 @@ class ShuyuanNovelResolver
         JsEngine.resetReplayCachesFor(source.id);
         final deadline = DateTime.now().add(_exploreCategoryBudget);
         ({ExploreKindsResult result, List<ExploreKind> kinds})? built;
-        for (var pass = 0; pass < _maxReplayPasses; pass++) {
-          ctx.ajaxPending.clear();
-          ctx.webviewPending.clear();
-          built = await _buildExploreKinds(source, bookSource, infoMap);
-          // 脚本报错可能只是占位符（java.ajax 首轮）引起的暂时失败：
-          // 仍有待抓取请求时继续重放，settle 后再判定真实错误。
-          if (!_hasPendingReplay(ctx)) {
-            if (built.result.error == null) {
-              await ShuyuanExploreKindsStore.save(
-                  infoKey, exploreUrl, built.kinds);
+        try {
+          for (var pass = 0; pass < _maxReplayPasses; pass++) {
+            ctx.ajaxPending.clear();
+            ctx.webviewPending.clear();
+            ctx.deferFeedback = true;
+            ctx.deferredToasts.clear();
+            built = await _buildExploreKinds(source, bookSource, infoMap);
+            // 脚本报错可能只是占位符（java.ajax 首轮）引起的暂时失败：
+            // 仍有待抓取请求时继续重放，settle 后再判定真实错误。
+            if (!_hasPendingReplay(ctx)) {
+              if (built.result.error == null) {
+                await ShuyuanExploreKindsStore.save(
+                    infoKey, exploreUrl, built.kinds);
+              }
+              return built.result;
             }
-            return built.result;
+            if (!_replayAllowed(pass, deadline)) return built.result;
+            final fetched = await _settleReplay(ctx, bookSource);
+            // 抓取失败/无进展：保留错误态，不写缓存（下次打开仍会重试）。
+            if (fetched == 0) return built.result;
           }
-          if (!_replayAllowed(pass, deadline)) return built.result;
-          final fetched = await _settleReplay(ctx, bookSource);
-          // 抓取失败/无进展：保留错误态，不写缓存（下次打开仍会重试）。
-          if (fetched == 0) return built.result;
+          return built?.result ?? ExploreKindsResult(infoMap: infoMap);
+        } finally {
+          ctx.flushDeferredToasts();
         }
-        return built?.result ?? ExploreKindsResult(infoMap: infoMap);
       });
     } on Object catch (e) {
       return ExploreKindsResult(infoMap: infoMap, error: '$e');
@@ -746,31 +763,37 @@ class ShuyuanNovelResolver
         ctx.clearStageCaches();
         engine.resetReplayCaches();
         final deadline = DateTime.now().add(_exploreCategoryBudget);
-        for (var pass = 0; pass < _maxReplayPasses; pass++) {
-          ctx.ajaxPending.clear();
-          ctx.webviewPending.clear();
-          ctx.kindBrowserOpens.clear();
-          ctx.kindRefreshRequested = false;
-          ctx.copiedTexts.clear();
-          _runKindAction(engine, action, infoMap, bookSource.bookSourceUrl);
-          _syncInfoMapFromJs(engine, infoMap);
-          if (!_hasPendingReplay(ctx)) break;
-          if (!_replayAllowed(pass, deadline)) break;
-          final fetched = await _settleReplay(ctx, bookSource);
-          if (fetched == 0) break;
+        try {
+          for (var pass = 0; pass < _maxReplayPasses; pass++) {
+            ctx.ajaxPending.clear();
+            ctx.webviewPending.clear();
+            ctx.kindBrowserOpens.clear();
+            ctx.kindRefreshRequested = false;
+            ctx.copiedTexts.clear();
+            ctx.deferFeedback = true;
+            ctx.deferredToasts.clear();
+            _runKindAction(engine, action, infoMap, bookSource.bookSourceUrl);
+            _syncInfoMapFromJs(engine, infoMap);
+            if (!_hasPendingReplay(ctx)) break;
+            if (!_replayAllowed(pass, deadline)) break;
+            final fetched = await _settleReplay(ctx, bookSource);
+            if (fetched == 0) break;
+          }
+          return ExploreKindActionResult(
+            openRequests: <ExploreKindOpenRequest>[
+              for (final open in ctx.kindBrowserOpens)
+                if ((open['url'] ?? '').isNotEmpty)
+                  ExploreKindOpenRequest(
+                    url: open['url']!,
+                    title: open['title'] ?? '',
+                  ),
+            ],
+            refreshKinds: ctx.kindRefreshRequested,
+            copiedTexts: List<String>.from(ctx.copiedTexts),
+          );
+        } finally {
+          ctx.flushDeferredToasts();
         }
-        return ExploreKindActionResult(
-          openRequests: <ExploreKindOpenRequest>[
-            for (final open in ctx.kindBrowserOpens)
-              if ((open['url'] ?? '').isNotEmpty)
-                ExploreKindOpenRequest(
-                  url: open['url']!,
-                  title: open['title'] ?? '',
-                ),
-          ],
-          refreshKinds: ctx.kindRefreshRequested,
-          copiedTexts: List<String>.from(ctx.copiedTexts),
-        );
       });
     } finally {
       engine.takeJavaVars();

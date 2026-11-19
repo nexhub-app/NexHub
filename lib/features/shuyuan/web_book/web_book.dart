@@ -365,7 +365,10 @@ class WebBook {
     } else {
       final analyzeUrl = AnalyzeUrl(
         url: tocUrl,
-        baseUrl: source.bookSourceUrl,
+        // legado `AnalyzeUrl(mUrl = book.tocUrl, baseUrl = book.bookUrl)`：
+        // 相对目录地址按书籍详情页解析，而非书源首页（否则相对路径拼到
+        // 站点根目录 → 404/错误页 → 目录恒空）。
+        baseUrl: book.bookUrl,
         source: source,
         ruleData: book,
         itemContext: _bookItemContext(book.bookUrl),
