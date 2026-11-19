@@ -20,7 +20,6 @@ import '../../../core/models/plugin_config.dart';
 import '../../../core/scraper/media_api_service.dart';
 import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/app_tokens.dart';
-import '../../../core/widgets/explore_affordance.dart';
 import '../../../core/widgets/app_glass_bar.dart';
 import '../../../core/widgets/app_empty_state.dart';
 import '../../../core/widgets/detail_action_utils.dart';
@@ -115,7 +114,7 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
           // 之上无缝相融），行间发丝分隔线。
           final bool first = idx == 0;
           final bool last = idx == sources.length - 1;
-          final bool expandable = sourceHasExplore(source);
+          final bool expandable = _hasExplore(source);
           final bool expanded = expandable && _expandedId == source.id;
           final Widget? statusChip = _buildStatusChip(source, scheme, l10n);
           return Material(
@@ -182,18 +181,12 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
                               const EdgeInsets.only(top: AppTokens.spaceXs),
                           child: statusChip,
                         ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: <Widget>[
-                      if (expandable) ExploreChevron(expanded: expanded),
-                      IconButton(
-                        icon: const Icon(Icons.open_in_new_rounded),
-                        tooltip: l10n.openSourceWebsite,
-                        onPressed: () =>
-                            openInAppBrowser(context, source.site.baseUrl,
-                                source: source),
-                      ),
-                    ],
+                  trailing: IconButton(
+                    icon: const Icon(Icons.open_in_new_rounded),
+                    tooltip: l10n.openSourceWebsite,
+                    onPressed: () =>
+                        openInAppBrowser(context, source.site.baseUrl,
+                            source: source),
                   ),
                 ),
                 if (expanded)
@@ -223,8 +216,16 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
     return body;
   }
 
+  /// 书源是否声明了 exploreUrl（有发现页选项栏可展开）。
+  bool _hasExplore(PluginConfig source) {
+    final xiaoshuo = source.selectors?['xiaoshuo'];
+    if (xiaoshuo is! Map) return false;
+    final v = xiaoshuo['exploreUrl'];
+    return v is String && v.trim().isNotEmpty;
+  }
+
   void _openSource(BuildContext context, PluginConfig source) {
-    if (!sourceHasExplore(source)) {
+    if (!_hasExplore(source)) {
       widget.onSourceTap(source);
       return;
     }
