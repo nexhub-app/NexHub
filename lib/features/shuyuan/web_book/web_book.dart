@@ -101,16 +101,20 @@ class WebBook {
   /// `infoMap` 绑定读取；`baseUrl` 绑定为书源 URL（legado
   /// `BaseSource.evalJS` 语义）。静态声明不需要运行时；JS 动态分类须在
   /// [ShuyuanSourceContext] 作用域内调用，ajax/webview 走重放协议。
+  /// 脚本异常经 [onScriptError] 上报，供调用方在分类为空时呈现错误项。
   List<ExploreKind> getExploreKinds(
     XiaoshuoBookSource source, {
     Map<String, String>? infoMap,
+    void Function(String error)? onScriptError,
   }) {
     final exploreUrl = source.exploreUrl;
     if (exploreUrl == null || exploreUrl.trim().isEmpty) {
       return const <ExploreKind>[];
     }
     return parseExploreKinds(exploreUrl,
-        infoMap: infoMap, baseUrl: source.bookSourceUrl);
+        infoMap: infoMap,
+        baseUrl: source.bookSourceUrl,
+        onScriptError: onScriptError);
   }
 
   /// 解析书源的发现分类列表（基于 `exploreUrl` 多级 URL 字符串）。

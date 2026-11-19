@@ -42,6 +42,7 @@ import '../analyze/analyze_url.dart';
 import '../analyze/source_context.dart';
 import '../shuyuan_adapter.dart';
 import '../shuyuan_explore_info_store.dart';
+import '../shuyuan_explore_kinds_store.dart';
 import '../web_book/web_book.dart';
 
 class ShuyuanNovelResolver
@@ -486,6 +487,7 @@ class ShuyuanNovelResolver
   ///
   /// 动态 exploreUrl / viewName 可发 `java.ajax`，沿用与发现分类相同的
   /// 占位符重放：每轮抓取未满足请求后重跑，直到无新请求或预算耗尽。
+  /// 成功结果按源持久缓存（legado ACache 等效）；[refresh] 强制重抓。
   @override
   Future<ExploreKindsResult> resolveExploreKinds(
     PluginConfig source, {
@@ -500,25 +502,43 @@ class ShuyuanNovelResolver
     }
     final infoKey = _exploreInfoKey(source, bookSource);
     final infoMap = await ShuyuanExploreInfoStore.load(infoKey);
+    if (refresh) await ShuyuanExploreKindsStore.clear(infoKey);
+    final cached = await ShuyuanExploreKindsStore.load(
+      infoKey,
+      exploreUrl: exploreUrl,
+    );
     final ctx = await _contextFor(source);
     ctx.bindSource(bookSource);
     try {
       return await ShuyuanSourceContext.run(ctx, () async {
         ctx.clearStageCaches();
+        if (cached != null) {
+          final items =
+              await _materializeKinds(source, bookSource, cached, infoMap);
+          return ExploreKindsResult(items: items, infoMap: infoMap);
+        }
         JsEngine.resetReplayCachesFor(source.id);
         final deadline = DateTime.now().add(_exploreCategoryBudget);
-        ExploreKindsResult? built;
+        ({ExploreKindsResult result, List<ExploreKind> kinds})? built;
         for (var pass = 0; pass < _maxReplayPasses; pass++) {
           ctx.ajaxPending.clear();
           ctx.webviewPending.clear();
           built = await _buildExploreKinds(source, bookSource, infoMap);
-          if (built.error != null) return built;
-          if (!_hasPendingReplay(ctx)) return built;
-          if (!_replayAllowed(pass, deadline)) return built;
+          // 脚本报错可能只是占位符（java.ajax 首轮）引起的暂时失败：
+          // 仍有待抓取请求时继续重放，settle 后再判定真实错误。
+          if (!_hasPendingReplay(ctx)) {
+            if (built.result.error == null) {
+              await ShuyuanExploreKindsStore.save(
+                  infoKey, exploreUrl, built.kinds);
+            }
+            return built.result;
+          }
+          if (!_replayAllowed(pass, deadline)) return built.result;
           final fetched = await _settleReplay(ctx, bookSource);
-          if (fetched == 0) return built;
+          // 抓取失败/无进展：保留错误态，不写缓存（下次打开仍会重试）。
+          if (fetched == 0) return built.result;
         }
-        return built ?? ExploreKindsResult(infoMap: infoMap);
+        return built?.result ?? ExploreKindsResult(infoMap: infoMap);
       });
     } on Object catch (e) {
       return ExploreKindsResult(infoMap: infoMap, error: '$e');
@@ -528,17 +548,49 @@ class ShuyuanNovelResolver
     }
   }
 
-  Future<ExploreKindsResult> _buildExploreKinds(
+  Future<({ExploreKindsResult result, List<ExploreKind> kinds})>
+      _buildExploreKinds(
     PluginConfig source,
     XiaoshuoBookSource bookSource,
     Map<String, String> infoMap,
   ) async {
     List<ExploreKind> kinds;
+    String? scriptError;
     try {
-      kinds = _webBook.getExploreKinds(bookSource, infoMap: infoMap);
+      kinds = _webBook.getExploreKinds(
+        bookSource,
+        infoMap: infoMap,
+        onScriptError: (e) => scriptError ??= e,
+      );
     } on Object catch (e) {
-      return ExploreKindsResult(infoMap: infoMap, error: '$e');
+      return (
+        result: ExploreKindsResult(infoMap: infoMap, error: '$e'),
+        kinds: const <ExploreKind>[],
+      );
     }
+    if (kinds.isEmpty && scriptError != null) {
+      // 对齐 legado `exploreKinds()`：脚本异常生成可见错误项，而不是
+      // 伪装成「该源没有发现页」。
+      return (
+        result: ExploreKindsResult(infoMap: infoMap, error: scriptError),
+        kinds: const <ExploreKind>[],
+      );
+    }
+    final items = await _materializeKinds(source, bookSource, kinds, infoMap);
+    return (
+      result: ExploreKindsResult(items: items, infoMap: infoMap),
+      kinds: kinds,
+    );
+  }
+
+  /// 把解析出的 kinds 变成可渲染条目：补齐 toggle/select 默认值并求值
+  /// viewName（缓存命中与网络解析共用）。
+  Future<List<ExploreKindItem>> _materializeKinds(
+    PluginConfig source,
+    XiaoshuoBookSource bookSource,
+    List<ExploreKind> kinds,
+    Map<String, String> infoMap,
+  ) async {
     final items = <ExploreKindItem>[];
     for (final kind in kinds) {
       if (kind.title.isEmpty && !kind.isBrowsable) continue;
@@ -558,7 +610,7 @@ class ShuyuanNovelResolver
         value: value,
       ));
     }
-    return ExploreKindsResult(items: items, infoMap: infoMap);
+    return items;
   }
 
   /// text 取 infoMap 已有值；toggle/select 缺省时写入并返回默认值。
@@ -586,6 +638,38 @@ class ShuyuanNovelResolver
     return const <String>['chars', 'is null'];
   }
 
+  /// infoMap 的 Java Map 兼容面（legado 的 infoMap 是 InfoMap/MutableMap）：
+  /// viewName/action 脚本会调 get/put/remove/containsKey/save。方法以
+  /// 非枚举属性挂载，`JSON.stringify(infoMap)` 仍只输出数据键。
+  static const String _infoMapCompatJs = '  '
+      'if (infoMap && typeof infoMap === "object") {\n'
+      '    var __def = function (n, f) {\n'
+      '      try { Object.defineProperty(infoMap, n, {value: f,\n'
+      '        enumerable: false, configurable: true, writable: true});'
+      ' } catch (e) {}\n'
+      '    };\n'
+      '    if (typeof infoMap.get !== "function") __def("get", function (k) {\n'
+      '      var v = infoMap[String(k)]; return v == null ? null : v; });\n'
+      '    if (typeof infoMap.put !== "function") __def("put", function (k, v) {\n'
+      '      var key = String(k); var prev = infoMap[key];\n'
+      '      infoMap[key] = v == null ? "" : String(v);\n'
+      '      return prev == null ? null : prev; });\n'
+      '    if (typeof infoMap.set !== "function") __def("set", function (k, v) {\n'
+      '      return infoMap.put(k, v); });\n'
+      '    if (typeof infoMap.remove !== "function")'
+      ' __def("remove", function (k) {\n'
+      '      var key = String(k); var prev = infoMap[key]; delete infoMap[key];\n'
+      '      return prev == null ? null : prev; });\n'
+      '    if (typeof infoMap.containsKey !== "function")'
+      ' __def("containsKey", function (k) {\n'
+      '      return Object.prototype.hasOwnProperty.call(infoMap, String(k));'
+      ' });\n'
+      '    if (typeof infoMap.save !== "function")'
+      ' __def("save", function () { return null; });\n'
+      '    if (typeof infoMap.saveNow !== "function")'
+      ' __def("saveNow", function () { return null; });\n'
+      '  }\n';
+
   /// viewName：`'字面量'`（长度 3–19）直接取内容，其余按 JS 求值
   /// （legado ExploreKindUiUseCase.ResolveDisplayName → BaseSource.evalJS，
   /// 脚本可读 `infoMap` 与 `baseUrl`=书源 URL）。
@@ -598,8 +682,11 @@ class ShuyuanNovelResolver
     final literal = _literalViewName(viewName);
     if (literal != null) return literal;
     final engine = JsEngine.forSource(source.id);
+    final wrapped = '(function () {\n$_infoMapCompatJs'
+        '  return eval(${jsonEncode(viewName)});\n'
+        '})()';
     final out = engine.eval(
-      viewName,
+      wrapped,
       bindings: <String, dynamic>{
         'infoMap': Map<String, String>.from(infoMap),
         'baseUrl': baseUrl,
@@ -700,19 +787,7 @@ class ShuyuanNovelResolver
     Map<String, String> infoMap,
     String baseUrl,
   ) {
-    final wrapped = '(function () {\n'
-        '  if (infoMap && typeof infoMap === "object") {\n'
-        '    if (typeof infoMap.put !== "function") infoMap.put = function (k, v) {'
-        ' this[String(k)] = v == null ? "" : String(v); return v; };\n'
-        '    if (typeof infoMap.get !== "function") infoMap.get = function (k) {'
-        ' return this[String(k)]; };\n'
-        '    if (typeof infoMap.remove !== "function") infoMap.remove = function (k) {'
-        ' var v = this[String(k)]; delete this[String(k)]; return v == null ? null : v; };\n'
-        '    if (typeof infoMap.containsKey !== "function") infoMap.containsKey = function (k) {'
-        ' return Object.prototype.hasOwnProperty.call(this, String(k)); };\n'
-        '    if (typeof infoMap.save !== "function") infoMap.save = function () { return null; };\n'
-        '    if (typeof infoMap.saveNow !== "function") infoMap.saveNow = function () { return null; };\n'
-        '  }\n'
+    final wrapped = '(function () {\n$_infoMapCompatJs'
         '  return eval(${jsonEncode(action)});\n'
         '})()';
     engine.eval(wrapped, bindings: <String, dynamic>{

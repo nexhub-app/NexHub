@@ -513,6 +513,16 @@ const String sourceContextJsPrelude = r'''
       header: function (name) { return syHeaderGet(headers, name); },
       cookies: function () { return syCookiesOf(headers); },
       url: function () { return finalUrl; },
+      // Jsoup Response 形态：连接响应可直接 .parse()/.get() 得到 Document
+      // （`Jsoup.connect(url).get().select(...)` 与 `java.get(url).parse()`）。
+      parse: function () {
+        var J = global.org && global.org.jsoup && global.org.jsoup.Jsoup;
+        if (!J || typeof J.parse !== "function") {
+          throw new Error('org.jsoup.Jsoup.parse 未注入');
+        }
+        return J.parse(String(bodyText), finalUrl);
+      },
+      get: function () { return resp.parse(); },
       isSuccessful: function () { return code >= 200 && code < 300; },
       method: function () { return syMethodOf(key); },
       charset: function () { return 'UTF-8'; },
@@ -665,6 +675,10 @@ const String sourceContextJsPrelude = r'''
                     : finalUrl;
                 return syResp(key, global.java.__ajaxReq(key));
               },
+              // jsoup Connection 的快捷方法：执行后直接把响应体解析成
+              // Document（`Jsoup.connect(url).get().select(...)`）。
+              get: function () { return req.execute().parse(); },
+              post: function () { return req.execute().parse(); },
             };
             return req;
           },
@@ -3796,6 +3810,16 @@ const String javaExtensionsJsPrelude = r'''
       return global.org.jsoup.Jsoup.connect(url);
     }
     throw new Error('Jsoup.connect: 需要在书源上下文中运行');
+  };
+  // `Packages.org.jsoup.Jsoup.parse` 与顶层 `org.jsoup.Jsoup.parse` 同源：
+  // parse 的纯 JS 实现由 jsoup_dom.dart 预置脚本挂到 global.org 上。
+  JsoupShim.parse = function (html, baseUri) {
+    var J = global.org && global.org.jsoup && global.org.jsoup.Jsoup;
+    if (J && typeof J.parse === 'function') return J.parse(html, baseUri);
+    throw new Error('Jsoup.parse: 需要在书源上下文中运行');
+  };
+  JsoupShim.parseBodyFragment = function (html, baseUri) {
+    return JsoupShim.parse(html, baseUri);
   };
   var JsoupConnection = {
     Method: {

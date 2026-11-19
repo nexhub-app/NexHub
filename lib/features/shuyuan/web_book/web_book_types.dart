@@ -151,7 +151,7 @@ String _executeExploreJs(String jsCode, {Map<String, String>? infoMap}) {
   // 引擎优先：动态分类脚本常依赖 java.ajax / 源变量 / jsLib 现算 URL，
   // 正则启发式只能捞到脚本里写死的字面量（还会把占位符当 URL）。
   // 引擎不可用（未打包 QuickJS）或脚本无返回值时才用启发式兜底。
-  final jsRaw = _evalExploreJsRaw(jsCode, infoMap: infoMap);
+  final jsRaw = _evalExploreJsRaw(jsCode, infoMap: infoMap).value;
   if (jsRaw.isNotEmpty && jsRaw != '[]') {
     // 只接受「像分类数据」的返回值：JSON 数组或含 `名称::URL` 的多行文本。
     // 脚本末尾的标量（赋值表达式完成值，如 `个人中心 = 1` → "1"）不是
@@ -178,7 +178,10 @@ bool _looksLikeKinds(String s) {
 /// （即书源 URL）。视频源的动态分类普遍写成
 /// `baseUrl + '/api.php/provide/vod/?ac=list'`，缺失时整个脚本
 /// ReferenceError、发现页零分类。
-String _evalExploreJsRaw(
+///
+/// 返回脚本结果与错误（[value] 为空、[error] 非空表示脚本失败）——
+/// 发现页据此把失败呈现为错误态，而不是静默的「无发现页」。
+({String value, String? error}) _evalExploreJsRaw(
   String jsCode, {
   Map<String, String>? infoMap,
   String? baseUrl,
@@ -232,8 +235,11 @@ String _evalExploreJsRaw(
       'baseUrl': baseUrl ?? '',
       if (infoMap != null) 'infoMap': Map<String, String>.from(infoMap),
     };
-    final out = jsEngine.eval(wrapped, bindings: bindings).trim();
-    if (infoMap != null) {
+    final outcome = jsEngine.evalChecked(wrapped, bindings: bindings);
+    final out = outcome.value.trim();
+    // 脚本失败时不回写 infoMap：半途中断的脚本没有完整的 toggle/select
+    // 状态（legado 同样只在脚本正常结束后保存 InfoMap）。
+    if (infoMap != null && outcome.error == null) {
       final snapshot = jsEngine.eval('globalThis.__shuyuanInfoOut || ""');
       if (snapshot.isNotEmpty) {
         try {
@@ -249,9 +255,9 @@ String _evalExploreJsRaw(
         } catch (_) {}
       }
     }
-    return out;
-  } catch (_) {
-    return '';
+    return (value: out, error: outcome.error);
+  } catch (e) {
+    return (value: '', error: '$e');
   } finally {
     // 池化引擎按源复用（保留 __ajaxCache / 预置脚本）；无上下文时独立实例。
     if (ctx == null) jsEngine.dispose();
@@ -524,25 +530,34 @@ String? _extractWholeJsBody(String s) {
 ///
 /// JS 求值时以 [infoMap] 作为全局绑定（toggle/select 当前值可参与 URL
 /// 拼装），[baseUrl] 对齐 legado `BaseSource.evalJS` 的 `baseUrl` 绑定。
+/// 脚本异常时经 [onScriptError] 上报首个错误（调用方在无分类时呈现为
+/// 错误项，对齐 legado `exploreKinds()` 的可见 ERROR 项）。
 /// JSON 声明非法时抛出 [FormatException]，由调用方展示为错误项。
 List<ExploreKind> parseExploreKinds(
   String exploreUrl, {
   Map<String, String>? infoMap,
   String? baseUrl,
+  void Function(String error)? onScriptError,
 }) {
   var ruleStr = exploreUrl.trim();
   if (ruleStr.isEmpty) return const <ExploreKind>[];
   final jsBody = _extractWholeJsBody(ruleStr);
   if (jsBody != null) {
-    final raw =
+    final outcome =
         _evalExploreJsRaw(jsBody, infoMap: infoMap, baseUrl: baseUrl);
+    if (outcome.error != null) {
+      onScriptError?.call(outcome.error!);
+      return const <ExploreKind>[];
+    }
+    final raw = outcome.value;
     if (raw.isEmpty || raw == '[]') return const <ExploreKind>[];
     ruleStr = raw.trim();
   }
   if (ruleStr.startsWith('[')) {
     return _parseKindsJson(ruleStr);
   }
-  return _parseKindsText(ruleStr, infoMap: infoMap, baseUrl: baseUrl);
+  return _parseKindsText(ruleStr,
+      infoMap: infoMap, baseUrl: baseUrl, onScriptError: onScriptError);
 }
 
 List<ExploreKind> _parseKindsJson(String raw) {
@@ -573,6 +588,7 @@ List<ExploreKind> _parseKindsText(
   String raw, {
   Map<String, String>? infoMap,
   String? baseUrl,
+  void Function(String error)? onScriptError,
 }) {
   final kinds = <ExploreKind>[];
   for (final segment in raw.split(RegExp(r'&&|\n'))) {
@@ -586,11 +602,15 @@ List<ExploreKind> _parseKindsText(
 
     final segJs = _extractWholeJsBody(trimmed);
     if (segJs != null) {
-      final segResult =
+      final outcome =
           _evalExploreJsRaw(segJs, infoMap: infoMap, baseUrl: baseUrl);
+      if (outcome.error != null) onScriptError?.call(outcome.error!);
+      final segResult = outcome.value;
       if (segResult.isNotEmpty) {
-        kinds.addAll(
-            parseExploreKinds(segResult, infoMap: infoMap, baseUrl: baseUrl));
+        kinds.addAll(parseExploreKinds(segResult,
+            infoMap: infoMap,
+            baseUrl: baseUrl,
+            onScriptError: onScriptError));
       }
       continue;
     }

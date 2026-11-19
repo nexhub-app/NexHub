@@ -63,6 +63,15 @@ class ExploreKindStyle {
       layoutJustifySelf: s('layout_justifySelf', 'auto'),
     );
   }
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'layout_flexGrow': layoutFlexGrow,
+        'layout_flexShrink': layoutFlexShrink,
+        'layout_alignSelf': layoutAlignSelf,
+        'layoutFlexBasisPercent': layoutFlexBasisPercent,
+        'layout_wrapBefore': layoutWrapBefore,
+        'layout_justifySelf': layoutJustifySelf,
+      };
 }
 
 /// 发现页的一条选项（分类 / 输入框 / 按钮 / 开关 / 下拉）。
@@ -119,6 +128,19 @@ class ExploreKind {
     final s = '$v';
     return s.trim().isEmpty ? null : s;
   }
+
+  /// 与 [ExploreKind.fromJson] 键名一致，供发现页缓存往返
+  /// （legado 同样把 exploreKinds 的 JSON 持久化到 ACache）。
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'title': title,
+        if (url != null) 'url': url,
+        'type': type,
+        if (action != null) 'action': action,
+        if (chars.isNotEmpty) 'chars': chars,
+        if (defaultValue != null) 'default': defaultValue,
+        if (viewName != null) 'viewName': viewName,
+        'style': style.toJson(),
+      };
 
   /// 缺失 type 视为 url；未知 type 返回 null（按静态条目展示）。
   ExploreKindType? get recognizedType => switch (type) {

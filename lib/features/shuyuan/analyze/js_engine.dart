@@ -14,11 +14,20 @@ import '../../../core/js/js_runtime_factory.dart';
 import '../../../core/novel/novel_chinese_converter.dart';
 import '../../../core/utils/app_log.dart';
 import 'java_extensions.dart';
+import 'jsoup_dom.dart';
 import 'source_context.dart';
+
+/// JS 求值结果：成功时 [error] 为 null；失败时 [value] 为空串、[error]
+/// 为 QuickJS 错误文本（供发现脚本等上层以可见错误态呈现，而非静默空）。
+class JsEvalOutcome {
+  final String value;
+  final String? error;
+
+  const JsEvalOutcome(this.value, {this.error});
+}
 
 class JsEngine {
   NexJsRuntime? _runtime;
-
   /// 是否已注入全局预置脚本（繁简转换 t2s()/s2t() + java.* 第一梯队）。
   bool _preludeInjected = false;
 
@@ -116,6 +125,17 @@ class JsEngine {
       }
     } catch (e) {
       AppLog.instance.w('[书源JS] 注入对象预置脚本注入异常: $e');
+    }
+    // org.jsoup.Jsoup.parse + 最小 DOM/CSS 选择器（Rhino 直调 jsoup 的
+    // 脚本面）。依赖上方预置脚本已建立 global.org.jsoup.Jsoup。
+    try {
+      final result = _runtime!.evaluate(jsoupDomJsPrelude);
+      if (result.isError) {
+        AppLog.instance.w(
+            '[书源JS] jsoup DOM 预置脚本注入失败: ${result.stringResult}');
+      }
+    } catch (e) {
+      AppLog.instance.w('[书源JS] jsoup DOM 预置脚本注入异常: $e');
     }
   }
 
@@ -246,22 +266,33 @@ class JsEngine {
   /// 执行失败记录到运行日志（设置 → 高级 → 运行日志），便于真机排查
   /// 「书源 JS 规则不生效」类问题（脚本摘要 + 错误信息）。
   String eval(String jsStr, {Map<String, dynamic>? bindings}) {
+    return evalChecked(jsStr, bindings: bindings).value;
+  }
+
+  /// 与 [eval] 相同，但保留错误信息（失败时 [JsEvalOutcome.error] 非空）。
+  JsEvalOutcome evalChecked(
+    String jsStr, {
+    Map<String, dynamic>? bindings,
+  }) {
     try {
       final result = _evaluatePrepared(jsStr, bindings);
       if (result.isError) {
-        AppLog.instance.w('[书源JS] 执行失败: ${_brief(jsStr)} → ${result.stringResult}');
-        return '';
+        final msg = result.stringResult;
+        AppLog.instance.w('[书源JS] 执行失败: ${_brief(jsStr)} → $msg');
+        return JsEvalOutcome('', error: msg.isEmpty ? '脚本执行失败' : msg);
       }
       var s = result.stringResult;
-      if (s == 'null' || s == 'undefined' || s.isEmpty) return '';
+      if (s == 'null' || s == 'undefined' || s.isEmpty) {
+        return const JsEvalOutcome('');
+      }
       // 整数结果带 .0（QuickJS 按 double 返回）时规整，避免 URL 拼接出错。
       if (s.length > 2 && RegExp(r'^-?\d+\.0+$').hasMatch(s)) {
         s = s.substring(0, s.indexOf('.'));
       }
-      return s;
+      return JsEvalOutcome(s);
     } catch (e) {
       AppLog.instance.w('[书源JS] 执行异常: ${_brief(jsStr)} → $e');
-      return '';
+      return JsEvalOutcome('', error: '$e');
     }
   }
 
