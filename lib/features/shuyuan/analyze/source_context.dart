@@ -17,6 +17,7 @@ import 'dart:typed_data';
 import 'package:meta/meta.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../../core/scraper/http_fetcher.dart';
 import '../../../core/utils/app_log.dart';
 import 'analyze_url.dart';
 import 'java_extensions.dart';
@@ -127,6 +128,20 @@ class ShuyuanSourceContext {
   /// 发现页选项 action 请求宿主打开浏览器（java.startBrowser/openUrl）。
   final List<Map<String, String>> kindBrowserOpens = <Map<String, String>>[];
 
+  /// `java.startBrowserAwait` 的确定性重放：键 → [url,title,refetch,html]；
+  /// 宿主 settle 弹浏览器后把响应写入 [browserAwaitCache]（JSON 载荷）。
+  final Map<String, List<String>> browserAwaitArgs = <String, List<String>>{};
+  final List<String> browserAwaitPending = <String>[];
+  final Map<String, String> browserAwaitCache = <String, String>{};
+
+  /// `java.getVerificationCode`：键 → 图片 URL；输入值 → 缓存。
+  final Map<String, String> verificationArgs = <String, String>{};
+  final List<String> verificationPending = <String>[];
+  final Map<String, String> verificationCodeCache = <String, String>{};
+
+  /// 本阶段已打开过的 startBrowser 动作（url\ttitle\thtml），跨重放轮去重。
+  final Set<String> browserOpened = <String>{};
+
   /// 发现页选项 action 请求刷新选项栏（java.refreshExplore/reLoginView）。
   bool kindRefreshRequested = false;
 
@@ -195,6 +210,13 @@ class ShuyuanSourceContext {
     webviewCache.clear();
     webviewPending.clear();
     webviewArgs.clear();
+    browserAwaitCache.clear();
+    browserAwaitPending.clear();
+    browserAwaitArgs.clear();
+    verificationCodeCache.clear();
+    verificationPending.clear();
+    verificationArgs.clear();
+    browserOpened.clear();
   }
 
   // ── java.webView 的确定性重放（与 java.ajax 同款，只是宿主换成无头 WebView）──
@@ -204,26 +226,62 @@ class ShuyuanSourceContext {
   final List<String> webviewPending = <String>[];
   final Map<String, String> webviewCache = <String, String>{};
 
-  /// 抓取 webviewPending 中的页面，写入 [webviewCache]；失败缓存空串避免重试。
-  /// 返回本次真正执行的取源次数（缓存命中不算）。
+  /// 抓取 webviewPending 中的页面，写入 [webviewCache]；失败同样缓存空串，
+  /// 让占位符就地解析为 `''`（非 null 即命中），不会重复排队。
+  ///
+  /// 返回**本次真正发起**的取源次数（与 [settleAjax] 同口径，无论成功与否，
+  /// 缓存命中不算）：调用方据此判断这一轮是否有进展。抓取失败也已把空串写进
+  /// 缓存、占位符就此消解，必须算作进展——若只计成功数，全失败的一轮会被当成
+  /// 零进展提前退出，把占位符轮次的 `out`（含 `__WEBVIEW_n__` 或空页）当结果。
   static Future<int> settleWebview(ShuyuanSourceContext ctx) async {
+    if (ctx.webviewPending.isEmpty) return 0;
+    final keys = List<String>.from(ctx.webviewPending);
+    ctx.webviewPending.clear();
     var fetched = 0;
-    for (final key in List<String>.from(ctx.webviewPending)) {
-      if (ctx.webviewCache.containsKey(key)) continue;
+    for (final key in keys) {
+      final args = ctx.webviewArgs[key] ?? const <String>[];
+      final html = args.isNotEmpty ? args[0] : '';
+      final url = args.length > 1 ? args[1] : '';
+      final js = args.length > 2 ? args[2] : '';
+      final delayMs = args.length > 3 ? int.tryParse(args[3]) ?? 0 : 0;
+      final headers = <String, String>{};
+      final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+      if (host.isNotEmpty) {
+        try {
+          headers['User-Agent'] =
+              HttpFetcher.instance.userAgentForUrl(url);
+        } catch (_) {}
+        final overlay = ctx.cookiesForHost(host);
+        if (overlay.isNotEmpty) {
+          headers['Cookie'] =
+              overlay.entries.map((e) => '${e.key}=${e.value}').join('; ');
+        }
+      }
+      // 与 settleAjax 一致：先计尝试再抓取，失败也必须算这一轮有进展。
       fetched++;
-      final args = ctx.webviewArgs[key] ?? const <String>['', '', ''];
       try {
-        final html = await ShuyuanWebviewFetcher.fetch(
-          html: args.isNotEmpty ? args[0] : null,
-          url: args.length > 1 ? args[1] : null,
-          js: args.length > 2 ? args[2] : null,
+        final result = await ShuyuanWebviewFetcher.fetch(
+          html: html,
+          url: url,
+          js: js,
+          delayMs: delayMs,
+          headers: headers,
         ).timeout(const Duration(seconds: 45));
-        ctx.webviewCache[key] = html ?? '';
+        ctx.webviewCache[key] = result?.html ?? '';
+        if (result != null) {
+          for (final e in result.cookieHeaders.entries) {
+            ctx.syncCookies(e.key, e.value);
+          }
+        }
       } catch (_) {
         ctx.webviewCache[key] = '';
       }
     }
-    ctx.webviewPending.clear();
+    // 捕获的 Cookie 必须落盘：仅留在内存时，另一个实例（解析器缓存 ctx /
+    // 登录窗）既读不到，且本实例 cookiesDirty 期间 refreshCookiesFromStore
+    // 是 no-op，后续排空会把陈旧快照写回存储覆盖别处写入的登录态。
+    // persistIfNeeded 在无写时为 no-op，无需条件保护。
+    await ctx.persistIfNeeded();
     return fetched;
   }
 
@@ -315,8 +373,38 @@ class ShuyuanSourceContext {
           // 'ajax'，settle 按并集抓取一次、双缓存填充）。
           if (!ajaxBytesPending.contains(a)) ajaxBytesPending.add(a);
         case 'browserOpen':
-          if (a.isNotEmpty) {
-            kindBrowserOpens.add(<String, String>{'url': a, 'title': b});
+          var title = b;
+          var html = '';
+          try {
+            final decoded = jsonDecode(b);
+            if (decoded is List) {
+              title = decoded.isNotEmpty ? '${decoded[0] ?? ''}' : '';
+              html = decoded.length > 1 ? '${decoded[1] ?? ''}' : '';
+            }
+          } catch (_) {}
+          kindBrowserOpens.add(<String, String>{
+            'url': a,
+            'title': title,
+            'html': html,
+          });
+        case 'browserAwait':
+          // startBrowserAwait：a=键，b=[url, title, refetch, html]。
+          if (!browserAwaitPending.contains(a)) {
+            browserAwaitPending.add(a);
+            try {
+              final decoded = jsonDecode(b);
+              if (decoded is List) {
+                browserAwaitArgs[a] = <String>[
+                  for (final e in decoded) e?.toString() ?? '',
+                ];
+              }
+            } catch (_) {}
+          }
+        case 'verificationCode':
+          // getVerificationCode：a=键，b=图片 URL。
+          if (!verificationPending.contains(a)) {
+            verificationPending.add(a);
+            verificationArgs[a] = b;
           }
         case 'refreshKinds':
           kindRefreshRequested = true;
@@ -489,6 +577,48 @@ class ShuyuanSourceContext {
       }
     }
     if (changed) cookiesDirty = true;
+  }
+
+  /// 交互浏览器 / WebView 捕获的 Cookie 回灌（只写 per-source 覆盖层）。
+  void syncCookies(String host, String header) {
+    final h = host.toLowerCase().trim();
+    if (h.isEmpty || header.trim().isEmpty) return;
+    var changed = false;
+    for (final part in header.split(';')) {
+      final eq = part.indexOf('=');
+      if (eq <= 0) continue;
+      final name = part.substring(0, eq).trim();
+      final value = part.substring(eq + 1).trim();
+      if (name.isEmpty) continue;
+      final prev = cookies[name];
+      if (prev == null || prev['value'] != value || prev['host'] != h) {
+        cookies[name] = <String, String>{'value': value, 'host': h};
+        changed = true;
+      }
+    }
+    if (changed) cookiesDirty = true;
+  }
+
+  /// 登录窗/交互浏览器可能由另一个 ctx 实例写入并落盘；解析前刷新一次。
+  /// 本实例有未落盘写入时跳过（内存写优先，避免被旧盘值覆盖）。
+  Future<void> refreshCookiesFromStore() async {
+    if (cookiesDirty) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_cookieStoreKey);
+      if (raw == null || raw.isEmpty) return;
+      _cookieCache = _decodeCookieStore(raw);
+      final mine = _cookieCache![sourceId];
+      if (mine == null) return;
+      for (final e in mine.entries) {
+        final prev = cookies[e.key];
+        if (prev == null ||
+            prev['value'] != e.value['value'] ||
+            prev['host'] != e.value['host']) {
+          cookies[e.key] = Map<String, String>.from(e.value);
+        }
+      }
+    } catch (_) {}
   }
 
   // ── cookie 覆盖层持久化（per sourceId） ──

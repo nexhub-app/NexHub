@@ -6046,5 +6046,7 @@
   "mediaChapterAudio": "Audio chapter",
   "mediaChapterVideo": "Video chapter",
   "mediaChapterPlay": "Play",
-  "mediaChapterHint": "This chapter is a media stream from the source. Tap play to start playback."
+  "mediaChapterHint": "This chapter is a media stream from the source. Tap play to start playback.",
+  "verificationCodeTitle": "Enter verification code",
+  "verificationCodeHint": "Enter the code shown in the image"
 }

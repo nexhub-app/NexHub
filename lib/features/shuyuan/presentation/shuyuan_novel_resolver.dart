@@ -44,6 +44,7 @@ import '../shuyuan_adapter.dart';
 import '../shuyuan_explore_info_store.dart';
 import '../shuyuan_explore_kinds_store.dart';
 import '../web_book/web_book.dart';
+import 'shuyuan_interactive.dart';
 
 class ShuyuanNovelResolver
     implements
@@ -128,9 +129,12 @@ class ShuyuanNovelResolver
   }
 
   Future<ShuyuanSourceContext> _contextFor(PluginConfig source) async {
-    return _contexts[source.id] ??= await ShuyuanSourceContext.forSource(
+    final ctx = _contexts[source.id] ??= await ShuyuanSourceContext.forSource(
       source.id,
     );
+    // 登录窗/交互浏览器可能由另一个 ctx 实例写入并落盘。
+    await ctx.refreshCookiesFromStore();
+    return ctx;
   }
 
   /// 重放轮次上限（安全阀）：正常多跳脚本 3–6 轮即收敛。
@@ -184,7 +188,7 @@ class ShuyuanNovelResolver
         // ——循环内每一轮都依赖页面缓存，否则重放会把同一页真实重复抓多次。
         ctx.clearStageCaches();
         JsEngine.resetReplayCachesFor(source.id);
-        final deadline = DateTime.now().add(_replayBudget);
+        var deadline = DateTime.now().add(_replayBudget);
         dynamic out;
         for (var pass = 0; pass < _maxReplayPasses; pass++) {
           ctx.ajaxPending.clear();
@@ -196,15 +200,17 @@ class ShuyuanNovelResolver
                 onProgress: onProgress);
           } on Object {
             if (_hasPendingReplay(ctx) && _replayAllowed(pass, deadline)) {
-              final fetched = await _settleReplay(ctx, bookSource);
-              if (fetched > 0) continue;
+              final settled = await _settleReplay(ctx, bookSource, source);
+              deadline = deadline.add(settled.waited);
+              if (settled.fetched > 0) continue;
             }
             rethrow;
           }
           if (!_hasPendingReplay(ctx)) return out;
           if (!_replayAllowed(pass, deadline)) break;
-          final fetched = await _settleReplay(ctx, bookSource);
-          if (fetched == 0) break;
+          final settled = await _settleReplay(ctx, bookSource, source);
+          deadline = deadline.add(settled.waited);
+          if (settled.fetched == 0) break;
         }
         return out;
       } on VerificationRequiredException catch (e) {
@@ -283,18 +289,33 @@ class ShuyuanNovelResolver
   ) =>
       ShuyuanSourceContext.settleAjax(ctx, bookSource);
 
-  /// 本轮是否还有等待宿主处理的请求（ajax 走 HTTP，webview 走无头渲染）。
+  /// 本轮是否还有等待宿主处理的请求（ajax 走 HTTP，webview 走无头渲染，
+  /// 交互式 await/验证码走冻结缓存）。发现阶段不弹 startBrowser。
   bool _hasPendingReplay(ShuyuanSourceContext ctx) =>
-      ctx.ajaxPending.isNotEmpty || ctx.webviewPending.isNotEmpty;
+      ctx.ajaxPending.isNotEmpty ||
+      ctx.webviewPending.isNotEmpty ||
+      hasPendingInteractive(ctx, includeOpenBrowsers: false);
 
-  /// 一次性补齐两类重放请求；返回本轮新抓取的条目数（0 = 无进展）。
-  Future<int> _settleReplay(
+  /// 一次性补齐重放请求（ajax / webview / 交互式浏览器与验证码）；
+  /// 返回本轮新抓取的条目数（0 = 无进展）与等待时长（供调用方延长预算）。
+  Future<ShuyuanInteractiveSettleResult> _settleReplay(
     ShuyuanSourceContext ctx,
     XiaoshuoBookSource bookSource,
+    PluginConfig source,
   ) async {
     var fetched = await _fetchAjaxPending(ctx, bookSource);
     fetched += await ShuyuanSourceContext.settleWebview(ctx);
-    return fetched;
+    final interactive = await settleShuyuanInteractive(
+      ctx,
+      bookSource,
+      pluginSource: source,
+    );
+    // 预算只按「用户交互等待」延长：ajax/webview 抓取本身有各自的 45s 超时，
+    // 若把它们耗时也算作返回的 waited，等于每轮免费续期，总预算形同虚设。
+    return ShuyuanInteractiveSettleResult(
+      fetched + interactive.fetched,
+      interactive.waited,
+    );
   }
 
   /// 渲染后 HTML 回灌：WebView 过验证后拿回的整页 HTML 直接走 WebBook 规则解析，
@@ -470,7 +491,7 @@ class ShuyuanNovelResolver
     return ShuyuanSourceContext.run(ctx, () async {
       ctx.clearStageCaches();
       JsEngine.resetReplayCachesFor(source.id);
-      final deadline = DateTime.now().add(_exploreCategoryBudget);
+      var deadline = DateTime.now().add(_exploreCategoryBudget);
       ctx.deferredToasts.clear();
       ctx.deferFeedback = true;
       try {
@@ -479,8 +500,9 @@ class ShuyuanNovelResolver
         for (var pass = 0; pass < _maxReplayPasses; pass++) {
           if (!_hasPendingReplay(ctx)) break;
           if (!_replayAllowed(pass, deadline)) break;
-          final fetched = await _settleReplay(ctx, bookSource);
-          if (fetched == 0) break;
+          final settled = await _settleReplay(ctx, bookSource, source);
+          deadline = deadline.add(settled.waited);
+          if (settled.fetched == 0) break;
           entries = _toCategoryEntries(
               _webBook.getExploreCategories(bookSource, infoMap: infoMap));
         }
@@ -531,7 +553,7 @@ class ShuyuanNovelResolver
           return ExploreKindsResult(items: items, infoMap: infoMap);
         }
         JsEngine.resetReplayCachesFor(source.id);
-        final deadline = DateTime.now().add(_exploreCategoryBudget);
+        var deadline = DateTime.now().add(_exploreCategoryBudget);
         ({ExploreKindsResult result, List<ExploreKind> kinds})? built;
         try {
           for (var pass = 0; pass < _maxReplayPasses; pass++) {
@@ -550,9 +572,10 @@ class ShuyuanNovelResolver
               return built.result;
             }
             if (!_replayAllowed(pass, deadline)) return built.result;
-            final fetched = await _settleReplay(ctx, bookSource);
+            final settled = await _settleReplay(ctx, bookSource, source);
+            deadline = deadline.add(settled.waited);
             // 抓取失败/无进展：保留错误态，不写缓存（下次打开仍会重试）。
-            if (fetched == 0) return built.result;
+            if (settled.fetched == 0) return built.result;
           }
           return built?.result ?? ExploreKindsResult(infoMap: infoMap);
         } finally {
@@ -764,7 +787,7 @@ class ShuyuanNovelResolver
       return await ShuyuanSourceContext.run(ctx, () async {
         ctx.clearStageCaches();
         engine.resetReplayCaches();
-        final deadline = DateTime.now().add(_exploreCategoryBudget);
+        var deadline = DateTime.now().add(_exploreCategoryBudget);
         try {
           for (var pass = 0; pass < _maxReplayPasses; pass++) {
             ctx.ajaxPending.clear();
@@ -778,8 +801,9 @@ class ShuyuanNovelResolver
             _syncInfoMapFromJs(engine, infoMap);
             if (!_hasPendingReplay(ctx)) break;
             if (!_replayAllowed(pass, deadline)) break;
-            final fetched = await _settleReplay(ctx, bookSource);
-            if (fetched == 0) break;
+            final settled = await _settleReplay(ctx, bookSource, source);
+            deadline = deadline.add(settled.waited);
+            if (settled.fetched == 0) break;
           }
           return ExploreKindActionResult(
             openRequests: <ExploreKindOpenRequest>[
@@ -1085,9 +1109,11 @@ class ShuyuanNovelResolver
         vars['cid'] ??
         '';
     if (chapterUrl.isEmpty) return <String>[];
+    final nextChapterUrl = vars['nextChapterUrl'] ?? '';
     final result = await _webBook.getContent(
       source: bookSource,
       chapterUrl: chapterUrl,
+      nextChapterUrl: nextChapterUrl.isEmpty ? null : nextChapterUrl,
     );
     return imageUrlsFromBlocks(result.blocks);
   }
@@ -1126,9 +1152,11 @@ class ShuyuanNovelResolver
     if (chapterUrl.isEmpty) {
       throw ArgumentError('content requires vars["url"]');
     }
+    final nextChapterUrl = vars['nextChapterUrl'] ?? '';
     final result = await _webBook.getContent(
       source: bookSource,
       chapterUrl: chapterUrl,
+      nextChapterUrl: nextChapterUrl.isEmpty ? null : nextChapterUrl,
     );
     if (result.error != null && result.blocks.isEmpty) {
       throw SourceResolveException(

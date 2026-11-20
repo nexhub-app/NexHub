@@ -684,6 +684,21 @@ const String sourceContextJsPrelude = r'''
     } catch (e) {}
     return resp;
   }
+  // 交互式重放的响应对象：与 syResp 同形，供 startBrowserAwait 返回。
+  function syAwaitResp(body, code, finalUrl, headers) {
+    var text = body == null ? '' : String(body);
+    var h = headers || {};
+    return {
+      body: function () { return text; },
+      code: function () { return Number(code) || 0; },
+      statusCode: function () { return Number(code) || 0; },
+      headers: function () { return syHeadersMap(h); },
+      header: function (n) { return syHeaderGet(h, n); },
+      cookies: function () { return syCookiesOf(h); },
+      url: function () { return finalUrl == null ? '' : String(finalUrl); },
+      toString: function () { return text; },
+    };
+  }
 
   if (global.java) {
     global.java.__ajaxReq = function (url) {
@@ -884,15 +899,31 @@ const String sourceContextJsPrelude = r'''
     // 同步沙箱内不能真开界面，统一记 op 由宿主排空后执行。
     global.java.startBrowser = function (url, title, html) {
       var u = String(url == null ? '' : url);
-      if (u) syOp('browserOpen', u, title == null ? '' : String(title));
+      var t = title == null ? '' : String(title);
+      var h = html == null ? '' : String(html);
+      if (u || h) syOp('browserOpen', u, JSON.stringify([t, h]));
       return null;
     };
-    global.java.startBrowserAwait = function (url, title) {
-      global.java.startBrowser(url, title);
-      // legado 返回响应对象；同步沙箱无真实响应，给空壳避免脚本 TypeError。
-      return { body: function () { return ''; },
-        code: function () { return 0; },
-        headers: function () { return {}; } };
+    // legado startBrowserAwait：打开浏览器并等待用户点「完成」。
+    // refetchAfterSuccess=false 返回 WebView outerHTML；其余返回原 URL
+    // 重新请求的响应。缓存由宿主 settle 写入（JSON 载荷）。
+    global.java.startBrowserAwait = function (url, title, refetchAfterSuccess, html) {
+      var u = String(url == null ? '' : url);
+      var t = title == null ? '' : String(title);
+      var h = html == null ? '' : String(html);
+      var refetch = refetchAfterSuccess === false ? 0 : 1;
+      if (!u && !h) return syAwaitResp('', 0, '', {});
+      var key = 'ba:' + syHash(h + '\u0001' + u + '\u0001' + refetch) + ':' +
+          (h.length + u.length);
+      var c = global.__browserAwaitCache;
+      if (c && c[key] != null) {
+        try {
+          var o = JSON.parse(c[key]);
+          return syAwaitResp(o.body || '', o.code || 0, o.url || '', o.headers || {});
+        } catch (e) {}
+      }
+      syOp('browserAwait', key, JSON.stringify([u, t, String(refetch), h]));
+      return syAwaitResp('', 0, '', {});
     };
     global.java.openUrl = function (url, mimeType) {
       global.java.startBrowser(url, '');
@@ -928,6 +959,17 @@ const String sourceContextJsPrelude = r'''
       var t = String(text == null ? '' : text);
       syOp('copyText', t, '');
       return t;
+    };
+    // legado getVerificationCode(imageUrl)：弹验证码输入并返回用户文本。
+    // 首轮记 op 返回空串；宿主缓存输入值后重放。取消/空输入缓存空串。
+    global.java.getVerificationCode = function (imageUrl) {
+      var u = String(imageUrl == null ? '' : imageUrl);
+      if (!u) return '';
+      var key = 'vc:' + syHash(u) + ':' + u.length;
+      var c = global.__verificationCodeCache;
+      if (c && c[key] != null) return c[key];
+      syOp('verificationCode', key, u);
+      return '';
     };
   }
 })(globalThis);
@@ -3139,6 +3181,64 @@ const String javaExtensionsJsPrelude = r'''
     },
   }, 'java.lang.Thread');
 
+  // ── java.net.URL（值对象；不触网，openStream/openConnection 显式抛错）──
+  function JavaNetURL(url) {
+    if (!(this instanceof JavaNetURL)) return new JavaNetURL(url);
+    var s = String(url == null ? '' : url).trim();
+    var m = s.match(
+        /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/([^\/?#]*)([^?#]*)(?:\?([^#]*))?(?:#(.*))?$/);
+    if (!m) throw new Error('Malformed URL: ' + s);
+    this.href = s;
+    this.protocol = m[1].toLowerCase();
+    this.authority = m[2];
+    var at = this.authority.lastIndexOf('@');
+    var hostPort = at >= 0 ? this.authority.substring(at + 1) : this.authority;
+    this.userInfo = at >= 0 ? this.authority.substring(0, at) : null;
+    var colon = hostPort.lastIndexOf(':');
+    var port = -1;
+    var host = hostPort;
+    if (colon >= 0) {
+      var p = parseInt(hostPort.substring(colon + 1), 10);
+      if (!isNaN(p)) {
+        port = p;
+        host = hostPort.substring(0, colon);
+      }
+    }
+    this.host = host;
+    this.port = port;
+    this.path = m[3] || '';
+    this.query = m[4] == null ? null : m[4];
+    this.ref = m[5] == null ? null : m[5];
+  }
+  jmark(JavaNetURL, 'java.net.URL');
+  JavaNetURL.prototype.getProtocol = function () { return this.protocol; };
+  JavaNetURL.prototype.getHost = function () { return this.host; };
+  JavaNetURL.prototype.getPort = function () { return this.port; };
+  JavaNetURL.prototype.getDefaultPort = function () {
+    return this.protocol === 'https' ? 443
+        : (this.protocol === 'http' ? 80 : -1);
+  };
+  JavaNetURL.prototype.getPath = function () { return this.path; };
+  JavaNetURL.prototype.getQuery = function () { return this.query; };
+  JavaNetURL.prototype.getRef = function () { return this.ref; };
+  JavaNetURL.prototype.getAuthority = function () { return this.authority; };
+  JavaNetURL.prototype.getUserInfo = function () { return this.userInfo; };
+  JavaNetURL.prototype.getFile = function () {
+    return this.path + (this.query == null ? '' : '?' + this.query);
+  };
+  JavaNetURL.prototype.toString = function () { return this.href; };
+  JavaNetURL.prototype.toExternalForm = function () { return this.href; };
+  JavaNetURL.prototype.toURI = function () {
+    var href = this.href;
+    return { toString: function () { return href; } };
+  };
+  JavaNetURL.prototype.openStream = function () {
+    throw new Error('java.net.URL.openStream is not supported');
+  };
+  JavaNetURL.prototype.openConnection = function () {
+    throw new Error('java.net.URL.openConnection is not supported');
+  };
+
   // ── android.text.TextUtils / android.os.Build ──
   var AndroidTextUtils = jmark({
     isEmpty: function (s) { return s == null || String(s).length === 0; },
@@ -3717,6 +3817,36 @@ const String javaExtensionsJsPrelude = r'''
     return bnToBytes(s, k).map(signedByte);
   }
 
+  // SHA256withRSA 验签：公钥模幂还原 EM 后逐段比对 PKCS#1 v1.5 填充与
+  // DigestInfo（与 rsaSignSha256 共用 sha256Bytes，签名/验签口径一致）。
+  function rsaVerifySha256(pub, msgBytes, sigBytes) {
+    if (!pub || !pub.n || !pub.e) throw new Error('RSA public key not set');
+    var n = bnFromBytes(pub.n);
+    var e = bnFromBytes(pub.e);
+    var k = Math.ceil(bnBitLength(n) / 8);
+    var em = bnModPow(bnFromBytes(juBytes(sigBytes)), e, montContext(n));
+    var emBytes = bnToBytes(em, k);
+    // EM = 0x00 0x01 FF..FF 0x00 || DigestInfo(SHA-256)
+    if (emBytes.length !== k || emBytes[0] !== 0 || emBytes[1] !== 1) {
+      return false;
+    }
+    var i = 2;
+    while (i < emBytes.length && emBytes[i] === 0xFF) i++;
+    if (i < 10 || i >= emBytes.length || emBytes[i] !== 0) return false;
+    var offset = i + 1;
+    var prefix = [0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48,
+      0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20];
+    if (emBytes.length - offset !== prefix.length + 32) return false;
+    for (var j = 0; j < prefix.length; j++) {
+      if (emBytes[offset + j] !== prefix[j]) return false;
+    }
+    var digest = sha256Bytes(juBytes(msgBytes));
+    for (var q = 0; q < 32; q++) {
+      if (emBytes[offset + prefix.length + q] !== digest[q]) return false;
+    }
+    return true;
+  }
+
   var JavaSignature = jmark(function JavaSignature() {},
       'java.security.Signature');
   JavaSignature.getInstance = function (algo) {
@@ -3731,7 +3861,12 @@ const String javaExtensionsJsPrelude = r'''
         return null;
       },
       initVerify: function (key) {
-        sig.__key = key;
+        var pub = key && key.__rsaPub;
+        if (!pub && key && key.__rsaPriv) {
+          pub = { n: key.__rsaPriv.n, e: key.__rsaPriv.e };
+        }
+        if (!pub) throw new Error('Signature: public key required');
+        sig.__key = pub;
         sig.__parts = [];
         return null;
       },
@@ -3748,7 +3883,15 @@ const String javaExtensionsJsPrelude = r'''
         return rsaSignSha256(sig.__key.__rsaPriv, sig.__parts);
       },
       verify: function (sigBytes) {
-        throw new Error('Signature: verify not implemented');
+        if (name !== 'SHA256WITHRSA') {
+          throw new Error('Signature: unsupported algorithm ' + algo);
+        }
+        if (!sig.__key || !sig.__key.n || !sig.__key.e) {
+          throw new Error('Signature: public key required');
+        }
+        var ok = rsaVerifySha256(sig.__key, sig.__parts, juBytes(sigBytes));
+        sig.__parts = [];
+        return ok;
       },
     };
     return sig;
@@ -4081,6 +4224,7 @@ const String javaExtensionsJsPrelude = r'''
     Signature: JavaSignature,
     MessageDigest: JavaMessageDigest,
   }, { spec: P_java_security_spec });
+  var P_java_net = jpkg({ URL: JavaNetURL });
   var P_javax_crypto_spec = jpkg({
     SecretKeySpec: SecretKeySpec,
     IvParameterSpec: IvParameterSpec,
@@ -4117,6 +4261,7 @@ const String javaExtensionsJsPrelude = r'''
       util: P_java_util,
       io: P_java_io,
       security: P_java_security,
+      net: P_java_net,
     },
     javax: { crypto: P_javax_crypto },
     android: {
@@ -4406,7 +4551,8 @@ const String javaExtensionsJsPrelude = r'''
     initUrl: function () { return unsupported('initUrl'); },
     openVideoPlayer: function () { return unsupported('openVideoPlayer'); },
     showBrowser: function () { return unsupported('showBrowser'); },
-    getVerificationCode: function () { return ''; },
+    // ── java.net 包（URL 值语义，不触网）──
+    net: P_java_net,
   };
 
   // 固定 UA（legado getWebViewUA 读取系统 WebView 默认 UA；沙箱内用

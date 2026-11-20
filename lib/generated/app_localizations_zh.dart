@@ -10408,4 +10408,10 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get mediaChapterHint => '本章为书源提供的媒体流，点击播放开始收听/观看';
+
+  @override
+  String get verificationCodeTitle => '输入验证码';
+
+  @override
+  String get verificationCodeHint => '请输入图片中的验证码';
 }

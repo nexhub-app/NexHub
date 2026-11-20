@@ -43,6 +43,8 @@ class JsEngine {
   final Set<String> _syncedAjaxBytesKeys = <String>{};
   final Set<String> _syncedAjaxMetaKeys = <String>{};
   final Set<String> _syncedWebviewKeys = <String>{};
+  final Set<String> _syncedBrowserAwaitKeys = <String>{};
+  final Set<String> _syncedVerificationKeys = <String>{};
 
   // ── 按源复用 ──
   //
@@ -171,6 +173,16 @@ class JsEngine {
     _pushDeltas('__webviewCache', cache, _syncedWebviewKeys);
   }
 
+  /// `java.startBrowserAwait` 的宿主响应（JSON 载荷）增量推送。
+  void _pushBrowserAwaitDeltas(Map<String, String> cache) {
+    _pushDeltas('__browserAwaitCache', cache, _syncedBrowserAwaitKeys);
+  }
+
+  /// `java.getVerificationCode` 的用户输入值增量推送。
+  void _pushVerificationDeltas(Map<String, String> cache) {
+    _pushDeltas('__verificationCodeCache', cache, _syncedVerificationKeys);
+  }
+
   void _pushDeltas(
     String globalName,
     Map<String, String> cache,
@@ -194,20 +206,24 @@ class JsEngine {
     }
   }
 
-  /// 清空 JS 侧重放缓存（ajax + webview）。每个解析阶段开始时调用，
+  /// 清空 JS 侧重放缓存（ajax + webview + 交互）。每个解析阶段开始时调用，
   /// 配合宿主 `ctx.clearStageCaches()`，防止缓存跨阶段无限增长。
   void resetReplayCaches() {
     _syncedAjaxKeys.clear();
     _syncedAjaxBytesKeys.clear();
     _syncedAjaxMetaKeys.clear();
     _syncedWebviewKeys.clear();
+    _syncedBrowserAwaitKeys.clear();
+    _syncedVerificationKeys.clear();
     if (_runtime == null) return;
     try {
       _runtime!.evaluate(
           'globalThis.__ajaxCache = Object.create(null);'
           'globalThis.__ajaxBytesCache = Object.create(null);'
           'globalThis.__ajaxMetaCache = Object.create(null);'
-          'globalThis.__webviewCache = Object.create(null);');
+          'globalThis.__webviewCache = Object.create(null);'
+          'globalThis.__browserAwaitCache = Object.create(null);'
+          'globalThis.__verificationCodeCache = Object.create(null);');
     } catch (_) {}
   }
 
@@ -335,6 +351,8 @@ class JsEngine {
       _pushAjaxBytesDeltas(activeCtx.ajaxBytesCache);
       _pushAjaxMetaDeltas(activeCtx.ajaxMetaCache);
       _pushWebviewDeltas(activeCtx.webviewCache);
+      _pushBrowserAwaitDeltas(activeCtx.browserAwaitCache);
+      _pushVerificationDeltas(activeCtx.verificationCodeCache);
       // jsLib 预执行（按源，同引擎同内容只执行一次）：书源自定义函数/
       // 变量对所有后续脚本可见（legado SharedJsScope 等效）。
       // jsLib 为 JSON 对象时（`{"name":"https://.../lib.js"}`）按 legado
@@ -582,5 +600,7 @@ class JsEngine {
     _syncedAjaxBytesKeys.clear();
     _syncedAjaxMetaKeys.clear();
     _syncedWebviewKeys.clear();
+    _syncedBrowserAwaitKeys.clear();
+    _syncedVerificationKeys.clear();
   }
 }

@@ -1,12 +1,7 @@
-/// 书源 `java.webView(html, url, js)` 的宿主实现（无头 WebView）。
+/// 书源 WebView 重放抓取：把规则层声明的 UA/Cookie 带进无头页面，
+/// 返回正文 HTML、最终 URL 与页面写下的 Cookie。
 ///
-/// 同步沙箱内开不了 WebView，故走与 `java.ajax` 相同的「确定性重放」：
-/// 脚本首轮记录参数并拿占位符；宿主在此真正加载页面（或注入 html）、
-/// 执行 js，回传渲染后的整页 HTML；重放时脚本直接拿到结果。
-///
-/// 隔离原则：**不改** [SilentHtmlCapture]（验证/媒体源共用，改动风险高），
-/// 这里只服务书源脚本。任何失败都返回 null（脚本拿到空串），
-/// 不抛异常、不影响既有流程；平台不支持 WebView 时同样静默返回 null。
+/// Cookie 只回传，不直接写全局 jar；由宿主写入 per-source 覆盖层。
 library;
 
 import 'dart:async';
@@ -15,45 +10,111 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
+import '../../../core/platform/platform_service.dart';
+import 'webview_cookie_reader.dart';
+
+/// WebView 抓取结果。
+class ShuyuanWebviewResult {
+  const ShuyuanWebviewResult({
+    required this.html,
+    this.finalUrl = '',
+    this.cookieHeaders = const <String, String>{},
+  });
+
+  final String html;
+  final String finalUrl;
+
+  /// host → `name=value; ...`（只含该域可回放的 Cookie）。
+  final Map<String, String> cookieHeaders;
+}
+
 class ShuyuanWebviewFetcher {
   ShuyuanWebviewFetcher._();
 
-  /// 测试注入：合成探针无法启动平台无头 WebView（flutter test 无插件宿主），
-  /// 用它替换真实渲染，验证 `java.webView` 分类的占位符重放闭环。
+  /// 测试注入：返回 null 表示模拟失败。
   @visibleForTesting
-  static Future<String?> Function({
+  static Future<ShuyuanWebviewResult?> Function({
     String? html,
     String? url,
     String? js,
     int delayMs,
+    Map<String, String>? headers,
   })? debugFetchOverride;
 
-  static const Duration _loadTimeout = Duration(seconds: 20);
   static const Duration _renderSettle = Duration(milliseconds: 1200);
   static const Duration _jsSettle = Duration(milliseconds: 600);
-
-  /// 桌面 UA：无头环境没有真实 UA，显式钉一个，避免站点按 UA 返回移动壳。
+  static const Duration _loadTimeout = Duration(seconds: 45);
   static const String _defaultUa =
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-  /// 加载 [url] 或注入 [html]（二者至少一个），可选执行 [js]，
-  /// 返回渲染后的整页 HTML；失败返回 null。
-  static Future<String?> fetch({
+  /// data: URL → 可注入 WebView 的 HTML。
+  /// 文本按 percent/base64 解码；图片包成 `<img>`（WebView2 禁止顶层
+  /// data: 导航，注入 about:blank 后可正常渲染）。
+  static String? dataUrlToHtml(String url) {
+    if (!url.startsWith('data:')) return null;
+    final comma = url.indexOf(',');
+    if (comma <= 5) return null;
+    final meta = url.substring(5, comma).toLowerCase();
+    final payload = url.substring(comma + 1);
+    if (meta.startsWith('image/')) {
+      final src = url.replaceAll('"', '%22');
+      return '<html><body><img src="$src"></body></html>';
+    }
+    if (!meta.startsWith('text/html') && !meta.contains('html')) return null;
+    try {
+      if (meta.endsWith(';base64')) {
+        return utf8.decode(base64Decode(payload));
+      }
+      return Uri.decodeComponent(payload);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<ShuyuanWebviewResult?> fetch({
     String? html,
     String? url,
     String? js,
     int delayMs = 0,
+    Map<String, String>? headers,
   }) async {
     final override = debugFetchOverride;
     if (override != null) {
-      return override(html: html, url: url, js: js, delayMs: delayMs);
+      return override(
+          html: html, url: url, js: js, delayMs: delayMs, headers: headers);
     }
-    final data = html ?? '';
-    final pageUrl = (url ?? '').trim();
+    if (!PlatformService.instance.isAndroid &&
+        !PlatformService.instance.isIOS &&
+        !PlatformService.instance.isWindows) {
+      return null;
+    }
+
+    var data = html ?? '';
+    var pageUrl = (url ?? '').trim();
+    final requestHeaders = <String, String>{...?headers};
+    String takeHeader(String name) {
+      for (final k in requestHeaders.keys.toList()) {
+        if (k.toLowerCase() == name.toLowerCase()) {
+          return requestHeaders.remove(k) ?? '';
+        }
+      }
+      return '';
+    }
+
+    final cookieHeader = takeHeader('Cookie');
+    final ua = takeHeader('User-Agent');
+    if (data.trim().isEmpty && pageUrl.startsWith('data:')) {
+      data = dataUrlToHtml(pageUrl) ?? '';
+      if (data.isNotEmpty) pageUrl = '';
+    }
     final hasHtml = data.trim().isNotEmpty;
-    final hasUrl = pageUrl.isNotEmpty;
+    final startUrl = pageUrl;
+    final hasUrl = startUrl.isNotEmpty;
     if (!hasHtml && !hasUrl) return null;
+
+    final cookiePairs = _parseCookieHeader(cookieHeader);
+    final directNavigation = hasUrl && cookiePairs.isEmpty;
 
     HeadlessInAppWebView? webview;
     final created = Completer<InAppWebViewController>();
@@ -61,17 +122,31 @@ class ShuyuanWebviewFetcher {
     try {
       webview = HeadlessInAppWebView(
         initialUrlRequest: URLRequest(
-          url: WebUri(hasUrl ? pageUrl : 'about:blank'),
+          url: WebUri(hasHtml || !directNavigation ? 'about:blank' : startUrl),
+          headers: directNavigation && requestHeaders.isNotEmpty
+              ? requestHeaders
+              : null,
         ),
         initialSettings: InAppWebViewSettings(
           javaScriptEnabled: true,
-          userAgent: hasUrl ? null : _defaultUa,
+          userAgent: ua.isEmpty ? (hasHtml ? _defaultUa : null) : ua,
         ),
-        onWebViewCreated: (controller) {
-          if (!created.isCompleted) created.complete(controller);
+        onWebViewCreated: (c) {
+          if (!created.isCompleted) created.complete(c);
         },
-        onLoadStop: (controller, uri) {
-          if (!loaded.isCompleted) loaded.complete();
+        onLoadStop: (_, uri) {
+          // 带 Cookie 时必须先落 about:blank 再 setCookie，about: 的
+          // 加载完成不算目标页就绪，只认 http(s) 导航。
+          final scheme = uri?.scheme ?? '';
+          if ((scheme == 'http' || scheme == 'https') && !loaded.isCompleted) {
+            loaded.complete();
+          }
+        },
+        onReceivedError: (_, request, __) {
+          final scheme = request.url.scheme;
+          if ((scheme == 'http' || scheme == 'https') && !loaded.isCompleted) {
+            loaded.complete();
+          }
         },
         // headless 无 UI：站点的 alert/confirm 必须接管，否则阻塞 JS 队列。
         onJsAlert: (controller, request) async =>
@@ -80,48 +155,75 @@ class ShuyuanWebviewFetcher {
             JsConfirmResponse(handledByClient: true),
       );
       await webview.run();
-      final controller = await created.future.timeout(_loadTimeout);
+      final c = await created.future.timeout(_loadTimeout);
+
+      if (cookiePairs.isNotEmpty) {
+        final uri = Uri.tryParse(startUrl);
+        if (uri != null && uri.host.isNotEmpty) {
+          for (final p in cookiePairs) {
+            try {
+              await CookieManager.instance().setCookie(
+                url: WebUri('${uri.scheme}://${uri.host}'),
+                name: p.$1,
+                value: p.$2,
+              );
+            } catch (_) {}
+          }
+        }
+      }
 
       if (hasHtml) {
-        // html 直投：baseUrl 决定相对链接/请求的基准（没有 url 时用 about:blank）。
-        // flutter_inappwebview 6.x 的接口名是 loadData（不是 loadDataWithBaseURL）。
-        await controller.loadData(
+        await c.loadData(
           data: data,
           mimeType: 'text/html',
           encoding: 'utf8',
-          baseUrl: WebUri(hasUrl ? pageUrl : 'about:blank'),
+          baseUrl: WebUri(hasUrl ? startUrl : 'about:blank'),
         );
         await Future<void>.delayed(_renderSettle);
       } else {
+        if (!directNavigation) {
+          await c.loadUrl(
+            urlRequest: URLRequest(
+              url: WebUri(startUrl),
+              headers: requestHeaders.isEmpty ? null : requestHeaders,
+            ),
+          );
+        }
         await loaded.future.timeout(_loadTimeout, onTimeout: () {});
         await Future<void>.delayed(_renderSettle);
       }
 
-      // legado BackstageWebView delayTime：页面加载后额外等待源声明时长
-      // （基础等待已由 _renderSettle 覆盖，此处只叠加额外部分）。
       if (delayMs > 0) {
         await Future<void>.delayed(Duration(milliseconds: delayMs));
       }
 
-      String? jsResult;
-      if (js != null && js.trim().isNotEmpty) {
+      String? evaluated;
+      final jsCode = (js ?? '').trim();
+      if (jsCode.isNotEmpty) {
         try {
-          final raw = await controller.evaluateJavascript(source: js);
-          jsResult = _normalizeJsResult(raw);
+          final r = await c.evaluateJavascript(source: jsCode);
+          final normalized = _normalizeJsResult(r);
+          if (normalized.isNotEmpty) evaluated = normalized;
         } on Object catch (e) {
           debugPrint('[书源webView] js 执行失败(忽略): $e');
         }
         await Future<void>.delayed(_jsSettle);
       }
-
-      // legado BackstageWebView：带 js 时返回 evaluateJavascript 的结果
-      // （unescapeJson + 去引号），而非整页 HTML。此前恒返回 getHtml，
-      // `java.webView(html,url,"JSON.stringify(...)")` 型源拿不到数据。
-      if (jsResult != null && jsResult.isNotEmpty) return jsResult;
-
-      final out = await controller.getHtml();
-      if (out == null || out.isEmpty) return null;
-      return out;
+      final finalUrl = (await c.getUrl())?.toString() ?? startUrl;
+      final out = (evaluated != null && evaluated.isNotEmpty)
+          ? evaluated
+          : await c.getHtml() ?? '';
+      final cookieHeaders = await readWebviewCookieHeaders(
+        manager: CookieManager.instance(),
+        controller: c,
+        finalUrl: finalUrl,
+        startUrl: startUrl,
+      );
+      return ShuyuanWebviewResult(
+        html: out,
+        finalUrl: finalUrl,
+        cookieHeaders: cookieHeaders,
+      );
     } on Object catch (e) {
       debugPrint('[书源webView] 无头取源失败: $e');
       return null;
@@ -132,6 +234,18 @@ class ShuyuanWebviewFetcher {
         // 释放失败不影响已取到的内容。
       }
     }
+  }
+
+  static List<(String, String)> _parseCookieHeader(String header) {
+    final out = <(String, String)>[];
+    for (final part in header.split(';')) {
+      final eq = part.indexOf('=');
+      if (eq <= 0) continue;
+      final name = part.substring(0, eq).trim();
+      final value = part.substring(eq + 1).trim();
+      if (name.isNotEmpty) out.add((name, value));
+    }
+    return out;
   }
 
   /// 对齐 legado unescapeJson：字符串结果可能被 JSON 再编码一层

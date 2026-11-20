@@ -1,9 +1,8 @@
 /// legado 书源登录入口（P2-1）。
 ///
 /// loginUrl 形态分派：
-/// - URL（非脚本）→ [WebViewLoginScreen]（startUrl 覆盖），Cookie 经
-///   「获取 Cookie」回灌 HttpFetcher jar → 书源请求经 AnalyzeUrl 共享
-///   合并自动生效（零新增管线）；
+/// - URL（非脚本）→ [ShuyuanBrowserScreen]，完成时回传 Cookie 至
+///   书源上下文覆盖层（per-source overlay）；
 /// - `@js:`/`<js>` 脚本 → loginUi（RowUi）表单收集值写入 ctx.loginInfo →
 ///   执行脚本（mini-settle：脚本内 java.ajax 走确定性重放）。
 ///
@@ -15,7 +14,6 @@ import 'dart:convert';
 
 import 'package:material_ui/material_ui.dart';
 import 'package:nexhub/generated/app_localizations.dart';
-import 'package:nexhub/features/verification/presentation/webview_login_screen.dart';
 
 import '../../../core/models/plugin_config.dart';
 import '../../../core/theme/app_tokens.dart';
@@ -23,6 +21,8 @@ import '../../../core/navigation/app_page_route.dart';
 import '../analyze/js_engine.dart';
 import '../analyze/source_context.dart';
 import '../shuyuan_source_service.dart';
+import 'shuyuan_browser_screen.dart';
+import 'shuyuan_interactive.dart';
 import 'shuyuan_variable_dialog.dart' show isShuyuanSourceConfig;
 
 /// 提取书源的 loginUrl（selectors['xiaoshuo'] 原图内）。
@@ -55,7 +55,7 @@ List<Map<String, dynamic>> shuyuanLoginUi(PluginConfig source) {
   return const [];
 }
 
-/// 书源登录入口：按 loginUrl 形态分派（WebView / 表单脚本）。
+/// 书源登录入口：按 loginUrl 形态分派（应用内浏览器 / 表单脚本）。
 Future<void> showShuyuanLogin(BuildContext context, PluginConfig source) async {
   final loginUrl = shuyuanLoginUrl(source);
   if (loginUrl == null) {
@@ -67,12 +67,24 @@ Future<void> showShuyuanLogin(BuildContext context, PluginConfig source) async {
   final isScript =
       loginUrl.startsWith('@js:') || loginUrl.contains('<js>');
   if (!isScript) {
-    // URL 形态：内嵌 WebView 登录，Cookie 由用户点击「获取 Cookie」回灌。
-    await Navigator.of(context).push(
-      AppPageRoute<bool>(
-        builder: (_) => WebViewLoginScreen(source: source, startUrl: loginUrl),
+    // URL 形态：应用内浏览器登录，完成时回传 Cookie 覆盖层。
+    final ctx = await ShuyuanSourceContext.forSource(source.id);
+    if (!context.mounted) return;
+    final outcome = await Navigator.of(context).push<ShuyuanBrowserOutcome>(
+      AppPageRoute<ShuyuanBrowserOutcome>(
+        builder: (_) => ShuyuanBrowserScreen(
+          url: loginUrl,
+          title: source.name,
+          source: source,
+        ),
       ),
     );
+    if (outcome != null) {
+      for (final e in outcome.cookieHeaders.entries) {
+        ctx.syncCookies(e.key, e.value);
+      }
+      await ctx.persistIfNeeded();
+    }
     return;
   }
   await _runFormLogin(context, source, loginUrl);
@@ -178,19 +190,34 @@ Future<void> _runFormLogin(
   // syOp 的 ajax 记录也只有存在活动 ctx 时才回放进 ajaxPending。旧实现未包，
   // 结果是「表单值读不到 + 永远不发请求 + 还弹成功」。
   final ok = await ShuyuanSourceContext.run(ctx, () async {
-    for (var pass = 0; pass < 6; pass++) {
+    var deadline = DateTime.now().add(const Duration(seconds: 120));
+    for (var pass = 0; pass < 10; pass++) {
       ctx.ajaxPending.clear();
       ctx.webviewPending.clear();
       final out = engine.eval(js);
-      if (ctx.ajaxPending.isEmpty && ctx.webviewPending.isEmpty) {
+      if (ctx.ajaxPending.isEmpty &&
+          ctx.webviewPending.isEmpty &&
+          !hasPendingInteractive(ctx)) {
         // 有输出，或本轮确实发过请求并重放过，才算执行成功。
         return pass > 0 || out.isNotEmpty;
       }
-      await ShuyuanSourceContext.settleAjax(ctx, bookSource);
-      await ShuyuanSourceContext.settleWebview(ctx);
+      if (!DateTime.now().isBefore(deadline)) return false;
+      final interactive = await settleShuyuanInteractive(
+        ctx,
+        bookSource,
+        pluginSource: source,
+        openBrowsers: true,
+      );
+      deadline = deadline.add(interactive.waited);
+      final fetched = interactive.fetched +
+          await ShuyuanSourceContext.settleAjax(ctx, bookSource) +
+          await ShuyuanSourceContext.settleWebview(ctx);
+      // 本轮没有任何新进展：不再空转到预算耗尽。
+      if (fetched == 0) return pass > 0 || out.isNotEmpty;
     }
     return false;
   });
+  await ctx.persistIfNeeded();
 
   if (!context.mounted) return;
   ScaffoldMessenger.of(context).showSnackBar(

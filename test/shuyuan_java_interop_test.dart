@@ -205,6 +205,15 @@ Packages.java.util.Base64.getEncoder().encodeToString(
         'YT2t4jvwtS6TfDMOEZCxhIFcU1BIlVaZO94Owv+vjLIEbcbfDBh3m/ZuT3UH/GiCiJ+M'
         'ifi75YZ7CmzIBvHKnVSE9KQdoOskqQXTCBuIcR+X8MZnt7vuDbUUX9bV5h7SfMHX151S'
         'PA==';
+    // 与本测试私钥配对的 2048-bit X.509 SPKI 公钥。
+    const pubB64 =
+        'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwBTSHU4Z96PigKrhb0ITr1Kh'
+        'hHAYaeLZBXuvBf3KIbbg6BT916joi7gMaeoJJXuyvtOrxTxPrzfY16q94DF6pp5JnURW'
+        'UCvIKhir53gOnwQag5LJWKPtbA3Ij36QRV92fT3fY5CRw9hm0qVu09/LdHE7N5jn49AR'
+        'hWO/O4MUqs3nXxEWlXvX3pp0pj5bS/QAbC9+cQd32BQ6s+4agrTEw7oyW4hYGRFDaqlh'
+        'tz1FgGw8pY6zCVCgmDanoMDAGYCIHT6FpApfYmdNlzPdHUaO7qSUuC2FM6zJIq/swZfA'
+        'qzJzMccg5OkXaOCO1OETEtbzxw4MJ2GwStW7kbXpmvruUQIDAQAB';
+    final x509Der = <int>[...base64Decode(pubB64)];
     final der = <int>[...base64Decode(privB64)];
     final e = engine();
     final sig = e.eval('''
@@ -218,6 +227,55 @@ Packages.java.util.Base64.getEncoder().encodeToString(
   return Packages.java.util.Base64.getEncoder().encodeToString(s.sign());
 })()''');
     expect(sig, expectedSig);
+    // verify：公钥校验签名；篡改消息/签名应返回 false。
+    final ok = e.eval('''
+(function(){
+  var k = Packages.java.security.KeyFactory.getInstance("RSA")
+      .generatePublic(new Packages.java.security.spec.X509EncodedKeySpec(
+          [${x509Der.join(',')}]));
+  var s = Packages.java.security.Signature.getInstance("SHA256withRSA");
+  s.initVerify(k);
+  s.update(String("hello sign 中文").getBytes("UTF-8"));
+  return String(s.verify(Packages.java.util.Base64.getDecoder()
+      .decode("$expectedSig")));
+})()''');
+    expect(ok, 'true');
+    // 篡改消息、篡改签名字节均应为 false（不抛错）。
+    expect(
+        e.eval('(function(){'
+            'var k=Packages.java.security.KeyFactory.getInstance("RSA")'
+            '.generatePublic(new Packages.java.security.spec.X509EncodedKeySpec(['
+            '${x509Der.join(',')}]));'
+            'var s=Packages.java.security.Signature.getInstance("SHA256withRSA");'
+            's.initVerify(k);'
+            's.update(String("hello sign 中文!").getBytes("UTF-8"));'
+            'return String(s.verify(Packages.java.util.Base64.getDecoder()'
+            '.decode("$expectedSig")));})()'),
+        'false');
+    expect(
+        e.eval('(function(){'
+            'var k=Packages.java.security.KeyFactory.getInstance("RSA")'
+            '.generatePublic(new Packages.java.security.spec.X509EncodedKeySpec(['
+            '${x509Der.join(',')}]));'
+            'var s=Packages.java.security.Signature.getInstance("SHA256withRSA");'
+            's.initVerify(k);'
+            's.update(String("hello sign 中文").getBytes("UTF-8"));'
+            'var b=Packages.java.util.Base64.getDecoder().decode("$expectedSig");'
+            'b[10]=(b[10]+1)%256;'
+            'return String(s.verify(b));})()'),
+        'false');
+    // 私钥对象也能 initVerify（从私钥取 n/e 公钥）。
+    expect(
+        e.eval('(function(){'
+            'var k=Packages.java.security.KeyFactory.getInstance("RSA")'
+            '.generatePrivate(new Packages.java.security.spec.PKCS8EncodedKeySpec(['
+            '${der.join(',')}]));'
+            'var s=Packages.java.security.Signature.getInstance("SHA256withRSA");'
+            's.initVerify(k);'
+            's.update(String("hello sign 中文").getBytes("UTF-8"));'
+            'return String(s.verify(Packages.java.util.Base64.getDecoder()'
+            '.decode("$expectedSig")));})()'),
+        'true');
     expect(
         e.eval('(function(){'
             'var md=Packages.java.security.MessageDigest.getInstance("SHA-256");'
@@ -225,6 +283,27 @@ Packages.java.util.Base64.getEncoder().encodeToString(
             'return Packages.java.util.Base64.getEncoder()'
             '.encodeToString(md.digest());})()'),
         'ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=');
+  });
+
+  test('java.net.URL 值语义', () {
+    final e = engine();
+    expect(
+        e.eval('(function(){'
+            'var u = new Packages.java.net.URL('
+            '"https://user@example.com:8443/a/b?q=1#f");'
+            'return [u.getProtocol(), u.getHost(), u.getPort(),'
+            'u.getDefaultPort(), u.getPath(), u.getQuery(), u.getRef(),'
+            'u.getAuthority(), u.getFile(), String(u)].join("|");'
+            '})()'),
+        'https|example.com|8443|443|/a/b|q=1|f|user@example.com:8443|'
+        '/a/b?q=1|https://user@example.com:8443/a/b?q=1#f');
+    expect(
+        e.eval('String(new java.net.URL("http://x.test").getDefaultPort())'),
+        '80');
+    expect(
+        e.eval('(function(){try{new java.net.URL("http://x.test")'
+            '.openStream();return "no";}catch(e){return "threw";}})()'),
+        'threw');
   });
 
   test('okhttp3：GET 缓存命中与 POST 组合重放键', () {

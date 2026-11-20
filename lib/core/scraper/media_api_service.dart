@@ -701,11 +701,14 @@ class MediaApiService {
   /// 小说章节正文（按 `content` 路由解析，返回图文块列表）。
   ///
   /// [novelId] 注入 `{id}`，[chapterUrl] 注入 `{chapter}`/`{url}`。
+  /// [nextChapterUrl] 注入 `{nextChapterUrl}`：正文规则内 JS 可读，书源
+  /// 解析层据此在多页跟随遇到下一章地址时停止（legado 防串章停止点）。
   /// 返回 [List<NovelBlock>]：文本段与插图共存，供阅读器图文混排。
   Future<List<NovelBlock>> fetchNovelContent(
     PluginConfig source, {
     required String novelId,
     required String chapterUrl,
+    String? nextChapterUrl,
     String? renderedHtml,
   }) async {
     if (renderedHtml != null && renderedHtml.isNotEmpty) {
@@ -717,6 +720,7 @@ class MediaApiService {
           'id': novelId,
           'chapter': chapterUrl,
           'url': chapterUrl,
+          'nextChapterUrl': nextChapterUrl ?? '',
         },
       );
       return _asBlocks(r);
@@ -728,6 +732,7 @@ class MediaApiService {
             'id': novelId,
             'chapter': chapterUrl,
             'url': chapterUrl,
+            'nextChapterUrl': nextChapterUrl ?? '',
           },
         );
     return _asBlocks(r);

@@ -6002,5 +6002,7 @@
   "mediaChapterAudio": "音频章节",
   "mediaChapterVideo": "视频章节",
   "mediaChapterPlay": "播放",
-  "mediaChapterHint": "本章为书源提供的媒体流，点击播放开始收听/观看"
+  "mediaChapterHint": "本章为书源提供的媒体流，点击播放开始收听/观看",
+  "verificationCodeTitle": "输入验证码",
+  "verificationCodeHint": "请输入图片中的验证码"
 }

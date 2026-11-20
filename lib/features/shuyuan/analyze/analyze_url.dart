@@ -648,9 +648,65 @@ class AnalyzeUrl {
     if (useWebView && !typeHex) {
       // legado BackstageWebView：`javaScript = webJs ?: jsStr` ——
       // URL 选项 webJs 优先，其次调用方传入的页内取值脚本（正文 webJs）。
-      final rendered = await ShuyuanWebviewFetcher.fetch(
-          url: url, js: webJs ?? jsStr, delayMs: webViewDelayTime);
-      if (rendered == null || rendered.isEmpty) {
+      // 源 header 与 per-source Cookie 覆盖层透传给 WebView，页面写下的
+      // Cookie 回写覆盖层（不写全局 jar）。
+      final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+      final webHeaders = <String, String>{};
+      try {
+        webHeaders['User-Agent'] = HttpFetcher.instance.userAgentForUrl(url);
+      } catch (_) {}
+      final rawHeader = source?.header ?? '';
+      if (rawHeader.isNotEmpty) {
+        try {
+          final sourceHeader = _parseHeader(rawHeader);
+          // 与下方 HTTP 分支同款语义：源 header 的 User-Agent 必须生效，
+          // 且要大小写不敏感地覆盖宿主 UA（源常写成 `user-agent`）。
+          // 直接 addAll 会让两个大小写不同的键并存 → WebView 用哪个不确定，
+          // registerHostUserAgent 注册到 HttpFetcher 的也仍是宿主 UA。
+          String? sourceUa;
+          for (final key in sourceHeader.keys.toList()) {
+            if (key.toLowerCase() == 'user-agent') {
+              sourceUa = sourceHeader.remove(key);
+              break;
+            }
+          }
+          if (sourceUa != null && sourceUa.isNotEmpty) {
+            webHeaders['User-Agent'] = sourceUa;
+          }
+          sourceHeader.forEach((k, v) => _putHeader(webHeaders, k, v));
+        } catch (_) {}
+      }
+      if (activeCtx != null) {
+        if (host.isNotEmpty) {
+          final overlay = activeCtx.cookiesForHost(host);
+          if (overlay.isNotEmpty) {
+            webHeaders['Cookie'] =
+                overlay.entries.map((e) => '${e.key}=${e.value}').join('; ');
+          }
+        }
+        if (activeCtx.loginHeader.isNotEmpty) {
+          webHeaders.addAll(activeCtx.loginHeader);
+        }
+      }
+      // 与下方 HTTP 分支同款护栏：源 header 的 @js 可能调用 java.ajax，首轮
+      // 拿到的是 __AJAX_n__ 占位符（`__WEBVIEW_n__` 同理）。带着占位符进
+      // WebView 既取不到真页，还会把占位符 UA 按 host 注册进 HttpFetcher
+      // 污染后续请求——注册/抓取前提前抛出让外层 settle 重放。
+      if (webHeaders.values.any(_hasReplayPlaceholder)) {
+        throw Exception('请求头含待重放占位符，等待 settle 抓取：$url');
+      }
+      final ua = webHeaders['User-Agent'];
+      if (host.isNotEmpty && ua != null && ua.isNotEmpty) {
+        HttpFetcher.instance.registerHostUserAgent(host, ua);
+      }
+      final result = await ShuyuanWebviewFetcher.fetch(
+        url: url,
+        js: webJs ?? jsStr,
+        delayMs: webViewDelayTime,
+        headers: webHeaders,
+      ).timeout(const Duration(seconds: 60));
+      final rendered = result?.html ?? '';
+      if (rendered.isEmpty) {
         throw VerificationRequiredException(
           url: url,
           body: '',
@@ -658,6 +714,24 @@ class AnalyzeUrl {
           preferWebView: true,
           webJs: webJs,
         );
+      }
+      if (activeCtx != null && result != null) {
+        for (final e in result.cookieHeaders.entries) {
+          activeCtx.syncCookies(e.key, e.value);
+        }
+      }
+      // 采用渲染后的最终 URL（与 HTTP 分支 `lastFinalUrl = response.realUri`
+      // 同语义）：settleAjax 元数据重放与「最终 URL」约定都依赖它。只接受
+      // 绝对 http(s) + 非空 host；空值、about:、data: 一律忽略。不改 `url`
+      // 字段——请求地址保持源声明值。
+      final renderedFinalUrl = result?.finalUrl.trim() ?? '';
+      if (renderedFinalUrl.isNotEmpty) {
+        final finalUri = Uri.tryParse(renderedFinalUrl);
+        if (finalUri != null &&
+            (finalUri.scheme == 'http' || finalUri.scheme == 'https') &&
+            finalUri.host.isNotEmpty) {
+          lastFinalUrl = renderedFinalUrl;
+        }
       }
       if (_looksLikeVerificationChallenge(rendered)) {
         throw VerificationRequiredException(

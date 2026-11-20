@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nexhub/features/shuyuan/analyze/concurrent_rate_limiter.dart';
 import 'package:nexhub/features/shuyuan/analyze/js_engine.dart';
 import 'package:nexhub/features/shuyuan/analyze/source_context.dart';
+import 'package:nexhub/features/shuyuan/analyze/webview_fetcher.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -308,6 +309,35 @@ void main() {
         expect(e.eval("java.webView('', '', '')"), '');
         expect(ctx.webviewPending, isEmpty);
       });
+    });
+
+    test('settleWebview 捕获的 Cookie 落盘（新 ctx 可从存储读回）', () async {
+      const url = 'https://wv-persist.test/a';
+      ShuyuanWebviewFetcher.debugFetchOverride = ({
+        String? html,
+        String? url,
+        String? js,
+        int delayMs = 0,
+        Map<String, String>? headers,
+      }) async =>
+          ShuyuanWebviewResult(
+            html: '<html></html>',
+            finalUrl: url ?? '',
+            cookieHeaders: const <String, String>{'example.com': 'sid=abc'},
+          );
+      addTearDown(() => ShuyuanWebviewFetcher.debugFetchOverride = null);
+
+      final ctx = ShuyuanSourceContext('src_wv_persist');
+      ctx.webviewArgs['wv:p'] = <String>['', url, '', '0'];
+      ctx.webviewPending.add('wv:p');
+      expect(await ShuyuanSourceContext.settleWebview(ctx), 1);
+      expect(ctx.cookies['sid']?['value'], 'abc');
+
+      // 修复前 settle 只 syncCookies 不落盘 → 新 ctx 读不到（且 dirty 期间
+      // refreshCookiesFromStore 是 no-op，陈旧快照会覆盖别处写入的登录态）。
+      final fresh = ShuyuanSourceContext('src_wv_persist');
+      await fresh.refreshCookiesFromStore();
+      expect(fresh.cookiesForHost('example.com'), containsPair('sid', 'abc'));
     });
   });
 

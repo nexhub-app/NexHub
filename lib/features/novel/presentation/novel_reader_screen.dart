@@ -2764,6 +2764,11 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
         for (final c in widget.chapters)
           if (data.summaryFor(c.id) == null) c,
       ];
+      // 章 id → 下一章地址：预扫描抓正文同样需要停止点，避免串章。
+      final nextUrlById = <String, String>{};
+      for (var i = 0; i + 1 < widget.chapters.length; i++) {
+        nextUrlById[widget.chapters[i].id] = widget.chapters[i + 1].url;
+      }
       for (var i = 0;
           i < pending.length;
           i += NovelPrescanService.chaptersPerBatch) {
@@ -2773,7 +2778,11 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
         final batch = pending.sublist(i, end);
         final inputs = <PrescanChapterInput>[];
         for (final c in batch) {
-          final head = await _loadChapterHead(c, source);
+          final head = await _loadChapterHead(
+            c,
+            source,
+            nextChapterUrl: nextUrlById[c.id],
+          );
           inputs.add(
               PrescanChapterInput(chapterId: c.id, title: c.title, head: head));
         }
@@ -2836,7 +2845,10 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   }
 
   /// 取一章开头片段（优先预下载缓存，失败返回空串——摘要退化为仅依据章节名）。
-  Future<String> _loadChapterHead(Episode chapter, PluginConfig source) async {
+  ///
+  /// [nextChapterUrl] 为正文多页跟随的停止点（下一章地址），缺省 null。
+  Future<String> _loadChapterHead(Episode chapter, PluginConfig source,
+      {String? nextChapterUrl}) async {
     try {
       final List<NovelBlock>? cached =
           await _preDownloader.cached(widget.novelId, chapter.id);
@@ -2845,6 +2857,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
             source,
             novelId: widget.novelId,
             chapterUrl: chapter.url,
+            nextChapterUrl: nextChapterUrl,
           );
       final buf = StringBuffer();
       for (final b in blocks) {
@@ -3036,6 +3049,11 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       if (source == null)
         throw Exception('source not found: ${widget.sourceId}');
       final chapter = widget.chapters[index];
+      // 下一章地址：作为正文多页跟随的停止点（legado nextChapterUrl），
+      // 避免末页的「下一章」链接被当成同章分页继续抓取。
+      final nextChapterUrl = index + 1 < widget.chapters.length
+          ? widget.chapters[index + 1].url
+          : null;
       final List<NovelBlock> paragraphs;
       // 命中预下载缓存（离线/已预取章节）则跳过网络抓取，直接渲染。
       final List<NovelBlock>? cached =
@@ -3047,6 +3065,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
           source,
           novelId: widget.novelId,
           chapterUrl: chapter.url,
+          nextChapterUrl: nextChapterUrl,
         );
       }
       if (!mounted) {
@@ -3158,10 +3177,14 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
         throw Exception('chapter index out of range: $index');
       }
       final chapter = widget.chapters[index];
+      final nextChapterUrl = index + 1 < widget.chapters.length
+          ? widget.chapters[index + 1].url
+          : null;
       final paragraphs = await _service.fetchNovelContent(
         source,
         novelId: widget.novelId,
         chapterUrl: chapter.url,
+        nextChapterUrl: nextChapterUrl,
         renderedHtml: renderedHtml,
       );
       if (!mounted) {
@@ -3596,10 +3619,12 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     final List<NovelBlock>? cached =
         await _preDownloader.cached(widget.novelId, ep.id);
     if (cached != null) return cached;
+    final nextChapterUrl = index + 1 < chs.length ? chs[index + 1].url : null;
     return _service.fetchNovelContent(
       source,
       novelId: widget.novelId,
       chapterUrl: ep.url,
+      nextChapterUrl: nextChapterUrl,
     );
   }
 

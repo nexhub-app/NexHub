@@ -19880,6 +19880,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'This chapter is a media stream from the source. Tap play to start playback.'**
   String get mediaChapterHint;
+
+  /// No description provided for @verificationCodeTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter verification code'**
+  String get verificationCodeTitle;
+
+  /// No description provided for @verificationCodeHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Enter the code shown in the image'**
+  String get verificationCodeHint;
 }
 
 class _AppLocalizationsDelegate

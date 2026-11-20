@@ -25,6 +25,7 @@ class FakeNovelMediaApiService extends MediaApiService {
     PluginConfig source, {
     required String novelId,
     required String chapterUrl,
+    String? nextChapterUrl,
     String? renderedHtml,
   }) async {
     await Future<void>.delayed(const Duration(milliseconds: 20));

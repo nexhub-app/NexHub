@@ -108,10 +108,12 @@ class NovelDownloadHandler implements DownloadHandler {
       _throwIfCancelled(isCancelled);
       final ch = chapters[i];
       try {
+        final nextUrl = i + 1 < chapters.length ? chapters[i + 1].url : null;
         fetched[i] = await service.fetchNovelContent(
           source,
           novelId: novelId,
           chapterUrl: ch.url,
+          nextChapterUrl: nextUrl,
         );
       } on Object catch (e) {
         // 单章抓取失败不影响整体：置 null，后续跳过该章（写空文件会触发

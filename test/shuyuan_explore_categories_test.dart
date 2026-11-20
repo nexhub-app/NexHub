@@ -141,10 +141,14 @@ void main() {
         String? url,
         String? js,
         int delayMs = 0,
+        Map<String, String>? headers,
       }) async {
         seenUrls.add(url ?? '');
-        return '[{"title":"电影","url":"/film"},'
-            '{"title":"剧集","url":"/tv"}]';
+        return ShuyuanWebviewResult(
+          html: '[{"title":"电影","url":"/film"},'
+              '{"title":"剧集","url":"/tv"}]',
+          finalUrl: url ?? '',
+        );
       };
       addTearDown(() => ShuyuanWebviewFetcher.debugFetchOverride = null);
 

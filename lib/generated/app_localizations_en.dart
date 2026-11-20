@@ -10684,4 +10684,10 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String get mediaChapterHint =>
       'This chapter is a media stream from the source. Tap play to start playback.';
+
+  @override
+  String get verificationCodeTitle => 'Enter verification code';
+
+  @override
+  String get verificationCodeHint => 'Enter the code shown in the image';
 }

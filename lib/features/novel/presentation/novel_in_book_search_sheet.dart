@@ -333,10 +333,14 @@ class _InBookSearchSheetState extends State<_InBookSearchSheet> {
             }
           } else {
             try {
+              final nextChapterUrl = ci + 1 < widget.chapters.length
+                  ? widget.chapters[ci + 1].url
+                  : null;
               blocks = await widget.service.fetchNovelContent(
                 widget.source!,
                 novelId: widget.novelId,
                 chapterUrl: chapter.url,
+                nextChapterUrl: nextChapterUrl,
               );
               _chapterCache[ci] = blocks;
             } on Object {

@@ -90,10 +90,13 @@ class NovelPreDownloader {
       if (await has(novelId, chapter.id)) continue;
       _inFlight.add(key);
       try {
+        final String? nextUrl =
+            i + 1 < chapters.length ? chapters[i + 1].url : null;
         final List<NovelBlock> blocks = await service.fetchNovelContent(
           source,
           novelId: novelId,
           chapterUrl: chapter.url,
+          nextChapterUrl: nextUrl,
         );
         _memory[key] = blocks;
         await _persist(key, blocks);
