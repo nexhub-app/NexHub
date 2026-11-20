@@ -305,6 +305,32 @@ class _RetryableNetworkImageState extends State<_RetryableNetworkImage> {
   late String _effectiveUrl = widget.url;
   bool _avifFallbackTried = false;
 
+  /// 已逐出过坏缓存的重试代次（[_retryKey]）：一次失败只逐出一回，
+  /// 避免 errorWidget 在 build 期被多次调用时重复打 IO。
+  int? _evictedRetryKey;
+
+  /// 本次下载实际使用的缓存键（与 [CachedNetworkImage.cacheKey] 保持一致）。
+  String get _activeCacheKey => _everFailed
+      ? '$_effectiveUrl#v${widget.cookieVersion}'
+      : _effectiveUrl;
+
+  /// 加载失败时逐出该 URL 的磁盘缓存，确保「重试」真的重新联网下载。
+  ///
+  /// 与 legado「解码不通过就绝不落盘」对齐：历史版本下载层不校验正文，
+  /// 拦截页/错误页可能被当作图片缓存 30 天，重试永远命中坏文件，图片永久
+  /// 无法加载。逐出后自愈；正常网络失败的条目也一并清掉，重试即重下。
+  void _evictFailedCacheEntry(String cacheKeyAtFailure) {
+    if (_evictedRetryKey == _retryKey) return;
+    _evictedRetryKey = _retryKey;
+    try {
+      NexImageCacheManager.forSource(widget.source)
+          .removeFile(cacheKeyAtFailure)
+          .ignore();
+    } on Object {
+      // 缓存管理器未初始化（纯单测环境）：忽略。
+    }
+  }
+
   @override
   void dispose() {
     _timer?.cancel();
@@ -320,6 +346,7 @@ class _RetryableNetworkImageState extends State<_RetryableNetworkImage> {
       _retryCount = 0;
       _retrying = false;
       _everFailed = false;
+      _evictedRetryKey = null;
     }
   }
 
@@ -387,15 +414,15 @@ class _RetryableNetworkImageState extends State<_RetryableNetworkImage> {
       // 仅失败过的图把版本并入缓存键：版本自增 → 新缓存键 → 重取
       // （验证回灌 Cookie 自动刷新失败封面）。成功过的图缓存键恒定，
       // 任何 Cookie 轮换都不再触发已加载图片重下。
-      cacheKey: _everFailed
-          ? '$_effectiveUrl#v${widget.cookieVersion}'
-          : _effectiveUrl,
+      cacheKey: _activeCacheKey,
       width: widget.width,
       height: widget.height,
       fit: widget.fit,
       memCacheWidth: widget.decodeCapWidthPx,
       placeholder: (c, u) => widget.placeholder,
       errorWidget: (c, u, e) {
+        final String failedKey = _activeCacheKey; // 翻转 _everFailed 前取生效键
+        _evictFailedCacheEntry(failedKey);
         _everFailed = true;
         _notifyLoaded();
         // avif 图在「不支持该格式的平台」上表现为解码失败：自动降级 .webp 重取。

@@ -21,6 +21,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:http/http.dart' as http;
 
@@ -80,6 +81,17 @@ class DioImageFileService extends FileService {
   /// SourceImage 的重试按钮接管）。
   static const Duration _headerTimeout = Duration(seconds: 30);
 
+  /// 首包超时：响应头已到但正文迟迟不来（连接被吊起/网关半开），按失败处理，
+  /// 否则占位图会永远转圈。
+  static const Duration _bodyProbeTimeout = Duration(seconds: 15);
+
+  /// 正文无数据超时（与 legado 的 read/callTimeout=60s 对齐）：首包到达后若
+  /// 连续这么久没有新字节，终止下载并按失败上报，避免永久停在学习态。
+  static const Duration _bodyStallTimeout = Duration(seconds: 60);
+
+  /// 首包探测保留的字节数：判类只需开头一小段。
+  static const int _headProbeLimit = 512;
+
   static int _loggedFailures = 0;
 
   /// 源级网络档案提供者（每次请求动态取，档案变更即时生效）。
@@ -97,6 +109,57 @@ class DioImageFileService extends FileService {
     return b.takeBytes();
   }
 
+  static bool _isWhitespace(int c) =>
+      c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0D;
+
+  /// 正文首包是否可能为图片。
+  ///
+  /// 与 legado「解码不通过就不写入图片文件」对齐的下载层闸门：任何 2xx 正文
+  /// 都会被缓存层持久化（stalePeriod 30 天），若把 HTML 拦截页/验证页/错误
+  /// JSON 当图片缓存，之后每次重试都命中坏文件、永远无法恢复。这里只拒绝
+  /// **明确以文本标记/JSON 开头**的响应，其余（图片魔数、未知二进制）一律
+  /// 放行交给解码器——图床把 JPEG 标成 `text/html` 或声明缺失的情况真实存在，
+  /// 宁放勿错杀。SVG 也放行：它由解码器判失败并进入逐出+重试路径。
+  @visibleForTesting
+  static bool isLikelyImagePayload(List<int> head) {
+    if (head.isEmpty) return false;
+    int i = 0;
+    // UTF-8 BOM
+    if (head.length >= 3 &&
+        head[0] == 0xEF &&
+        head[1] == 0xBB &&
+        head[2] == 0xBF) {
+      i = 3;
+    }
+    while (i < head.length && _isWhitespace(head[i])) {
+      i++;
+    }
+    if (i >= head.length) return true; // 仅空白：交给解码器判定
+    final int c0 = head[i];
+    if (c0 == 0x7B || c0 == 0x5B) return false; // { [ → JSON 正文
+    if (c0 != 0x3C) return true; // 非 '<' → 二进制（图片魔数等）
+    // 取首个标签名：跳过 / ! ? 与空白（<> 注释/doctype/xml 声明 → 非 svg）
+    int j = i + 1;
+    while (j < head.length &&
+        (head[j] == 0x2F ||
+            head[j] == 0x21 ||
+            head[j] == 0x3F ||
+            _isWhitespace(head[j]))) {
+      j++;
+    }
+    final StringBuffer tag = StringBuffer();
+    while (j < head.length && tag.length < 8) {
+      final int ch = head[j];
+      final bool alnum = (ch >= 0x41 && ch <= 0x5A) ||
+          (ch >= 0x61 && ch <= 0x7A) ||
+          (ch >= 0x30 && ch <= 0x39);
+      if (!alnum) break;
+      tag.writeCharCode(ch);
+      j++;
+    }
+    return tag.toString().toLowerCase() == 'svg';
+  }
+
   @override
   Future<FileServiceResponse> get(
     String url, {
@@ -112,7 +175,26 @@ class DioImageFileService extends FileService {
     final List<List<int>> earlyChunks = <List<int>>[];
     bool headersArrived = false;
     final Completer<void> headersWaiter = Completer<void>();
+    // 首包探测：拿到第一个正文分块（或流结束/出错）才向下游返回响应。
+    final Completer<void> bodyStarted = Completer<void>();
+    final List<int> headProbe = <int>[];
+    Object? probeError;
+    Timer? stallTimer;
     StreamSubscription<Uint8List>? sub;
+
+    // 正文停滞看门狗：首包到达后连续无数据即终止下载并向上报错，避免图片
+    // 永远停在加载态（对齐 legado 的 OkHttp read/callTimeout=60s）。
+    void armStallWatchdog() {
+      stallTimer?.cancel();
+      stallTimer = Timer(_bodyStallTimeout, () {
+        if (body.isClosed) return;
+        unawaited(sub?.cancel());
+        body.addError(TimeoutException(
+            '图片正文中断（${_bodyStallTimeout.inSeconds}s 无数据）',
+            _bodyStallTimeout));
+        unawaited(body.close());
+      });
+    }
 
     try {
       final Stream<Uint8List> raw = HttpFetcher.instance.getBytesStream(
@@ -138,19 +220,29 @@ class DioImageFileService extends FileService {
       );
       sub = raw.listen(
         (Uint8List chunk) {
+          if (!bodyStarted.isCompleted) bodyStarted.complete();
+          if (headProbe.length < _headProbeLimit) {
+            headProbe.addAll(chunk.take(_headProbeLimit - headProbe.length));
+          }
           if (body.isClosed) return;
           if (headersArrived) {
             body.add(chunk);
+            armStallWatchdog();
           } else {
             earlyChunks.add(chunk);
           }
         },
         onError: (Object e, StackTrace st) {
+          probeError ??= e;
+          stallTimer?.cancel();
+          if (!bodyStarted.isCompleted) bodyStarted.complete();
           if (!headersWaiter.isCompleted) headersWaiter.completeError(e, st);
           // 下游已取消/关闭后到达的错误不能转发（控制器抛 StateError）。
           if (!body.isClosed) body.addError(e, st);
         },
         onDone: () {
+          if (!bodyStarted.isCompleted) bodyStarted.complete();
+          stallTimer?.cancel();
           if (!body.isClosed) body.close();
         },
       );
@@ -159,12 +251,31 @@ class DioImageFileService extends FileService {
         throw HttpException('HTTP $statusCode',
             uri: Uri.tryParse(url));
       }
+      // 正文首包到达前不向下游返回：空响应/僵死正文在这里就判失败，而不是让
+      // 缓存层保存一个空文件、让占位图永远转圈。
+      await bodyStarted.future.timeout(_bodyProbeTimeout);
+      final Object? firstChunkError = probeError;
+      if (firstChunkError != null) {
+        throw firstChunkError;
+      }
+      if (headProbe.isEmpty) {
+        throw HttpException('图片响应为空', uri: Uri.tryParse(url));
+      }
+      final Uri? uri = Uri.tryParse(url);
+      final bool encrypted =
+          uri != null && ImageBytesDecryptRegistry.matchFor(uri) != null;
+      // 非图片正文（拦截页/错误 JSON）直接判失败：与 legado「解码不通过绝不
+      // 写入图片文件」对齐。否则坏文件会被缓存 30 天，之后每次重试都命中它，
+      // 表现为封面/图片永久无法加载。
+      if (!encrypted && !isLikelyImagePayload(headProbe)) {
+        throw HttpException('非图片响应（拦截页/错误页）', uri: uri);
+      }
       // 源声明式图片解密（imageTransform）：命中注册 host 时缓冲全量字节解密
       // 后再交给缓存层（磁盘缓存的是明文，保存/分享自动继承）。未命中的源
       // 走原流式路径，零额外开销。
-      final Uri? uri = Uri.tryParse(url);
-      if (uri != null && ImageBytesDecryptRegistry.matchFor(uri) != null) {
+      if (encrypted) {
         final Uint8List cipher = await _collect(body.stream);
+        stallTimer?.cancel();
         final Uint8List plain = ImageBytesDecryptRegistry.decrypt(uri, cipher);
         return HttpGetResponse(http.StreamedResponse(
           Stream<Uint8List>.value(plain),
@@ -173,8 +284,12 @@ class DioImageFileService extends FileService {
           headers: responseHeaders,
         ));
       }
-      // 下游取消（缓存被丢弃/重试）时同步掐断底层下载，避免连接空转。
-      body.onCancel = () => sub?.cancel();
+      // 下游取消（缓存被丢弃/重试）时同步掐断底层下载与看门狗，避免连接空转。
+      body.onCancel = () {
+        stallTimer?.cancel();
+        unawaited(sub?.cancel());
+      };
+      armStallWatchdog();
       return HttpGetResponse(http.StreamedResponse(
         body.stream,
         statusCode,
@@ -182,8 +297,12 @@ class DioImageFileService extends FileService {
         headers: responseHeaders,
       ));
     } on Object catch (e) {
+      stallTimer?.cancel();
       await sub?.cancel();
-      if (!body.isClosed) await body.close();
+      // 不能 await：失败路径上 body.stream 可能从未被订阅（响应尚未返回给
+      // 缓存层），无监听者的 close() 其 future 永不完成，会把它上面的调用方
+      // 永久挂起（历史上的「图片一直加载」就包括这一条）。
+      if (!body.isClosed) unawaited(body.close());
       if (_loggedFailures < _maxLoggedFailures) {
         _loggedFailures++;
         AppLog.instance.w('图片加载失败(HTTP $statusCode): $url — $e');
