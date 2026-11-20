@@ -86,7 +86,8 @@ class ShuyuanWebviewFetcher {
     }
     if (!PlatformService.instance.isAndroid &&
         !PlatformService.instance.isIOS &&
-        !PlatformService.instance.isWindows) {
+        !PlatformService.instance.isWindows &&
+        !PlatformService.instance.isOHOS) {
       return null;
     }
 

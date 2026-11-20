@@ -75,7 +75,8 @@ class _ShuyuanBrowserScreenState extends State<ShuyuanBrowserScreen> {
   bool get _supported =>
       PlatformService.instance.isAndroid ||
       PlatformService.instance.isIOS ||
-      PlatformService.instance.isWindows;
+      PlatformService.instance.isWindows ||
+      PlatformService.instance.isOHOS;
 
   String? get _inlineHtml {
     if (widget.html.trim().isNotEmpty) return widget.html;
