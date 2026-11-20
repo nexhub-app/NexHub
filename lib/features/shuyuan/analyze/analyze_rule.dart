@@ -287,6 +287,20 @@ class AnalyzeRule {
         if (st.rule.isNotEmpty || st.replaceRegex.isEmpty) {
           if (st.templateMode) {
             result = st.rule;
+          } else if (sourceRule.mode == Mode.js && st.rule.trim().isNotEmpty) {
+            // legado evalJS 列表语境：JS 直接返回数组时逐个条目作为列表项
+            //（nextTocUrl 常见写法 `let list = [...]; list`）。空数组必须
+            // 产出空列表——字符串化成 "[]" 会被绝对化成假分页地址并多抓
+            // 一次 404 页面。
+            final js = _evalJs(st.rule, result, structured: true);
+            if (js is List) {
+              result = js
+                  .map((e) => e == null ? '' : e.toString())
+                  .where((s) => s.isNotEmpty)
+                  .toList();
+            } else {
+              result = js ?? '';
+            }
           } else {
             result = _executeRule(result, sourceRule.mode, st.rule, isUrl: isUrl);
           }
@@ -385,7 +399,12 @@ class AnalyzeRule {
         // `JSON.stringify(...)` 文本时必须保留该文本（截断成空列表会让
         // 后续字段规则在 `[]` 上求值，整本详情解析全空）。
         if (single) return jsResult;
+        // legado getElements：JS 段结果原样交给下一段规则。`<js>…</js>` 后
+        // 跟 JSONPath 的组合规则（API 型目录源）依赖 JS 返回的 JSON 字符串
+        // 透传；仅返回列表时直接作为元素集合。此前非 List 一律丢成空，
+        // 组合规则恒 0 元素 → 目录整页为空。
         if (jsResult is List) return jsResult;
+        if (jsResult is String) return jsResult;
         return [];
       case Mode.regex:
         if (result is String) {
