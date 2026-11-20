@@ -183,13 +183,22 @@ const String sourceContextJsPrelude = r'''
       return c.sourceVars[String(k)] || '';
     },
     putVariable: function (k, v) {
+      // legado BaseSource.putVariable(variable) 是单参：写入整段源变量，
+      // 与 getVariable()/setVariable() 同一存储（发现页设置状态、登录数据
+      // 都走这条通道）。两参写法是本实现的键值扩展，保留兼容。
+      if (arguments.length < 2) {
+        var whole = String(k == null ? '' : k);
+        syCtx().sourceVars['__variable'] = whole;
+        syOp('sourceVar', '__variable', whole);
+        return whole;
+      }
       if (k == null) return v;
       syCtx().sourceVars[String(k)] = String(v == null ? '' : v);
       syOp('sourceVar', k, v);
       return v;
     },
     setVariable: function (v) {
-      return source.putVariable('__variable', v);
+      return source.putVariable(v);
     },
     // legado getLoginInfoMap 返回 Java HashMap：脚本常用 .get/.put。
     getLoginInfoMap: function () {
@@ -740,9 +749,16 @@ const String sourceContextJsPrelude = r'''
     // legado JsExtensions.importScript：取远端/本地脚本文本（远程 jsLib 里的
     // Reload 等助手靠它加载发现页规则）。沿用 ajax 确定性重放：首轮返回
     // 占位符，宿主 settle 抓取后重放得到脚本正文。
+    // 空内容必须抛错（legado "内容获取失败或者为空"）：返回空串会让
+    // `eval(String(Reload(...)))` 变成 eval("") 的“成功空结果”，发现页被
+    // 误判为无分类并持久缓存，网络抖动一次即永久失效。
     global.java.importScript = function (path) {
       var key = String(path == null ? '' : path);
-      return String(global.java.__ajaxReq(key));
+      var body = String(global.java.__ajaxReq(key));
+      if (!body || !body.trim()) {
+        throw new Error(key + ' 内容获取失败或者为空');
+      }
+      return body;
     };
     global.java.getStrResponse = function (urlStr) {
       return global.java.connect(urlStr);

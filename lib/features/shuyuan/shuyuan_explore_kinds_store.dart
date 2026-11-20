@@ -50,10 +50,14 @@ class ShuyuanExploreKindsStore {
     final list = entry['kinds'];
     if (list is! List) return null;
     try {
-      return <ExploreKind>[
+      final kinds = <ExploreKind>[
         for (final e in list)
           if (e is Map) ExploreKind.fromJson(Map<String, dynamic>.from(e)),
       ];
+      // legado 视空白缓存为未命中（重新跑脚本）；历史版本可能把一次网络
+      // 抖动产生的空数组固化下来，这里一并按未命中处理以实现自愈。
+      if (kinds.isEmpty) return null;
+      return kinds;
     } catch (e) {
       AppLog.instance.w('[发现页缓存] 解析失败: $e');
       return null;
@@ -66,6 +70,11 @@ class ShuyuanExploreKindsStore {
     List<ExploreKind> kinds,
   ) async {
     final all = await _loadAll();
+    if (kinds.isEmpty) {
+      // 空结果不落盘（下次展开重跑脚本），并清掉可能的旧条目。
+      if (all.remove(key) != null) await _flush(all);
+      return;
+    }
     all[key] = <String, dynamic>{
       'url': exploreUrl,
       'kinds': <Map<String, dynamic>>[for (final k in kinds) k.toJson()],

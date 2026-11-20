@@ -140,7 +140,9 @@ class ShuyuanNovelResolver
   static const Duration _replayBudget = Duration(seconds: 120);
 
   /// 发现分类重放预算：进分类页前的等待，超过则先用已解析结果出 Tab。
-  static const Duration _exploreCategoryBudget = Duration(seconds: 45);
+  /// 与 [_replayBudget] 对齐：单请求超时就有 45s，预算若同为 45s，一个慢
+  /// 请求就会把多跳发现脚本（jsLib→importScript→ajax→…）直接掐死。
+  static const Duration _exploreCategoryBudget = Duration(seconds: 120);
 
   /// 无 category 的发现入口最多尝试的分类数（首个失效/为空时顺延，
   /// 避免全量串行抓取导致首页长时间加载）。

@@ -344,19 +344,24 @@ class JsEngine {
         if (activeCtx.jsLib.trimLeft().startsWith('{')) {
           final urls = _jsLibUrls(activeCtx.jsLib);
           if (urls != null) {
+            // 空白下载结果视为失败（legado SharedJsScope 下载失败直接抛错、
+            // 不缓存 scope）：只有全部脚本正文非空并执行成功才标记已应用，
+            // 否则保留未应用状态，下个阶段/下次展开重新登记下载重试。
             var allReady = true;
             for (final u in urls) {
-              if (!activeCtx.ajaxCache.containsKey(u)) {
+              final code = activeCtx.ajaxCache[u];
+              if (code == null) {
                 allReady = false;
                 if (!activeCtx.ajaxPending.contains(u)) {
                   activeCtx.ajaxPending.add(u);
                 }
+              } else if (code.isEmpty) {
+                allReady = false;
               }
             }
             if (allReady) {
               for (final u in urls) {
                 final code = activeCtx.ajaxCache[u] ?? '';
-                if (code.isEmpty) continue;
                 final r = _evalLibSource(code);
                 if (r.isError) {
                   AppLog.instance.w('[书源JS] jsLib 下载脚本执行失败 $u: ${r.stringResult}');

@@ -381,6 +381,10 @@ class AnalyzeRule {
         // 目录/列表类 JS 规则常返回对象数组（如按卷组装 {name,url,volume}）。
         // 字符串结果无法还原对象，须走结构化求值（JSON 回传）。
         final jsResult = _evalJs(rule, result, structured: true);
+        // legado getElement（single）：JS 完成值原样返回——init 规则返回
+        // `JSON.stringify(...)` 文本时必须保留该文本（截断成空列表会让
+        // 后续字段规则在 `[]` 上求值，整本详情解析全空）。
+        if (single) return jsResult;
         if (jsResult is List) return jsResult;
         return [];
       case Mode.regex:
