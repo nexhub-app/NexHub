@@ -387,10 +387,31 @@ class ShuyuanNovelResolver
           redirectUrl: id,
           body: html,
         );
-        return <Episode>[
-          for (var i = 0; i < chapters.length; i++)
-            Episode(id: '$i', title: chapters[i].title, url: chapters[i].url),
-        ];
+        // 漫画阅读器以 chapterId=Episode.id 回传图片请求，id 须为章节 URL。
+        return episodesFromChapters(
+          chapters,
+          isComic: source.type == SourceType.mangaSource,
+        );
+      case 'images':
+        // 漫画图片：渲染后 HTML 直接按正文规则取图（含 WebView 过验证后
+        // 的回灌），不再回落 resolve 触发重抓/重复验证。
+        final imageChapterUrl = vars['chapterId'] ??
+            vars['url'] ??
+            vars['chapter'] ??
+            vars['cid'] ??
+            '';
+        if (imageChapterUrl.isEmpty) return <String>[];
+        final imageBlocks = BookContent.analyzeContent(
+          bookSource: bookSource,
+          book: XiaoshuoBook(bookUrl: '', name: ''),
+          bookChapter:
+              XiaoshuoBookChapter(bookUrl: '', url: imageChapterUrl),
+          baseUrl: imageChapterUrl,
+          redirectUrl: imageChapterUrl,
+          body: html,
+          processTitle: false,
+        );
+        return imageUrlsFromBlocks(imageBlocks, baseUrl: imageChapterUrl);
       case 'content':
         // 正文：用 [BookContent] 解析渲染后 HTML（与 [WebBook.getContent] 同口径，
         // 声明式 ruleContent 而非脚本 override——书源渲染路径一致）。正文分页跟随
@@ -1074,26 +1095,33 @@ class ShuyuanNovelResolver
       // 作为 Episode 会变成点不开的「章节」并挤占首章，故整体跳过。
       onBatch: (batch) {
         final playable = batch.where((c) => !c.isVolume);
-        onProgress?.call(playable
-            .map((c) => Episode(
-                  id: '${c.index}',
-                  title: c.title,
-                  url: c.url,
-                ))
-            .toList());
+        onProgress?.call(episodesFromChapters(
+          playable.toList(),
+          isComic: source.type == SourceType.mangaSource,
+        ));
       },
     );
-    final isComic = source.type == SourceType.mangaSource;
-    return chapters
-        .where((c) => !c.isVolume)
-        .map((c) => Episode(
-              // 漫画模块：阅读器以 chapterId=Episode.id 回传 fetchImages，
-              // id 须存章节 URL（小说模块 id 为序号、URL 走 url 字段）。
-              id: isComic ? c.url : '${c.index}',
-              title: c.title,
-              url: c.url,
-            ))
-        .toList();
+    return episodesFromChapters(
+      chapters.where((c) => !c.isVolume).toList(),
+      isComic: source.type == SourceType.mangaSource,
+    );
+  }
+
+  /// 章节 → Episode 映射。漫画模块：阅读器以 chapterId=Episode.id 回传
+  /// fetchImages，id 须存章节 URL（小说模块 id 为序号、URL 走 url 字段）。
+  @visibleForTesting
+  static List<Episode> episodesFromChapters(
+    List<XiaoshuoBookChapter> chapters, {
+    required bool isComic,
+  }) {
+    return [
+      for (final c in chapters)
+        Episode(
+          id: isComic ? c.url : '${c.index}',
+          title: c.title,
+          url: c.url,
+        ),
+    ];
   }
 
   /// 漫画 'images' 适配：复用小说正文管线（img 内容 → 插图块），收集
@@ -1115,27 +1143,75 @@ class ShuyuanNovelResolver
       chapterUrl: chapterUrl,
       nextChapterUrl: nextChapterUrl.isEmpty ? null : nextChapterUrl,
     );
-    return imageUrlsFromBlocks(result.blocks);
+    return imageUrlsFromBlocks(result.blocks, baseUrl: chapterUrl);
   }
 
-  /// 从图文块收集图片 URL：插图块直取；纯 URL 文本行兜底。
+  /// 从图文块收集图片 URL：插图块直取；纯文本兜底支持整段 URL 列表
+  /// （换行/`&&`/JSON 数组/引号逗号分隔），相对路径按 [baseUrl] 绝对化。
   @visibleForTesting
-  static List<String> imageUrlsFromBlocks(List<NovelBlock> blocks) {
+  static List<String> imageUrlsFromBlocks(
+    List<NovelBlock> blocks, {
+    String? baseUrl,
+  }) {
     final urls = <String>[];
+    final seen = <String>{};
+    void add(String url) {
+      final trimmed = url.trim();
+      if (trimmed.isEmpty || !seen.add(trimmed)) return;
+      urls.add(trimmed);
+    }
+
     for (final b in blocks) {
       if (b is NovelImageBlock && b.url.trim().isNotEmpty) {
-        urls.add(b.url.trim());
+        add(b.url);
       }
     }
     if (urls.isNotEmpty) return urls;
+
+    final dataUriPattern =
+        RegExp(r'data:image/[a-zA-Z0-9.+_-]+(?:;[a-zA-Z0-9=+_-]+)*,'
+            r'[A-Za-z0-9+/=%]+');
+    final relativeImagePattern = RegExp(
+      r'\.(?:jpe?g|png|webp|gif|bmp|avif|svg)(?:[?#].*)?$',
+      caseSensitive: false,
+    );
+    final hasBase = baseUrl != null && baseUrl.trim().isNotEmpty;
+
     for (final b in blocks) {
-      if (b is NovelTextBlock) {
-        final newline = String.fromCharCode(10);
-        for (final line in b.text.split(newline)) {
-          final t = line.trim();
-          if (t.startsWith('http://') || t.startsWith('https://')) {
-            urls.add(t);
+      if (b is! NovelTextBlock) continue;
+      var text = AnalyzeRule.unescapeHtml(b.text);
+      // data:image 的 payload 可能含逗号/分号，先抽出占位，防被分隔符切碎。
+      final dataUris = <String>[];
+      text = text.replaceAllMapped(dataUriPattern, (m) {
+        dataUris.add(m.group(0)!);
+        return '__DATA_URI_${dataUris.length - 1}__';
+      });
+      text = text.replaceAll('&&', '\n');
+      for (final rawToken in text.split(
+        RegExp('[\\s,;，；"\'\u201c\u201d\\[\\](){}<>]+'),
+      )) {
+        var token = rawToken.trim();
+        if (token.isEmpty) continue;
+        final dataRef =
+            RegExp(r'^__DATA_URI_(\d+)__$').firstMatch(token);
+        if (dataRef != null) {
+          add(dataUris[int.parse(dataRef.group(1)!)]);
+          continue;
+        }
+        if (token.startsWith('data:image')) {
+          add(token);
+        } else if (token.startsWith('http://') ||
+            token.startsWith('https://')) {
+          add(token);
+        } else if (token.startsWith('//') ||
+            token.startsWith('/') ||
+            relativeImagePattern.hasMatch(token)) {
+          if (!hasBase) continue;
+          if (token.startsWith('javascript:') ||
+              token.startsWith('about:')) {
+            continue;
           }
+          add(AnalyzeRule.absoluteUrl(baseUrl, token));
         }
       }
     }

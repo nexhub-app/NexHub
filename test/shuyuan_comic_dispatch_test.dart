@@ -4,6 +4,7 @@ library;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexhub/core/models/novel_block.dart';
 import 'package:nexhub/core/models/plugin_config.dart';
+import 'package:nexhub/features/shuyuan/model/xiaoshuo_book_chapter.dart';
 import 'package:nexhub/features/shuyuan/presentation/shuyuan_novel_resolver.dart';
 import 'package:nexhub/features/shuyuan/shuyuan_adapter.dart';
 import 'package:nexhub/features/shuyuan/shuyuan_source_service.dart';
@@ -81,6 +82,100 @@ void main() {
       ];
       expect(ShuyuanNovelResolver.imageUrlsFromBlocks(blocks),
           ['https://img.example.com/a.jpg']);
+    });
+
+    List<String> fromText(String text, {String? base}) =>
+        ShuyuanNovelResolver.imageUrlsFromBlocks(
+          [NovelTextBlock(text)],
+          baseUrl: base,
+        );
+
+    test('协议相对/根相对/相对路径按章节地址绝对化', () {
+      const base = 'https://comic.example.com/ch/12.html';
+      expect(
+        fromText('//cdn.example.com/1.jpg\n/images/2.jpg\nimg/3.png',
+            base: base),
+        [
+          'https://cdn.example.com/1.jpg',
+          'https://comic.example.com/images/2.jpg',
+          'https://comic.example.com/ch/img/3.png',
+        ],
+      );
+    });
+
+    test('JSON 数组与引号/逗号分隔', () {
+      expect(
+        fromText('["https://img.example.com/1.jpg",'
+            '"https://img.example.com/2.jpg"]'),
+        [
+          'https://img.example.com/1.jpg',
+          'https://img.example.com/2.jpg',
+        ],
+      );
+    });
+
+    test('&& 分隔与实体编码查询串', () {
+      expect(
+        fromText('https://img.example.com/1.jpg?a=1&amp;b=2'
+            '&&https://img.example.com/2.jpg'),
+        [
+          'https://img.example.com/1.jpg?a=1&b=2',
+          'https://img.example.com/2.jpg',
+        ],
+      );
+    });
+
+    test('data:image 直取，保序去重', () {
+      const d = 'data:image/png;base64,AAAA';
+      expect(
+        fromText('$d,https://img.example.com/1.jpg\n$d'),
+        [d, 'https://img.example.com/1.jpg'],
+      );
+    });
+
+    test('无基准地址时相对路径不产出，javascript 忽略', () {
+      expect(fromText('/images/1.jpg\njavascript:alert(1)\nimg/2.png'),
+          isEmpty);
+    });
+
+    test('相对文本无图片扩展名时不误收', () {
+      expect(fromText('upload/file?id=1'), isEmpty);
+    });
+  });
+
+  group('章节 → Episode 映射（漫画 id=URL）', () {
+    final chapters = <XiaoshuoBookChapter>[
+      XiaoshuoBookChapter(
+        bookUrl: 'https://comic.example.com/book/1',
+        url: 'https://comic.example.com/ch/1',
+        title: '第1话',
+        index: 0,
+      ),
+      XiaoshuoBookChapter(
+        bookUrl: 'https://comic.example.com/book/1',
+        url: 'https://comic.example.com/ch/2',
+        title: '第2话',
+        index: 1,
+      ),
+    ];
+
+    test('漫画：id 与 url 均为章节地址（直连/回灌共用）', () {
+      final eps =
+          ShuyuanNovelResolver.episodesFromChapters(chapters, isComic: true);
+      expect(eps.map((e) => e.id), [
+        'https://comic.example.com/ch/1',
+        'https://comic.example.com/ch/2',
+      ]);
+      expect(eps.map((e) => e.url), [
+        'https://comic.example.com/ch/1',
+        'https://comic.example.com/ch/2',
+      ]);
+    });
+
+    test('小说：id 为章节序号', () {
+      final eps =
+          ShuyuanNovelResolver.episodesFromChapters(chapters, isComic: false);
+      expect(eps.map((e) => e.id), ['0', '1']);
     });
   });
 }
