@@ -4,6 +4,7 @@
 /// `webViewDelayTime` 解析，以及 discover 列表规则空白回落 ruleSearch。
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -170,6 +171,35 @@ void main() {
       } finally {
         await server.close(force: true);
       }
+    });
+
+    test('data: URI + type：base64 载荷按字节 hex 返回（视频章节 data: 链路）',
+        () async {
+      // 合成载荷：`<数字>&<数字>`，与视频源章节地址的参数形态一致。
+      const raw = '1234567890&9876543210';
+      final payload = base64Encode(utf8.encode(raw));
+      final expectedHex = utf8
+          .encode(raw)
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join();
+      final au = AnalyzeUrl(
+        url: 'data:video;base64,$payload,{"type":"c"}',
+        baseUrl: 'https://h.test/',
+      );
+      expect(au.requestType, 'c');
+      expect(await au.getStrResponse(), expectedHex);
+    });
+
+    test('data: URI（无 type）：base64 载荷解码为文本', () async {
+      final payload = base64Encode(utf8.encode('hello 媒体'));
+      final au = AnalyzeUrl(url: 'data:text/plain;base64,$payload');
+      expect(await au.getStrResponse(), 'hello 媒体');
+    });
+
+    test('data: URI：缺失填充的 base64 容错解码', () async {
+      // 'ab' → base64 'YWI='，去填充后 'YWI'（Android Base64.DEFAULT 可解）。
+      final au = AnalyzeUrl(url: 'data:text/plain;base64,YWI,{"type":"raw"}');
+      expect(await au.getStrResponse(), '6162');
     });
 
     test('bodyJs：响应体作为 result 再过一遍 JS', () async {

@@ -597,6 +597,26 @@ class AnalyzeUrl {
     String? sourceRegex,
     Map<String, String>? headers,
   }) async {
+    // legado `AnalyzeUrl.getStrResponseAwait`：声明 URL 选项 `type` 时响应体
+    // 改为原始字节的 hex 字符串（音频等二进制内容），且不走 WebView、不做
+    // jsStr/sourceRegex/bodyJs 文本后处理。
+    final typeHex = requestType != null && requestType!.trim().isNotEmpty;
+
+    // legado `getByteArrayIfDataUri`：`data:…;base64,<载荷>` 不发起 HTTP 请求，
+    // 直接取 base64 解码字节（type 选项存在时返回字节 hex）。视频/音频源常把
+    // 章节地址写成 data: 携带 aid&cid 等参数，正文脚本再 hexDecodeToString 还原。
+    if (url.startsWith('data:')) {
+      final dataBytes = _decodeDataUri(url);
+      if (dataBytes != null) {
+        lastStatusCode = 200;
+        lastFinalUrl = url;
+        lastResponseBytes = dataBytes;
+        return typeHex
+            ? _toHex(dataBytes)
+            : utf8.decode(dataBytes, allowMalformed: true);
+      }
+    }
+
     if (!_isValidHttpUrl) {
       throw Exception('Invalid URL: $url');
     }
@@ -604,11 +624,6 @@ class AnalyzeUrl {
     lastStatusCode = null;
     lastResponseHeaders = null;
     lastFinalUrl = null;
-
-    // legado `AnalyzeUrl.getStrResponseAwait`：声明 URL 选项 `type` 时响应体
-    // 改为原始字节的 hex 字符串（音频等二进制内容），且不走 WebView、不做
-    // jsStr/sourceRegex/bodyJs 文本后处理。
-    final typeHex = requestType != null && requestType!.trim().isNotEmpty;
 
     // 阶段级页面缓存：settle 重放会整段重跑，命中则直接返回上一次的响应
     // （含 jsStr/sourceRegex 后处理结果，故 key 里带上这两项）。
@@ -1164,6 +1179,25 @@ class AnalyzeUrl {
 
   static bool _hasReplayPlaceholder(String v) =>
       v.contains('__AJAX_') || v.contains('__WEBVIEW_');
+
+  /// `data:…;base64,<载荷>` 载荷解码（legado `getByteArrayIfDataUri` 等效）：
+  /// 对齐 Android `Base64.DEFAULT` 的容错——忽略空白、补齐缺失的 `=` 填充；
+  /// 非 base64 形式或载荷非法时返回 null。
+  static Uint8List? _decodeDataUri(String dataUrl) {
+    const marker = ';base64,';
+    final idx = dataUrl.indexOf(marker);
+    if (idx < 0) return null;
+    var payload = dataUrl.substring(idx + marker.length);
+    payload = payload.replaceAll(RegExp(r'\s'), '');
+    final rem = payload.length % 4;
+    if (rem == 1) return null;
+    if (rem != 0) payload = payload.padRight(payload.length + (4 - rem), '=');
+    try {
+      return base64.decode(payload);
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// 原始字节转小写 hex（对齐 legado `ByteArray.toHexString`）。
   static String _toHex(Uint8List bytes) {
