@@ -64,6 +64,10 @@ class ShuyuanSourceContext {
   /// Cookie 请求头（读合并不写回全局罐——三通道隔离红线）。
   final Map<String, Map<String, String>> cookies = {};
 
+  /// 已做过 412 根域种子 Cookie 预处理的站点根（URL 形态，按上下文去重）。
+  /// 不随阶段缓存清空：Cookie 已落库，后续阶段不会再次触发 412。
+  final Set<String> cookiePrimedRoots = <String>{};
+
   /// source.putLoginInfo/getLoginInfoMap。
   final Map<String, String> loginInfo = {};
 

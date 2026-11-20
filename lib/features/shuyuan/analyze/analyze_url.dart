@@ -750,17 +750,7 @@ class AnalyzeUrl {
       activeCtx.loginHeader.forEach((k, v) {
         if (k.isNotEmpty && v.isNotEmpty) _putHeader(requestHeaders, k, v);
       });
-      final reqHost = Uri.tryParse(url)?.host ?? '';
-      final overlay = activeCtx.cookiesForHost(reqHost);
-      if (overlay.isNotEmpty) {
-        final overlayStr =
-            overlay.entries.map((e) => '${e.key}=${e.value}').join('; ');
-        _putHeader(
-            requestHeaders,
-            'Cookie',
-            _mergeCookieStrings(
-                _headerValue(requestHeaders, 'Cookie'), overlayStr));
-      }
+      _mergeCtxCookieOverlay(requestHeaders, url, activeCtx);
     }
 
     // 源 header 的 @js 可能调用 java.ajax：首轮拿到的是 __AJAX_n__ 占位符，
@@ -804,16 +794,16 @@ class AnalyzeUrl {
             ))
           : _dio;
 
-      final options = Options(
-        headers: requestHeaders,
-        responseType: ResponseType.bytes,
-        followRedirects: followRedirects ?? true,
-        // 不跟随重定向时 3xx 是正常结果（Location 头即脚本要的答案），
-        // 不能按错误抛出。
-        validateStatus: (status) => status != null &&
-            (status >= 200 && status < 300 ||
-                (followRedirects == false && status >= 300 && status < 400)),
-      );
+      Options buildOptions() => Options(
+            headers: requestHeaders,
+            responseType: ResponseType.bytes,
+            followRedirects: followRedirects ?? true,
+            // 不跟随重定向时 3xx 是正常结果（Location 头即脚本要的答案），
+            // 不能按错误抛出。
+            validateStatus: (status) => status != null &&
+                (status >= 200 && status < 300 ||
+                    (followRedirects == false && status >= 300 && status < 400)),
+          );
 
       // concurrentRate 限速（legado ConcurrentRateLimiter 等效，书源侧
       // 包装——按源计数，媒体源链路零影响）。
@@ -822,6 +812,7 @@ class AnalyzeUrl {
 
       Response<List<int>>? response;
       var attempt = 0;
+      var cookiePrimed = false;
       while (true) {
         try {
           final m = method?.toUpperCase();
@@ -829,21 +820,31 @@ class AnalyzeUrl {
             response = await dio.post<List<int>>(
               url,
               data: this.body,
-              options: options,
+              options: buildOptions(),
             );
           } else if (m == 'HEAD') {
             response = await dio.head<List<int>>(
               url,
-              options: options,
+              options: buildOptions(),
             );
           } else {
             response = await dio.get<List<int>>(
               url,
-              options: options,
+              options: buildOptions(),
             );
           }
           break;
-        } on DioException {
+        } on DioException catch (e) {
+          // HTTP 412 风控（缺站点会话 Cookie）：先访问站点根域取首页下发的
+          // 种子 Cookie（浏览器同款会话建立方式），并把新 Cookie 并入请求头，
+          // 再原请求重试一次。站点根按上下文去重；取不到 Cookie 不重试。
+          if (e.response?.statusCode == 412 &&
+              !cookiePrimed &&
+              (source?.enabledCookieJar ?? false) &&
+              await _primeSessionCookies(dio, url, requestHeaders, activeCtx)) {
+            cookiePrimed = true;
+            continue;
+          }
           // retry：书源 URL 选项声明的重试次数（网络异常/连接失败重试；
           // 验证挑战异常不在此层——由下方挑战检测分支处理）。
           attempt += 1;
@@ -1049,6 +1050,99 @@ class AnalyzeUrl {
     }
     if (merged.isEmpty) return incoming;
     return merged.entries.map((e) => '${e.key}=${e.value}').join('; ');
+  }
+
+  /// per-source cookie 覆盖层按 host 并入请求头（请求组装与 412 种子 Cookie
+  /// 重试共用；只读合并，不写全局罐）。
+  static void _mergeCtxCookieOverlay(
+    Map<String, String> requestHeaders,
+    String url,
+    ShuyuanSourceContext? ctx,
+  ) {
+    if (ctx == null) return;
+    final overlay = ctx.cookiesForHost(Uri.tryParse(url)?.host ?? '');
+    if (overlay.isEmpty) return;
+    final overlayStr =
+        overlay.entries.map((e) => '${e.key}=${e.value}').join('; ');
+    _putHeader(
+        requestHeaders,
+        'Cookie',
+        _mergeCookieStrings(_headerValue(requestHeaders, 'Cookie'), overlayStr));
+  }
+
+  /// HTTP 412 风控的通用会话建立：访问站点根域（IP/localhost 用同源根），
+  /// 把首页 Set-Cookie 落进 per-source cookie 覆盖层，并并入重试请求头。
+  ///
+  /// 返回 true 表示拿到了对该请求 host 生效的新 Cookie，调用方可重试一次。
+  /// 同一上下文同一根域只尝试一次；根域请求失败或未下发 Cookie 返回 false，
+  /// 避免「412 → 首页 → 仍 412」的循环放大请求。
+  static Future<bool> _primeSessionCookies(
+    Dio dio,
+    String failingUrl,
+    Map<String, String> requestHeaders,
+    ShuyuanSourceContext? ctx,
+  ) async {
+    if (ctx == null) return false;
+    final rootUrl = _siteRootUrlOf(failingUrl);
+    if (rootUrl == null) return false;
+    if (!ctx.cookiePrimedRoots.add(rootUrl)) return false;
+    final host = Uri.tryParse(failingUrl)?.host.toLowerCase() ?? '';
+    final before = ctx.cookiesForHost(host);
+    try {
+      final resp = await dio.get<List<int>>(
+        rootUrl,
+        options: Options(
+          headers: <String, String>{
+            'User-Agent': _headerValue(requestHeaders, 'User-Agent') ??
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                    'AppleWebKit/537.36 (KHTML, like Gecko) '
+                    'Chrome/120.0.0.0 Safari/537.36',
+            'Accept':
+                'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          },
+          responseType: ResponseType.bytes,
+          followRedirects: true,
+          validateStatus: (_) => true,
+        ),
+      );
+      _storeResponseCookies(ctx, rootUrl, resp.headers.map);
+    } catch (_) {
+      return false;
+    }
+    final after = ctx.cookiesForHost(host);
+    if (after.isEmpty) return false;
+    final changed = after.length != before.length ||
+        after.entries.any((e) => before[e.key] != e.value);
+    if (!changed) return false;
+    _mergeCtxCookieOverlay(requestHeaders, failingUrl, ctx);
+    return true;
+  }
+
+  /// 请求 URL 的站点根：域名取可注册域（含常见二级后缀），IP/localhost
+  /// 取同源。用于 412 种子 Cookie 预处理。
+  static String? _siteRootUrlOf(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null || uri.host.isEmpty) return null;
+    final scheme = uri.scheme.isEmpty ? 'https' : uri.scheme;
+    final host = uri.host.toLowerCase();
+    final isIp = RegExp(r'^\d{1,3}(\.\d{1,3}){3}$').hasMatch(host) ||
+        host.contains(':') ||
+        host == 'localhost';
+    if (isIp) {
+      final port = uri.hasPort ? ':${uri.port}' : '';
+      return '$scheme://$host$port/';
+    }
+    final labels = host.split('.');
+    if (labels.length <= 2) return '$scheme://$host/';
+    const twoLabelSuffixes = <String>{
+      'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn', 'ac.cn',
+      'com.hk', 'com.tw', 'co.uk', 'org.uk', 'co.jp', 'co.kr',
+      'com.au', 'com.sg', 'com.br', 'com.mx',
+    };
+    final tail2 = labels.sublist(labels.length - 2).join('.');
+    final take = twoLabelSuffixes.contains(tail2) ? 3 : 2;
+    return '$scheme://${labels.sublist(labels.length - take).join('.')}/';
   }
 
   /// 大小写不敏感的请求头写入：同名旧键先移除，避免 `User-Agent` 与
