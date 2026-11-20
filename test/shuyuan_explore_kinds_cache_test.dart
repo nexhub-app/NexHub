@@ -5,6 +5,7 @@
 /// - `exploreUrl` 变化时旧缓存失效；字段完整往返。
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -110,6 +111,28 @@ void main() {
     expect(second.error, isNull);
     expect(second.items, isNotEmpty);
     expect(_hits, 2);
+  });
+
+  test('旧格式缓存条目按未命中处理（引擎语义修复后自愈）', () async {
+    // 旧版本在 jsLib 解析失败时可能把脚本兜底项写入缓存；条目格式升级后
+    // 必须视为未命中，让修复后的引擎重新跑脚本，而不是永久回放坏结果。
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      'shuyuan_explore_kinds_v1',
+      jsonEncode(<String, dynamic>{
+        'k-old': <String, dynamic>{
+          'url': 'https://x.test/a',
+          'kinds': <Map<String, dynamic>>[
+            <String, dynamic>{'title': '旧缓存'},
+          ],
+        },
+      }),
+    );
+    ShuyuanExploreKindsStore.resetCacheForTest();
+
+    final miss = await ShuyuanExploreKindsStore.load('k-old',
+        exploreUrl: 'https://x.test/a');
+    expect(miss, isNull);
   });
 
   test('缓存按 exploreUrl 失效，字段完整往返', () async {

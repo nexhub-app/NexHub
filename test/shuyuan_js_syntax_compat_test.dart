@@ -68,6 +68,37 @@ let re = /k..l/g;
     });
   });
 
+  group('Rhino 语法失败识别', () {
+    test('鸿蒙原生桥无 <eval> 定位的报错也进入兼容改写', () {
+      // 鸿蒙 QuickJS 桥只回纯错误文本（无堆栈定位）；这是真机 jsLib
+      // 整段失效的根因：旧判据要求 `<eval>:`，兜底改写从未触发。
+      expect(
+        isLegacySyntaxFailure(
+            'SyntaxError: invalid redefinition of parameter name'),
+        isTrue,
+      );
+      expect(isLegacySyntaxFailure('SyntaxError: expecting field name'), isTrue);
+      // flutter_js 带定位的报错保持原判据兼容。
+      expect(
+        isLegacySyntaxFailure('SyntaxError: <eval>:12: invalid ...'),
+        isTrue,
+      );
+    });
+
+    test('运行期错误不触发兼容改写', () {
+      expect(isLegacySyntaxFailure('TypeError: must be called with new'),
+          isFalse);
+      expect(
+        isLegacySyntaxFailure("ReferenceError: 'sourceHelper' is not defined"),
+        isFalse,
+      );
+      expect(
+        isLegacySyntaxFailure("SyntaxError: unexpected token: '__AJAX_1__'"),
+        isFalse,
+      );
+    });
+  });
+
   group('JsEngine jsLib 解析兜底', () {
     setUp(() {
       HttpOverrides.global = null;

@@ -6,6 +6,8 @@
 /// 按源缓存（不过期，手动刷新才重抓），NexHub 对齐该行为：
 /// - 键为源标识（bookSourceUrl / source.id），值与 exploreUrl 绑定，
 ///   源定义变化时旧缓存自动失效；
+/// - 条目带引擎语义版本：解析/脚本兼容修复后升级版本号，旧条目按未命中
+///   处理，避免历史坏结果（如 jsLib 解析失败时的脚本兜底项）被永久回放；
 /// - 脚本失败不写缓存；`refresh: true` 由调用方清除后重抓。
 library;
 
@@ -18,6 +20,10 @@ import '../../core/utils/app_log.dart';
 
 class ShuyuanExploreKindsStore {
   static const String _prefsKey = 'shuyuan_explore_kinds_v1';
+
+  /// 条目格式/引擎语义版本。JS 运行时或兼容层的修复可能改变同一
+  /// exploreUrl 的求值结果，升级时递增即可让旧缓存整体失效一次。
+  static const int _schemaVersion = 2;
 
   /// 内存快照（同一会话内多个源复用；写入后同步更新）。
   static Map<String, dynamic>? _cache;
@@ -46,6 +52,7 @@ class ShuyuanExploreKindsStore {
     final all = await _loadAll();
     final entry = all[key];
     if (entry is! Map) return null;
+    if (entry['v'] != _schemaVersion) return null;
     if ('${entry['url'] ?? ''}' != exploreUrl) return null;
     final list = entry['kinds'];
     if (list is! List) return null;
@@ -76,6 +83,7 @@ class ShuyuanExploreKindsStore {
       return;
     }
     all[key] = <String, dynamic>{
+      'v': _schemaVersion,
       'url': exploreUrl,
       'kinds': <Map<String, dynamic>>[for (final k in kinds) k.toJson()],
     };

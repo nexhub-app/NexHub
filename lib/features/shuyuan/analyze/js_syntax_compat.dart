@@ -43,6 +43,18 @@ bool _isIdentStart(int c) =>
     c == 0x5F ||
     c == 0x24;
 
+/// 错误文案是否代表「Rhino 专有语法导致的解析失败」。
+///
+/// flutter_js 的错误文本带 JS 堆栈（含 `<eval>:行:列` 定位）；鸿蒙原生
+/// QuickJS 桥只回 `SyntaxError: <消息>`，没有定位。按上述两类 Rhino
+/// 写法对应的 QuickJS 报错词识别，保证两端的兜底改写都能触发。
+bool isLegacySyntaxFailure(String message) {
+  if (!message.contains('SyntaxError')) return false;
+  return message.contains('<eval>:') ||
+      message.contains('invalid redefinition of parameter name') ||
+      message.contains('expecting field name');
+}
+
 /// 把 Rhino 专有写法改写为标准 JS；无可改写内容时原样返回同一字符串。
 String adaptLegacyJs(String source) {
   final n = source.length;

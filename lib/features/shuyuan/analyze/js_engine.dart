@@ -410,13 +410,14 @@ class JsEngine {
   }
 
   /// 执行 jsLib 源码；整段脚本解析失败（Rhino 专有语法）时按兼容写法
-  /// 重试一次。仅在 `SyntaxError` 且报错位置在脚本层（`<eval>`）时改写，
-  /// 避免把运行期嵌套 eval 的错误误判为脚本语法问题。
+  /// 重试一次。仅在语法类错误且可改写时执行，避免把运行期错误误判为
+  /// 脚本语法问题（鸿蒙 QuickJS 桥的错误文本无 `<eval>:` 定位，不能只靠
+  /// 堆栈位置判定）。
   NexJsEvalResult _evalLibSource(String code) {
     final r = runtime.evaluate(code);
     if (!r.isError) return r;
     final msg = r.stringResult;
-    if (!msg.contains('SyntaxError') || !msg.contains('<eval>:')) return r;
+    if (!isLegacySyntaxFailure(msg)) return r;
     final adapted = adaptLegacyJs(code);
     if (identical(adapted, code)) return r;
     AppLog.instance.w('[书源JS] jsLib 含 Rhino 专有语法，按兼容写法重试');
