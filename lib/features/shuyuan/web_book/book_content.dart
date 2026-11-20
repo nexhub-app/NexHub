@@ -159,9 +159,13 @@ class BookContent {
 
     String content = '';
 
+    final watch = Stopwatch()..start();
     if (contentRule.content != null && contentRule.content!.isNotEmpty) {
       content = _getContent(analyzeRule, contentRule.content!);
     }
+    AppLog.instance.i('[书源正文] 规则求值 源=${bookSource.bookSourceName} '
+        '输入=${body.length} 输出=${content.length} '
+        '耗时=${watch.elapsedMilliseconds}ms');
 
     // 正文规则提取结果日志：空结果 → 规则未命中 / JS 失败（真机排查关键）。
     if (content.trim().isEmpty) {
@@ -217,8 +221,13 @@ class BookContent {
     if (contentRule.replaceRegex != null && contentRule.replaceRegex!.isNotEmpty) {
       // 逐行 trim 后应用替换规则（对齐 legado：逐行 trim）
       content = content.split('\n').map((line) => line.trim()).join('\n');
+      watch.reset();
       content = applyReplaceRules(content, contentRule.replaceRegex!,
           analyzeRule: analyzeRule);
+      if (watch.elapsedMilliseconds >= 500) {
+        AppLog.instance.i('[书源正文] 替换规则 源=${bookSource.bookSourceName} '
+            '长度=${content.length} 耗时=${watch.elapsedMilliseconds}ms');
+      }
     }
 
     // 内容清洗：块级剥离 HTML + 按段提取插图 + 按段去除广告行。

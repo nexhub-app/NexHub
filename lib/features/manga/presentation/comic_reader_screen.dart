@@ -284,6 +284,16 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
   /// 正在预加载的章节下标集合（防止同一章重复发起请求）。
   final Set<int> _preloading = <int>{};
 
+  /// 在途预载 Future：手动加载命中同章时直接共享，避免同一章被并发抓两份。
+  /// 后台预载与手动加载都要过源站的每主机串行闸门，重复请求会让阅读器
+  /// 排在多余的长请求后面，表现为「一直加载」。
+  final Map<int, Future<List<String>>> _preloadFutures =
+      <int, Future<List<String>>>{};
+
+  /// 预载并发上限：同时最多两章（上/下邻章）。手动加载进行中不再新增预载，
+  /// 让用户当前章的请求优先进入串行闸门。
+  static const int _maxConcurrentPreloads = 2;
+
   /// 图片 URL → Referer（取图反盗链用）。
   ///
   /// 部分站点按「图片 ↔ 所属章节页」绑定校验 Referer（如 GraphQL 漫画源的
@@ -1635,9 +1645,21 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
 
   // ─────────────────────── 数据加载 ───────────────────────
 
+  /// 书源（规则引擎）源：取图请求只带源声明的头，不做浏览器式 Referer 推导。
+  ///
+  /// 对齐 legado `BookHelp.acquireReadingImage` → `AnalyzeUrl(src, source =
+  /// bookSource)`：漫画取图只注入源声明的 UA/防盗链 Referer，页面推导的
+  /// Referer 在对等语义里不存在。按页推导仅保留给原生漫画源（图片与章节页
+  /// 绑定校验、且源无法声明逐图 Referer 的站点）。
+  bool get _declaredImageHeadersOnly {
+    final PluginConfig? source = _source ?? _repo.getById(widget.sourceId);
+    return source?.isShuyuanSource ?? false;
+  }
+
   /// 登记一批图片的取图 Referer（章节页 URL 推导，见 [_urlReferers] 注释）。
   /// best-effort：章节页 URL 非法（本地章节等）时静默跳过。
   void _registerImageReferers(List<String> urls, String chapterPageUrl) {
+    if (_declaredImageHeadersOnly) return;
     for (final String u in urls) {
       final String? referer =
           HttpFetcher.refererForSubresource(chapterPageUrl, u);
@@ -1654,6 +1676,8 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
     // 翻章后刷新顶栏章节书签状态。
     unawaited(_refreshChapterBookmark());
     if (mounted) setState(() => _loading = true);
+    final chapterWatch = Stopwatch()..start();
+    AppLog.instance.i('[漫画阅读器] 加载章节 index=$index');
     try {
       final source = _repo.getById(widget.sourceId);
       if (source == null)
@@ -1662,13 +1686,23 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
       // 翻译控制器的防盗链 headers 需要源配置（源异步加载后补传）。
       _translation.updateSource(source);
       final chapter = widget.chapters[index];
+      final String? renderedHtml = _renderedHtmlByChapter[index];
+      // 与在途预载共享 Future（同章只抓一份）。已回填渲染 HTML 时不共享：
+      // 预载可能起步于 WebView 回灌之前，复用会再次失败。
+      final bool preloadCached = _preload.containsKey(index);
+      final Future<List<String>>? preloadFuture =
+          renderedHtml == null ? _preloadFutures[index] : null;
       final List<String> imgs = _preload.remove(index) ??
-          await _service.fetchImages(
-            source,
-            comicId: widget.comicId,
-            chapterId: chapter.id,
-            renderedHtml: _renderedHtmlByChapter[index],
-          );
+          await (preloadFuture ??
+              _service.fetchImages(
+                source,
+                comicId: widget.comicId,
+                chapterId: chapter.id,
+                renderedHtml: renderedHtml,
+              ));
+      AppLog.instance.i('[漫画阅读器] 章节就绪 index=$index 图=${imgs.length} '
+          '来源=${preloadCached ? '预载缓存' : preloadFuture != null ? '共享预载' : '直接请求'} '
+          '耗时=${chapterWatch.elapsedMilliseconds}ms');
       // 登记本章图片的取图 Referer（章节页 URL 推导，见 _urlReferers 注释）。
       _registerImageReferers(imgs, chapter.url);
       // 翻译控制器 OCR 拉图同源指纹：同步当前章节页 URL 供 Referer 推导。
@@ -2134,19 +2168,20 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
   void _preloadChapter(int index) {
     if (index < 0 || index >= widget.chapters.length) return;
     if (_preload.containsKey(index) || _preloading.contains(index)) return;
-    _preloading.add(index);
+    // 手动加载优先：正在转圈的章节请求不该再排到后台预载后面。
+    if (_loading) return;
+    if (_preloading.length >= _maxConcurrentPreloads) return;
     final source = _repo.getById(widget.sourceId);
-    if (source == null) {
-      _preloading.remove(index);
-      return;
-    }
-    _service
-        .fetchImages(
-          source,
-          comicId: widget.comicId,
-          chapterId: widget.chapters[index].id,
-          renderedHtml: _renderedHtmlByChapter[index],
-        )
+    if (source == null) return;
+    _preloading.add(index);
+    final future = _service.fetchImages(
+      source,
+      comicId: widget.comicId,
+      chapterId: widget.chapters[index].id,
+      renderedHtml: _renderedHtmlByChapter[index],
+    );
+    _preloadFutures[index] = future;
+    future
         .then((imgs) {
           if (!mounted) return;
           _preload[index] = imgs;
@@ -2161,7 +2196,10 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
           }
         })
         .catchError((Object _) {})
-        .whenComplete(() => _preloading.remove(index));
+        .whenComplete(() {
+          _preloading.remove(index);
+          _preloadFutures.remove(index);
+        });
   }
 
   /// 预加载本地模式相邻章节（聚合本地 / 本地下载目录），走与 [_loadLocalImages]

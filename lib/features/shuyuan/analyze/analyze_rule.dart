@@ -811,6 +811,21 @@ class AnalyzeRule {
 
   String _replaceRegex(String result, _RuleState st) {
     if (st.replaceRegex.isEmpty) return result;
+    // 大输入计时面包屑：catastrophic 回溯会让本同步调用无限阻塞主 isolate，
+    // 起始行即卡点证据（完成行缺失 = 卡在本次替换）。
+    final watch = result.length >= 20000 ? (Stopwatch()..start()) : null;
+    if (watch != null) {
+      AppLog.instance.i('[书源JS] 替换规则开始 输入=${result.length} '
+          '规则=${st.replaceRegex.length}字符');
+    }
+    String finish(String out) {
+      if (watch != null) {
+        AppLog.instance.i('[书源JS] 替换规则完成 输出=${out.length} '
+            '耗时=${watch.elapsedMilliseconds}ms');
+      }
+      return out;
+    }
+
     try {
       // Java→Dart 正则兼容：`(?i)` 内联标志、\Q..\E、占有量词、\p{In…} 等。
       // 翻译不了的（如反向引用）保持原样，求值失败仍走既有 catch。
@@ -827,20 +842,20 @@ class AnalyzeRule {
         // 匹配之外的前后缀全部丢弃；无匹配则整条为空。此前按全串
         // replaceFirst 处理，合成封面/URL 规则会残留尾部（如 `...s.jpghtml`）。
         final m = regex.firstMatch(result);
-        if (m == null) return '';
-        return expand(m);
+        if (m == null) return finish('');
+        return finish(expand(m));
       }
-      return result.replaceAllMapped(regex, expand);
+      return finish(result.replaceAllMapped(regex, expand));
     } catch (_) {
       try {
         if (st.replaceFirst) {
           // 与 legado 一致：正则编译失败时直接返回替换模板本身。
           final index = result.indexOf(st.replaceRegex);
-          return index >= 0 ? st.replacement : '';
+          return finish(index >= 0 ? st.replacement : '');
         }
-        return result.replaceAll(st.replaceRegex, st.replacement);
+        return finish(result.replaceAll(st.replaceRegex, st.replacement));
       } catch (_) {
-        return result;
+        return finish(result);
       }
     }
   }

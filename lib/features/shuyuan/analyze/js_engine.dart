@@ -417,7 +417,20 @@ class JsEngine {
     // `SyntaxError: redeclaration` → 章节 URL 全部为空。legado 的 Rhino
     // 每次 eval 也是新脚本作用域；`var`/function 仍挂全局（跨规则共享，
     // 与 legado SharedJsScope 等效）。完成值语义不变（eval 的完成值）。
+    //
+    // 大脚本计时面包屑：QuickJS 同步执行在主 isolate，无中断手段——若卡死，
+    // 起始行是最后一条日志（完成行缺失），据「输入长度 + 片段」定位肇事脚本。
+    final Stopwatch? watch =
+        jsStr.length >= 800 ? (Stopwatch()..start()) : null;
+    if (watch != null) {
+      AppLog.instance.i('[书源JS] 大脚本求值开始 长度=${jsStr.length} '
+          '片段=${_brief(jsStr)}');
+    }
     final result = runtime.evaluate('eval(${jsonEncode(jsStr)})');
+    if (watch != null) {
+      AppLog.instance.i('[书源JS] 大脚本求值完成 长度=${jsStr.length} '
+          '耗时=${watch.elapsedMilliseconds}ms 错误=${result.isError}');
+    }
     // 排空必须先于一切早退（isError 也一样）：脚本中途抛错（ajax 占位符
     // 下游解析失败）同样产生 ajax 记录，settle 循环依赖它暖缓存重试；
     // 完成值 undefined/null 的纯写脚本同样产生写操作（2026-11-14 实测）。

@@ -4,6 +4,7 @@
 /// 站点解析能力全部下沉到 Builtin/Script/WebView Resolver 或源内嵌脚本。
 library;
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -19,6 +20,7 @@ import '../resolver/resolver_registry.dart';
 import '../resolver/script_resolver.dart';
 import '../resolver/webview_resolver.dart';
 import '../services/config_loader.dart';
+import '../utils/app_log.dart';
 import 'collect_api_parser.dart';
 import 'http_fetcher.dart';
 
@@ -671,12 +673,26 @@ class MediaApiService {
       );
       return _asStrings(r);
     }
-    final r = await registry.find(source, 'images').resolve(
-          source,
-          'images',
-          vars: imagesVars,
-        );
-    return _asStrings(r);
+    // 看门狗：解析链内部各等待已有界（重放预算 + 单请求超时），这里再兜
+    // 一道总超时，保证阅读器即使遇到未预见的阻塞也能退出转圈态。
+    final watch = Stopwatch()..start();
+    AppLog.instance.i('[漫画取图] 请求 源=${source.name} '
+        '主机=${Uri.tryParse(chapterId)?.host ?? ''}');
+    try {
+      final r = await registry.find(source, 'images').resolve(
+            source,
+            'images',
+            vars: imagesVars,
+          ).timeout(const Duration(minutes: 4));
+      final out = _asStrings(r);
+      AppLog.instance.i('[漫画取图] 返回 源=${source.name} '
+          '图=${out.length} 耗时=${watch.elapsedMilliseconds}ms');
+      return out;
+    } on TimeoutException {
+      AppLog.instance.w('[漫画取图] 总超时 源=${source.name} '
+          '耗时=${watch.elapsedMilliseconds}ms');
+      rethrow;
+    }
   }
 
   Future<VideoResult> fetchVideoUrl(PluginConfig source, String episodeUrl,

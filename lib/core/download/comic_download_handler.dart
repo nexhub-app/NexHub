@@ -81,7 +81,7 @@ class ComicDownloadHandler implements DownloadHandler {
         await runPool(concurrency, idxList, (j) async {
           final bytes = await _fetchImageBytes(
             images[j],
-            referer: HttpFetcher.refererForSubresource(ch.url, images[j]),
+            referer: _subresourceReferer(ch.url, images[j]),
           );
           if (bytes != null) {
             await fs.writeBytes(
@@ -126,7 +126,7 @@ class ComicDownloadHandler implements DownloadHandler {
       await runPool(concurrency, idxList, (j) async {
         pageBytes[j] = await _fetchImageBytes(
           images[j],
-          referer: HttpFetcher.refererForSubresource(ch.url, images[j]),
+          referer: _subresourceReferer(ch.url, images[j]),
         );
       }, onItemDone: (completed, total) {
         onProgress?.call(i, chapters.length, completed / total);
@@ -192,6 +192,14 @@ class ComicDownloadHandler implements DownloadHandler {
     if (isCancelled?.call() ?? false) {
       throw const DownloadCancelledException();
     }
+  }
+
+  /// 取图 Referer：书源（规则引擎）源不做页面推导——对齐 legado
+  /// `BookHelp.saveImageFile` 的 `AnalyzeUrl(src, source = bookSource)`，
+  /// 只带源声明的 UA/Referer。按章节页推导仅限原生漫画源。
+  String? _subresourceReferer(String chapterPageUrl, String imageUrl) {
+    if (source.isShuyuanSource) return null;
+    return HttpFetcher.refererForSubresource(chapterPageUrl, imageUrl);
   }
 
   Future<Uint8List?> _fetchImageBytes(String url, {String? referer}) async {

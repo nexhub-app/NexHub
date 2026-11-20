@@ -1158,6 +1158,12 @@ class PluginConfig {
         this.version = 1,
       });
 
+  /// 书源（规则引擎）源：`selectors['xiaoshuo']` 由 ShuyuanAdapter 写入。
+  ///
+  /// 用于区分「规则引擎源」与原生源的行为差异：取图请求头、参考 legado
+  /// `AnalyzeUrl(src, source = bookSource)` 语义，只带源声明头、不做页面推导。
+  bool get isShuyuanSource => selectors?['xiaoshuo'] is Map<String, dynamic>;
+
   /// 构造与阅读器在线取图一致的防盗链 headers（Referer / 指定 UA / Cookie），
   /// 供下载路径复用（防盗链源在缺头时返回 HTML 错误页或 ~5KB 占位图）。
   ///

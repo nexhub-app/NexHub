@@ -545,8 +545,13 @@ class ComicTranslationController extends ChangeNotifier {
     final site = source?.site;
     final ahHeaders = ah?.headers;
     final siteHeaders = site?.headers;
-    final referer = HttpFetcher.refererForSubresource(_chapterPageUrl, url) ??
-        ah?.referer;
+    // 书源（规则引擎）源只带源声明的头：对齐 legado 取图的
+    // AnalyzeUrl(src, source = bookSource) 语义，不做章节页 Referer 推导。
+    final bool declaredOnly = source?.isShuyuanSource ?? false;
+    final referer = declaredOnly
+        ? ah?.referer
+        : HttpFetcher.refererForSubresource(_chapterPageUrl, url) ??
+            ah?.referer;
     final siteUa = site?.userAgent;
     final ua = (siteUa != null && siteUa.isNotEmpty)
         ? siteUa

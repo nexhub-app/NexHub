@@ -9,6 +9,7 @@ library;
 import '../../../core/models/explore_kind.dart';
 import '../../../core/models/novel_block.dart';
 import '../../../core/novel/novel_chinese_converter.dart';
+import '../../../core/utils/app_log.dart';
 import '../analyze/analyze_rule.dart';
 import '../analyze/analyze_url.dart';
 import '../model/book_source.dart';
@@ -586,10 +587,13 @@ class WebBook {
       );
       // legado getStrResponseAwait(jsStr = ruleContent.webJs, sourceRegex = …)：
       // webJs 在 WebView 路径作为页内取值脚本（Java 直连分支不消费）。
+      final fetchWatch = Stopwatch()..start();
       firstBody = await analyzeUrl.getStrResponse(
         jsStr: contentRule.webJs,
         sourceRegex: contentRule.sourceRegex,
       );
+      AppLog.instance.i('[书源正文] 首页抓取完成 源=${source.bookSourceName} '
+          '长度=${firstBody.length} 耗时=${fetchWatch.elapsedMilliseconds}ms');
       firstBaseUrl = analyzeUrl.url;
     }
     if (firstBody.isEmpty) {
@@ -601,6 +605,7 @@ class WebBook {
         source.bookSourceType == 1 || source.bookSourceType == 4;
 
     final List<NovelBlock> blocks = <NovelBlock>[];
+    final analyzeWatch = Stopwatch()..start();
     final firstContent = BookContent.analyzeContent(
       bookSource: source,
       book: book,
@@ -614,6 +619,8 @@ class WebBook {
       // 标题规则在全部页拼接后执行一次（见下方 postRule）。
       processTitle: false,
     );
+    AppLog.instance.i('[书源正文] 内容规则解析完成 源=${source.bookSourceName} '
+        '块=${firstContent.length} 耗时=${analyzeWatch.elapsedMilliseconds}ms');
     blocks.addAll(firstContent);
 
     final nextRule = contentRule.nextContentUrl;

@@ -233,12 +233,24 @@ class ShuyuanSourceContext {
   /// 缓存命中不算）：调用方据此判断这一轮是否有进展。抓取失败也已把空串写进
   /// 缓存、占位符就此消解，必须算作进展——若只计成功数，全失败的一轮会被当成
   /// 零进展提前退出，把占位符轮次的 `out`（含 `__WEBVIEW_n__` 或空页）当结果。
-  static Future<int> settleWebview(ShuyuanSourceContext ctx) async {
+  ///
+  /// [deadline] 非空时是整轮 settle 的硬预算：耗尽后剩余取源直接按失败缓存
+  /// （空串），不再逐个发起——否则 N 个慢页串行 × 45s 超时会把阅读器转圈
+  /// 拖到分钟级，且调用方在 settle 期间没有任何中断点。
+  static Future<int> settleWebview(
+    ShuyuanSourceContext ctx, {
+    DateTime? deadline,
+  }) async {
     if (ctx.webviewPending.isEmpty) return 0;
     final keys = List<String>.from(ctx.webviewPending);
     ctx.webviewPending.clear();
     var fetched = 0;
     for (final key in keys) {
+      if (deadline != null && !DateTime.now().isBefore(deadline)) {
+        ctx.webviewCache[key] = '';
+        fetched++;
+        continue;
+      }
       final args = ctx.webviewArgs[key] ?? const <String>[];
       final html = args.isNotEmpty ? args[0] : '';
       final url = args.length > 1 ? args[1] : '';
@@ -721,10 +733,14 @@ class ShuyuanSourceContext {
   ///
   /// 返回**本次真正发起**的请求数（缓存命中不算）：调用方据此判断这一轮
   /// 是否有进展，避免「URL 带随机数」的脚本无限重放。
+  ///
+  /// [deadline] 语义同 [settleWebview]：整轮预算耗尽后剩余请求按失败缓存
+  /// （占位符就地消解为 `''`），保证调用方等待有上界。
   static Future<int> settleAjax(
     ShuyuanSourceContext ctx,
-    XiaoshuoBookSource source,
-  ) async {
+    XiaoshuoBookSource source, {
+    DateTime? deadline,
+  }) async {
     var fetched = 0;
     // bodyAsBytes 与 java.ajax 可能记录同一 URL：按并集各抓一次，
     // 依各自的待办标志分别填充文本/二进制缓存。
@@ -739,6 +755,16 @@ class ShuyuanSourceContext {
       if (wantBody && ctx.ajaxCache.containsKey(key)) continue;
       if (wantBytes && ctx.ajaxBytesCache.containsKey(key)) continue;
       fetched++;
+      if (deadline != null && !DateTime.now().isBefore(deadline)) {
+        if (wantBody) ctx.ajaxCache[key] = '';
+        if (wantBytes) ctx.ajaxBytesCache[key] = '';
+        ctx.ajaxMetaCache[key] = jsonEncode(<String, dynamic>{
+          'code': 0,
+          'url': key,
+          'headers': const <String, List<String>>{},
+        });
+        continue;
+      }
       var url = key;
       String? postBody;
       const marker = '||POST||';
