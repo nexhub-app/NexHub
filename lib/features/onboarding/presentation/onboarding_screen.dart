@@ -4,11 +4,15 @@
 /// 3. 添加源
 /// 4. 关联 Bangumi
 /// 5. 授予权限（Android 逐项授权）+ 下载位置
+/// 6. 免责声明（必须勾选同意才能开始使用）
 ///
 /// 设计取向：只保留「真正需要配置」的步骤——弹弹play、隐私说明等纯介绍性
 /// 页面已移除；主题/语言选择采用紧凑单选行，小屏不溢出；主题色带实时预览；
 /// 下载位置与权限放在同一页，首次启动即可确认下载目录，无需再四处找设置。
 /// 页面在小屏（手机）上自动紧凑排布并整体可滚动。
+///
+/// 免责声明固定在最后一页：未勾选同意时「开始使用」置灰，「跳过」也会被带到
+/// 该页并提示，确保首次使用一定看过声明。
 ///
 /// 走完（点「开始使用」或「跳过」）后回调 [onDone]，由调用方写入
 /// `GeneralSettings.onboardingCompleted = true` 并切换到主界面。
@@ -55,6 +59,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final Map<Permission, bool> _grantedStatus = <Permission, bool>{};
   bool _statusRefreshed = false;
 
+  /// 免责声明是否已勾选同意；未勾选时无法走完引导。
+  bool _disclaimerAgreed = false;
+
   void _goNext() {
     AppHaptics.selectionClick();
     if (_page < _totalPages - 1) {
@@ -62,9 +69,45 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         duration: const Duration(milliseconds: 300),
         curve: Curves.easeInOut,
       );
-    } else {
-      widget.onDone();
+      return;
     }
+    if (!_disclaimerAgreed) {
+      _showDisclaimerHint();
+      return;
+    }
+    widget.onDone();
+  }
+
+  /// 跳过：未同意免责声明时先跳到声明页并提示，不让用户绕过。
+  void _skip() {
+    AppHaptics.light();
+    if (_disclaimerAgreed) {
+      widget.onDone();
+      return;
+    }
+    final int lastPage = _totalPages - 1;
+    if (_page != lastPage) {
+      _pageController.animateToPage(
+        lastPage,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+    }
+    _showDisclaimerHint();
+  }
+
+  void _showDisclaimerHint() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            AppLocalizations.of(context).onboardingDisclaimerRequired,
+          ),
+          duration: const Duration(seconds: 2),
+        ),
+      );
   }
 
   @override
@@ -174,7 +217,120 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         body: l10n.onboardingPermissionBody,
         customBody: _buildPermissionBody(context, l10n),
       ),
+      _OnboardingPageData(
+        icon: Icons.verified_user_rounded,
+        title: l10n.onboardingDisclaimerTitle,
+        body: l10n.onboardingDisclaimerBody,
+        customBody: _buildDisclaimerBody(context, l10n),
+      ),
     ];
+  }
+
+  // ── 免责声明页（要点列表 + 勾选同意）────────────────────────────────
+  Widget _buildDisclaimerBody(BuildContext context, AppLocalizations l10n) {
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final points = <String>[
+      l10n.onboardingDisclaimerPoint1,
+      l10n.onboardingDisclaimerPoint2,
+      l10n.onboardingDisclaimerPoint3,
+      l10n.onboardingDisclaimerPoint4,
+      l10n.onboardingDisclaimerPoint5,
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Container(
+          padding: const EdgeInsets.all(AppTokens.spaceMd),
+          decoration: BoxDecoration(
+            color: scheme.surfaceContainerLow,
+            borderRadius: BorderRadius.circular(AppTokens.radiusMd),
+            border: Border.all(color: scheme.outlineVariant),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              for (int i = 0; i < points.length; i++)
+                Padding(
+                  padding: EdgeInsets.only(
+                    bottom: i == points.length - 1 ? 0 : AppTokens.spaceSm,
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Container(
+                        width: 20,
+                        height: 20,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: scheme.primaryContainer,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Text(
+                          '${i + 1}',
+                          style: textTheme.labelSmall?.copyWith(
+                            color: scheme.onPrimaryContainer,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: AppTokens.spaceSm),
+                      Expanded(
+                        child: Text(
+                          points[i],
+                          style: textTheme.bodySmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                            height: 1.5,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: AppTokens.spaceXs),
+        CheckboxListTile(
+          value: _disclaimerAgreed,
+          onChanged: (bool? v) {
+            AppHaptics.selectionClick();
+            setState(() => _disclaimerAgreed = v ?? false);
+          },
+          controlAffinity: ListTileControlAffinity.leading,
+          contentPadding: EdgeInsets.zero,
+          dense: true,
+          visualDensity: VisualDensity.compact,
+          title: Text(
+            l10n.onboardingDisclaimerAgree,
+            style: textTheme.bodyMedium,
+          ),
+        ),
+        if (!_disclaimerAgreed)
+          Padding(
+            padding: const EdgeInsets.only(left: AppTokens.spaceXs),
+            child: Row(
+              children: <Widget>[
+                Icon(
+                  Icons.info_outline_rounded,
+                  size: 14,
+                  color: scheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: AppTokens.spaceXs),
+                Expanded(
+                  child: Text(
+                    l10n.onboardingDisclaimerRequired,
+                    style: textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
   }
 
   @override
@@ -189,10 +345,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         automaticallyImplyLeading: false,
         actions: <Widget>[
           TextButton(
-            onPressed: () {
-              AppHaptics.light();
-              widget.onDone();
-            },
+            onPressed: _skip,
             child: Text(l10n.onboardingSkip),
           ),
         ],
@@ -236,7 +389,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   ),
                   const Spacer(),
                   FilledButton(
-                    onPressed: _goNext,
+                    onPressed:
+                        isLast && !_disclaimerAgreed ? null : _goNext,
                     child: Text(isLast
                         ? l10n.onboardingGetStarted
                         : l10n.onboardingNext),

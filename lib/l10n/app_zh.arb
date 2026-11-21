@@ -1518,6 +1518,7 @@
   "thirdPartyLibraries": "第三方库",
   "acknowledgements": "致谢",
   "acknowledgementsLegado": "NexHub 小说分页器以独立 Dart 实现借鉴了其 ChapterProvider 分页算法（未复制源码）。上游仓库未附带明确开源许可证，本致谢仅作启发署名。",
+  "acknowledgementsLegadoMd3": "基于 Legado 的 Material Design 3 风格重构分支，其书源解析规则为 NexHub 的源解析提供了参考。以 GPL-3.0 发布（© HapeLee），NexHub 未复制其源码，仅借鉴规则思路独立实现。",
   "acknowledgementsMihon": "扩展源架构与漫画阅读器交互为 NexHub 的漫画解析与阅读体验提供了重要参考。以 Apache License 2.0 发布（© Mihon contributors）。",
   "acknowledgementsRssHub": "为 NexHub 的订阅功能提供 RSS 聚合服务。以 AGPL-3.0 发布（© DIYgod），NexHub 仅作客户端调用，未修改或再分发其源码。",
   "acknowledgementsWenyi": "其小说 AI 翻译管线设计（上下文增强、术语闭环、审查与精译）为 NexHub 内置小说翻译的深度优化提供了重要参考。以 MIT License 发布（© BigDawnGhost），NexHub 未复制其源码，仅借鉴设计思想独立实现。",
@@ -4383,6 +4384,15 @@
   "onboardingChooseDownloadPath": "选择下载目录",
   "onboardingThemeColorLabel": "主题色",
   "onboardingThemePreviewLabel": "样式预览",
+  "onboardingDisclaimerTitle": "免责声明",
+  "onboardingDisclaimerBody": "请阅读以下要点，勾选确认后即可开始使用。",
+  "onboardingDisclaimerPoint1": "技术演示：本应用不提供、不存储、不中转任何内容，也不内置任何站点源。",
+  "onboardingDisclaimerPoint2": "源由你负责：所有内容均来自你自行导入的源，其合法性、准确性及版权状况由源提供方与使用者承担。",
+  "onboardingDisclaimerPoint3": "遵守法规：请遵守所在地法律法规，仅用于个人学习与技术研究，不得用于商业用途或非法传播。",
+  "onboardingDisclaimerPoint4": "按现状提供：本应用不作任何明示或默示担保，使用或无法使用造成的损失由使用者自行承担。",
+  "onboardingDisclaimerPoint5": "未成年人：请在监护人指导下使用，并避免接触不适宜的内容。",
+  "onboardingDisclaimerAgree": "我已阅读并同意上述声明",
+  "onboardingDisclaimerRequired": "勾选同意后才能开始使用",
   "privacySettingsTitle": "隐私设置",
   "@privacySettingsTitle": {
     "description": "隐私设置页标题"

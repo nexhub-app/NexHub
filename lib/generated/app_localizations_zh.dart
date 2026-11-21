@@ -2875,6 +2875,10 @@ class AppLocalizationsZh extends AppLocalizations {
       'NexHub 小说分页器以独立 Dart 实现借鉴了其 ChapterProvider 分页算法（未复制源码）。上游仓库未附带明确开源许可证，本致谢仅作启发署名。';
 
   @override
+  String get acknowledgementsLegadoMd3 =>
+      '基于 Legado 的 Material Design 3 风格重构分支，其书源解析规则为 NexHub 的源解析提供了参考。以 GPL-3.0 发布（© HapeLee），NexHub 未复制其源码，仅借鉴规则思路独立实现。';
+
+  @override
   String get acknowledgementsMihon =>
       '扩展源架构与漫画阅读器交互为 NexHub 的漫画解析与阅读体验提供了重要参考。以 Apache License 2.0 发布（© Mihon contributors）。';
 
@@ -8087,6 +8091,36 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get onboardingThemePreviewLabel => '样式预览';
+
+  @override
+  String get onboardingDisclaimerTitle => '免责声明';
+
+  @override
+  String get onboardingDisclaimerBody => '请阅读以下要点，勾选确认后即可开始使用。';
+
+  @override
+  String get onboardingDisclaimerPoint1 => '技术演示：本应用不提供、不存储、不中转任何内容，也不内置任何站点源。';
+
+  @override
+  String get onboardingDisclaimerPoint2 =>
+      '源由你负责：所有内容均来自你自行导入的源，其合法性、准确性及版权状况由源提供方与使用者承担。';
+
+  @override
+  String get onboardingDisclaimerPoint3 =>
+      '遵守法规：请遵守所在地法律法规，仅用于个人学习与技术研究，不得用于商业用途或非法传播。';
+
+  @override
+  String get onboardingDisclaimerPoint4 =>
+      '按现状提供：本应用不作任何明示或默示担保，使用或无法使用造成的损失由使用者自行承担。';
+
+  @override
+  String get onboardingDisclaimerPoint5 => '未成年人：请在监护人指导下使用，并避免接触不适宜的内容。';
+
+  @override
+  String get onboardingDisclaimerAgree => '我已阅读并同意上述声明';
+
+  @override
+  String get onboardingDisclaimerRequired => '勾选同意后才能开始使用';
 
   @override
   String get privacySettingsTitle => '隐私设置';

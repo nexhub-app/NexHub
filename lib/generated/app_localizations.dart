@@ -5648,6 +5648,12 @@ abstract class AppLocalizations {
   /// **'NexHub\'s novel paginator re-implements its ChapterProvider pagination algorithm as an independent Dart implementation (no source copied). The upstream repo ships no explicit open-source license; this credit is inspiration attribution only.'**
   String get acknowledgementsLegado;
 
+  /// No description provided for @acknowledgementsLegadoMd3.
+  ///
+  /// In en, this message translates to:
+  /// **'A Material Design 3 restyle of Legado whose book-source parsing rules informed NexHub\'s source parsing. Released under GPL-3.0 (© HapeLee); NexHub copied no source code and implemented independently from the rule designs.'**
+  String get acknowledgementsLegadoMd3;
+
   /// No description provided for @acknowledgementsMihon.
   ///
   /// In en, this message translates to:
@@ -15535,6 +15541,60 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Style preview'**
   String get onboardingThemePreviewLabel;
+
+  /// No description provided for @onboardingDisclaimerTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Disclaimer'**
+  String get onboardingDisclaimerTitle;
+
+  /// No description provided for @onboardingDisclaimerBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Please read the key points below, then check the box to start using the app.'**
+  String get onboardingDisclaimerBody;
+
+  /// No description provided for @onboardingDisclaimerPoint1.
+  ///
+  /// In en, this message translates to:
+  /// **'Technical demo: this app does not provide, store, or relay any content, and ships no site sources.'**
+  String get onboardingDisclaimerPoint1;
+
+  /// No description provided for @onboardingDisclaimerPoint2.
+  ///
+  /// In en, this message translates to:
+  /// **'Sources are your responsibility: all content comes from sources you import; legality, accuracy, and copyright status rest with the source provider and the user.'**
+  String get onboardingDisclaimerPoint2;
+
+  /// No description provided for @onboardingDisclaimerPoint3.
+  ///
+  /// In en, this message translates to:
+  /// **'Comply with the law: follow the laws of your jurisdiction, use the app only for personal study and technical research, and never for commercial use or illegal distribution.'**
+  String get onboardingDisclaimerPoint3;
+
+  /// No description provided for @onboardingDisclaimerPoint4.
+  ///
+  /// In en, this message translates to:
+  /// **'Provided as is: the app makes no express or implied warranty; any loss from using or being unable to use it is borne by the user.'**
+  String get onboardingDisclaimerPoint4;
+
+  /// No description provided for @onboardingDisclaimerPoint5.
+  ///
+  /// In en, this message translates to:
+  /// **'Minors: use the app under guardian supervision and avoid inappropriate content.'**
+  String get onboardingDisclaimerPoint5;
+
+  /// No description provided for @onboardingDisclaimerAgree.
+  ///
+  /// In en, this message translates to:
+  /// **'I have read and agree to the statement above'**
+  String get onboardingDisclaimerAgree;
+
+  /// No description provided for @onboardingDisclaimerRequired.
+  ///
+  /// In en, this message translates to:
+  /// **'Check the box to start using the app'**
+  String get onboardingDisclaimerRequired;
 
   /// Privacy settings page title
   ///

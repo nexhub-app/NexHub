@@ -2928,6 +2928,10 @@ class AppLocalizationsEn extends AppLocalizations {
       'NexHub\'s novel paginator re-implements its ChapterProvider pagination algorithm as an independent Dart implementation (no source copied). The upstream repo ships no explicit open-source license; this credit is inspiration attribution only.';
 
   @override
+  String get acknowledgementsLegadoMd3 =>
+      'A Material Design 3 restyle of Legado whose book-source parsing rules informed NexHub\'s source parsing. Released under GPL-3.0 (© HapeLee); NexHub copied no source code and implemented independently from the rule designs.';
+
+  @override
   String get acknowledgementsMihon =>
       'Its extension-source architecture and comic-reader interaction informed NexHub\'s manga parsing and reading experience. Licensed under Apache License 2.0 (© Mihon contributors).';
 
@@ -8284,6 +8288,41 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get onboardingThemePreviewLabel => 'Style preview';
+
+  @override
+  String get onboardingDisclaimerTitle => 'Disclaimer';
+
+  @override
+  String get onboardingDisclaimerBody =>
+      'Please read the key points below, then check the box to start using the app.';
+
+  @override
+  String get onboardingDisclaimerPoint1 =>
+      'Technical demo: this app does not provide, store, or relay any content, and ships no site sources.';
+
+  @override
+  String get onboardingDisclaimerPoint2 =>
+      'Sources are your responsibility: all content comes from sources you import; legality, accuracy, and copyright status rest with the source provider and the user.';
+
+  @override
+  String get onboardingDisclaimerPoint3 =>
+      'Comply with the law: follow the laws of your jurisdiction, use the app only for personal study and technical research, and never for commercial use or illegal distribution.';
+
+  @override
+  String get onboardingDisclaimerPoint4 =>
+      'Provided as is: the app makes no express or implied warranty; any loss from using or being unable to use it is borne by the user.';
+
+  @override
+  String get onboardingDisclaimerPoint5 =>
+      'Minors: use the app under guardian supervision and avoid inappropriate content.';
+
+  @override
+  String get onboardingDisclaimerAgree =>
+      'I have read and agree to the statement above';
+
+  @override
+  String get onboardingDisclaimerRequired =>
+      'Check the box to start using the app';
 
   @override
   String get privacySettingsTitle => 'Privacy Settings';

@@ -1539,6 +1539,7 @@
   "thirdPartyLibraries": "Third-party libraries",
   "acknowledgements": "Acknowledgements",
   "acknowledgementsLegado": "NexHub's novel paginator re-implements its ChapterProvider pagination algorithm as an independent Dart implementation (no source copied). The upstream repo ships no explicit open-source license; this credit is inspiration attribution only.",
+  "acknowledgementsLegadoMd3": "A Material Design 3 restyle of Legado whose book-source parsing rules informed NexHub's source parsing. Released under GPL-3.0 (© HapeLee); NexHub copied no source code and implemented independently from the rule designs.",
   "acknowledgementsMihon": "Its extension-source architecture and comic-reader interaction informed NexHub's manga parsing and reading experience. Licensed under Apache License 2.0 (© Mihon contributors).",
   "acknowledgementsRssHub": "Powers the RSS aggregation behind NexHub's subscription feature. Licensed under AGPL-3.0 (© DIYgod); NexHub only calls it as a client and does not modify or redistribute its source.",
   "acknowledgementsWenyi": "Its novel AI-translation pipeline design (context enrichment, terminology loop, review and refined drafting) informed the deep optimization of NexHub's built-in novel translation. Licensed under the MIT License (© BigDawnGhost); NexHub copied no source code and implemented independently.",
@@ -4427,6 +4428,15 @@
   "onboardingChooseDownloadPath": "Choose download folder",
   "onboardingThemeColorLabel": "Accent color",
   "onboardingThemePreviewLabel": "Style preview",
+  "onboardingDisclaimerTitle": "Disclaimer",
+  "onboardingDisclaimerBody": "Please read the key points below, then check the box to start using the app.",
+  "onboardingDisclaimerPoint1": "Technical demo: this app does not provide, store, or relay any content, and ships no site sources.",
+  "onboardingDisclaimerPoint2": "Sources are your responsibility: all content comes from sources you import; legality, accuracy, and copyright status rest with the source provider and the user.",
+  "onboardingDisclaimerPoint3": "Comply with the law: follow the laws of your jurisdiction, use the app only for personal study and technical research, and never for commercial use or illegal distribution.",
+  "onboardingDisclaimerPoint4": "Provided as is: the app makes no express or implied warranty; any loss from using or being unable to use it is borne by the user.",
+  "onboardingDisclaimerPoint5": "Minors: use the app under guardian supervision and avoid inappropriate content.",
+  "onboardingDisclaimerAgree": "I have read and agree to the statement above",
+  "onboardingDisclaimerRequired": "Check the box to start using the app",
   "privacySettingsTitle": "Privacy Settings",
   "@privacySettingsTitle": {
     "description": "Privacy settings page title"
