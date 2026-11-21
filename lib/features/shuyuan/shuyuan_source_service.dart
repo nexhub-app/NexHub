@@ -127,7 +127,11 @@ class ShuyuanSource {
       (ruleSearch != null ||
           ruleToc != null ||
           ruleContent != null ||
-          ruleExplore != null);
+          ruleExplore != null ||
+          // 文件类书源（bookSourceType=3）没有搜索/目录/正文规则，详情阶段
+          // 直接由 ruleBookInfo 给出 downloadUrls 文件列表——仅有 ruleBookInfo
+          // 也算有效源，否则导入预览会把这类源整批判死。
+          ruleBookInfo != null);
 
   /// 转换为 XiaoshuoBookSource（供 WebBook 直接消费）。
   XiaoshuoBookSource toBookSource() {

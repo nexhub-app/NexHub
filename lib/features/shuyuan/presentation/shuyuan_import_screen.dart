@@ -138,8 +138,8 @@ class _ShuyuanImportScreenState extends State<ShuyuanImportScreen> {
       _parsed = sources;
       _loading = false;
       _selectedUrls.clear();
-      // 默认全选「文本类且有效」的书源；音频/图片/视频/文件类（legado
-      // bookSourceType 1/2/3/4）在小说阅读器无法解析，预览标为不支持且不勾选。
+      // 默认全选「文本类与文件类且有效」的书源；音频/图片/视频（legado
+      // bookSourceType 1/2/4）不在小说模块消费，预览标为不支持且不勾选。
       for (final s in sources) {
         if (s.isValid && _isNovelSupported(s)) {
           _selectedUrls.add(s.bookSourceUrl);
@@ -151,9 +151,13 @@ class _ShuyuanImportScreenState extends State<ShuyuanImportScreen> {
     });
   }
 
-  /// 小说阅读器仅支持文本书源（legado bookSourceType == 0）。
-  /// 音频(1)/图片(2)/文件(3)/视频(4) 在小说模块无对应解析管线，导入亦无法使用。
-  bool _isNovelSupported(ShuyuanSource s) => s.bookSourceType == 0;
+  /// 小说模块可消费的书源类型：文本(0)与文件(3)。
+  /// 文件类（bookSourceType=3）无章节目录，详情阶段直接给出 downloadUrls
+  /// 文件列表，下载后按本地书导入阅读（见 ShuyuanNovelResolver 文件链路）。
+  /// 音频(1)/图片(2)/视频(4) 不在小说模块消费，不在此导入；如需使用请走
+  /// 源管理页的通用导入（网络/本地导入全类型放行，媒体/漫画栏消费）。
+  bool _isNovelSupported(ShuyuanSource s) =>
+      s.bookSourceType == 0 || s.bookSourceType == 3;
 
   // ── 批量保存（仅保存勾选项） ──
   void _saveAll() {

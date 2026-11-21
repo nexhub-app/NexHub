@@ -122,6 +122,17 @@ class _SourceImportScreenState extends State<SourceImportScreen> {
     setState(() => _loading = true);
     try {
       final text = await HttpFetcher.instance.getHtml(url);
+      // 空响应不能直接交给 _tryParse：其空文本分支会静默 return，_loading
+      // 永不复位，提交按钮（√/导入）会永久停在加载转圈态。
+      if (text.trim().isEmpty) {
+        if (mounted) {
+          setState(() {
+            _error = AppLocalizations.of(context).sourceUnrecognized;
+            _loading = false;
+          });
+        }
+        return;
+      }
       await _tryParse(text);
     } catch (e) {
       if (mounted) {

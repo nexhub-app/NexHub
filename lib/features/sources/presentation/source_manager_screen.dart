@@ -110,6 +110,11 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
   // 是否显示隐藏源
   bool _showHidden = false;
 
+  /// 源列表虚拟化阈值：超过该行数时列表改用 itemBuilder 懒建行并关掉
+  /// shrinkWrap。shrinkWrap（低配整卡/合并滚动路径默认开启）要求首帧量出
+  /// 全部行高＝全量构建+布局每一行，上千源会在进入页面时冻结甚至 OOM 崩溃。
+  static const int _virtualListThreshold = 100;
+
   // 网络导入状态
   bool _networkLoading = false;
   String? _networkError;
@@ -200,12 +205,23 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
     });
 
     try {
-      // 这里需要 HttpFetcher，但为避免循环依赖，用基础的 HttpClient
-      final httpClient = HttpClient();
-      final request = await httpClient.getUrl(Uri.parse(url));
-      final response = await request.close();
-      final text = await response.transform(utf8.decoder).join();
-      httpClient.close();
+      // 这里需要 HttpFetcher，但为避免循环依赖，用基础的 HttpClient。
+      // 必须带超时：裸 HttpClient 无连接/读取时限，地址不可达或响应流
+      // 停滞时 √（suffixIcon）会永久停在加载转圈，用户侧表现为「填完地址
+      // 后 √ 变成加载符号再也不回来」。
+      final httpClient = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 15);
+      final String text;
+      try {
+        final request = await httpClient.getUrl(Uri.parse(url));
+        final response = await request.close();
+        text = await response
+            .transform(utf8.decoder)
+            .join()
+            .timeout(const Duration(seconds: 30));
+      } finally {
+        httpClient.close();
+      }
 
       // 统一批量解析：URL 返回合并 JSON（小说+媒体+漫画）也能一次导入。
       // 后台 isolate 解析：大书源列表主线程解析会冻结 UI。
@@ -706,6 +722,26 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
           ],
         );
       }
+      // 大库列表必须脱离合并滚动：合并滚动要求列表 shrinkWrap 撑开全部行，
+      // 首帧全量构建+布局，上千源会冻结/OOM 崩溃。此时放弃「区块随列表
+      // 滚走」，改为区块固定在顶、列表自身滚动（虚拟化生效的前提）。
+      if (sources.length > _virtualListThreshold) {
+        return Column(
+          children: <Widget>[
+            if (section != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppTokens.spaceMd,
+                  AppTokens.spaceXs,
+                  AppTokens.spaceMd,
+                  0,
+                ),
+                child: section,
+              ),
+            Expanded(child: _buildSourceListView(l10n, sources)),
+          ],
+        );
+      }
       return SingleChildScrollView(
         // 媒体服务器区块与源列表并入同一条滚动流：列表 shrinkWrap 撑开、
         // 滚动交给外层，区块不再固定在顶部，而是跟着列表一起滚走。
@@ -920,7 +956,13 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
     final int belowGapItem = (!dragging || lowSpec)
         ? -1
         : (gg < dd && gapSlot + 1 <= dd ? gapSlot : gapSlot + 1);
-    return ReorderableListView(
+    // 大库列表虚拟化：超过阈值后行必须懒建，且 shrinkWrap 必须关闭——
+    // shrinkWrap 要求首帧量出全部行高，等于把每一行都构建+布局一遍，
+    // 上千源会冻结主线程甚至 OOM（「导入太多书源后进源管理崩溃」的根因）。
+    final bool virtual = sources.length > _virtualListThreshold;
+    // 一律走 .builder：itemBuilder 懒建行（小列表行为与 children 版一致）。
+    return ReorderableListView.builder(
+      itemCount: sources.length,
       // 低配（默认）：整卡为一张静态强调色卡（首次对话版式），行内容平铺，
       // 卡自身左右 12px 与媒体服务器等前置区块对齐；底栏避让由外层卡片
       // Padding 承担（卡内只留设计留白，避免无源空白被涂成卡底色）。
@@ -942,8 +984,10 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
       // 媒体服务器区块场景：列表全部行直接撑开，滚动交给外层容器。
       // 低配整卡模式同理收成内容高度：卡底只包住有源的行，末行以下的
       // 空白区不再被强调色卡裹住（高配行段自绘本就如此）。
-      shrinkWrap: scrollsWithParent || lowSpec,
-      physics: scrollsWithParent ? const NeverScrollableScrollPhysics() : null,
+      shrinkWrap: !virtual && (scrollsWithParent || lowSpec),
+      physics: scrollsWithParent && !virtual
+          ? const NeverScrollableScrollPhysics()
+          : null,
       // 禁用默认拖动手柄：拖动改由行内长按接管，行首不再被把手占位。
       buildDefaultDragHandles: false,
       // 拖起浮卡：强调色底 + 圆角 + 单层投影（无缩放/位移/描边）。
@@ -998,15 +1042,46 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
         ids.insert(newIndex, moved);
         context.read<SourceRepository>().setSourceOrder(ids);
       },
-      children: <Widget>[
-        for (final (i, s) in sources.indexed)
-          KeyedSubtree(
-            // GlobalKey 供拖拽中实时量取行矩形（镜像落点规则用）。
-            key: _dragKey(s.id),
-            child: lowSpec
-                ? // 低配（默认）：行内容平铺在整卡上，无分段底色、无圆角。
-                Column(
+      // itemBuilder 懒建行（大库只构建可见行；小列表行为与逐条 children 一致）。
+      itemBuilder: (BuildContext context, int i) {
+        final s = sources[i];
+        return KeyedSubtree(
+          // GlobalKey 供拖拽中实时量取行矩形（镜像落点规则用）。
+          key: _dragKey(s.id),
+          child: lowSpec
+              ? // 低配（默认）：行内容平铺在整卡上，无分段底色、无圆角。
+              Column(
+                  children: <Widget>[
+                    if (i > 0)
+                      const Divider(
+                        height: 1,
+                        thickness: 1,
+                        indent: AppTokens.spaceLg,
+                        endIndent: AppTokens.spaceLg,
+                      ),
+                    ReorderableDelayedDragStartListener(
+                      index: i,
+                      child: _sourceTile(l10n, auth, s),
+                    ),
+                  ],
+                )
+              : Container(
+                  key: Key(s.id),
+                  decoration: BoxDecoration(
+                    // 分段底色拼出连体卡；列表内被拖项由框架隐藏为透明占位。
+                    color: AppTheme.cardContainer(scheme),
+                    borderRadius: BorderRadius.vertical(
+                      top: (i == 0 || i == belowGapItem)
+                          ? const Radius.circular(AppTokens.radiusLg)
+                          : Radius.zero,
+                      bottom: (i == sources.length - 1 || i == aboveGapItem)
+                          ? const Radius.circular(AppTokens.radiusLg)
+                          : Radius.zero,
+                    ),
+                  ),
+                  child: Column(
                     children: <Widget>[
+                      // 发丝分隔线随行携带（与设置分组一致），首行无线。
                       if (i > 0)
                         const Divider(
                           height: 1,
@@ -1014,47 +1089,17 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
                           indent: AppTokens.spaceLg,
                           endIndent: AppTokens.spaceLg,
                         ),
+                      // 长按整行启动拖动；开关/「更多」菜单等控件自身手势
+                      // 优先，点击行为不受影响。
                       ReorderableDelayedDragStartListener(
                         index: i,
                         child: _sourceTile(l10n, auth, s),
                       ),
                     ],
-                  )
-                : Container(
-                    key: Key(s.id),
-                    decoration: BoxDecoration(
-                      // 分段底色拼出连体卡；列表内被拖项由框架隐藏为透明占位。
-                      color: AppTheme.cardContainer(scheme),
-                      borderRadius: BorderRadius.vertical(
-                        top: (i == 0 || i == belowGapItem)
-                            ? const Radius.circular(AppTokens.radiusLg)
-                            : Radius.zero,
-                        bottom: (i == sources.length - 1 || i == aboveGapItem)
-                            ? const Radius.circular(AppTokens.radiusLg)
-                            : Radius.zero,
-                      ),
-                    ),
-                    child: Column(
-                      children: <Widget>[
-                        // 发丝分隔线随行携带（与设置分组一致），首行无线。
-                        if (i > 0)
-                          const Divider(
-                            height: 1,
-                            thickness: 1,
-                            indent: AppTokens.spaceLg,
-                            endIndent: AppTokens.spaceLg,
-                          ),
-                        // 长按整行启动拖动；开关/「更多」菜单等控件自身手势
-                        // 优先，点击行为不受影响。
-                        ReorderableDelayedDragStartListener(
-                          index: i,
-                          child: _sourceTile(l10n, auth, s),
-                        ),
-                      ],
-                    ),
                   ),
-          ),
-      ],
+                ),
+        );
+      },
     );
   }
 
@@ -1535,16 +1580,13 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
             hintText: l10n.networkImportPasteHint,
             prefixIcon: const Icon(Icons.link_rounded),
             border: const OutlineInputBorder(),
-            suffixIcon: _networkLoading
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : IconButton(
-                    icon: const Icon(Icons.check_rounded),
-                    onPressed: _fetchFromUrl,
-                  ),
+            // √ 恒定不变（用户要求 2026-11-21）：加载态不再把 suffixIcon
+            // 替换成转圈符号；加载提示由下方整块加载指示区承担，√ 仅在
+            // 加载中置灰以防重复提交。
+            suffixIcon: IconButton(
+              icon: const Icon(Icons.check_rounded),
+              onPressed: _networkLoading ? null : _fetchFromUrl,
+            ),
           ),
           keyboardType: TextInputType.url,
           onSubmitted: (_) => _fetchFromUrl(),
