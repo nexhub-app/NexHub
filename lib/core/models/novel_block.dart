@@ -59,6 +59,18 @@ class NovelMediaBlock extends NovelBlock {
   int get hashCode => Object.hash(url, kind);
 }
 
+/// 一次正文抓取结果：图文块列表 + 源 `ruleContent.title` 产生的章节名。
+///
+/// legado 在全部页拼接后求值一次标题规则并回写 `BookChapter.title`；
+/// [title] 为 null 表示未声明规则 / 规则未命中 / 结果为空，
+/// 调用方应沿用目录章节名。
+class NovelContentResult {
+  final List<NovelBlock> blocks;
+  final String? title;
+
+  const NovelContentResult(this.blocks, {this.title});
+}
+
 /// 插图块：章节正文中的一张图片。
 ///
 /// [url] 已是解析层拼好的绝对地址（含 baseUrl 归一化）。

@@ -546,12 +546,18 @@ class WebBook {
     required String chapterUrl,
     XiaoshuoBook? originalBook,
     String? nextChapterUrl,
+    String? chapterTitle,
   }) async {
     final contentRule = source.getContentRule();
     final book = originalBook ?? XiaoshuoBook(bookUrl: '', name: '');
     // 本章对象贯穿 URL 求值与正文规则：JS 里可读 `chapter.*`（legado
-    // AnalyzeUrl/AnalyzeRule 都绑定同一 BookChapter）。
-    final chapter = XiaoshuoBookChapter(bookUrl: book.bookUrl, url: chapterUrl);
+    // AnalyzeUrl/AnalyzeRule 都绑定同一 BookChapter）。标题用目录章节名
+    // 预置：legado 的标题规则在图片尾巴剥离为空时回落到 `bookChapter.title`。
+    final chapter = XiaoshuoBookChapter(
+      bookUrl: book.bookUrl,
+      url: chapterUrl,
+      title: chapterTitle ?? '',
+    );
 
     // 对照 legado WebBook.getContentAwait：正文规则为空时直接以章节链接
     // 作为正文（音频/视频源播放页章节即靠此返回直链；旧实现直接报
@@ -782,15 +788,16 @@ class WebBook {
         }
       } catch (_) {}
     }
-    BookContent.applyChapterTitle(postRule, contentRule, chapter);
+    final appliedTitle =
+        BookContent.applyChapterTitle(postRule, contentRule, chapter);
 
     if (blocks.isEmpty) {
-      return BookContentResult(content: '', error: '解析失败');
+      return BookContentResult(content: '', title: appliedTitle, error: '解析失败');
     }
 
     // 各子页已在 BookContent.analyzeContent 内完成清洗 / 缩进 / 去广告，
     // 拼接后即为最终正文；此处不再二次归一化（避免重复缩进叠加）。
-    return BookContentResult(blocks: blocks);
+    return BookContentResult(blocks: blocks, title: appliedTitle);
   }
 
   /// 从当前页正文中提取"下一页"绝对 URL；无下一页时返回空串。

@@ -115,7 +115,13 @@ class AnalyzeRule {
     if (fromBook.isNotEmpty) return fromBook;
     final local = nonEmpty(_variables[key]);
     if (local.isNotEmpty) return local;
-    return nonEmpty(ShuyuanSourceContext.current?.sourceVars[key]);
+    final sourceVars = ShuyuanSourceContext.current?.sourceVars;
+    // legado 链尾是 source.get(key)（BaseSource 的 v_ 命名空间 =
+    // 本实现的 `__v:` 前缀，source.put 写入处）；无前缀的源变量是
+    // NexHub 扩展通道，作为最后兜底保留。
+    final fromSourcePut = nonEmpty(sourceVars?['__v:$key']);
+    if (fromSourcePut.isNotEmpty) return fromSourcePut;
+    return nonEmpty(sourceVars?[key]);
   }
 
   List<String> getStringList(String? ruleStr, {bool isUrl = false}) {
@@ -456,6 +462,22 @@ class AnalyzeRule {
       // 时退化为独立实例。
       _jsEngine ??= JsEngine.forSource(
           ShuyuanSourceContext.current?.sourceId);
+      final activeCtx = ShuyuanSourceContext.current;
+      final target = book;
+      // 书变量层同步：JS `book.getVariable` 读的是 ctx.bookVars 种子；
+      // 与 Dart 书对象 variableMap 保持一致（覆盖换书残留）。
+      if (activeCtx != null && target != null) {
+        activeCtx.bookVars
+          ..clear()
+          ..addAll(target.variableMap);
+      }
+      // 种子顺序对齐 legado get 链：源变量 < 书变量 < 章节变量 < 本轮 put。
+      final seedJavaVars = <String, String>{
+        ...?activeCtx?.sourceVars,
+        ...?book?.variableMap,
+        ...?chapter?.variableMap,
+        ..._variables,
+      };
       final bindings = <String, dynamic>{
         // `java` 对象由 java_extensions 预置脚本提供（引擎侧跳过同名绑定）；
         // 变量表经 __javaVars 种子注入（动态 java.get 可读），脚本内 java.put
@@ -471,18 +493,10 @@ class AnalyzeRule {
         'nextChapterUrl': nextChapterUrl ?? '',
         // 每轮都重置变量快照（不能因为当前为空就跳过）：引擎已按源池化，
         // 会跨书/跨章存活；若沿用上一轮的 __javaVars，`java.get` 会读到
-        // 别的书的变量。put 的写回仍经 takeJavaVars → put 进 _variables。
-        // 种子顺序对齐 legado get 链：源变量 < 书变量 < 章节变量 < 本轮 put。
-        '__javaVars': <String, String>{
-          ...?ShuyuanSourceContext.current?.sourceVars,
-          ...?book?.variableMap,
-          ...?chapter?.variableMap,
-          ..._variables,
-        },
+        // 别的书的变量。
+        '__javaVars': seedJavaVars,
         if (extraBindings != null) ...extraBindings,
       };
-      final activeCtx = ShuyuanSourceContext.current;
-      final target = book;
       // book 字段 → JS 种子：脚本里 `book.name/author/…` 读到的是当前书。
       if (activeCtx != null && target != null) {
         activeCtx.bookInfo
@@ -500,7 +514,11 @@ class AnalyzeRule {
       }
       final out = _evalJsWithRuleBridge(jsStr, bindings, structured: structured);
       final javaVars = _jsEngine!.takeJavaVars();
-      javaVars.forEach(put);
+      // 只回写 JS 实际改动的键：__javaVars 同时是种子表，整表 put 会把
+      // 章节/书/源变量灌进规则层变量表（后续 get 链顺序失真、跨阶段残留）。
+      javaVars.forEach((k, v) {
+        if (seedJavaVars[k] != v) put(k, v);
+      });
       // JS 里 `book.name = '…'` 等字段写入回写当前书（空值不覆盖——
       // 正文解析阶段 book 是空壳，避免把详情阶段已解析的字段抹掉）。
       if (activeCtx != null && target != null) {

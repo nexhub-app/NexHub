@@ -237,6 +237,17 @@ const String sourceContextJsPrelude = r'''
       });
       return m;
     },
+    // legado BaseSource.getLoginInfo：登录信息整段 JSON 字符串（无信息 null）。
+    getLoginInfo: function () {
+      var c = syCtx();
+      var has = false;
+      var o = {};
+      for (var k in c.loginInfo) {
+        o[k] = c.loginInfo[k];
+        has = true;
+      }
+      return has ? JSON.stringify(o) : null;
+    },
     putLoginInfo: function (m) {
       var c = syCtx();
       var obj = m;
@@ -348,6 +359,33 @@ const String sourceContextJsPrelude = r'''
       return isNaN(n) ? 0 : n;
     },
   });
+
+  // legado AnalyzeRule.get(key)：特殊键 bookName/title 优先，其余按
+  // chapter → book → ruleData → source.get(v_ 命名空间) 非空链取值。
+  // 空值不短路（`takeIf { it.isNotEmpty() }`），后面的层仍可命中。
+  function syRuleGet(k) {
+    var key = String(k == null ? '' : k);
+    if (key === 'bookName') {
+      return String(book.name == null ? '' : book.name);
+    }
+    var ch = global.chapter;
+    if (key === 'title' && ch != null) {
+      return String(ch.title == null ? '' : ch.title);
+    }
+    if (ch != null && ch.variableMap && ch.variableMap[key] != null) {
+      var cv = String(ch.variableMap[key]);
+      if (cv !== '') return cv;
+    }
+    var bv = String(book.getVariable(key) || '');
+    if (bv !== '') return bv;
+    var rv = global.__javaVars;
+    if (rv && rv[key] != null) {
+      var s = String(rv[key]);
+      if (s !== '') return s;
+    }
+    var sv = syCtx().sourceVars['__v:' + key];
+    return sv == null ? '' : String(sv);
+  }
 
   var cache = {
     put: function (k, v, saveTime) {
@@ -701,6 +739,21 @@ const String sourceContextJsPrelude = r'''
   }
 
   if (global.java) {
+    // legado 的 `java` 有两种绑定：规则求值期是 AnalyzeRule（get/put 变量
+    // 语义），登录/初始化脚本里是 BaseSource 本身（getKey/getVariable/
+    // getLoginHeader…）。沙箱共用一套 java 对象：把 BaseSource 面挂上来，
+    // 两类脚本都能跑。同名方法保留 AnalyzeRule 版（get/put 见分派）。
+    ['getKey', 'getVariable', 'putVariable', 'setVariable', 'getLoginInfo',
+     'getLoginInfoMap', 'putLoginInfo', 'removeLoginInfo', 'getLoginHeader',
+     'getLoginHeaderMap', 'putLoginHeader', 'removeLoginHeader',
+     'refreshJSLib', 'refreshBookUrl'].forEach(function (n) {
+      if (typeof global.java[n] !== 'function') {
+        global.java[n] = function () {
+          return global.source[n].apply(global.source, arguments);
+        };
+      }
+    });
+    global.java.getSource = function () { return global.source; };
     global.java.__ajaxReq = function (url) {
       var key = String(url == null ? '' : url);
       var c = global.__ajaxCache;
@@ -730,17 +783,18 @@ const String sourceContextJsPrelude = r'''
     // get 分派（legado 两个重载）：
     // - 2 参及以上 → HTTP GET（JsExtensions.get(url, headers)，Jsoup 口径：
     //   不跟随重定向、headers 是 Map）；
-    // - 1 参 → **变量优先**，取不到且形如 URL 才发请求。
-    // 变量优先很关键：`java.get('bookUrl')` 的值本身就是 URL，按「看起来
-    // 像 URL 就发请求」会把它误当接口（旧逻辑即如此）。
+    // - 1 参 → **AnalyzeRule 变量链优先**（bookName/title 特殊键 +
+    //   chapter → book → ruleData → source.put 命名空间），链路全空且
+    //   形如 URL 才发请求。变量优先很关键：`java.get('bookUrl')` 的值
+    //   本身就是 URL，按「看起来像 URL 就发请求」会把它误当接口。
     global.java.get = function (a, b, c) {
       if (arguments.length >= 2) {
         var key = syWithHeaders(a, b, { followRedirects: false });
         return syResp(key, global.java.__ajaxReq(key));
       }
       var s = String(a == null ? '' : a);
-      var v = global.__javaVars;
-      if (v && v[s] != null) return String(v[s]);
+      var v = syRuleGet(s);
+      if (v !== '') return v;
       if (/^https?:\/\//i.test(s)) {
         var key2 = syWithHeaders(s, null, { followRedirects: false });
         return syResp(key2, global.java.__ajaxReq(key2));
@@ -4501,10 +4555,17 @@ const String javaExtensionsJsPrelude = r'''
       return v && v[k] != null ? String(v[k]) : '';
     },
     put: function (k, v) {
+      var s = v == null ? '' : String(v);
+      // legado AnalyzeRule.put：有章节时先写章节 variableMap，随后
+      // java.get 的 chapter 层优先命中新值；无章节由宿主排空写 ruleData。
+      var ch = global.chapter;
+      if (ch != null && ch.variableMap && typeof ch.variableMap === 'object') {
+        ch.variableMap[String(k)] = s;
+      }
       if (!global.__javaVars || typeof global.__javaVars !== 'object') {
         global.__javaVars = {};
       }
-      global.__javaVars[String(k)] = v == null ? '' : String(v);
+      global.__javaVars[String(k)] = s;
       return v;
     },
     // ── 规则求值桥（确定性重放，见 ruleCall 注释）──

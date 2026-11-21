@@ -20,7 +20,12 @@ import '../../../core/models/episode.dart';
 import '../../../core/models/explore_kind.dart';
 import '../../../core/models/media_item.dart';
 import '../../../core/models/novel_block.dart'
-    show NovelBlock, NovelImageBlock, NovelMediaBlock, NovelTextBlock;
+    show
+        NovelBlock,
+        NovelContentResult,
+        NovelImageBlock,
+        NovelMediaBlock,
+        NovelTextBlock;
 import 'package:meta/meta.dart';
 
 import '../../../core/models/plugin_config.dart';
@@ -445,10 +450,15 @@ class ShuyuanNovelResolver
         // 在渲染路径下不做（WebView 取回的已是单页渲染结果），绝大多数章节单页。
         final chapterUrl = vars['url'] ?? vars['chapter'] ?? '';
         final book = XiaoshuoBook(bookUrl: '', name: '');
+        final chapter = XiaoshuoBookChapter(
+          bookUrl: '',
+          url: chapterUrl,
+          title: vars['chapterTitle'] ?? '',
+        );
         final blocks = BookContent.analyzeContent(
           bookSource: bookSource,
           book: book,
-          bookChapter: XiaoshuoBookChapter(bookUrl: '', url: chapterUrl),
+          bookChapter: chapter,
           baseUrl: chapterUrl,
           redirectUrl: chapterUrl,
           body: html,
@@ -462,7 +472,10 @@ class ShuyuanNovelResolver
             message: '正文渲染后解析为空',
           );
         }
-        return blocks;
+        return NovelContentResult(
+          blocks,
+          title: chapter.title.isEmpty ? null : chapter.title,
+        );
       case 'video':
         // 视频/音频源播放直链：渲染后 HTML 取正文规则里的媒体 URL。
         final videoChapterUrl = vars['url'] ?? vars['chapter'] ?? '';
@@ -1263,7 +1276,7 @@ class ShuyuanNovelResolver
   }
 
   // ── 正文 ──
-  Future<List<NovelBlock>> _handleContent(
+  Future<NovelContentResult> _handleContent(
     PluginConfig source,
     XiaoshuoBookSource bookSource,
     Map<String, String> vars,
@@ -1273,10 +1286,14 @@ class ShuyuanNovelResolver
       throw ArgumentError('content requires vars["url"]');
     }
     final nextChapterUrl = vars['nextChapterUrl'] ?? '';
+    // 目录章节名：标题规则的图片尾巴剥离为空时回落到它（legado 用书对象里
+    // 的 BookChapter.title，NexHub 由调用方经 vars 传入）。
+    final chapterTitle = vars['chapterTitle'] ?? '';
     final result = await _webBook.getContent(
       source: bookSource,
       chapterUrl: chapterUrl,
       nextChapterUrl: nextChapterUrl.isEmpty ? null : nextChapterUrl,
+      chapterTitle: chapterTitle.isEmpty ? null : chapterTitle,
     );
     if (result.error != null && result.blocks.isEmpty) {
       throw SourceResolveException(
@@ -1300,13 +1317,14 @@ class ShuyuanNovelResolver
             _extractMediaUrl(result.blocks),
         chapterUrl,
       );
-      return <NovelBlock>[
-        NovelMediaBlock(mediaUrl ?? '', kind: kind),
-      ];
+      return NovelContentResult(
+        <NovelBlock>[NovelMediaBlock(mediaUrl ?? '', kind: kind)],
+        title: result.title,
+      );
     }
     // 图文块列表（文本段 + 插图），保留解析层给出的原始顺序，
     // 供阅读器图文混排显示。
-    return result.blocks;
+    return NovelContentResult(result.blocks, title: result.title);
   }
 
   /// 从正文块（音/视频源的正文规则输出）提取媒体直链。

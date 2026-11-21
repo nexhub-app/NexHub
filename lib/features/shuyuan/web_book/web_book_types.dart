@@ -34,11 +34,16 @@ class BookContentResult {
   /// 图文块列表：文本段与插图按原顺序共存，供阅读器图文混排。
   final List<NovelBlock> blocks;
 
+  /// `ruleContent.title` 命中后的章节名（含 legado imgRegex 剥离）。
+  /// null 表示未声明标题规则 / 未命中，调用方沿用目录章节名。
+  final String? title;
+
   final String? error;
 
   BookContentResult({
     this.content = '',
     this.blocks = const [],
+    this.title,
     this.error,
   });
 }

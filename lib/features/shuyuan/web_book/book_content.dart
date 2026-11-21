@@ -264,23 +264,30 @@ class BookContent {
   /// legado BookContent 外层标题规则：在页拼接后求值一次；命中
   /// `图片地址` 尾巴时剥离为章节名（图片部分 legado 存入 reviewImg，
   /// NexHub 章节模型无该字段，丢弃）。
-  static void applyChapterTitle(
+  ///
+  /// 返回实际生效的章节名（未声明规则 / 未命中 / 结果为空返回 null），
+  /// 供 `BookContentResult.title` 透传到阅读器。
+  static String? applyChapterTitle(
     AnalyzeRule analyzeRule,
     ContentRule contentRule,
     XiaoshuoBookChapter bookChapter,
   ) {
     final titleRule = contentRule.title;
-    if (titleRule == null || titleRule.isEmpty) return;
+    if (titleRule == null || titleRule.isEmpty) return null;
     try {
       var title = analyzeRule.getString(titleRule);
-      if (title.isEmpty) return;
+      if (title.isEmpty) return null;
       final match = _chapterImgRegex.firstMatch(title);
       if (match != null) {
         final beforeImg = match.group(1) ?? '';
         title = beforeImg.isNotEmpty ? beforeImg : bookChapter.title;
       }
+      if (title.isEmpty) return null;
       bookChapter.title = title;
-    } catch (_) {}
+      return title;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// legado BookContent 外层 subContent：all 页拼接后对首页响应求值一次，

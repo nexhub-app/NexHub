@@ -4,6 +4,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:nexhub/generated/app_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
+import 'package:nexhub/core/comic/models/reader_preferences.dart'
+    show InMemoryBackend;
 import 'package:nexhub/core/favorites/favorites_manager.dart';
 import 'package:nexhub/core/models/episode.dart';
 import 'package:nexhub/core/models/novel_block.dart';
@@ -27,6 +29,7 @@ class FakeNovelMediaApiService extends MediaApiService {
     required String chapterUrl,
     String? nextChapterUrl,
     String? renderedHtml,
+    String? chapterTitle,
   }) async {
     await Future<void>.delayed(const Duration(milliseconds: 20));
     return const <NovelBlock>[
@@ -38,12 +41,37 @@ class FakeNovelMediaApiService extends MediaApiService {
       NovelTextBlock('最后一段为结尾，留下悬念，引向下一章的故事发展。'),
     ];
   }
+
+  @override
+  Future<NovelContentResult> fetchNovelContentDetailed(
+    PluginConfig source, {
+    required String novelId,
+    required String chapterUrl,
+    String? nextChapterUrl,
+    String? renderedHtml,
+    String? chapterTitle,
+  }) async {
+    final blocks = await fetchNovelContent(
+      source,
+      novelId: novelId,
+      chapterUrl: chapterUrl,
+      nextChapterUrl: nextChapterUrl,
+      renderedHtml: renderedHtml,
+      chapterTitle: chapterTitle,
+    );
+    // 模拟源声明了 `ruleContent.title`：阅读器应以规则结果覆盖目录章节名。
+    return NovelContentResult(blocks, title: '正文规则标题');
+  }
 }
 
 void main() {
   setUpAll(() async {
     // NovelNoteManager / NovelBookmarkManager 依赖 Hive box，测试前需初始化。
-    Hive.init(Directory.systemTemp.path);
+    // 用每次运行唯一的临时目录（同 comic 阅读器测试）：固定路径会在多文件
+    // 并发/先后运行时争抢同名 .lock 文件。
+    Hive.init(
+      Directory.systemTemp.createTempSync('novel_reader_hive').path,
+    );
     // 预先打开 box，使 NovelNoteManager.init() 走 isBoxOpen 快路径同步返回，
     // 避免 Hive.openBox() 在 _init() 中创建的异步计时器干扰 pumpAndSettle。
     await Hive.openBox('novel_notes');
@@ -53,9 +81,8 @@ void main() {
     await Hive.openBox('novel_pre_downloads');
   });
 
-  tearDownAll(() async {
-    await Hive.deleteFromDisk();
-  });
+  // 不做 Hive.deleteFromDisk()：其内部的异步文件 I/O 在 testWidgets 文件的
+  // teardown 阶段可能永不完成；目录是本次运行唯一的临时目录，交给系统清理。
 
   testWidgets('reader renders content and toggles UI', (tester) async {
     SharedPreferences.setMockInitialValues(<String, Object>{
@@ -86,7 +113,9 @@ void main() {
     });
     final repo = SourceRepository(<PluginConfig>[source]);
     final service = FakeNovelMediaApiService();
-    final favorites = FavoritesManager();
+    // FilePrefsBackend 走 dart:io，testWidgets 的 fake-async 区域等不到
+    // 真实 I/O 完成；测试注入内存后端，避免 init() 无限挂起。
+    final favorites = FavoritesManager(backend: InMemoryBackend());
     await favorites.init();
     const chapters = <Episode>[
       Episode(id: 'ch1', title: '第1章 开端', url: '/ch1'),
@@ -133,11 +162,13 @@ void main() {
     // 点击中心切换阅读器控件显隐。
     await tester.tapAt(const Offset(400, 600));
     await tester.pumpAndSettle();
-    expect(find.byIcon(Icons.arrow_back), findsOneWidget);
+    expect(find.byIcon(Icons.arrow_back_rounded), findsOneWidget);
+    // 标题规则贯通：控制栏章节副标题应显示源规则产生的章节名。
+    expect(find.textContaining('正文规则标题'), findsWidgets);
 
     // 再次点击中心收起控件。
     await tester.tapAt(const Offset(400, 600));
     await tester.pumpAndSettle();
-    expect(find.byIcon(Icons.arrow_back), findsNothing);
+    expect(find.byIcon(Icons.arrow_back_rounded), findsNothing);
   });
 }

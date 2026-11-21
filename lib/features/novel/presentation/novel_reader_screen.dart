@@ -589,15 +589,44 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   bool get _isAggregatedLocal =>
       widget.localChapterPaths != null && widget.localChapterPaths!.isNotEmpty;
 
+  /// 源 `ruleContent.title` 产生的章节名（legado 回写 BookChapter.title）。
+  /// 按目录下标覆盖显示；未命中的章节保持目录名。
+  final Map<int, String> _contentChapterTitles = <int, String>{};
+
+  /// [_contentChapterTitles] 叠加后的章节列表缓存（失效时重建）。
+  List<Episode>? _chaptersWithContentTitles;
+
+  /// 记录正文标题规则结果（null/空串 = 未命中，保持目录名）。
+  void _recordContentTitle(int index, String? title) {
+    if (title == null || title.isEmpty) return;
+    if (_contentChapterTitles[index] == title) return;
+    _contentChapterTitles[index] = title;
+    _chaptersWithContentTitles = null;
+  }
+
   /// 实际可用的章节列表：聚合本地用构建后的展开目录（EPUB 拆成多章），
   /// 单 EPUB 用解析出的章节，其余用传入的 [widget.chapters]。
+  /// 正文标题规则命中的章节以规则结果覆盖目录名（legado 同语义）。
   List<Episode> get _effectiveChapters {
+    final List<Episode> base;
     if (_isAggregatedLocal && _expandedChapters != null) {
-      return _expandedChapters!;
+      base = _expandedChapters!;
+    } else {
+      base = widget.chapters.isNotEmpty
+          ? widget.chapters
+          : (_parsedChapterEpisodes ?? const <Episode>[]);
     }
-    return widget.chapters.isNotEmpty
-        ? widget.chapters
-        : (_parsedChapterEpisodes ?? const <Episode>[]);
+    if (_contentChapterTitles.isEmpty) return base;
+    final cached = _chaptersWithContentTitles;
+    if (cached != null && cached.length == base.length) return cached;
+    final overlaid = <Episode>[
+      for (var i = 0; i < base.length; i++)
+        _contentChapterTitles[i] != null
+            ? base[i].copyWith(title: _contentChapterTitles[i])
+            : base[i],
+    ];
+    _chaptersWithContentTitles = overlaid;
+    return overlaid;
   }
 
   ScrollController? _scrollController;
@@ -3061,12 +3090,18 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       if (cached != null) {
         paragraphs = cached;
       } else {
-        paragraphs = await _service.fetchNovelContent(
+        final NovelContentResult fetched =
+            await _service.fetchNovelContentDetailed(
           source,
           novelId: widget.novelId,
           chapterUrl: chapter.url,
           nextChapterUrl: nextChapterUrl,
+          // 目录章节名：标题规则剥图后为空时回落到它（legado BookChapter）。
+          chapterTitle: chapter.title,
         );
+        paragraphs = fetched.blocks;
+        // 标题规则结果覆盖显示名（legado 回写 BookChapter.title）。
+        _recordContentTitle(index, fetched.title);
       }
       if (!mounted) {
         _chapterLoading = false;
@@ -3180,13 +3215,17 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       final nextChapterUrl = index + 1 < widget.chapters.length
           ? widget.chapters[index + 1].url
           : null;
-      final paragraphs = await _service.fetchNovelContent(
+      final NovelContentResult fetched =
+          await _service.fetchNovelContentDetailed(
         source,
         novelId: widget.novelId,
         chapterUrl: chapter.url,
         nextChapterUrl: nextChapterUrl,
         renderedHtml: renderedHtml,
+        chapterTitle: chapter.title,
       );
+      final paragraphs = fetched.blocks;
+      _recordContentTitle(index, fetched.title);
       if (!mounted) {
         _chapterLoading = false;
         return;
@@ -3571,7 +3610,8 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       final List<NovelBlock> effective =
           await _applyContentEditOverride(chs[next].id, blocks);
       if (!mounted) return;
-      final String title = chs[next].title;
+      // 取覆盖后的章节名（正文标题规则结果可能已在抓取时记录）。
+      final String title = _effectiveChapters[next].title;
       setState(() {
         _scrollSegments.add(
           _NovelScrollSegment(
@@ -3620,12 +3660,16 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
         await _preDownloader.cached(widget.novelId, ep.id);
     if (cached != null) return cached;
     final nextChapterUrl = index + 1 < chs.length ? chs[index + 1].url : null;
-    return _service.fetchNovelContent(
+    final NovelContentResult fetched =
+        await _service.fetchNovelContentDetailed(
       source,
       novelId: widget.novelId,
       chapterUrl: ep.url,
       nextChapterUrl: nextChapterUrl,
+      chapterTitle: ep.title,
     );
+    _recordContentTitle(index, fetched.title);
+    return fetched.blocks;
   }
 
   /// 本地模式取指定章节的正文块（纯内存切片）。
@@ -5573,7 +5617,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   Widget _buildMediaChapterScaffold(BuildContext context, AppLocalizations l10n) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final bg = _prefs.resolveBackgroundColor(isDark);
-    final chapters = widget.chapters;
+    final chapters = _effectiveChapters;
     final title = chapters.isNotEmpty
         ? chapters[_chapterIndex.clamp(0, chapters.length - 1)].title
         : '';

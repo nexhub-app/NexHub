@@ -726,32 +726,53 @@ class MediaApiService {
     required String chapterUrl,
     String? nextChapterUrl,
     String? renderedHtml,
+    String? chapterTitle,
   }) async {
+    final r = await fetchNovelContentDetailed(
+      source,
+      novelId: novelId,
+      chapterUrl: chapterUrl,
+      nextChapterUrl: nextChapterUrl,
+      renderedHtml: renderedHtml,
+      chapterTitle: chapterTitle,
+    );
+    return r.blocks;
+  }
+
+  /// 同 [fetchNovelContent]，额外返回源 `ruleContent.title` 产生的章节名
+  /// （legado 会把它回写到 BookChapter；null 表示未声明/未命中，
+  /// 调用方沿用目录章节名）。[chapterTitle] 为目录章节名，标题规则
+  /// 剥离图片尾巴为空时回落到它。
+  Future<NovelContentResult> fetchNovelContentDetailed(
+    PluginConfig source, {
+    required String novelId,
+    required String chapterUrl,
+    String? nextChapterUrl,
+    String? renderedHtml,
+    String? chapterTitle,
+  }) async {
+    final vars = <String, String>{
+      'id': novelId,
+      'chapter': chapterUrl,
+      'url': chapterUrl,
+      'nextChapterUrl': nextChapterUrl ?? '',
+      'chapterTitle': chapterTitle ?? '',
+    };
     if (renderedHtml != null && renderedHtml.isNotEmpty) {
       final r = await _resolveFromRenderedHtml(
         source,
         'content',
         renderedHtml,
-        vars: <String, String>{
-          'id': novelId,
-          'chapter': chapterUrl,
-          'url': chapterUrl,
-          'nextChapterUrl': nextChapterUrl ?? '',
-        },
+        vars: vars,
       );
-      return _asBlocks(r);
+      return _asContentResult(r);
     }
     final r = await registry.find(source, 'content').resolve(
           source,
           'content',
-          vars: <String, String>{
-            'id': novelId,
-            'chapter': chapterUrl,
-            'url': chapterUrl,
-            'nextChapterUrl': nextChapterUrl ?? '',
-          },
+          vars: vars,
         );
-    return _asBlocks(r);
+    return _asContentResult(r);
   }
 
   List<MediaItem> _asItems(dynamic r) {
@@ -764,6 +785,11 @@ class MediaApiService {
     if (r is List<Episode>) return r;
     if (r is List) return [for (final e in r) if (e is Episode) e];
     return const [];
+  }
+
+  NovelContentResult _asContentResult(dynamic r) {
+    if (r is NovelContentResult) return r;
+    return NovelContentResult(_asBlocks(r));
   }
 
   List<NovelBlock> _asBlocks(dynamic r) {

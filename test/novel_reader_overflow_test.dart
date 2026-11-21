@@ -15,6 +15,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:nexhub/generated/app_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hive/hive.dart';
+import 'package:nexhub/core/comic/models/reader_preferences.dart'
+    show InMemoryBackend;
 import 'package:nexhub/core/favorites/favorites_manager.dart';
 import 'package:nexhub/core/models/episode.dart';
 import 'package:nexhub/core/models/novel_block.dart';
@@ -36,6 +38,7 @@ class _FakeNovelMediaApiService extends MediaApiService {
     required String chapterUrl,
     String? nextChapterUrl,
     String? renderedHtml,
+    String? chapterTitle,
   }) async {
     await Future<void>.delayed(const Duration(milliseconds: 20));
     // 长段 + 短段 + 章节标题混合：既触发跨页断行与寡行回退，也覆盖
@@ -55,11 +58,35 @@ class _FakeNovelMediaApiService extends MediaApiService {
       ],
     ];
   }
+
+  @override
+  Future<NovelContentResult> fetchNovelContentDetailed(
+    PluginConfig source, {
+    required String novelId,
+    required String chapterUrl,
+    String? nextChapterUrl,
+    String? renderedHtml,
+    String? chapterTitle,
+  }) async {
+    final blocks = await fetchNovelContent(
+      source,
+      novelId: novelId,
+      chapterUrl: chapterUrl,
+      nextChapterUrl: nextChapterUrl,
+      renderedHtml: renderedHtml,
+      chapterTitle: chapterTitle,
+    );
+    return NovelContentResult(blocks);
+  }
 }
 
 void main() {
   setUpAll(() async {
-    Hive.init(Directory.systemTemp.path);
+    // 每次运行唯一的临时目录（同 comic 阅读器测试），避免多文件运行
+    // 争抢固定路径下的同名 .lock 文件。
+    Hive.init(
+      Directory.systemTemp.createTempSync('novel_overflow_hive').path,
+    );
     await Hive.openBox('novel_notes');
     await Hive.openBox('novel_bookmarks');
     // 预下载缓存 box：预打开避免阅读器 _loadChapter 内 Hive.openBox
@@ -67,9 +94,8 @@ void main() {
     await Hive.openBox('novel_pre_downloads');
   });
 
-  tearDownAll(() async {
-    await Hive.deleteFromDisk();
-  });
+  // 不做 Hive.deleteFromDisk()：其内部异步文件 I/O 在 testWidgets 文件的
+  // teardown 阶段可能永不完成；临时目录交给系统清理。
 
   Future<void> pumpReader(
     WidgetTester tester,
@@ -103,7 +129,9 @@ void main() {
     });
     final repo = SourceRepository(<PluginConfig>[source]);
     final service = _FakeNovelMediaApiService();
-    final favorites = FavoritesManager();
+    // FilePrefsBackend 走 dart:io，testWidgets 的 fake-async 区域等不到
+    // 真实 I/O 完成；测试注入内存后端，避免 init() 无限挂起。
+    final favorites = FavoritesManager(backend: InMemoryBackend());
     await favorites.init();
     const chapters = <Episode>[
       Episode(id: 'ch1', title: '第1章 开端', url: '/ch1'),
