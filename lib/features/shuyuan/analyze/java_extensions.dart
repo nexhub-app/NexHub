@@ -405,8 +405,11 @@ const String sourceContextJsPrelude = r'''
 
   var cache = {
     put: function (k, v, saveTime) {
-      syCtx().cache[String(k)] = String(v == null ? '' : v);
-      syOp('cachePut', k, v);
+      var s = String(v == null ? '' : v);
+      syCtx().cache[String(k)] = s;
+      // 传字符串快照：宿主 cache 是 Map<String,String>，对象直传会在排空
+      // 时类型失配；同时保证占位符守卫看到的就是最终缓存值。
+      syOp('cachePut', k, s);
       return null;
     },
     get: function (k) {
@@ -1259,6 +1262,29 @@ const String javaExtensionsJsPrelude = r'''
     var out = [];
     for (var i = 0; i + 1 < h.length; i += 2) {
       out.push(signedByte(parseInt(h.charAt(i) + h.charAt(i + 1), 16)));
+    }
+    return out;
+  }
+
+  // legado `String.hexToByteArray()`（CryptoUtils.kt）：null 抛异常、长度
+  // 必须为偶数、每两位必须是合法十六进制，否则抛异常。脚本常用
+  // try { java.hexDecodeToString(result) } catch 做能力/阶段探测，宽松
+  // 解码会把本该失败的分支当成功，跳过 catch 里的初始化。
+  function hexStrictBytes(s) {
+    if (s === null || s === undefined) {
+      throw new TypeError('hexDecode: null');
+    }
+    var h = String(s);
+    if (h.length % 2 !== 0) {
+      throw new Error('hexDecode: odd length ' + h.length);
+    }
+    var out = [];
+    for (var i = 0; i < h.length; i += 2) {
+      var pair = h.substring(i, i + 2);
+      if (!/^[0-9a-fA-F]{2}$/.test(pair)) {
+        throw new Error('hexDecode: invalid pair ' + pair);
+      }
+      out.push(signedByte(parseInt(pair, 16)));
     }
     return out;
   }
@@ -4544,8 +4570,8 @@ const String javaExtensionsJsPrelude = r'''
     base64Decode: function (s) { return utf8Decode(bytesFromB64(s)); },
     base64DecodeToByteArray: function (s) { return bytesFromB64(s); },
     hexEncodeToString: function (v) { return bytesToHex(anyToBytes(v)); },
-    hexDecodeToString: function (s) { return utf8Decode(hexToBytes(s)); },
-    hexDecodeToByteArray: function (s) { return hexToBytes(s); },
+    hexDecodeToString: function (s) { return utf8Decode(hexStrictBytes(s)); },
+    hexDecodeToByteArray: function (s) { return hexStrictBytes(s); },
     // AES：encode 输出 base64；decode 系列接受 base64 或 hex，输出字符串/字节数组。
     // transformation 形如 "AES/CBC/PKCS5Padding"、"AES/ECB/NoPadding"；
     // CTR/GCM/CFB/OFB 未实现（返回空，避免给出错误结果）。

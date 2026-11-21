@@ -200,6 +200,11 @@ bool _looksLikeKinds(String s) {
     // JSON.stringify(infoMap) 仍只输出数据键；脚本结束再快照回传宿主，
     // 让 save/put/下标写入像 legado 一样持久化。
     final wrapped = '(function () {\n'
+        // legado 的发现页 eval 不绑定 result（BaseSource.evalJS 独立作用域）；
+        // NexHub 的规则绑定是全局 var，会把上一次 URL/规则求值的 result
+        // 泄露进来。局部声明遮蔽它：脚本读到 undefined，与 legado 一致，
+        // 依赖 `hexDecode(result)` 抛错进入 catch 初始化的脚本才不会走偏。
+        '  var result;\n'
         '  globalThis.__shuyuanInfoOut = "";\n'
         '  if (typeof infoMap !== "undefined" && infoMap) {\n'
         '    var __def = function (n, f) {\n'

@@ -399,7 +399,11 @@ class ShuyuanSourceContext {
             }
           } catch (_) {}
         case 'cachePut':
-          cache[a] = b;
+          // 占位符值（本轮未回填的 ajax/webview 结果）不能落持久缓存：
+          // 脚本常把取数结果拼进 headers 再 cache.put，一旦把带
+          // `__WEBVIEW_n__` 的脏值存下来，后续重放轮会命中它而不再重建
+          // （legado 的桥是同步的，缓存里只会出现真实响应）。
+          if (!_hasReplayPlaceholderValue(b)) cache[a] = b;
         case 'cacheDel':
           cache.remove(a);
         case 'ajax':
@@ -796,6 +800,12 @@ class ShuyuanSourceContext {
       for (final k in ctx.ajaxBytesPending)
         if (!ctx.ajaxPending.contains(k)) k,
     ];
+    // 含未回填占位符的请求键（如签名/请求头里嵌着 `__WEBVIEW_n__`）本轮
+    // 一律不发：字面占位符打到站点只会拿到错误响应并写进缓存。直接丢弃
+    // 待办，让下一轮用已回填的依赖重新构造真实 URL。
+    keys.removeWhere(_hasReplayPlaceholderValue);
+    ctx.ajaxPending.removeWhere(_hasReplayPlaceholderValue);
+    ctx.ajaxBytesPending.removeWhere(_hasReplayPlaceholderValue);
     for (final key in keys) {
       final wantBody = ctx.ajaxPending.contains(key);
       final wantBytes = ctx.ajaxBytesPending.contains(key);
@@ -878,3 +888,8 @@ class ShuyuanSourceContext {
     _cookieCache = null;
   }
 }
+
+/// 重放占位符（`__AJAX_n__` / `__WEBVIEW_n__`）：脚本在宿主取数前拿到的
+/// 临时返回值。含占位符的内容不完整，不能持久化，也不能作为真实请求发出。
+bool _hasReplayPlaceholderValue(String v) =>
+    v.contains('__AJAX_') || v.contains('__WEBVIEW_');

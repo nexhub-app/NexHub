@@ -9,6 +9,7 @@ import 'package:nexhub/features/shuyuan/analyze/concurrent_rate_limiter.dart';
 import 'package:nexhub/features/shuyuan/analyze/js_engine.dart';
 import 'package:nexhub/features/shuyuan/analyze/source_context.dart';
 import 'package:nexhub/features/shuyuan/analyze/webview_fetcher.dart';
+import 'package:nexhub/features/shuyuan/model/book_source.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -87,6 +88,36 @@ void main() {
       final e = engine();
       expect(e.eval("cache.get('c')"), '9');
       expect(e.eval("cache.delete('c'); cache.get('c')"), '');
+    });
+  });
+
+  test('cache：对象值按字符串快照入宿主缓存', () {
+    final ctx = ShuyuanSourceContext('src_1');
+    ShuyuanSourceContext.run(ctx, () {
+      final e = engine();
+      expect(e.eval("cache.put('obj', {a: 1}); typeof cache.get('obj')"),
+          'string');
+      expect(ctx.cache['obj'], '[object Object]');
+    });
+  });
+
+  test('cache：含重放占位符的值不落持久缓存（下轮重算）', () {
+    final ctx = ShuyuanSourceContext('src_1');
+    ShuyuanSourceContext.run(ctx, () {
+      final e = engine();
+      // 同一次求值内 put 后 get 仍可见（脚本本轮拼装依赖）。
+      expect(
+          e
+              .eval("cache.put('hd', JSON.stringify("
+                  "{headers: {Secret: '__WEBVIEW_1__'}})); cache.get('hd')")
+              .contains('__WEBVIEW_1__'),
+          isTrue);
+    });
+    // 跨 eval 的种子不得带占位符：下一轮脚本会重新构建真实值。
+    expect(ctx.cache.containsKey('hd'), isFalse);
+    ShuyuanSourceContext.run(ctx, () {
+      final e = engine();
+      expect(e.eval("cache.get('hd')"), '');
     });
   });
 
@@ -219,6 +250,44 @@ void main() {
             'true');
         expect(e.eval("java.ajax('https://x.test/big').length"), '4096');
       });
+    });
+
+    test('settleAjax 丢弃含占位符的请求键（不发真实请求、不写缓存）', () async {
+      final ctx = ShuyuanSourceContext('ajax-placeholder');
+      final src = XiaoshuoBookSource(
+        bookSourceUrl: 'https://src.example.com/',
+        bookSourceName: '本地占位符测试源',
+      );
+      ctx.ajaxPending
+        ..add('https://api.invalid/x?sign=__WEBVIEW_1__')
+        ..add('https://api.invalid/y||POST||__AJAX_2__');
+      ctx.ajaxBytesPending.add('https://api.invalid/z?k=__AJAX_3__');
+
+      final fetched = await ShuyuanSourceContext.run(
+          ctx, () => ShuyuanSourceContext.settleAjax(ctx, src));
+
+      expect(fetched, 0, reason: '占位符请求不得计入抓取数');
+      expect(ctx.ajaxPending, isEmpty);
+      expect(ctx.ajaxBytesPending, isEmpty);
+      expect(ctx.ajaxCache, isEmpty);
+      expect(ctx.ajaxBytesCache, isEmpty);
+      expect(ctx.ajaxMetaCache, isEmpty);
+    });
+
+    test('settleAjax 真实键照常抓取（data: 不发网络）', () async {
+      final ctx = ShuyuanSourceContext('ajax-real');
+      final src = XiaoshuoBookSource(
+        bookSourceUrl: 'https://src.example.com/',
+        bookSourceName: '本地真实请求测试源',
+      );
+      const key = 'data:text/plain;base64,aGk=';
+      ctx.ajaxPending.add(key);
+
+      final fetched = await ShuyuanSourceContext.run(
+          ctx, () => ShuyuanSourceContext.settleAjax(ctx, src));
+
+      expect(fetched, 1);
+      expect(ctx.ajaxCache[key], 'hi');
     });
   });
 

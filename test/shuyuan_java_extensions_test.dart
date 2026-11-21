@@ -97,6 +97,24 @@ void main() {
           'e4b8ad');
     });
 
+    test('hexDecode 严格对齐 legado：空串为空，null/奇数/非法字符抛错', () {
+      final e = engine();
+      expect(e.eval("java.hexDecodeToString('')"), '');
+      const probe = "(function(){try{java.hexDecodeToString(%s);"
+          "return 'ok';}catch(e){return 'throw';}})()";
+      expect(e.eval(probe.replaceAll('%s', "'abc'")), 'throw',
+          reason: '奇数长度');
+      expect(e.eval(probe.replaceAll('%s', "'zz'")), 'throw', reason: '非法字符');
+      expect(e.eval(probe.replaceAll('%s', "'0g'")), 'throw', reason: '半合法对');
+      expect(e.eval(probe.replaceAll('%s', 'null')), 'throw', reason: 'null');
+      expect(e.eval(probe.replaceAll('%s', 'undefined')), 'throw',
+          reason: 'undefined');
+      expect(
+          e.eval("(function(){try{java.hexDecodeToByteArray('0g');"
+              "return 'ok';}catch(e){return 'throw';}})()"),
+          'throw');
+    });
+
     test('encodeURI 为 Java URLEncoder 口径（空格→+）', () {
       final e = engine();
       expect(e.eval("java.encodeURI('a b&c=中文')"), 'a+b%26c%3D%E4%B8%AD%E6%96%87');
