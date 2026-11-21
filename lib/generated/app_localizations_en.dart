@@ -5739,6 +5739,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get playerPip => 'Picture in picture';
 
   @override
+  String get playerLyric => 'Lyrics';
+
+  @override
   String get playerCast => 'Cast';
 
   @override

@@ -506,11 +506,12 @@ class ShuyuanNovelResolver
       case 'video':
         // 视频/音频源播放直链：渲染后 HTML 取正文规则里的媒体 URL。
         final videoChapterUrl = vars['url'] ?? vars['chapter'] ?? '';
+        final videoChapter =
+            XiaoshuoBookChapter(bookUrl: '', url: videoChapterUrl);
         final videoBlocks = BookContent.analyzeContent(
           bookSource: bookSource,
           book: XiaoshuoBook(bookUrl: '', name: ''),
-          bookChapter:
-              XiaoshuoBookChapter(bookUrl: '', url: videoChapterUrl),
+          bookChapter: videoChapter,
           baseUrl: videoChapterUrl,
           redirectUrl: videoChapterUrl,
           body: html,
@@ -536,9 +537,13 @@ class ShuyuanNovelResolver
           baseUrl: bookSource.bookSourceUrl,
           source: bookSource,
         );
+        // 音频源 `subContent` 在正文规则里产出 LRC，BookContent 已写入
+        // 章节变量 `lyric`（md3 AudioPlay 同源）；随直链一并回传给播放器。
+        final lyric = videoChapter.getVariable('lyric').trim();
         return VideoResult(
           url: renderedAnalyze.url,
           headers: renderedAnalyze.resolveRequestHeaders(),
+          lyric: lyric.isEmpty ? null : lyric,
         );
       default:
         return resolve(source, apiName, vars: vars);

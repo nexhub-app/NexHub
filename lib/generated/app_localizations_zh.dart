@@ -5623,6 +5623,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get playerPip => '画中画';
 
   @override
+  String get playerLyric => '歌词';
+
+  @override
   String get playerCast => '投屏';
 
   @override

@@ -161,11 +161,16 @@ class VideoResult {
   /// 由解析器在源提供多地址时填充（共创式：不针对单个源写死）。
   final List<VideoLine> lines;
 
+  /// 内嵌歌词（LRC 文本）。音频源在正文 `subContent` 里产出，解析层随
+  /// 直链一并回传；播放器据此呈现带时间轴的歌词。非音频/无歌词为 null。
+  final String? lyric;
+
   const VideoResult({
     required this.url,
     this.type,
     this.headers,
     this.lines = const <VideoLine>[],
+    this.lyric,
   });
 
   factory VideoResult.fromJson(Map<String, dynamic> json) => VideoResult(
@@ -178,6 +183,7 @@ class VideoResult {
                 ?.map((e) => VideoLine.fromJson(e as Map<String, dynamic>))
                 .toList() ??
             const <VideoLine>[],
+        lyric: json['lyric'] as String?,
       );
 
   Map<String, dynamic> toJson() => {
@@ -186,5 +192,6 @@ class VideoResult {
         if (headers != null) 'headers': headers,
         if (lines.isNotEmpty)
           'lines': lines.map((l) => l.toJson()).toList(),
+        if (lyric != null) 'lyric': lyric,
       };
 }

@@ -10880,6 +10880,12 @@ abstract class AppLocalizations {
   /// **'Picture in picture'**
   String get playerPip;
 
+  /// No description provided for @playerLyric.
+  ///
+  /// In en, this message translates to:
+  /// **'Lyrics'**
+  String get playerLyric;
+
   /// No description provided for @playerCast.
   ///
   /// In en, this message translates to:

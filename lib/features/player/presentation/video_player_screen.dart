@@ -29,6 +29,7 @@ import '../../../core/async_session.dart';
 import '../../../core/history/media_playback_position_manager.dart';
 import '../../../core/history/media_watched_manager.dart';
 import '../../../core/models/episode.dart';
+import '../../../core/models/audio_lyric.dart';
 import '../../../core/models/media_item.dart';
 import '../../../core/models/plugin_config.dart';
 import '../../../core/player/player_controller.dart';
@@ -100,6 +101,7 @@ part 'video_player_info_stats.dart';
 part 'video_player_screenshot.dart';
 part 'video_player_danmaku_input.dart';
 part 'video_player_widgets.dart';
+part 'video_player_lyrics.dart';
 
 /// 发送弹幕时可选择的预设颜色（与主流弹幕站一致）。
 const List<Color> _danmakuPresetColors = <Color>[
@@ -267,6 +269,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   /// Current playable URL (used for sharing).
   String? _playUrl;
+
+  /// 当前剧集的内嵌歌词（音频源 LRC 解析后的带时间轴行；无歌词为空）。
+  List<AudioLyricLine> _lyricLines = const <AudioLyricLine>[];
 
   /// 自定义截图保存目录（空 = 默认 Documents/screenshots）。
   String? _customScreenshotDir;
@@ -1146,6 +1151,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       Map<String, String>? playHeaders = video.headers;
       _playUrl = playUrl;
       _playHeaders = playHeaders;
+      _lyricLines = parseAudioLyrics(video.lyric);
 
       // 由解析结果构造播放线路：源提供多线路（video.lines）时使用，
       // 否则以单线路 url 兜底为「线路 1」。播放页「选集 / 线路」面板据此切换。
@@ -3331,6 +3337,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       _position = Duration.zero;
       _nextEpisodePreloaded = false;
       _lastPositionSaveAt = DateTime.fromMillisecondsSinceEpoch(0);
+      // 上一集的歌词不属于新集；等解析结果回来再填充。
+      _lyricLines = const <AudioLyricLine>[];
       // 切集重置重连状态：上一集的重连耗尽不应影响本集。
       _reconnectExhausted = false;
       _reconnectAttempts = 0;
@@ -3444,6 +3452,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       Map<String, String>? playHeaders = video.headers;
       _playUrl = playUrl;
       _playHeaders = playHeaders;
+      if (mounted) {
+        setState(() => _lyricLines = parseAudioLyrics(video.lyric));
+      }
       // 切集后刷新线路列表（源提供多线路时直接使用 video.lines）。
       if (video.url.isNotEmpty) {
         _controller.lines = _buildLines(video);

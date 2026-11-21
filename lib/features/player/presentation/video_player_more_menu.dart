@@ -108,6 +108,18 @@ extension _VideoMoreMenu on _VideoPlayerScreenState {
           },
         ),
       ),
+      // ── 音频源内嵌歌词（无歌词行时不出现，对齐 md3 歌词页显隐口径）──
+      _PlayerMenuEntry(
+        visibilityPredicate: () => _lyricLines.isNotEmpty,
+        builder: (BuildContext ctx) => ListTile(
+          leading: const Icon(Icons.lyrics_rounded),
+          title: Text(l10n.playerLyric),
+          onTap: () {
+            Navigator.pop(ctx);
+            _showLyricsSheet(l10n);
+          },
+        ),
+      ),
       // ── 媒体服务器（仅该来源显示）：码率档位 + 音轨 ──
       _PlayerMenuEntry(
         visibilityPredicate: () => _isMediaServer,
