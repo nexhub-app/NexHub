@@ -661,6 +661,27 @@ class ShuyuanSourceContext {
     return ctx;
   }
 
+  /// 已装载的 cookie 覆盖层（同步，供图片头钩子判断是否需要走慢路径）。
+  static Map<String, Map<String, String>> persistedCookiesFor(
+      String sourceId) {
+    final mine = _cookieCache?[sourceId];
+    if (mine == null || mine.isEmpty) return const {};
+    return mine;
+  }
+
+  /// 启动期预读 cookie 覆盖层：图片头钩子是同步调用（取图期无法 await），
+  /// 未预热时只会看到空覆盖层，登录后的 Cookie 不会进图片请求。
+  static Future<void> warmCookieCache() async {
+    if (_cookieCache != null) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_cookieStoreKey);
+      if (raw != null && raw.isNotEmpty) {
+        _cookieCache ??= _decodeCookieStore(raw);
+      }
+    } catch (_) {}
+  }
+
   /// 排空后持久化（仅 dirty 时）：源变量 + cookie 覆盖层。
   ///
   /// 旧实现只落 cookie，`sourceVarsDirty` 写了没人读 —— 脚本里

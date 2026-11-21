@@ -111,12 +111,21 @@ class SourceImage extends StatelessWidget {
         ? siteUa
         : HttpFetcher.instance.userAgentForUrl(url);
     final cookies = site?.cookies;
+    // 书源（规则引擎）源：脚本式 header 在取图期求值（legado 图片请求同样
+    // 走 AnalyzeUrl(src, source)），静态 header 已在适配期映射到
+    // SiteConfig/AntiHotlinking。求值结果含登录 Cookie 覆盖层，故放在
+    // 共享罐 Cookie 之后整体覆盖。
+    final dynamicHeaders =
+        (source != null && source.isShuyuanSource)
+            ? ShuyuanImageHeaderHooks.resolver?.call(source, url)
+            : null;
     final hasFields = (siteHeaders != null && siteHeaders.isNotEmpty) ||
         (ahHeaders != null && ahHeaders.isNotEmpty) ||
         (referer != null && referer.isNotEmpty) ||
         (refererOverride != null && refererOverride.isNotEmpty) ||
         (ua != null && ua.isNotEmpty) ||
-        (cookies != null && cookies.isNotEmpty);
+        (cookies != null && cookies.isNotEmpty) ||
+        (dynamicHeaders != null && dynamicHeaders.isNotEmpty);
     if (!hasFields) return null;
     final Map<String, String> m = <String, String>{};
     if (ahHeaders != null) m.addAll(ahHeaders);
@@ -143,6 +152,11 @@ class SourceImage extends StatelessWidget {
       m['Cookie'] = (existing != null && existing.isNotEmpty)
           ? '$existing; $synced'
           : synced;
+    }
+    if (dynamicHeaders != null) {
+      dynamicHeaders.forEach((k, v) {
+        if (v.isNotEmpty) m[k] = v;
+      });
     }
     // 图片请求头修正：源 site.headers 常带 `Accept: application/json`（用于
     // API），漏到图片请求会让部分 CDN 按「伪装的图片请求」拒绝；改为图片专用

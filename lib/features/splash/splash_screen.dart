@@ -61,6 +61,8 @@ import '../../core/theme/system_wallpaper_color.dart';
 import '../../core/update/update_manager.dart';
 import '../../core/update/update_settings.dart';
 import '../shuyuan/presentation/shuyuan_novel_resolver.dart';
+import '../shuyuan/analyze/image_request_headers.dart';
+import '../shuyuan/analyze/source_context.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/theme/app_tokens.dart';
 
@@ -210,6 +212,11 @@ class _SplashScreenState extends State<SplashScreen> {
     // 注入书源解析器（ShuyuanNovelResolver），避免 core 反向依赖 feature 层。
     // 必须在 registry 被使用前注册；ShuyuanNovelResolver 内部自建 WebBook/XiaoshuoHttp。
     registerShuyuanResolver(ShuyuanNovelResolver.new);
+    // 书源图片/媒体请求头钩子：legado 对图片与页面共用 AnalyzeUrl(src, source)，
+    // 脚本式 header 与登录 Cookie 覆盖层只能在取图期求值。钩子同步调用，
+    // 覆盖层需在启动期预读进内存。
+    ShuyuanImageHeaders.register();
+    await ShuyuanSourceContext.warmCookieCache();
     final mediaService = MediaApiService(registry);
 
     // Download base path: 优先用用户配置的路径；未配置（空串或旧版

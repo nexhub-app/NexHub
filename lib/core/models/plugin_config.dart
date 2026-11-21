@@ -1191,6 +1191,17 @@ class PluginConfig {
       final String? origin = _fallbackRefererOrigin(url);
       if (origin != null) m['Referer'] = origin;
     }
+    // 书源（规则引擎）源：脚本式 header 与登录 Cookie 覆盖层由 shuyuan
+    // 层在取图/下载期求值（legado 图片请求同样走 AnalyzeUrl(src, source)），
+    // 静态 header 已在适配期映射，无需重复。
+    final dynamicHeaders = isShuyuanSource
+        ? ShuyuanImageHeaderHooks.resolver?.call(this, url)
+        : null;
+    if (dynamicHeaders != null) {
+      dynamicHeaders.forEach((k, v) {
+        if (v.isNotEmpty) m[k] = v;
+      });
+    }
     if (m.isEmpty) return null;
     return m;
   }
@@ -1768,6 +1779,14 @@ class PluginConfig {
   /// 路由级声明的 responseType，缺省回退到顶层。
   String? responseTypeFor(String apiName) =>
       _routeFor(apiName)?.responseType ?? responseType;
+}
+
+/// 书源图片/媒体请求头钩子：core 层不依赖 features 层，启动期由
+/// shuyuan 模块注入（`ShuyuanImageHeaders.register`）。返回 null 表示
+/// 静态映射已足够，调用方保持原头不变。
+class ShuyuanImageHeaderHooks {
+  static Map<String, String>? Function(PluginConfig source, String url)?
+      resolver;
 }
 
 /// 源配置解析异常（校验/路由缺失）。
