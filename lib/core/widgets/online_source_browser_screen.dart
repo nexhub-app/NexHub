@@ -22,6 +22,7 @@ import '../../../core/theme/app_theme.dart';
 import '../../../core/theme/app_tokens.dart';
 import '../../../core/widgets/app_glass_bar.dart';
 import '../../../core/widgets/app_empty_state.dart';
+import '../../../core/widgets/app_search_field.dart';
 import '../../../core/widgets/detail_action_utils.dart';
 import '../../../core/widgets/explore_kinds_panel.dart';
 import '../../../core/services/source_repository.dart';
@@ -73,6 +74,17 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
   /// 加载期间被合并的刷新请求（见 [_loadKinds]）。
   final Set<String> _reloadQueued = <String>{};
 
+  /// 在线列表搜索（源列表正上方）：名称 / id / 站点地址过滤，大小写不敏感；
+  /// 媒体服务器入口行不参与过滤。大库下快速定位要进的源。
+  final TextEditingController _searchController = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context);
@@ -80,6 +92,21 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
     final repo = context.watch<SourceRepository>();
     final sources = repo.byType(widget.sourceType);
     final tiles = widget.mediaServerTiles ?? const <Widget>[];
+
+    // 在线列表搜索：名称 / id / 站点地址，大小写不敏感。仅过滤源行；
+    // 媒体服务器入口行始终显示。搜索进行中且无匹配 → 列表末尾给提示行。
+    final String q = _query.trim().toLowerCase();
+    final List<PluginConfig> filtered = q.isEmpty
+        ? sources
+        : sources
+            .where(
+              (s) =>
+                  s.name.toLowerCase().contains(q) ||
+                  s.id.toLowerCase().contains(q) ||
+                  s.site.baseUrl.toLowerCase().contains(q),
+            )
+            .toList(growable: false);
+    final bool noMatch = q.isNotEmpty && filtered.isEmpty;
 
     final Widget body;
     if (sources.isEmpty && tiles.isEmpty) {
@@ -94,7 +121,7 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
         // 行首图标可点：移动端避让玻璃底栏。
         padding:
             const EdgeInsets.all(AppTokens.spaceMd) + context.glassBarInset,
-        itemCount: tiles.length + sources.length,
+        itemCount: tiles.length + filtered.length + (noMatch ? 1 : 0),
         itemBuilder: (context, i) {
           // 媒体服务器入口行前置（每台服务器一个；未配置时不占位）。
           if (i < tiles.length) {
@@ -104,11 +131,24 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
             );
           }
           final int idx = i - tiles.length;
-          final source = sources[idx];
+          if (idx >= filtered.length) {
+            return Padding(
+              padding: const EdgeInsets.only(top: AppTokens.spaceLg),
+              child: Center(
+                child: Text(
+                  l10n.noResults,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                ),
+              ),
+            );
+          }
+          final source = filtered[idx];
           // 每行一段与面板同色的底色（常驻面板提供整体圆角，行段在此
           // 之上无缝相融），行间发丝分隔线。
           final bool first = idx == 0;
-          final bool last = idx == sources.length - 1;
+          final bool last = idx == filtered.length - 1;
           final bool expandable = _hasExplore(source);
           final bool expanded = expandable && _expandedId == source.id;
           final Widget? statusChip = _buildStatusChip(source, scheme, l10n);
@@ -208,7 +248,27 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
       );
     }
 
-    return body;
+    // 源列表页签：搜索框常驻列表正上方（无源时无可搜，随空态省略）。
+    if (sources.isEmpty && tiles.isEmpty) return body;
+    return Column(
+      children: <Widget>[
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
+            AppTokens.spaceMd,
+            AppTokens.spaceXs,
+            AppTokens.spaceMd,
+            AppTokens.spaceXs,
+          ),
+          child: AppSearchField(
+            controller: _searchController,
+            hint: l10n.searchSourceHint,
+            prefixIcon: const Icon(Icons.search_rounded, size: 20),
+            onChanged: (String v) => setState(() => _query = v),
+          ),
+        ),
+        Expanded(child: body),
+      ],
+    );
   }
 
   /// 书源是否声明了 exploreUrl（有发现页选项栏可展开）。

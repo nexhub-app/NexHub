@@ -123,7 +123,10 @@ class OnlineContentListScreen extends StatefulWidget {
   /// 动态筛选分组解析（可选）；为 null 或返回空时分类页不显示筛选按钮。
   final ResolveFilters? resolveFilters;
   final void Function(MediaItem item, String? heroTag) onItemTap;
-  final VoidCallback? onSearch;
+  /// 搜索按钮回调：参数为**当前源**（null=未选源，如空态入口）。
+  /// 模块层据此构造搜索页——当前源非空时默认只勾选该源
+  /// （startSingle + initialSourceId，进入搜索页面的源即搜索起点）。
+  final void Function(PluginConfig? source)? onSearch;
   final VoidCallback? onAddSource;
   final VerifyCallback? verificationHandler;
   final bool initialGrid;
@@ -1408,7 +1411,7 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
             IconButton(
               icon: const Icon(Icons.search_rounded),
               tooltip: l10n.search,
-              onPressed: widget.onSearch,
+              onPressed: () => widget.onSearch?.call(_source),
             ),
           Expanded(
             // 桌面端：鼠标左键可拖动分类 Tab 横向滚动（TabBar 自身无
@@ -1492,7 +1495,7 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
       message: l10n.bookSourceNoExplore,
       sourceId: _source?.id,
       actionLabel: l10n.search,
-      onAction: widget.onSearch,
+      onAction: widget.onSearch == null ? null : () => widget.onSearch!(_source),
     );
   }
 
@@ -1606,7 +1609,9 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
         message: noExplore ? l10n.bookSourceNoExplore : l10n.emptyContent,
         sourceId: _source?.id,
         actionLabel: noExplore ? l10n.search : null,
-        onAction: noExplore ? widget.onSearch : null,
+        onAction: noExplore
+            ? (widget.onSearch == null ? null : () => widget.onSearch!(_source))
+            : null,
       );
     }
 

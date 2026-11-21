@@ -31,6 +31,7 @@ import '../../../core/widgets/app_card.dart';
 import '../../../core/widgets/app_glass_bar.dart';
 import '../../../core/widgets/app_segmented_tabs.dart';
 import '../../../core/widgets/app_empty_state.dart';
+import '../../../core/widgets/app_search_field.dart';
 import '../../../core/widgets/app_url_input_bar.dart';
 import '../../../core/widgets/unified_source_tile.dart';
 import 'source_import_preview_screen.dart';
@@ -110,6 +111,12 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
   // 是否显示隐藏源
   bool _showHidden = false;
 
+  /// 源列表搜索（仅「源列表」页签）：按名称 / id / 站点地址过滤。
+  /// 搜索进行中禁用长按拖拽排序——排序回调把**当前可见子集**的 id 顺序
+  /// 写回全量排序，过滤状态下拖动会把未显示源的顺序冲掉。
+  final TextEditingController _sourceSearchController = TextEditingController();
+  String _sourceQuery = '';
+
   /// 源列表虚拟化阈值：超过该行数时列表改用 itemBuilder 懒建行并关掉
   /// shrinkWrap。shrinkWrap（低配整卡/合并滚动路径默认开启）要求首帧量出
   /// 全部行高＝全量构建+布局每一行，上千源会在进入页面时冻结甚至 OOM 崩溃。
@@ -138,6 +145,7 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
   void dispose() {
     _modeTabCtrl.dispose();
     _dragGap.dispose();
+    _sourceSearchController.dispose();
     _urlController.dispose();
     _libraryUrlController.dispose();
     _libraryNameController.dispose();
@@ -166,7 +174,39 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
     }
     // 年龄限制开启时隐藏 18+ 源（无法管理 / 无法浏览）
     sources = sources.where((c) => !repo.isAgeBlocked(c)).toList();
+    // 源列表搜索：名称 / id / 站点地址，大小写不敏感（搜索框见
+    // [_buildSourceSearchField]，挂在「源列表」页签顶部）。
+    final String q = _sourceQuery.trim().toLowerCase();
+    if (q.isNotEmpty) {
+      sources = sources
+          .where(
+            (c) =>
+                c.name.toLowerCase().contains(q) ||
+                c.id.toLowerCase().contains(q) ||
+                c.site.baseUrl.toLowerCase().contains(q),
+          )
+          .toList();
+    }
     return sources;
+  }
+
+  /// 源列表搜索框（仅「源列表」页签渲染）：设计规范沿用 [AppSearchField]
+  /// （与换源弹窗同款），左右留白与下方连体卡（spaceMd）对齐。
+  Widget _buildSourceSearchField(AppLocalizations l10n) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppTokens.spaceMd,
+        AppTokens.spaceXs,
+        AppTokens.spaceMd,
+        AppTokens.spaceXs,
+      ),
+      child: AppSearchField(
+        controller: _sourceSearchController,
+        hint: l10n.searchSourceHint,
+        prefixIcon: const Icon(Icons.search_rounded, size: 20),
+        onChanged: (String v) => setState(() => _sourceQuery = v),
+      ),
+    );
   }
 
   /// 按分类 Tab 过滤源（项 7）。
@@ -690,7 +730,23 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
     // 若指定了 filterType（从模块设置页进入），直接显示单列表，不加分类 Tab。
     if (widget.filterType != null) {
       final section = widget.mediaServerSection;
+      final Widget searchField = _buildSourceSearchField(l10n);
       if (sources.isEmpty) {
+        // 搜索进行中但当前过滤集为空 → 搜索框保留（可继续编辑关键词），
+        // 内容区显示「暂无结果」。
+        if (_sourceQuery.trim().isNotEmpty) {
+          return Column(
+            children: <Widget>[
+              searchField,
+              Expanded(
+                child: AppEmptyState(
+                  icon: Icons.search_off_rounded,
+                  message: l10n.noResults,
+                ),
+              ),
+            ],
+          );
+        }
         if (section == null) {
           return AppEmptyState(
             icon: Icons.extension_rounded,
@@ -725,8 +781,9 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
       // 大库列表必须脱离合并滚动：合并滚动要求列表 shrinkWrap 撑开全部行，
       // 首帧全量构建+布局，上千源会冻结/OOM 崩溃。此时放弃「区块随列表
       // 滚走」，改为区块固定在顶、列表自身滚动（虚拟化生效的前提）。
+      Widget content;
       if (sources.length > _virtualListThreshold) {
-        return Column(
+        content = Column(
           children: <Widget>[
             if (section != null)
               Padding(
@@ -741,25 +798,32 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
             Expanded(child: _buildSourceListView(l10n, sources)),
           ],
         );
-      }
-      return SingleChildScrollView(
-        // 媒体服务器区块与源列表并入同一条滚动流：列表 shrinkWrap 撑开、
-        // 滚动交给外层，区块不再固定在顶部，而是跟着列表一起滚走。
-        child: Column(
-          children: <Widget>[
-            if (section != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(
-                  AppTokens.spaceMd,
-                  AppTokens.spaceXs,
-                  AppTokens.spaceMd,
-                  0,
+      } else {
+        content = SingleChildScrollView(
+          // 媒体服务器区块与源列表并入同一条滚动流：列表 shrinkWrap 撑开、
+          // 滚动交给外层，区块不再固定在顶部，而是跟着列表一起滚走。
+          child: Column(
+            children: <Widget>[
+              if (section != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppTokens.spaceMd,
+                    AppTokens.spaceXs,
+                    AppTokens.spaceMd,
+                    0,
+                  ),
+                  child: section,
                 ),
-                child: section,
-              ),
-            _buildSourceListView(l10n, sources, scrollsWithParent: true),
-          ],
-        ),
+              _buildSourceListView(l10n, sources, scrollsWithParent: true),
+            ],
+          ),
+        );
+      }
+      return Column(
+        children: <Widget>[
+          searchField,
+          Expanded(child: content),
+        ],
       );
     }
 
@@ -799,6 +863,7 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
             ],
           ),
         ),
+        _buildSourceSearchField(l10n),
         Expanded(
           child: <Widget>[
             _buildCategoryList(l10n, _getCategorySources(sources, 0),
@@ -820,6 +885,13 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
     String categoryLabel,
   ) {
     if (sources.isEmpty) {
+      // 搜索进行中该分类无匹配 → 显示「暂无结果」而非分类空态。
+      if (_sourceQuery.trim().isNotEmpty) {
+        return AppEmptyState(
+          icon: Icons.search_off_rounded,
+          message: l10n.noResults,
+        );
+      }
       return AppEmptyState(
         icon: Icons.extension_rounded,
         message: l10n.sourceCategoryEmpty(categoryLabel),
@@ -1059,10 +1131,13 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
                         indent: AppTokens.spaceLg,
                         endIndent: AppTokens.spaceLg,
                       ),
-                    ReorderableDelayedDragStartListener(
-                      index: i,
-                      child: _sourceTile(l10n, auth, s),
-                    ),
+                    // 搜索进行中不挂拖拽监听：过滤子集排序会冲掉未显示源的顺序。
+                    _sourceQuery.isEmpty
+                        ? ReorderableDelayedDragStartListener(
+                            index: i,
+                            child: _sourceTile(l10n, auth, s),
+                          )
+                        : _sourceTile(l10n, auth, s),
                   ],
                 )
               : Container(
@@ -1090,11 +1165,14 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
                           endIndent: AppTokens.spaceLg,
                         ),
                       // 长按整行启动拖动；开关/「更多」菜单等控件自身手势
-                      // 优先，点击行为不受影响。
-                      ReorderableDelayedDragStartListener(
-                        index: i,
-                        child: _sourceTile(l10n, auth, s),
-                      ),
+                      // 优先，点击行为不受影响。搜索进行中不挂拖拽监听
+                      // （过滤子集排序会冲掉未显示源的顺序）。
+                      _sourceQuery.isEmpty
+                          ? ReorderableDelayedDragStartListener(
+                              index: i,
+                              child: _sourceTile(l10n, auth, s),
+                            )
+                          : _sourceTile(l10n, auth, s),
                     ],
                   ),
                 ),

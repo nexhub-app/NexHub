@@ -65,6 +65,10 @@ class _AppSearchFieldState extends State<AppSearchField> {
     return AnimatedContainer(
       duration: AppTokens.durFast,
       curve: Curves.easeOutCubic,
+      // 强制撑满可用宽度：组件自身不带宽度时，在默认 crossAxisAlignment
+      // 居中的 Column 里会收缩为内容宽并整框居中，提示文字表现为「居中」
+      // （2026-11-21 源管理列表实测）。现有使用点均为有界宽度，不受影响。
+      width: double.infinity,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(AppTokens.radiusMd),
         border: Border.all(color: borderColor, width: _focused ? 2 : 1),
@@ -77,6 +81,10 @@ class _AppSearchFieldState extends State<AppSearchField> {
         controller: widget.controller,
         focusNode: _focus,
         autofocus: widget.autofocus,
+        // 显式锁定对齐：文字水平靠左、垂直居中（双保险，防止任何继承/
+        // 主题行为把它变成居中排版）。
+        textAlign: TextAlign.start,
+        textAlignVertical: TextAlignVertical.center,
         textInputAction: widget.textInputAction,
         decoration: InputDecoration(
           hintText: widget.hint,

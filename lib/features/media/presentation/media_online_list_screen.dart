@@ -70,11 +70,14 @@ class MediaOnlineListScreen extends StatelessWidget {
         item: item,
         heroTag: heroTag,
       ),
-      onSearch: () => Navigator.of(context).push(
+      // 搜索按钮：默认只勾选进入搜索页面的源（当前在线浏览的源）。
+      onSearch: (PluginConfig? current) => Navigator.of(context).push(
         AppPageRoute<void>(
           builder: (_) => ModuleSourceSearchScreen(
             sourceType: SourceType.animeSource,
             title: l10n.search,
+            startSingle: current != null,
+            initialSourceId: current?.id,
             // 搜索结果含本地内容（导入/下载），本地条目直接进本地播放器。
             onItemTap: (item, heroTag) => openSearchResultEntry(
               context,
