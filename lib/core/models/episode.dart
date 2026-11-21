@@ -27,6 +27,12 @@ class Episode {
   /// 章节/剧集序号（用于"显示序号"和"按序号排序"）。
   final int? number;
 
+  /// 书源章节是否为 VIP 章节（legado BookChapter.isVip）。
+  final bool isVip;
+
+  /// 书源章节是否已购买（legado BookChapter.isPay）。
+  final bool isPay;
+
   const Episode({
     required this.id,
     required this.title,
@@ -38,6 +44,8 @@ class Episode {
     this.danmakuUrl,
     this.updatedAt,
     this.number,
+    this.isVip = false,
+    this.isPay = false,
   });
 
   /// 复制并覆盖部分字段（弹幕自动匹配时用于生成带 ID 的新实例）。
@@ -52,6 +60,8 @@ class Episode {
     String? danmakuUrl,
     DateTime? updatedAt,
     int? number,
+    bool? isVip,
+    bool? isPay,
   }) =>
       Episode(
         id: id ?? this.id,
@@ -64,6 +74,8 @@ class Episode {
         danmakuUrl: danmakuUrl ?? this.danmakuUrl,
         updatedAt: updatedAt ?? this.updatedAt,
         number: number ?? this.number,
+        isVip: isVip ?? this.isVip,
+        isPay: isPay ?? this.isPay,
       );
 
   factory Episode.fromJson(Map<String, dynamic> json) => Episode(
@@ -79,6 +91,8 @@ class Episode {
             ? DateTime.tryParse(json['updatedAt'] as String)
             : null,
         number: (json['number'] as num?)?.toInt(),
+        isVip: json['isVip'] as bool? ?? false,
+        isPay: json['isPay'] as bool? ?? false,
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -93,6 +107,8 @@ class Episode {
         if (updatedAt != null)
           'updatedAt': updatedAt!.toIso8601String(),
         if (number != null) 'number': number,
+        if (isVip) 'isVip': isVip,
+        if (isPay) 'isPay': isPay,
       };
 
   @override

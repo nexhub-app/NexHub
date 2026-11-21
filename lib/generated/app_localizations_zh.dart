@@ -5701,6 +5701,18 @@ class AppLocalizationsZh extends AppLocalizations {
   String get novelContentEditRestored => '已恢复原文';
 
   @override
+  String get novelPayChapter => '购买本章';
+
+  @override
+  String get novelPayChapterTitle => '章节付费';
+
+  @override
+  String get novelPayChapterConfirm => '将按书源规则执行购买操作，完成后自动重新加载本章。';
+
+  @override
+  String get novelPayChapterFailed => '购买操作失败';
+
+  @override
   String novelSummaryProgress(int read, int total) {
     return '进度：读到第 $read / $total 章';
   }

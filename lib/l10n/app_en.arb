@@ -3022,6 +3022,10 @@
   "novelContentEditRestore": "Restore original",
   "novelContentEditRestoreConfirm": "Discard your edits and restore the chapter to its original content?",
   "novelContentEditRestored": "Original content restored",
+  "novelPayChapter": "Buy chapter",
+  "novelPayChapterTitle": "Chapter purchase",
+  "novelPayChapterConfirm": "Run the source's purchase action? The chapter will reload when it finishes.",
+  "novelPayChapterFailed": "Purchase action failed",
   "novelSummaryProgress": "Progress: chapter {read} of {total}",
   "@novelSummaryProgress": {
     "placeholders": {

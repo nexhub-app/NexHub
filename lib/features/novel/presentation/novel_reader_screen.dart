@@ -55,6 +55,9 @@ import '../../../core/novel/novel_reader_preferences.dart';
 import '../../../core/novel/novel_tts_router.dart' show NovelTtsSystemSlots;
 import '../../../core/novel/novel_pre_download_preferences.dart';
 import '../../../core/novel/novel_pre_downloader.dart';
+import '../../../core/novel/novel_pay_action.dart' show confirmAndRunNovelPay;
+import '../../../core/novel/novel_pay_result.dart'
+    show NovelPayOutcome, NovelPayResult;
 import '../../../core/services/novel_highlight_sync_service.dart';
 import 'novel_selection_ai_dialog.dart';
 import '../../../core/reader/tap_zone_resolver.dart';
@@ -772,6 +775,10 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
 
   /// 已触发过预下载的章节索引（每章只触发一次）。
   int _preDownloadTriggeredFor = -1;
+
+  /// 本会话内购买成功的章节 id（购买入口随即隐藏；服务端目录在下次
+  /// 进入阅读器时会回传 isPay）。
+  final Set<String> _paidChapterIds = <String>{};
 
   /// 本地读完自动接续在线（无缝）：防重入标志。
   bool _localToOnlineTriggered = false;
@@ -1611,6 +1618,45 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   /// 重载当前章节（三点菜单入口）。
   Future<void> _reloadChapter() async {
     await _loadChapter(_chapterIndex);
+  }
+
+  /// 本章可走书源付费（legado `ReaderChapterInput.isPayable`）：在线书 +
+  /// 源声明 payAction + 章节 isVip 且未购买（含本会话已购买）。
+  bool get _currentChapterPayable {
+    if (_isLocalMode) return false;
+    if (_chapterIndex < 0 || _chapterIndex >= widget.chapters.length) {
+      return false;
+    }
+    final Episode chapter = widget.chapters[_chapterIndex];
+    if (!chapter.isVip || chapter.isPay) return false;
+    if (_paidChapterIds.contains(chapter.id)) return false;
+    final PluginConfig? source = _source;
+    if (source == null) return false;
+    return _service.canPayNovelChapter(source);
+  }
+
+  /// 购买本章（legado payAction）：确认后执行源规则；已购则清正文缓存
+  /// 并重载本章（源站返回 VIP 正文），返回支付 URL 时打开内置浏览器。
+  Future<void> _payCurrentChapter() async {
+    final PluginConfig? source = _source;
+    if (source == null || _isLocalMode) return;
+    if (_chapterIndex < 0 || _chapterIndex >= widget.chapters.length) return;
+    final Episode chapter = widget.chapters[_chapterIndex];
+    final NovelPayResult? result = await confirmAndRunNovelPay(
+      context,
+      service: _service,
+      source: source,
+      novelId: widget.novelId,
+      chapterUrl: chapter.url,
+      chapterTitle: chapter.title,
+    );
+    if (result == null || !mounted) return;
+    if (result.outcome != NovelPayOutcome.refreshed) return;
+    _paidChapterIds.add(chapter.id);
+    await _preDownloader.dropChapter(widget.novelId, chapter.id);
+    if (!mounted) return;
+    setState(() {});
+    await _loadChapter(_chapterIndex, restorePage: _currentPage);
   }
 
   /// 切换 TTS 朗读（三点菜单入口）。
@@ -6626,6 +6672,8 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
                         absoluteChapterUrl,
                       );
                     }
+                  case 'payChapter':
+                    _payCurrentChapter();
                   case 'bookmarkList':
                     _showBookmarkList();
                   case 'summary':
@@ -6687,6 +6735,17 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
                       dense: true,
                     ),
                   ),
+                  // 书源付费章节入口（legado payAction 可购买时显示）。
+                  if (_currentChapterPayable)
+                    PopupMenuItem<String>(
+                      value: 'payChapter',
+                      child: ListTile(
+                        leading: const Icon(Icons.paid_rounded),
+                        title: Text(l10n.novelPayChapter),
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                      ),
+                    ),
                   const PopupMenuDivider(),
                 ],
                 // 待读队列：加入队列 / 打开队列（非本地模式才显示）。

@@ -29,6 +29,7 @@ import '../../../core/models/novel_block.dart'
 import 'package:meta/meta.dart';
 
 import '../../../core/models/plugin_config.dart';
+import '../../../core/novel/novel_pay_result.dart';
 import '../../../core/resolver/source_resolver.dart';
 import '../../../core/resolver/resolver_registry.dart';
 import '../../../core/resolver/webview_resolver.dart';
@@ -310,6 +311,8 @@ class ShuyuanNovelResolver
       case 'images':
         // 漫画模块的正文路由：书源正文（img 标签/URL 列表）→ 图片 URL 列表。
         return await _handleComicImages(source, bookSource, vars);
+      case 'pay':
+        return await _handlePayAction(source, bookSource, vars);
       default:
         throw UnsupportedError(
           'ShuyuanNovelResolver does not support apiName: $apiName',
@@ -1178,6 +1181,8 @@ class ShuyuanNovelResolver
           id: isComic ? c.url : '${c.index}',
           title: c.title,
           url: c.url,
+          isVip: c.isVip,
+          isPay: c.isPay,
         ),
     ];
   }
@@ -1340,6 +1345,68 @@ class ShuyuanNovelResolver
     // 图文块列表（文本段 + 插图），保留解析层给出的原始顺序，
     // 供阅读器图文混排显示。
     return NovelContentResult(result.blocks, title: result.title);
+  }
+
+  // ── 付费动作 ──
+
+  /// 执行书源购买动作（legado `ruleContent.payAction`）。
+  ///
+  /// 对齐 md3 `ReadBookViewModel.confirmPayAction` /
+  /// `MangaReaderActionRepository.payCurrentChapter`：
+  /// - 以本章上下文（book/chapter/baseUrl）直接编译执行 payAction；
+  /// - 返回绝对 URL → 交给 UI 打开支付页；
+  /// - 返回真值 → 视为已购买，UI 清正文缓存后重载；
+  /// - 其余（空/false）→ 报错。
+  Future<NovelPayResult> _handlePayAction(
+    PluginConfig source,
+    XiaoshuoBookSource bookSource,
+    Map<String, String> vars,
+  ) async {
+    final payAction = (bookSource.ruleContent?.payAction ?? '').trim();
+    if (payAction.isEmpty) {
+      throw SourceResolveException(
+        sourceId: source.id,
+        apiName: 'pay',
+        message: 'ruleContent.payAction 未声明',
+      );
+    }
+    final chapterUrl = vars['url'] ?? vars['chapter'] ?? '';
+    if (chapterUrl.isEmpty) {
+      throw ArgumentError('pay requires vars["url"]');
+    }
+    final bookUrl = vars['bookUrl'] ?? vars['id'] ?? '';
+    // 复用详情/搜索阶段暂存的书对象：payAction 里 `java.get`/`book.*`
+    // 读到的变量与 API 型源的签名参数一致（legado 持有同一 Book 对象）。
+    final book = _bookInfoCache[bookUrl] ??
+        _seedFor(bookUrl) ??
+        XiaoshuoBook(bookUrl: bookUrl, name: vars['bookName'] ?? '');
+    final chapter = XiaoshuoBookChapter(
+      bookUrl: bookUrl,
+      url: chapterUrl,
+      title: vars['chapterTitle'] ?? '',
+      isVip: true,
+    );
+    final rule = AnalyzeRule(book: book, chapter: chapter)
+      ..setBaseUrl(chapterUrl);
+    final result = rule.evalJs(payAction, null).trim();
+    if (result.startsWith('http://') || result.startsWith('https://')) {
+      return NovelPayResult.openUrl(result);
+    }
+    if (_payActionIsTrue(result)) return NovelPayResult.refreshed();
+    throw SourceResolveException(
+      sourceId: source.id,
+      apiName: 'pay',
+      message: 'payAction 返回 $result',
+    );
+  }
+
+  /// legado `String?.isTrue`：空 / "null" 为假；忽略大小写的
+  /// `false|no|not|0|0.0` 为假；其余非空值为真。
+  static bool _payActionIsTrue(String? value) {
+    final text = value?.trim() ?? '';
+    if (text.isEmpty || text == 'null') return false;
+    return !RegExp(r'^(?:false|no|not|0|0\.0)$', caseSensitive: false)
+        .hasMatch(text);
   }
 
   /// 从正文块（音/视频源的正文规则输出）提取媒体直链。

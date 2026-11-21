@@ -15,6 +15,7 @@ import '../models/explore_kind.dart';
 import '../models/media_item.dart';
 import '../models/novel_block.dart';
 import '../models/plugin_config.dart';
+import '../novel/novel_pay_result.dart';
 import '../resolver/builtin_resolver.dart';
 import '../resolver/resolver_registry.dart';
 import '../resolver/script_resolver.dart';
@@ -786,6 +787,43 @@ class MediaApiService {
           vars: vars,
         );
     return _asContentResult(r);
+  }
+
+  /// 源是否声明了章节购买动作（legado `ruleContent.payAction`）。
+  ///
+  /// 只读 selectors 判断，不触发解析；供阅读器决定是否显示「购买本章」。
+  bool canPayNovelChapter(PluginConfig source) {
+    final Object? xiaoshuo = source.selectors?['xiaoshuo'];
+    if (xiaoshuo is! Map) return false;
+    final Object? ruleContent = xiaoshuo['ruleContent'];
+    if (ruleContent is! Map) return false;
+    final Object? payAction = ruleContent['payAction'];
+    return payAction is String && payAction.trim().isNotEmpty;
+  }
+
+  /// 执行书源购买动作（legado `payAction`）。
+  ///
+  /// [chapterUrl] 注入 `chapter`/`url`，[novelId] 注入 `id`/`bookUrl`，
+  /// payAction 脚本可经 `book`/`chapter` 绑定读取当前上下文。返回
+  /// [NovelPayResult]：绝对 URL（打开支付页）或已购买（重载正文）。
+  Future<NovelPayResult> payNovelChapter(
+    PluginConfig source, {
+    required String novelId,
+    required String chapterUrl,
+    String? chapterTitle,
+  }) async {
+    final vars = <String, String>{
+      'id': novelId,
+      'bookUrl': novelId,
+      'chapter': chapterUrl,
+      'url': chapterUrl,
+      'chapterTitle': chapterTitle ?? '',
+    };
+    final r = await registry
+        .find(source, 'pay')
+        .resolve(source, 'pay', vars: vars);
+    if (r is NovelPayResult) return r;
+    throw UnsupportedError('pay route did not return NovelPayResult: $r');
   }
 
   List<MediaItem> _asItems(dynamic r) {

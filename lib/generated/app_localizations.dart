@@ -11030,6 +11030,30 @@ abstract class AppLocalizations {
   /// **'Original content restored'**
   String get novelContentEditRestored;
 
+  /// No description provided for @novelPayChapter.
+  ///
+  /// In en, this message translates to:
+  /// **'Buy chapter'**
+  String get novelPayChapter;
+
+  /// No description provided for @novelPayChapterTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Chapter purchase'**
+  String get novelPayChapterTitle;
+
+  /// No description provided for @novelPayChapterConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Run the source\'s purchase action? The chapter will reload when it finishes.'**
+  String get novelPayChapterConfirm;
+
+  /// No description provided for @novelPayChapterFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Purchase action failed'**
+  String get novelPayChapterFailed;
+
   /// No description provided for @novelSummaryProgress.
   ///
   /// In en, this message translates to:

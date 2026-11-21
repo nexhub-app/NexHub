@@ -2999,6 +2999,10 @@
   "novelContentEditRestore": "恢复原文",
   "novelContentEditRestoreConfirm": "放弃对本章的修改并恢复为源站原文？",
   "novelContentEditRestored": "已恢复原文",
+  "novelPayChapter": "购买本章",
+  "novelPayChapterTitle": "章节付费",
+  "novelPayChapterConfirm": "将按书源规则执行购买操作，完成后自动重新加载本章。",
+  "novelPayChapterFailed": "购买操作失败",
   "novelSummaryProgress": "进度：读到第 {read} / {total} 章",
   "@novelSummaryProgress": {
     "placeholders": {

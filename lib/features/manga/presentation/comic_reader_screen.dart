@@ -50,6 +50,9 @@ import '../../../core/history/media_watched_manager.dart';
 import '../../../core/models/episode.dart';
 import '../../../core/models/media_item.dart';
 import '../../../core/models/plugin_config.dart';
+import '../../../core/novel/novel_pay_action.dart' show confirmAndRunNovelPay;
+import '../../../core/novel/novel_pay_result.dart'
+    show NovelPayOutcome, NovelPayResult;
 import '../../../core/download/download_manager.dart';
 import '../../../core/download/local_to_online.dart';
 import '../../../core/download/download_settings.dart';
@@ -275,6 +278,10 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
   bool _loading = true;
   String? _error;
   PluginConfig? _source;
+
+  /// 本会话内购买成功的章节 id（购买入口随即隐藏；服务端目录在下次
+  /// 进入阅读器时会回传 isPay）。
+  final Set<String> _paidChapterIds = <String>{};
 
   /// 章节加载令牌：每次发起加载自增，仅最新请求的加载结果会被应用，
   /// 避免快速翻章时旧章节覆盖新章节（竞态导致「显示的章节与 _chapterIndex 不一致」）。
@@ -1761,6 +1768,48 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
         });
       }
     }
+  }
+
+  /// 本章可走书源付费（legado `ReaderChapterInput.isPayable`）：在线书 +
+  /// 源声明 payAction + 章节 isVip 且未购买（含本会话已购买）。
+  bool get _currentChapterPayable {
+    if (_isLocalMode) return false;
+    if (_chapterIndex < 0 || _chapterIndex >= widget.chapters.length) {
+      return false;
+    }
+    final Episode chapter = widget.chapters[_chapterIndex];
+    if (!chapter.isVip || chapter.isPay) return false;
+    if (_paidChapterIds.contains(chapter.id)) return false;
+    final PluginConfig? source = _source ?? _repo.getById(widget.sourceId);
+    if (source == null) return false;
+    return _service.canPayNovelChapter(source);
+  }
+
+  /// 购买本章（legado payAction）：确认后执行源规则；已购则清本话图片 /
+  /// 预载缓存并重载，返回支付 URL 时打开内置浏览器。
+  Future<void> _payCurrentChapter() async {
+    final PluginConfig? source = _source ?? _repo.getById(widget.sourceId);
+    if (source == null || _isLocalMode) return;
+    if (_chapterIndex < 0 || _chapterIndex >= widget.chapters.length) return;
+    final Episode chapter = widget.chapters[_chapterIndex];
+    final NovelPayResult? result = await confirmAndRunNovelPay(
+      context,
+      service: _service,
+      source: source,
+      novelId: widget.comicId,
+      chapterUrl: chapter.url,
+      chapterTitle: chapter.title,
+    );
+    if (result == null || !mounted) return;
+    if (result.outcome != NovelPayOutcome.refreshed) return;
+    _paidChapterIds.add(chapter.id);
+    // 清本话的预载 / 在途 / 渲染 HTML 缓存，强制重取已购正文。
+    _preload.remove(_chapterIndex);
+    _preloading.remove(_chapterIndex);
+    _preloadFutures.remove(_chapterIndex);
+    _renderedHtmlByChapter.remove(_chapterIndex);
+    setState(() {});
+    await _loadChapter(_chapterIndex, restorePage: _currentPage);
   }
 
   /// 渲染后抽取完成后回填 HTML 并重试抓取当前章节图片（webview-html 源）。
@@ -6340,6 +6389,9 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
                       case 'readingQueue':
                         openReadingQueueSheet(context);
                         return;
+                      case 'payChapter':
+                        _payCurrentChapter();
+                        return;
                     }
                     if (absoluteChapterUrl == null) return;
                     switch (value) {
@@ -6376,6 +6428,17 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
                         dense: true,
                       ),
                     ),
+                    // 书源付费章节入口（legado payAction 可购买时显示）。
+                    if (_currentChapterPayable)
+                      PopupMenuItem<String>(
+                        value: 'payChapter',
+                        child: ListTile(
+                          leading: const Icon(Icons.paid_rounded),
+                          title: Text(l10n.novelPayChapter),
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                        ),
+                      ),
                     const PopupMenuDivider(),
                     PopupMenuItem<String>(
                       value: 'webview',

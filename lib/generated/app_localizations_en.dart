@@ -5822,6 +5822,19 @@ class AppLocalizationsEn extends AppLocalizations {
   String get novelContentEditRestored => 'Original content restored';
 
   @override
+  String get novelPayChapter => 'Buy chapter';
+
+  @override
+  String get novelPayChapterTitle => 'Chapter purchase';
+
+  @override
+  String get novelPayChapterConfirm =>
+      'Run the source\'s purchase action? The chapter will reload when it finishes.';
+
+  @override
+  String get novelPayChapterFailed => 'Purchase action failed';
+
+  @override
   String novelSummaryProgress(int read, int total) {
     return 'Progress: chapter $read of $total';
   }

@@ -111,6 +111,18 @@ class NovelPreDownloader {
     return downloaded;
   }
 
+  /// 删除单章缓存（购买成功后强制重取正文；内存 + Hive 同步清理）。
+  Future<void> dropChapter(String novelId, String chapterId) async {
+    final String key = _key(novelId, chapterId);
+    _memory.remove(key);
+    try {
+      final Box<dynamic> box = await _openBox();
+      await box.delete(key);
+    } on Object catch (e) {
+      AppLog.instance.w('[预下载] 删除缓存失败 $key: $e');
+    }
+  }
+
   /// 按作品清空缓存（预下载设置关闭 / 源切换时可调用清理）。
   Future<void> clearForNovel(String novelId) async {
     _memory.removeWhere((k, _) => k.startsWith('$novelId::'));
