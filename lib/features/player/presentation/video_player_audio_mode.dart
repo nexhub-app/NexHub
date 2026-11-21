@@ -747,21 +747,31 @@ class _AudioUtilityButton extends StatelessWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(AppTokens.radiusMd),
         onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(
-            horizontal: AppTokens.spaceSm,
-            vertical: AppTokens.spaceXxs,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+        // 固定 48 图标槽：与传输键同高，图标中线落在行中线上；
+        // 文字悬挂在图标下方，不参与行内垂直对齐，左右按钮宽度对称。
+        child: SizedBox(
+          width: 48,
+          height: 48,
+          child: Stack(
+            clipBehavior: Clip.none,
+            alignment: Alignment.center,
             children: <Widget>[
               Icon(icon, size: 22, color: Colors.white70),
-              const SizedBox(height: 2),
-              Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.white70, fontSize: 11),
+              Positioned(
+                top: 36,
+                left: -8,
+                right: -8,
+                child: Text(
+                  label,
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 11,
+                    height: 1.2,
+                  ),
+                ),
               ),
             ],
           ),
@@ -795,15 +805,80 @@ class _AudioEpisodeList extends StatefulWidget {
 
 class _AudioEpisodeListState extends State<_AudioEpisodeList> {
   static const double _itemExtent = 68;
+  static const Duration _idleRecenterDelay = Duration(seconds: 3);
 
-  late final ScrollController _scroll = ScrollController(
-    initialScrollOffset: math.max(0, widget.currentIndex - 2) * _itemExtent,
-  );
+  final ScrollController _scroll = ScrollController();
+  Timer? _idleTimer;
+  bool _userScrolling = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _centerCurrent(animate: false));
+  }
+
+  @override
+  void didUpdateWidget(covariant _AudioEpisodeList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.currentIndex != widget.currentIndex ||
+        !identical(oldWidget.episodes, widget.episodes)) {
+      _idleTimer?.cancel();
+      _idleTimer = null;
+      if (!_userScrolling) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _centerCurrent();
+        });
+      }
+    }
+  }
 
   @override
   void dispose() {
+    _idleTimer?.cancel();
     _scroll.dispose();
     super.dispose();
+  }
+
+  /// 把当前集滚到视口垂直中线；静置态下同时是空间感缩放的最大行。
+  void _centerCurrent({bool animate = true}) {
+    if (!mounted || !_scroll.hasClients || widget.episodes.isEmpty) return;
+    if (_scroll.position.viewportDimension <= 0) return;
+    final int current =
+        widget.currentIndex.clamp(0, widget.episodes.length - 1);
+    final double target = (widget.padding.top +
+            AppTokens.spaceMd +
+            current * _itemExtent +
+            _itemExtent / 2 -
+            _scroll.position.viewportDimension / 2)
+        .clamp(0.0, _scroll.position.maxScrollExtent);
+    if (!animate) {
+      _scroll.jumpTo(target);
+      return;
+    }
+    _scroll.animateTo(
+      target,
+      duration: const Duration(milliseconds: 520),
+      curve: Curves.fastOutSlowIn,
+    );
+  }
+
+  /// 用户拖动/甩动结束后静置数秒回中；程序化滚动不触发。
+  bool _onScrollNotification(ScrollNotification notification) {
+    if (notification is ScrollStartNotification &&
+        notification.dragDetails != null) {
+      _userScrolling = true;
+      _idleTimer?.cancel();
+      _idleTimer = null;
+    } else if (notification is ScrollEndNotification && _userScrolling) {
+      _userScrolling = false;
+      _idleTimer?.cancel();
+      _idleTimer = Timer(_idleRecenterDelay, () {
+        _idleTimer = null;
+        _centerCurrent();
+      });
+    }
+    return false;
   }
 
   @override
@@ -847,76 +922,79 @@ class _AudioEpisodeListState extends State<_AudioEpisodeList> {
     }
     final int current =
         widget.currentIndex.clamp(0, widget.episodes.length - 1);
-    return ListView.builder(
-      controller: _scroll,
-      itemExtent: _itemExtent,
-      padding: EdgeInsets.only(
-        top: widget.padding.top + AppTokens.spaceMd,
-        bottom: widget.padding.bottom + AppTokens.spaceMd,
-        left: AppTokens.spaceLg,
-        right: AppTokens.spaceLg,
-      ),
-      itemCount: widget.episodes.length,
-      itemBuilder: (BuildContext context, int index) {
-        final bool selected = index == current;
-        final String title = widget.episodes[index].title;
-        // 空间感：越靠近视口垂直中线越大，向上下两端递减；当前集略加成。
-        return AnimatedBuilder(
-          animation: _scroll,
-          builder: (BuildContext context, Widget? child) => Transform.scale(
-            scale: (_scaleFor(index) + (selected ? 0.1 : 0)).clamp(0.0, 1.1),
-            child: child,
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 2),
-            child: Material(
-              color: selected
-                  ? Colors.white.withValues(alpha: 0.12)
-                  : Colors.transparent,
-              borderRadius: BorderRadius.circular(12),
-              child: InkWell(
+    return NotificationListener<ScrollNotification>(
+      onNotification: _onScrollNotification,
+      child: ListView.builder(
+        controller: _scroll,
+        itemExtent: _itemExtent,
+        padding: EdgeInsets.only(
+          top: widget.padding.top + AppTokens.spaceMd,
+          bottom: widget.padding.bottom + AppTokens.spaceMd,
+          left: AppTokens.spaceLg,
+          right: AppTokens.spaceLg,
+        ),
+        itemCount: widget.episodes.length,
+        itemBuilder: (BuildContext context, int index) {
+          final bool selected = index == current;
+          final String title = widget.episodes[index].title;
+          // 空间感：越靠近视口垂直中线越大，向上下两端递减；当前集略加成。
+          return AnimatedBuilder(
+            animation: _scroll,
+            builder: (BuildContext context, Widget? child) => Transform.scale(
+              scale: (_scaleFor(index) + (selected ? 0.1 : 0)).clamp(0.0, 1.1),
+              child: child,
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Material(
+                color: selected
+                    ? Colors.white.withValues(alpha: 0.12)
+                    : Colors.transparent,
                 borderRadius: BorderRadius.circular(12),
-                onTap: selected ? null : () => widget.onSelect(index),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: AppTokens.spaceSm,
-                  ),
-                  child: Row(
-                    children: <Widget>[
-                      // 当前集前置播放状态图标；非当前集不显示序号。
-                      if (selected) ...<Widget>[
-                        Icon(
-                          widget.playing
-                              ? Icons.pause_rounded
-                              : Icons.play_arrow_rounded,
-                          size: 16,
-                          color: Colors.white,
-                        ),
-                        const SizedBox(width: AppTokens.spaceSm),
-                      ],
-                      Expanded(
-                        child: Text(
-                          title,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: selected ? Colors.white : Colors.white70,
-                            fontSize: 15,
-                            height: 1.35,
-                            fontWeight:
-                                selected ? FontWeight.w600 : FontWeight.w400,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: selected ? null : () => widget.onSelect(index),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: AppTokens.spaceSm,
+                    ),
+                    child: Row(
+                      children: <Widget>[
+                        // 当前集前置播放状态图标；非当前集不显示序号。
+                        if (selected) ...<Widget>[
+                          Icon(
+                            widget.playing
+                                ? Icons.pause_rounded
+                                : Icons.play_arrow_rounded,
+                            size: 16,
+                            color: Colors.white,
+                          ),
+                          const SizedBox(width: AppTokens.spaceSm),
+                        ],
+                        Expanded(
+                          child: Text(
+                            title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: selected ? Colors.white : Colors.white70,
+                              fontSize: 15,
+                              height: 1.35,
+                              fontWeight:
+                                  selected ? FontWeight.w600 : FontWeight.w400,
+                            ),
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 

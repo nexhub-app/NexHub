@@ -117,6 +117,55 @@ void main() {
       expect(_textOf(tester, '第一行').style?.fontSize, greaterThanOrEqualTo(18));
     });
 
+    testWidgets('静置时当前行位于视口垂直中线', (WidgetTester tester) async {
+      final StreamController<Duration> positions =
+          StreamController<Duration>.broadcast();
+      addTearDown(positions.close);
+      final List<AudioLyricLine> lines = <AudioLyricLine>[
+        for (int i = 0; i <= 30; i++) AudioLyricLine(i * 1000, '行 $i'),
+      ];
+
+      await tester.pumpWidget(_host(
+        lines: lines,
+        stream: positions.stream,
+        initial: const Duration(seconds: 10),
+      ));
+      await tester.pumpAndSettle();
+
+      final ScrollableState scrollable =
+          tester.state<ScrollableState>(find.byType(Scrollable));
+      // 顶部留白 8 + 行高 72、视口 400：第 10 行中心停在视口中线。
+      const double expected = 8 + 10 * 72 + 72 / 2 - 200;
+      expect(
+        scrollable.position.pixels,
+        moreOrLessEquals(expected, epsilon: 0.5),
+      );
+    });
+
+    testWidgets('滚动停止约 3 秒后自动回中', (WidgetTester tester) async {
+      final StreamController<Duration> positions =
+          StreamController<Duration>.broadcast();
+      addTearDown(positions.close);
+      final List<AudioLyricLine> lines = <AudioLyricLine>[
+        for (int i = 0; i <= 30; i++) AudioLyricLine(i * 1000, '行 $i'),
+      ];
+
+      await tester.pumpWidget(_host(lines: lines, stream: positions.stream));
+      await tester.pumpAndSettle();
+
+      await tester.drag(find.byType(ListView), const Offset(0, -800));
+      await tester.pumpAndSettle();
+      final ScrollableState scrollable =
+          tester.state<ScrollableState>(find.byType(Scrollable));
+      expect(scrollable.position.pixels, greaterThan(100),
+          reason: '翻动后允许暂时不居中');
+
+      // 静置 3 秒后当前行自动回到中线（第 0 行回中即顶部极限 0）。
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      expect(scrollable.position.pixels, lessThan(1));
+    });
+
     testWidgets('高亮行自动滚入可视区', (WidgetTester tester) async {
       final StreamController<Duration> positions =
           StreamController<Duration>.broadcast();

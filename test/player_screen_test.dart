@@ -350,6 +350,42 @@ void main() {
         expect(lyrics, contains('active ? 0.14 : 0'));
       });
 
+      test('工具键图标同一行对齐：固定图标槽，文字悬挂不参与对齐', () {
+        final String audioMode = File(
+          'lib/features/player/presentation/video_player_audio_mode.dart',
+        ).readAsStringSync();
+        final int utility = audioMode.indexOf('class _AudioUtilityButton');
+        final int utilityEnd = audioMode.indexOf('class _AudioEpisodeList');
+        expect(utility, greaterThan(0));
+        final String src = audioMode.substring(utility, utilityEnd);
+        // 48×48 图标槽与传输键同高，图标中线落在行中线上。
+        expect(src, contains('SizedBox('));
+        expect(src, contains('width: 48,'));
+        expect(src, contains('height: 48,'));
+        expect(src, contains('clipBehavior: Clip.none'));
+        expect(src, contains('top: 36,'));
+        expect(src, isNot(contains('mainAxisSize: MainAxisSize.min')));
+      });
+
+      test('列表与歌词停稳数秒后自动回中，翻动期间不抢滚动', () {
+        final String audioMode = File(
+          'lib/features/player/presentation/video_player_audio_mode.dart',
+        ).readAsStringSync();
+        final String lyrics = File(
+          'lib/features/player/presentation/audio_lyrics_view.dart',
+        ).readAsStringSync();
+        for (final String src in <String>[audioMode, lyrics]) {
+          expect(src, contains('ScrollEndNotification'));
+          expect(src, contains('dragDetails != null'));
+          expect(src, contains('Duration(seconds: 3)'));
+          // 回中目标：当前项中心对齐视口垂直中线。
+          expect(src, contains('viewportDimension / 2'));
+        }
+        expect(audioMode, contains('_centerCurrent'));
+        expect(lyrics, contains('_userScrolling'));
+        expect(lyrics, contains('_scrollToActive'));
+      });
+
       test('音频背景支持封面取色 / 应用主题 / 纯色', () {
         final String audioMode = File(
           'lib/features/player/presentation/video_player_audio_mode.dart',
