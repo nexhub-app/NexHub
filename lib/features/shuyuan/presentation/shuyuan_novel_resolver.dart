@@ -41,6 +41,7 @@ import '../web_book/book_info.dart';
 import '../web_book/book_list.dart';
 import '../model/book_source.dart';
 import '../model/search_book.dart';
+import '../model/source_callback_result.dart';
 import '../model/xiaoshuo_book.dart';
 import '../model/xiaoshuo_book_chapter.dart';
 import '../analyze/js_engine.dart';
@@ -210,6 +211,8 @@ class ShuyuanNovelResolver
         // ——循环内每一轮都依赖页面缓存，否则重放会把同一页真实重复抓多次。
         ctx.clearStageCaches();
         JsEngine.resetReplayCachesFor(source.id);
+        // 事件回调（callback）允许 startBrowser 真开浏览器；其余阶段不弹。
+        final isCallback = apiName == 'callback';
         var deadline = DateTime.now().add(_replayBudget);
         // 面包屑日志（信息级常驻）：定位「一直加载」时，最后一条日志即卡点
         // ——停在派发前说明 JS/正则同步执行卡死；停在 settle 说明网络等待。
@@ -228,23 +231,24 @@ class ShuyuanNovelResolver
             out = await _dispatch(source, bookSource, apiName, vars,
                 onProgress: onProgress);
           } on Object {
-            if (_hasPendingReplay(ctx) && _replayAllowed(pass, deadline)) {
+            if (_hasPendingReplay(ctx, openBrowsers: isCallback) &&
+                _replayAllowed(pass, deadline)) {
               final settled = await _settleReplay(ctx, bookSource, source,
-                  deadline: deadline);
+                  deadline: deadline, openBrowsers: isCallback);
               deadline = deadline.add(settled.waited);
               if (settled.fetched > 0) continue;
             }
             rethrow;
           }
-          if (!_hasPendingReplay(ctx)) return out;
+          if (!_hasPendingReplay(ctx, openBrowsers: isCallback)) return out;
           AppLog.instance.i('[书源重放] 轮次=$pass 派发完成 '
               '耗时=${dispatchWatch.elapsedMilliseconds}ms '
               '待办 ajax=${ctx.ajaxPending.length} '
               'webview=${ctx.webviewPending.length}');
           if (!_replayAllowed(pass, deadline)) break;
           final settleWatch = Stopwatch()..start();
-          final settled =
-              await _settleReplay(ctx, bookSource, source, deadline: deadline);
+          final settled = await _settleReplay(ctx, bookSource, source,
+              deadline: deadline, openBrowsers: isCallback);
           deadline = deadline.add(settled.waited);
           AppLog.instance.i('[书源重放] 轮次=$pass settle 完成 '
               '抓取=${settled.fetched} 耗时=${settleWatch.elapsedMilliseconds}ms');
@@ -313,6 +317,8 @@ class ShuyuanNovelResolver
         return await _handleComicImages(source, bookSource, vars);
       case 'pay':
         return await _handlePayAction(source, bookSource, vars);
+      case 'callback':
+        return await _handleSourceCallback(source, bookSource, vars);
       default:
         throw UnsupportedError(
           'ShuyuanNovelResolver does not support apiName: $apiName',
@@ -333,11 +339,12 @@ class ShuyuanNovelResolver
       ShuyuanSourceContext.settleAjax(ctx, bookSource, deadline: deadline);
 
   /// 本轮是否还有等待宿主处理的请求（ajax 走 HTTP，webview 走无头渲染，
-  /// 交互式 await/验证码走冻结缓存）。发现阶段不弹 startBrowser。
-  bool _hasPendingReplay(ShuyuanSourceContext ctx) =>
+  /// 交互式 await/验证码走冻结缓存）。发现阶段不弹 startBrowser；
+  /// [openBrowsers] 为 true（事件回调）时 startBrowser 也计入待办。
+  bool _hasPendingReplay(ShuyuanSourceContext ctx, {bool openBrowsers = false}) =>
       ctx.ajaxPending.isNotEmpty ||
       ctx.webviewPending.isNotEmpty ||
-      hasPendingInteractive(ctx, includeOpenBrowsers: false);
+      hasPendingInteractive(ctx, includeOpenBrowsers: openBrowsers);
 
   /// 一次性补齐重放请求（ajax / webview / 交互式浏览器与验证码）；
   /// 返回本轮新抓取的条目数（0 = 无进展）与等待时长（供调用方延长预算）。
@@ -349,6 +356,7 @@ class ShuyuanNovelResolver
     XiaoshuoBookSource bookSource,
     PluginConfig source, {
     DateTime? deadline,
+    bool openBrowsers = false,
   }) async {
     var fetched = await _fetchAjaxPending(ctx, bookSource, deadline: deadline);
     fetched += await ShuyuanSourceContext.settleWebview(ctx, deadline: deadline);
@@ -358,6 +366,7 @@ class ShuyuanNovelResolver
       ctx,
       bookSource,
       pluginSource: source,
+      openBrowsers: openBrowsers,
     );
     // 预算只按「用户交互等待」延长：ajax/webview 抓取本身有各自的 45s 超时，
     // 若把它们耗时也算作返回的 waited，等于每轮免费续期，总预算形同虚设。
@@ -1392,7 +1401,7 @@ class ShuyuanNovelResolver
     if (result.startsWith('http://') || result.startsWith('https://')) {
       return NovelPayResult.openUrl(result);
     }
-    if (_payActionIsTrue(result)) return NovelPayResult.refreshed();
+    if (_isLegadoTrue(result)) return NovelPayResult.refreshed();
     throw SourceResolveException(
       sourceId: source.id,
       apiName: 'pay',
@@ -1400,9 +1409,108 @@ class ShuyuanNovelResolver
     );
   }
 
+  // ── 事件回调 ──
+
+  /// 执行书源事件回调（legado `SourceCallBack`）。
+  ///
+  /// 对齐 md3：绑定 `event`/`result`/`book`/`chapter`，`java` 为 BaseSource
+  /// （含登录/搜索/发现 UI 面）；返回假值 → 调用方执行默认动作，真值 →
+  /// 保持脚本结果，异常 → 仅记录、默认动作也不执行。
+  ///
+  /// 脚本包在 `eval` 里执行：语法错误/运行期异常在 JS 侧捕获并回传
+  /// `{e:...}`，与引擎级失败（空串）一起映射为「异常」。
+  Future<SourceCallbackResult> _handleSourceCallback(
+    PluginConfig source,
+    XiaoshuoBookSource bookSource,
+    Map<String, String> vars,
+  ) async {
+    final jsStr = (bookSource.ruleContent?.callBackJs ?? '').trim();
+    if (jsStr.isEmpty) {
+      // 无回调脚本：等同未开启事件监听，默认动作照常执行。
+      return const SourceCallbackResult(runDefault: true);
+    }
+    final ctx = ShuyuanSourceContext.current;
+    ctx?.openRequests.clear();
+    ctx?.copiedTexts.clear();
+
+    final bookUrl = vars['bookUrl'] ?? vars['id'] ?? '';
+    final book = _bookInfoCache[bookUrl] ??
+        _seedFor(bookUrl) ??
+        XiaoshuoBook(bookUrl: bookUrl, name: '');
+    if (book.name.isEmpty) book.name = vars['bookName'] ?? '';
+    if (book.author.isEmpty) book.author = vars['author'] ?? '';
+    final chapterUrl = vars['chapterUrl'] ?? '';
+    XiaoshuoBookChapter? chapter;
+    if (chapterUrl.isNotEmpty) {
+      chapter = XiaoshuoBookChapter(
+        bookUrl: bookUrl,
+        url: chapterUrl,
+        title: vars['chapterTitle'] ?? '',
+        index: int.tryParse(vars['chapterIndex'] ?? '') ?? 0,
+        isVip: vars['chapterVip'] == '1',
+        isPay: vars['chapterPay'] == '1',
+      );
+    }
+    final rule = AnalyzeRule(book: book, chapter: chapter)
+      ..setBaseUrl(bookSource.bookSourceUrl);
+    const wrapper = '(function () {\n'
+        '  try {\n'
+        '    var __v = eval(__src);\n'
+        "    var __t = __v === undefined || __v === null ? '' : String(__v);\n"
+        '    return JSON.stringify({v: __t});\n'
+        '  } catch (__e) {\n'
+        "    return JSON.stringify({e: String(__e && __e.message ? __e.message : __e)});\n"
+        '  }\n'
+        '})()';
+    // md3 CopyTocUrl 的 result 变量就是 book.tocUrl（详情阶段解析并回填）；
+    // 界面调用方拿不到书对象，这里按事件补齐。
+    final String? resultText = vars['result'] ??
+        ((vars['event'] ?? '') == 'clickCopyTocUrl' ? book.tocUrl : null);
+    final raw = rule.evalJs(
+      wrapper,
+      resultText,
+      extraBindings: <String, dynamic>{
+        'event': vars['event'] ?? '',
+        '__src': jsStr,
+      },
+    );
+    String value = '';
+    String? error;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        final e = decoded['e'];
+        if (e != null) error = e.toString();
+        value = decoded['v']?.toString() ?? '';
+      } else {
+        value = raw;
+      }
+    } catch (_) {
+      // 引擎级失败（AnalyzeRule 吞异常返回空串）：按异常处理——md3 异常
+      // 只记日志，默认动作不执行。
+      error = raw.trim().isEmpty ? 'callback eval failed' : null;
+      if (error == null) value = raw;
+    }
+    final openRequests =
+        ctx == null ? const <Map<String, String>>[] : List.of(ctx.openRequests);
+    final copiedTexts =
+        ctx == null ? const <String>[] : List.of(ctx.copiedTexts);
+    ctx?.openRequests.clear();
+    ctx?.copiedTexts.clear();
+    return SourceCallbackResult(
+      runDefault: error == null && !_isLegadoTrue(value),
+      value: value,
+      error: error,
+      openRequests: openRequests,
+      copiedTexts: copiedTexts,
+      tocUrl: book.tocUrl ?? '',
+    );
+  }
+
   /// legado `String?.isTrue`：空 / "null" 为假；忽略大小写的
   /// `false|no|not|0|0.0` 为假；其余非空值为真。
-  static bool _payActionIsTrue(String? value) {
+  /// payAction 与 callBackJs 共用同一口径（md3 两处都调 `isTrue`）。
+  static bool _isLegadoTrue(String? value) {
     final text = value?.trim() ?? '';
     if (text.isEmpty || text == 'null') return false;
     return !RegExp(r'^(?:false|no|not|0|0\.0)$', caseSensitive: false)
@@ -1505,6 +1613,14 @@ class ShuyuanNovelResolver
   }
 
   // ── 模型转换 ──
+
+  /// 目录地址随条目透传（`extra.tocUrl`）：CopyTocUrl 的默认动作在源未
+  /// 开启事件回调时仍要复制书对象的 tocUrl（md3 `book.tocUrl`）。
+  Map<String, dynamic>? _tocExtra(String? tocUrl) =>
+      (tocUrl == null || tocUrl.isEmpty)
+          ? null
+          : <String, dynamic>{'tocUrl': tocUrl};
+
   MediaItem _searchBookToMediaItem(SearchBook sb, PluginConfig source) {
     return MediaItem(
       id: sb.bookUrl,
@@ -1521,6 +1637,7 @@ class ShuyuanNovelResolver
           .map((s) => s.trim())
           .toList(),
       wordCount: sb.wordCount,
+      extra: _tocExtra(sb.tocUrl),
     );
   }
 
@@ -1548,6 +1665,7 @@ class ShuyuanNovelResolver
           .toList(),
       updatedAt: parsedUpdatedAt,
       wordCount: book.wordCount,
+      extra: _tocExtra(book.tocUrl),
     );
   }
 

@@ -326,6 +326,12 @@ const String sourceContextJsPrelude = r'''
     },
     refreshJSLib: function () { return true; },
     refreshBookUrl: function () { return true; },
+    // legado BaseSource.putConcurrent：运行期调整本源并发率
+    // （ConcurrentRateLimiter.updateConcurrentRate(getKey(), value)）。
+    putConcurrent: function (value) {
+      syOp('concurrentRate', String(value == null ? '' : value), '');
+      return null;
+    },
   };
 
   var book = {
@@ -756,7 +762,7 @@ const String sourceContextJsPrelude = r'''
     ['getKey', 'getVariable', 'putVariable', 'setVariable', 'getLoginInfo',
      'getLoginInfoMap', 'putLoginInfo', 'removeLoginInfo', 'getLoginHeader',
      'getLoginHeaderMap', 'putLoginHeader', 'removeLoginHeader',
-     'refreshJSLib', 'refreshBookUrl'].forEach(function (n) {
+     'refreshJSLib', 'refreshBookUrl', 'putConcurrent'].forEach(function (n) {
       if (typeof global.java[n] !== 'function') {
         global.java[n] = function () {
           return global.source[n].apply(global.source, arguments);
@@ -992,6 +998,21 @@ const String sourceContextJsPrelude = r'''
     global.java.openUrl = function (url, mimeType) {
       global.java.startBrowser(url, '');
       return true;
+    };
+    // legado SourceLoginJsExtensions.open(name, url, title, origin)：
+    // 回调脚本用 login → 源登录、search → 按关键字搜索、explore → 打开发现页。
+    // 同步沙箱不改界面，记 op 由宿主在求值结束后按 name 排空。
+    // origin 缺省为当前源（md3 `origin ?: source`）。
+    global.java.open = function (name, url, title, origin) {
+      var n = String(name == null ? '' : name);
+      if (!n) return null;
+      syOp('open', JSON.stringify([
+        n,
+        url == null ? '' : String(url),
+        title == null ? '' : String(title),
+        origin == null ? '' : String(origin),
+      ]), '');
+      return null;
     };
     global.java.refreshExplore = function () {
       syOp('refreshKinds', '', '');

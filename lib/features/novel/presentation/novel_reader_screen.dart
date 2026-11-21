@@ -70,6 +70,8 @@ import '../../../core/scraper/media_api_service.dart';
 import '../../../core/scraper/verification_detector.dart';
 import '../../../core/services/novel_progress_sync_service.dart';
 import '../../../core/services/source_repository.dart';
+import '../../shuyuan/model/source_callback_result.dart';
+import '../../shuyuan/presentation/shuyuan_callback_host.dart';
 import '../../../core/async_session.dart';
 import '../../../core/player/audio_playback_service.dart';
 import '../../../core/stats/reading_session_recorder.dart';
@@ -160,6 +162,9 @@ class NovelReaderScreen extends StatefulWidget {
   /// 详情页 URL（用于收藏时透传，避免历史/收藏详情灰屏）。
   final String? detailUrl;
 
+  /// 书籍作者（书源事件回调的 book.author 字段）。
+  final String? bookAuthor;
+
   /// 封面 URL（用于收藏时透传，避免收藏书架缺封面）。
   final String? coverUrl;
 
@@ -183,6 +188,7 @@ class NovelReaderScreen extends StatefulWidget {
     this.localEpubPath,
     this.localChapterPaths,
     this.detailUrl,
+    this.bookAuthor,
     this.coverUrl,
     this.restoreProgress = true,
     this.initialPage,
@@ -408,6 +414,9 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
 
   late NovelReaderPreferences _prefs;
   int _chapterIndex = 0;
+
+  /// 已触发过 saveRead 的章节（md3：换章 / 首次落页才回调，翻页不重复）。
+  int? _saveReadChapterIndex;
 
   /// 本地加载代次守卫：快速翻章 / 初始与切换并发时，丢弃过期结果，
   /// 避免较慢的初始解析覆盖已切换的章节（表现为「切换章还是同一章」）。
@@ -3112,6 +3121,80 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     await _loadChapter(_chapterIndex, restorePage: _currentPage);
   }
 
+  /// 阅读器书源事件（md3 `callBackBook`）：
+  /// - `startRead`：每次章节正文加载完成；
+  /// - `saveRead`：首次落页 / 换章（翻页不重复）。
+  /// 原生源与未开启事件监听的源不产生任何调用。
+  void _notifyReadCallbacks(int index) {
+    final PluginConfig? source = _source;
+    if (source == null || _isLocalMode) return;
+    final MediaApiService api = context.read<MediaApiService>();
+    if (!api.canRunSourceCallback(source)) return;
+    final Episode? chapter =
+        index >= 0 && index < widget.chapters.length
+            ? widget.chapters[index]
+            : null;
+    Future<void> run(String event) async {
+      try {
+        final SourceCallbackResult r = await api.runSourceCallback(
+          source,
+          event,
+          bookUrl: widget.novelId,
+          bookName: widget.title,
+          author: widget.bookAuthor,
+          chapterUrl: chapter?.url,
+          chapterTitle: chapter?.title,
+          chapterIndex: index,
+          chapterVip: chapter?.isVip ?? false,
+          chapterPay: chapter?.isPay ?? false,
+        );
+        if (mounted) {
+          await drainShuyuanCallbackEffects(context, source, r);
+        }
+      } on Object catch (e) {
+        AppLog.instance.e('[书源回调] $event 出错: $e');
+      }
+    }
+
+    unawaited(run('startRead'));
+    if (_saveReadChapterIndex != index) {
+      _saveReadChapterIndex = index;
+      unawaited(run('saveRead'));
+    }
+  }
+
+  Future<void> _runReaderCustomButton({required bool longPress}) async {
+    final PluginConfig? source = _source;
+    if (source == null || _isLocalMode) return;
+    final MediaApiService api = context.read<MediaApiService>();
+    if (!api.canRunSourceCallback(source)) return;
+    final int index = _chapterIndex;
+    final Episode? chapter =
+        index >= 0 && index < widget.chapters.length
+            ? widget.chapters[index]
+            : null;
+    try {
+      final SourceCallbackResult r = await api.runSourceCallback(
+        source,
+        longPress ? 'longClickCustomButton' : 'clickCustomButton',
+        bookUrl: widget.novelId,
+        bookName: widget.title,
+        author: widget.bookAuthor,
+        chapterUrl: chapter?.url,
+        chapterTitle: chapter?.title,
+        chapterIndex: index,
+        chapterVip: chapter?.isVip ?? false,
+        chapterPay: chapter?.isPay ?? false,
+      );
+      if (mounted) {
+        await drainShuyuanCallbackEffects(context, source, r);
+      }
+    } on Object catch (e) {
+      // md3 阅读器自定义按钮：脚本异常只记日志（无默认动作/无提示）。
+      AppLog.instance.e('[书源回调] clickCustomButton 出错: $e');
+    }
+  }
+
   Future<void> _loadChapter(int index,
       {int restorePage = 0, bool keepTts = false}) async {
     // 防并发：章节加载期间忽略新的切章请求（快速连按上一页/下一页时）。
@@ -3185,6 +3268,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
         _verificationError = null;
         _contentVersion++;
       });
+      _notifyReadCallbacks(index);
       if (_isMediaChapter) return;
       _setupControllers(restorePage: restorePage);
       // 章节加载完成、分页就绪后检查一次预下载（单页章 / 直达章末场景，
@@ -6674,6 +6758,8 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
                     }
                   case 'payChapter':
                     _payCurrentChapter();
+                  case 'sourceCustomButton':
+                    _runReaderCustomButton(longPress: false);
                   case 'bookmarkList':
                     _showBookmarkList();
                   case 'summary':
@@ -6744,6 +6830,24 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
                         title: Text(l10n.novelPayChapter),
                         contentPadding: EdgeInsets.zero,
                         dense: true,
+                      ),
+                    ),
+                  // 书源自定义按钮（legado customButton）；长按触发 longClickCustomButton。
+                  if (_source != null && shuyuanHasCustomButton(_source!))
+                    PopupMenuItem<String>(
+                      value: 'sourceCustomButton',
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onLongPress: () {
+                          Navigator.of(ctx).pop();
+                          _runReaderCustomButton(longPress: true);
+                        },
+                        child: ListTile(
+                          leading: const Icon(Icons.extension_rounded),
+                          title: Text(l10n.sourceCustomButton),
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                        ),
                       ),
                     ),
                   const PopupMenuDivider(),

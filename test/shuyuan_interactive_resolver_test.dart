@@ -76,9 +76,9 @@ void main() {
     ));
     final resolver = ShuyuanNovelResolver();
     final first = await resolver.resolve(config, 'content',
-        vars: <String, String>{'url': '$origin/a.html'}) as List<NovelBlock>;
+        vars: <String, String>{'url': '$origin/a.html'}) as NovelContentResult;
     expect(
-      first.whereType<NovelTextBlock>().map((b) => b.text.trim()),
+      first.blocks.whereType<NovelTextBlock>().map((b) => b.text.trim()),
       contains('/a.html'),
     );
 
@@ -88,9 +88,9 @@ void main() {
     requireCookie = true;
 
     final second = await resolver.resolve(config, 'content',
-        vars: <String, String>{'url': '$origin/b.html'}) as List<NovelBlock>;
+        vars: <String, String>{'url': '$origin/b.html'}) as NovelContentResult;
     expect(
-      second.whereType<NovelTextBlock>().map((b) => b.text.trim()),
+      second.blocks.whereType<NovelTextBlock>().map((b) => b.text.trim()),
       contains('/b.html'),
     );
   });

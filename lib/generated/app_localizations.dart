@@ -2432,6 +2432,42 @@ abstract class AppLocalizations {
   /// **'Copied to clipboard'**
   String get shareCopied;
 
+  /// No description provided for @sourceCustomButton.
+  ///
+  /// In en, this message translates to:
+  /// **'Custom button'**
+  String get sourceCustomButton;
+
+  /// No description provided for @sourceCopyBookUrl.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy book link'**
+  String get sourceCopyBookUrl;
+
+  /// No description provided for @sourceCopyTocUrl.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy table-of-contents link'**
+  String get sourceCopyTocUrl;
+
+  /// No description provided for @sourceCopyPlayUrl.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy playback link'**
+  String get sourceCopyPlayUrl;
+
+  /// No description provided for @sourceClearCache.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear cache'**
+  String get sourceClearCache;
+
+  /// No description provided for @sourceNoCustomButton.
+  ///
+  /// In en, this message translates to:
+  /// **'The source did not handle the custom button'**
+  String get sourceNoCustomButton;
+
   /// No description provided for @browserTitle.
   ///
   /// In en, this message translates to:

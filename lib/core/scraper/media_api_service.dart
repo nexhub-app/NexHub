@@ -9,6 +9,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
+import '../../features/shuyuan/model/source_callback_result.dart';
 import '../models/category_entry.dart';
 import '../models/episode.dart';
 import '../models/explore_kind.dart';
@@ -824,6 +825,66 @@ class MediaApiService {
         .resolve(source, 'pay', vars: vars);
     if (r is NovelPayResult) return r;
     throw UnsupportedError('pay route did not return NovelPayResult: $r');
+  }
+
+  /// 源是否启用了事件回调（legado `eventListener` + `ruleContent.callBackJs`）。
+  ///
+  /// 只读 selectors 判断，不触发解析；供详情页/阅读器决定是否把点击与
+  /// 阅读生命周期事件交给源脚本。
+  bool canRunSourceCallback(PluginConfig source) {
+    final Object? xiaoshuo = source.selectors?['xiaoshuo'];
+    if (xiaoshuo is! Map) return false;
+    if (xiaoshuo['eventListener'] != true) return false;
+    final Object? ruleContent = xiaoshuo['ruleContent'];
+    if (ruleContent is! Map) return false;
+    final Object? callBackJs = ruleContent['callBackJs'];
+    return callBackJs is String && callBackJs.trim().isNotEmpty;
+  }
+
+  /// 执行书源事件回调（legado `SourceCallBack.callBackBtn/callBackBook`）。
+  ///
+  /// 返回 [SourceCallbackResult]：`runDefault` 为 true 时调用方执行默认
+  /// 动作（搜索/分享/复制/清缓存等）；`openRequests`/`copiedTexts` 是脚本
+  /// 经 `java.open`/`java.copyText` 请求的界面动作。
+  Future<SourceCallbackResult> runSourceCallback(
+    PluginConfig source,
+    String event, {
+    required String bookUrl,
+    String bookName = '',
+    String? author,
+    String? baseUrl,
+    String? chapterUrl,
+    String? chapterTitle,
+    int? chapterIndex,
+    bool chapterVip = false,
+    bool chapterPay = false,
+    String? result,
+  }) async {
+    // md3 `SourceCallBack`：源未开启事件监听或 callBackJs 为空 → noCall，
+    // 直接执行默认动作（不进入脚本）。此处兜底，调用方忘记门控也不会误跑。
+    if (!canRunSourceCallback(source)) {
+      return const SourceCallbackResult(runDefault: true);
+    }
+    final vars = <String, String>{
+      'event': event,
+      'bookUrl': bookUrl,
+      'bookName': bookName,
+      if (author != null && author.isNotEmpty) 'author': author,
+      if (baseUrl != null && baseUrl.isNotEmpty) 'baseUrl': baseUrl,
+      if (result != null) 'result': result,
+      if (chapterUrl != null && chapterUrl.isNotEmpty) ...<String, String>{
+        'chapterUrl': chapterUrl,
+        'chapterTitle': chapterTitle ?? '',
+        'chapterIndex': '${chapterIndex ?? 0}',
+        'chapterVip': chapterVip ? '1' : '0',
+        'chapterPay': chapterPay ? '1' : '0',
+      },
+    };
+    final r = await registry
+        .find(source, 'callback')
+        .resolve(source, 'callback', vars: vars);
+    if (r is SourceCallbackResult) return r;
+    throw UnsupportedError('callback route did not return SourceCallbackResult: $r');
   }
 
   List<MediaItem> _asItems(dynamic r) {

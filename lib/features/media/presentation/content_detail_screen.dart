@@ -29,6 +29,7 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:nexhub/generated/app_localizations.dart';
 import 'package:provider/provider.dart';
@@ -60,6 +61,7 @@ import '../../../core/theme/app_tokens.dart';
 import '../../../core/theme/image_accent_extractor.dart';
 import '../../../core/theme/theme_controller.dart';
 import '../../../core/utils/app_haptics.dart';
+import '../../../core/utils/app_log.dart';
 import '../../../core/widgets/app_cover_image.dart';
 import '../../../core/widgets/app_error_state.dart';
 import '../../../core/widgets/bangumi_full_tab.dart';
@@ -79,6 +81,8 @@ import '../../downloads/presentation/download_list_screen.dart';
 import '../../manga/presentation/comic_reader_screen.dart';
 import '../../novel/presentation/novel_reader_screen.dart';
 import '../../player/presentation/video_player_screen.dart';
+import '../../shuyuan/model/source_callback_result.dart';
+import '../../shuyuan/presentation/shuyuan_callback_host.dart';
 import '../../verification/presentation/webview_verification_screen.dart';
 import 'series_detail_screen.dart';
 
@@ -550,6 +554,125 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
     }
   }
 
+  // ───────────────────── 书源事件回调（legado SourceCallBack） ─────────────────────
+
+  /// 书对象的 bookUrl：书源条目 id 即书目 URL，详情路由回填的 detailUrl
+  /// 优先（md3 回调绑定的是 Book.bookUrl）。
+  String get _callbackBookUrl {
+    final String? detailUrl = _fetchedDetail.detailUrl ?? widget.item.detailUrl;
+    if (detailUrl != null && detailUrl.isNotEmpty) return detailUrl;
+    return _fetchedDetail.id;
+  }
+
+  /// 执行一次 callBackJs 事件；null = 源未启用回调（调用方走默认动作）。
+  ///
+  /// 脚本异常时返回 `runDefault=false`：md3 `callBackBtn` 异常只记日志，
+  /// 默认动作**不**执行。
+  Future<SourceCallbackResult?> _runSourceCallback(
+    String event, {
+    String? result,
+  }) async {
+    final PluginConfig? source =
+        context.read<SourceRepository>().getById(widget.item.sourceId ?? '');
+    if (source == null) return null;
+    final MediaApiService service = context.read<MediaApiService>();
+    if (!service.canRunSourceCallback(source)) return null;
+    try {
+      final SourceCallbackResult r = await service.runSourceCallback(
+        source,
+        event,
+        bookUrl: _callbackBookUrl,
+        bookName: _fetchedDetail.title,
+        author: _fetchedDetail.author,
+        result: result,
+      );
+      if (mounted) {
+        await drainShuyuanCallbackEffects(context, source, r);
+      }
+      return r;
+    } on Object catch (e) {
+      AppLog.instance.e('[书源回调] $event 出错: $e');
+      return const SourceCallbackResult(runDefault: false);
+    }
+  }
+
+  /// 收藏增删是 `callBackBook` 事件（md3：无条件触发，无默认动作/无返回值门控）。
+  void _notifyShelfEvent(String event) {
+    unawaited(_runSourceCallback(event));
+  }
+
+  Future<void> _handleAuthorTap(String name, String? url) async {
+    final SourceCallbackResult? r =
+        await _runSourceCallback('clickAuthor', result: name);
+    if (r != null && !r.runDefault) return;
+    if (!mounted) return;
+    if (url != null && url.isNotEmpty) {
+      _openSourceUrl(url, '${AppLocalizations.of(context).authorColon}$name');
+    } else {
+      _openUnifiedSearch(name, field: 'author');
+    }
+  }
+
+  Future<void> _handleAuthorLongPress(String name) async {
+    final SourceCallbackResult? r =
+        await _runSourceCallback('longClickAuthor', result: name);
+    if (r != null && !r.runDefault) return;
+    if (!mounted) return;
+    _openUnifiedSearch(name, field: 'author');
+  }
+
+  Future<void> _handleBookNameTap({required bool longPress}) async {
+    final String name = _fetchedDetail.title;
+    final SourceCallbackResult? r = await _runSourceCallback(
+      longPress ? 'longClickBookName' : 'clickBookName',
+      result: name,
+    );
+    if (r != null && !r.runDefault) return;
+    if (!mounted) return;
+    _openUnifiedSearch(name);
+  }
+
+  /// 详情页「自定义按钮」：md3 无默认动作，未消费时静默。
+  Future<void> _runCustomButton() async {
+    await _runSourceCallback('clickCustomButton');
+  }
+
+  Future<void> _copyBookUrl() async {
+    final String url = _callbackBookUrl;
+    final SourceCallbackResult? r =
+        await _runSourceCallback('clickCopyBookUrl', result: url);
+    if (r != null && !r.runDefault) return;
+    if (!mounted || url.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: url));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(AppLocalizations.of(context).shareCopied)),
+    );
+  }
+
+  Future<void> _copyTocUrl() async {
+    // result 由解析层按 book.tocUrl 填充（md3 CopyTocUrl 的 result 同源）；
+    // 源未开启事件回调时没有回调结果，改用条目随详情透传的 tocUrl。
+    final SourceCallbackResult? r = await _runSourceCallback('clickCopyTocUrl');
+    if (r != null && !r.runDefault) return;
+    final String tocUrl = (r?.tocUrl.isNotEmpty ?? false)
+        ? r!.tocUrl
+        : (_fetchedDetail.extra?['tocUrl'] as String? ?? '');
+    if (!mounted || tocUrl.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: tocUrl));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(AppLocalizations.of(context).shareCopied)),
+    );
+  }
+
+  Future<void> _clearSourceCache() async {
+    final SourceCallbackResult? r = await _runSourceCallback('clickClearCache');
+    if (r != null && !r.runDefault) return;
+    if (!mounted) return;
+    _refreshMetadata();
+  }
+
   // ───────────────────────── 打开内容 ─────────────────────────
 
   /// 打开播放器 / 阅读器。
@@ -589,6 +712,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
               initialEpisodeIndex: index,
               favoriteType: _favType,
               detailUrl: detailUrl,
+              bookAuthor: widget.item.author,
               coverUrl: coverUrl,
               restoreProgress: remember,
             ),
@@ -605,6 +729,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
               initialChapterIndex: index,
               restoreProgress: effectiveRestore,
               detailUrl: detailUrl,
+              bookAuthor: widget.item.author,
               coverUrl: coverUrl,
             ),
           ),
@@ -620,6 +745,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
               initialChapterIndex: index,
               restoreProgress: effectiveRestore,
               detailUrl: detailUrl,
+              bookAuthor: widget.item.author,
               coverUrl: coverUrl,
             ),
           ),
@@ -641,6 +767,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
     // animeSource，会与上方 isFavorite(_favType) 查询的类型不一致，
     // 表现为「详情页点收藏无效」（收藏进了别的书架，图标不亮）。
     await fav.toggleFavorite(widget.item, type: _favType);
+    _notifyShelfEvent(wasFavorite ? 'delBookShelf' : 'addBookShelf');
     if (!mounted) return;
     if (wasFavorite) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -676,6 +803,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
     final AppLocalizations l10n = AppLocalizations.of(context);
     // MD3「Toggle」：取消收藏 → tick。
     AppHaptics.toggleOff();
+    _notifyShelfEvent('delBookShelf');
     await context.read<FavoritesManager>().removeFavorite(
           widget.item.id,
           _favType,
@@ -831,7 +959,13 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
     });
   }
 
-  void _share() {
+  Future<void> _share() async {
+    final SourceCallbackResult? r = await _runSourceCallback(
+      'clickShareBook',
+      result: _callbackBookUrl,
+    );
+    if (r != null && !r.runDefault) return;
+    if (!mounted) return;
     shareContent(context, widget.item.title, widget.item.detailUrl);
   }
 
@@ -848,6 +982,14 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
         );
       case 'uploadToWebdav':
         unawaited(_uploadExportsToWebdav(l10n));
+      case 'sourceCustomButton':
+        unawaited(_runCustomButton());
+      case 'copyBookUrl':
+        unawaited(_copyBookUrl());
+      case 'copyTocUrl':
+        unawaited(_copyTocUrl());
+      case 'clearSourceCache':
+        unawaited(_clearSourceCache());
     }
   }
 
@@ -1016,9 +1158,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
         onDirectorTap: (String name) =>
             _openUnifiedSearch(name, field: 'director'),
         onActorTap: (String name) => _openUnifiedSearch(name, field: 'actors'),
-        onAuthorTap: (String name, String? url) => (url != null && url.isNotEmpty)
-            ? _openSourceUrl(url, '${l10n.authorColon}$name')
-            : _openUnifiedSearch(name, field: 'author'),
+        onAuthorTap: _handleAuthorTap,
+        onAuthorLongPress: _handleAuthorLongPress,
       ),
     ];
   }
@@ -1306,6 +1447,12 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
   }) {
     final PluginConfig? source =
         context.read<SourceRepository>().getById(item.sourceId ?? '');
+    // 书源事件入口（md3：CopyBookUrl/CopyTocUrl/ClearCache 对远程书恒显，
+    // CustomButton 仅 customButton=true 时显示）。原生源不新增菜单项。
+    final bool shuyuanSource =
+        source != null && source.selectors?['xiaoshuo'] is Map;
+    final bool customButton =
+        source != null && shuyuanHasCustomButton(source);
     final FavoritesManager favorites = context.watch<FavoritesManager>();
     final DownloadManager downloadMgr = context.watch<DownloadManager>();
     // 订阅已看变更以驱动重建；实际读取统一走 _progressRepo（同一实例）。
@@ -1349,6 +1496,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
       infoChips: _buildInfoChips(item, l10n, episodes.length),
       tags: _buildTags(item, l10n),
       onCoverTap: () => _showCoverViewer(context),
+      onTitleTap: () => _handleBookNameTap(longPress: false),
+      onTitleLongPress: () => _handleBookNameTap(longPress: true),
       onRefresh: _onRefresh,
       fallbackIcon: switch (_sourceType) {
         SourceType.mangaSource => Icons.menu_book_rounded,
@@ -1425,6 +1574,49 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
                   ],
                 ),
               ),
+            if (customButton)
+              PopupMenuItem<String>(
+                value: 'sourceCustomButton',
+                child: Row(
+                  children: <Widget>[
+                    const Icon(Icons.extension_rounded),
+                    const SizedBox(width: AppTokens.spaceSm),
+                    Text(l10n.sourceCustomButton),
+                  ],
+                ),
+              ),
+            if (shuyuanSource) ...<PopupMenuEntry<String>>[
+              PopupMenuItem<String>(
+                value: 'copyBookUrl',
+                child: Row(
+                  children: <Widget>[
+                    const Icon(Icons.link_rounded),
+                    const SizedBox(width: AppTokens.spaceSm),
+                    Text(l10n.sourceCopyBookUrl),
+                  ],
+                ),
+              ),
+              PopupMenuItem<String>(
+                value: 'copyTocUrl',
+                child: Row(
+                  children: <Widget>[
+                    const Icon(Icons.list_alt_rounded),
+                    const SizedBox(width: AppTokens.spaceSm),
+                    Text(l10n.sourceCopyTocUrl),
+                  ],
+                ),
+              ),
+              PopupMenuItem<String>(
+                value: 'clearSourceCache',
+                child: Row(
+                  children: <Widget>[
+                    const Icon(Icons.cleaning_services_rounded),
+                    const SizedBox(width: AppTokens.spaceSm),
+                    Text(l10n.sourceClearCache),
+                  ],
+                ),
+              ),
+            ],
           ],
         ),
       ],
@@ -1667,6 +1859,7 @@ class _InfoChipsSection extends StatefulWidget {
   final void Function(String name) onDirectorTap;
   final void Function(String name) onActorTap;
   final void Function(String name, String? url) onAuthorTap;
+  final void Function(String name)? onAuthorLongPress;
 
   const _InfoChipsSection({
     required this.item,
@@ -1675,6 +1868,7 @@ class _InfoChipsSection extends StatefulWidget {
     required this.onDirectorTap,
     required this.onActorTap,
     required this.onAuthorTap,
+    this.onAuthorLongPress,
   });
 
   @override
@@ -1699,12 +1893,17 @@ class _InfoChipsSectionState extends State<_InfoChipsSection> {
 
     final List<Widget> staticChips = <Widget>[
       for (int i = 0; i < authors.length; i++)
-        ActionChip(
-          label: Text(authors[i]),
-          tooltip: l10n.searchByAuthor,
-          onPressed: () => widget.onAuthorTap(
-            authors[i],
-            i < authorUrls.length ? authorUrls[i].trim() : null,
+        GestureDetector(
+          onLongPress: widget.onAuthorLongPress == null
+              ? null
+              : () => widget.onAuthorLongPress!(authors[i]),
+          child: ActionChip(
+            label: Text(authors[i]),
+            tooltip: l10n.searchByAuthor,
+            onPressed: () => widget.onAuthorTap(
+              authors[i],
+              i < authorUrls.length ? authorUrls[i].trim() : null,
+            ),
           ),
         ),
       if (item.year != null && item.year!.isNotEmpty)

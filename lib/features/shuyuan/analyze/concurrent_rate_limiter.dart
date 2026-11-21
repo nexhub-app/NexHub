@@ -10,6 +10,31 @@ class ConcurrentRateLimiter {
 
   static final Map<String, List<DateTime>> _hits = <String, List<DateTime>>{};
 
+  /// 运行时覆盖（legado `BaseSource.putConcurrent` → ConcurrentRateLimiter
+  /// 共享记录表）：脚本可在运行期调整本源并发率，覆盖源声明值直到进程结束。
+  static final Map<String, String> _overrides = <String, String>{};
+
+  /// 写入运行期并发率。`次数/毫秒` 或 `毫秒` 形态且数值有效才生效；
+  /// 非法值忽略（对齐 legado `compute` 解析失败保留原记录的语义）。
+  static void updateConcurrentRate(String key, String rate) {
+    final r = rate.trim();
+    if (r.isEmpty) return;
+    final slash = r.indexOf('/');
+    bool valid;
+    if (slash > 0) {
+      final limit = int.tryParse(r.substring(0, slash)) ?? 0;
+      final interval = int.tryParse(r.substring(slash + 1)) ?? 0;
+      valid = limit > 0 && interval > 0;
+    } else {
+      valid = (int.tryParse(r) ?? 0) > 0;
+    }
+    if (valid) _overrides[key] = r;
+  }
+
+  /// 生效并发率：运行期覆盖优先，其次源声明值。
+  static String? effectiveRate(String? declared, String key) =>
+      _overrides[key] ?? declared;
+
   /// 请求前调用：按 [rate] 规则对 [key]（书源标识）限速，必要时等待。
   static Future<void> gate(String? rate, String key) async {
     if (rate == null || rate.trim().isEmpty) return;

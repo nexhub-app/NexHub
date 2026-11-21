@@ -33,6 +33,8 @@ class XiaoshuoBookSource {
   int weight;
   String? exploreUrl;
   String? exploreScreen;
+  bool eventListener;
+  bool customButton;
   ExploreRule? ruleExplore;
   String? searchUrl;
   SearchRule? ruleSearch;
@@ -76,6 +78,8 @@ class XiaoshuoBookSource {
     this.weight = 0,
     this.exploreUrl,
     this.exploreScreen,
+    this.eventListener = false,
+    this.customButton = false,
     this.ruleExplore,
     this.searchUrl,
     this.ruleSearch,
@@ -146,6 +150,8 @@ class XiaoshuoBookSource {
       weight: json['weight'] as int? ?? 0,
       exploreUrl: json['exploreUrl'] as String?,
       exploreScreen: json['exploreScreen'] as String?,
+      eventListener: json['eventListener'] as bool? ?? false,
+      customButton: json['customButton'] as bool? ?? false,
       ruleExplore: _parseExploreRule(json['ruleExplore']),
       searchUrl: json['searchUrl'] as String?,
       ruleSearch: _parseSearchRule(json['ruleSearch']),
@@ -185,6 +191,8 @@ class XiaoshuoBookSource {
         'weight': weight,
         if (exploreUrl != null) 'exploreUrl': exploreUrl,
         if (exploreScreen != null) 'exploreScreen': exploreScreen,
+        if (eventListener) 'eventListener': eventListener,
+        if (customButton) 'customButton': customButton,
         if (ruleExplore != null) 'ruleExplore': ruleExplore!.toJson(),
         if (searchUrl != null) 'searchUrl': searchUrl,
         if (ruleSearch != null) 'ruleSearch': ruleSearch!.toJson(),

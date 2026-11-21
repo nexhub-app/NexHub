@@ -94,6 +94,10 @@ class ContentDetailTabbedShell extends StatefulWidget {
   final List<Widget>? tags;
   final VoidCallback? onCoverTap;
 
+  /// 标题点击 / 长按（书源事件 clickBookName / longClickBookName 的挂载点）。
+  final VoidCallback? onTitleTap;
+  final VoidCallback? onTitleLongPress;
+
   /// 进度卡，渲染在「详情」标签内。
   final Widget? progressSection;
 
@@ -148,6 +152,8 @@ class ContentDetailTabbedShell extends StatefulWidget {
     this.detailUrl,
     this.tags,
     this.onCoverTap,
+    this.onTitleTap,
+    this.onTitleLongPress,
     this.progressSection,
     this.bangumiSection,
     this.commentsSection,
@@ -497,6 +503,19 @@ class _ContentDetailTabbedShellState extends State<ContentDetailTabbedShell>
     return cover;
   }
 
+  /// 标题手势包装（书源书名点击/长按；未挂回调时原样返回）。
+  Widget _wrapTitleGestures(Widget child) {
+    if (widget.onTitleTap == null && widget.onTitleLongPress == null) {
+      return child;
+    }
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: widget.onTitleTap,
+      onLongPress: widget.onTitleLongPress,
+      child: child,
+    );
+  }
+
   /// 标题块：标题 + 状态徽标 + 来源 + 更新时间。
   Widget _buildTitleBlock(
     BuildContext context,
@@ -508,13 +527,16 @@ class _ContentDetailTabbedShellState extends State<ContentDetailTabbedShell>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        AutoTranslatedText(
-          text: widget.title,
-          kind: TranslatableTextKind.title,
-          style: (isCompact ? textTheme.titleLarge : textTheme.headlineSmall)
-              ?.copyWith(fontWeight: FontWeight.w600),
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
+        _wrapTitleGestures(
+          AutoTranslatedText(
+            text: widget.title,
+            kind: TranslatableTextKind.title,
+            style:
+                (isCompact ? textTheme.titleLarge : textTheme.headlineSmall)
+                    ?.copyWith(fontWeight: FontWeight.w600),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
         ),
         if (widget.statusText != null && widget.statusText!.isNotEmpty) ...[
           const SizedBox(height: AppTokens.spaceSm),
@@ -914,27 +936,29 @@ class _ContentDetailTabbedShellState extends State<ContentDetailTabbedShell>
                                     (0.163 + 0.28 * (1 - t)),
                             child: Opacity(
                               opacity: expandOpacity,
-                              child: AutoTranslatedText(
-                                text: widget.title,
-                                kind: TranslatableTextKind.title,
-                                style: textTheme.headlineSmall?.copyWith(
-                                  color: scheme.onSurface,
-                                  fontWeight: FontWeight.w700,
-                                  shadows: <Shadow>[
-                                    Shadow(
-                                      blurRadius: 14,
-                                      color: scheme.surface
-                                          .withValues(alpha: 0.75),
-                                    ),
-                                    Shadow(
-                                      blurRadius: 5,
-                                      color: scheme.shadow
-                                          .withValues(alpha: 0.25),
-                                    ),
-                                  ],
+                              child: _wrapTitleGestures(
+                                AutoTranslatedText(
+                                  text: widget.title,
+                                  kind: TranslatableTextKind.title,
+                                  style: textTheme.headlineSmall?.copyWith(
+                                    color: scheme.onSurface,
+                                    fontWeight: FontWeight.w700,
+                                    shadows: <Shadow>[
+                                      Shadow(
+                                        blurRadius: 14,
+                                        color: scheme.surface
+                                            .withValues(alpha: 0.75),
+                                      ),
+                                      Shadow(
+                                        blurRadius: 5,
+                                        color: scheme.shadow
+                                            .withValues(alpha: 0.25),
+                                      ),
+                                    ],
+                                  ),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
                               ),
                             ),
                           ),
@@ -949,13 +973,15 @@ class _ContentDetailTabbedShellState extends State<ContentDetailTabbedShell>
                               alignment: Alignment.centerLeft,
                               child: Opacity(
                                 opacity: collapseOpacity,
-                                child: AutoTranslatedText(
-                                  text: widget.title,
-                                  kind: TranslatableTextKind.title,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: textTheme.titleMedium?.copyWith(
-                                    fontWeight: FontWeight.w600,
+                                child: _wrapTitleGestures(
+                                  AutoTranslatedText(
+                                    text: widget.title,
+                                    kind: TranslatableTextKind.title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: textTheme.titleMedium?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
                                   ),
                                 ),
                               ),

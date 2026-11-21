@@ -76,6 +76,8 @@ import '../../../core/widgets/web_favorite_action.dart';
 import '../../../core/resolver/webview_resolver.dart';
 import '../../../core/widgets/source_image.dart';
 import '../../../core/local/pdf_util.dart';
+import '../../shuyuan/model/source_callback_result.dart';
+import '../../shuyuan/presentation/shuyuan_callback_host.dart';
 import '../../verification/presentation/webview_verification_screen.dart';
 import 'reader_image_actions.dart';
 import 'reader_image_filter.dart';
@@ -210,6 +212,9 @@ class ComicReaderScreen extends StatefulWidget {
   /// 详情页 URL（用于收藏时透传，避免历史/收藏详情灰屏）。
   final String? detailUrl;
 
+  /// 书籍作者（书源事件回调的 book.author 字段）。
+  final String? bookAuthor;
+
   /// 封面 URL（用于收藏时透传，避免收藏书架缺封面）。
   final String? coverUrl;
 
@@ -228,6 +233,7 @@ class ComicReaderScreen extends StatefulWidget {
     this.restoreProgress = true,
     this.initialPage,
     this.detailUrl,
+    this.bookAuthor,
     this.coverUrl,
   });
 
@@ -2707,6 +2713,40 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
           }
         });
       }
+    }
+  }
+
+  /// 书源自定义按钮（md3 漫画阅读器 RunSourceCustomButton）：
+  /// 长按触发 longClickCustomButton；脚本未消费/异常时静默（无默认动作）。
+  Future<void> _runSourceCustomButton({required bool longPress}) async {
+    final PluginConfig? source = _source;
+    if (source == null || _isLocalMode) return;
+    final MediaApiService api = context.read<MediaApiService>();
+    if (!api.canRunSourceCallback(source)) return;
+    final int index = _chapterIndex;
+    final Episode? chapter =
+        index >= 0 && index < widget.chapters.length
+            ? widget.chapters[index]
+            : null;
+    final String bookUrl = (widget.detailUrl ?? widget.comicId);
+    try {
+      final SourceCallbackResult r = await api.runSourceCallback(
+        source,
+        longPress ? 'longClickCustomButton' : 'clickCustomButton',
+        bookUrl: bookUrl,
+        bookName: widget.title,
+        author: widget.bookAuthor,
+        chapterUrl: chapter?.url,
+        chapterTitle: chapter?.title,
+        chapterIndex: index,
+        chapterVip: chapter?.isVip ?? false,
+        chapterPay: chapter?.isPay ?? false,
+      );
+      if (mounted) {
+        await drainShuyuanCallbackEffects(context, source, r);
+      }
+    } on Object catch (e) {
+      AppLog.instance.e('[书源回调] clickCustomButton 出错: $e');
     }
   }
 
@@ -6743,6 +6783,20 @@ class _ComicReaderScreenState extends State<ComicReaderScreen>
           tooltip: l10n.readerRotatePage,
           onPressed: _rotateCurrentPage,
         ),
+        if (_source != null && shuyuanHasCustomButton(_source!))
+          // 长按要触发 longClickCustomButton，故不用 IconButton.tooltip：
+          // Tooltip 自带长按识别器会赢下手势竞技场，长按只弹提示不执行回调。
+          Semantics(
+            label: l10n.sourceCustomButton,
+            button: true,
+            child: GestureDetector(
+              onLongPress: () => _runSourceCustomButton(longPress: true),
+              child: IconButton(
+                icon: const Icon(Icons.extension_rounded),
+                onPressed: () => _runSourceCustomButton(longPress: false),
+              ),
+            ),
+          ),
         IconButton(
           icon: const Icon(Icons.tune_rounded),
           tooltip: l10n.readerSettings,

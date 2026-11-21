@@ -56,6 +56,8 @@ import '../../../core/stats/reading_session_recorder.dart';
 import '../../../core/stats/stats_models.dart';
 import '../../../core/stats/stats_repository.dart';
 import '../../../core/widgets/web_favorite_action.dart';
+import '../../shuyuan/model/source_callback_result.dart';
+import '../../shuyuan/presentation/shuyuan_callback_host.dart';
 import '../../verification/presentation/webview_verification_screen.dart';
 import '../../../core/settings/danmaku_config.dart';
 import '../../../core/theme/app_tokens.dart';
@@ -155,6 +157,9 @@ class VideoPlayerScreen extends StatefulWidget {
   /// 详情页 URL（用于收藏时透传，避免历史/收藏详情灰屏）。
   final String? detailUrl;
 
+  /// 书籍作者（书源事件回调的 book.author 字段）。
+  final String? bookAuthor;
+
   /// 是否恢复上次播放位置（默认 true）。
   ///
   /// 由全局「记住播放/阅读位置」开关门控：关闭时打开即从头播放，
@@ -191,6 +196,7 @@ class VideoPlayerScreen extends StatefulWidget {
     this.directUrl,
     this.directHeaders,
     this.detailUrl,
+    this.bookAuthor,
     this.coverUrl,
     this.restoreProgress = true,
     this.initialPositionMs,
@@ -3550,6 +3556,94 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       return widget.episodes![_episodeIndex].title;
     }
     return widget.episode.title;
+  }
+
+  /// 当前集（md3 回调绑定 BookChapter）。
+  Episode get _currentEpisode {
+    if (widget.episodes != null &&
+        _episodeIndex >= 0 &&
+        _episodeIndex < widget.episodes!.length) {
+      return widget.episodes![_episodeIndex];
+    }
+    return widget.episode;
+  }
+
+  PluginConfig? get _callbackSource {
+    if (widget.sourceId.isEmpty) return null;
+    try {
+      return context.read<SourceRepository>().getById(widget.sourceId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 触发书源事件回调；返回 null = 源未启用回调（调用方执行默认动作）。
+  /// 脚本异常按 md3 语义：只记日志，默认动作不执行。
+  Future<SourceCallbackResult?> _runSourceCallback(
+    String event, {
+    String? result,
+  }) async {
+    final PluginConfig? source = _callbackSource;
+    if (source == null) return null;
+    final MediaApiService api = context.read<MediaApiService>();
+    if (!api.canRunSourceCallback(source)) return null;
+    final Episode ep = _currentEpisode;
+    try {
+      final SourceCallbackResult r = await api.runSourceCallback(
+        source,
+        event,
+        bookUrl: widget.detailUrl ?? widget.itemId,
+        bookName: widget.title,
+        author: widget.bookAuthor,
+        chapterUrl: ep.url,
+        chapterTitle: ep.title,
+        chapterIndex: _episodeIndex,
+        chapterVip: ep.isVip,
+        chapterPay: ep.isPay,
+        result: result,
+      );
+      if (mounted) {
+        await drainShuyuanCallbackEffects(context, source, r);
+      }
+      return r;
+    } on Object catch (e) {
+      AppLog.instance.e('[书源回调] $event 出错: $e');
+      return const SourceCallbackResult(runDefault: false);
+    }
+  }
+
+  /// md3 `CopyPlayUrl`：默认动作复制当前播放直链。
+  Future<void> _copyPlayUrl() async {
+    final String url = _playUrl ?? '';
+    if (url.isEmpty) return;
+    final SourceCallbackResult? r =
+        await _runSourceCallback('clickCopyPlayUrl', result: url);
+    if (r != null && !r.runDefault) return;
+    if (!mounted) return;
+    await Clipboard.setData(ClipboardData(text: url));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(AppLocalizations.of(context).shareCopied)),
+    );
+  }
+
+  /// md3 `CustomButton`：回调未消费时提示（不做静默失败）。
+  Future<void> _runCustomButton() async {
+    final PluginConfig? source = _callbackSource;
+    final MediaApiService api = context.read<MediaApiService>();
+    if (source == null || !api.canRunSourceCallback(source)) {
+      _toastNoCustomButton();
+      return;
+    }
+    final SourceCallbackResult? r = await _runSourceCallback('clickCustomButton');
+    if (r?.runDefault == true && mounted) _toastNoCustomButton();
+  }
+
+  void _toastNoCustomButton() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(AppLocalizations.of(context).sourceNoCustomButton)),
+    );
   }
 
   /// 保存当前集播放位置到 MediaPlaybackPositionManager。

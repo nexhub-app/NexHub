@@ -20,6 +20,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/scraper/http_fetcher.dart';
 import '../../../core/utils/app_log.dart';
 import 'analyze_url.dart';
+import 'concurrent_rate_limiter.dart';
 import 'java_extensions.dart';
 import 'webview_fetcher.dart';
 import '../model/book_source.dart';
@@ -127,6 +128,10 @@ class ShuyuanSourceContext {
 
   /// 发现页选项 action 请求宿主打开浏览器（java.startBrowser/openUrl）。
   final List<Map<String, String>> kindBrowserOpens = <Map<String, String>>[];
+
+  /// java.open(name,url,title,origin) 请求队列（事件回调的登录/搜索/发现
+  /// 入口）。由回调执行方在求值结束后排空并交给对应 UI 宿主。
+  final List<Map<String, String>> openRequests = <Map<String, String>>[];
 
   /// `java.startBrowserAwait` 的确定性重放：键 → [url,title,refetch,html]；
   /// 宿主 settle 弹浏览器后把响应写入 [browserAwaitCache]（JSON 载荷）。
@@ -373,6 +378,26 @@ class ShuyuanSourceContext {
           bookVars[a] = b;
         case 'bookField':
           bookInfo[a] = b;
+        case 'concurrentRate':
+          // source.putConcurrent / java.putConcurrent：运行期调整并发率。
+          ConcurrentRateLimiter.updateConcurrentRate(
+              bookSourceUrl.isNotEmpty ? bookSourceUrl : sourceId, a);
+        case 'open':
+          // java.open(name,url,title,origin)：宿主 UI 请求（登录/搜索/发现），
+          // 由回调调用方在求值结束后排空执行。载荷为 JSON 数组。
+          try {
+            final decoded = jsonDecode(a);
+            if (decoded is List && decoded.isNotEmpty) {
+              openRequests.add(<String, String>{
+                'name': decoded[0]?.toString() ?? '',
+                'url': decoded.length > 1 ? decoded[1]?.toString() ?? '' : '',
+                'title':
+                    decoded.length > 2 ? decoded[2]?.toString() ?? '' : '',
+                'origin':
+                    decoded.length > 3 ? decoded[3]?.toString() ?? '' : '',
+              });
+            }
+          } catch (_) {}
         case 'cachePut':
           cache[a] = b;
         case 'cacheDel':

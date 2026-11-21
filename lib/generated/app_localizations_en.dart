@@ -1235,6 +1235,25 @@ class AppLocalizationsEn extends AppLocalizations {
   String get shareCopied => 'Copied to clipboard';
 
   @override
+  String get sourceCustomButton => 'Custom button';
+
+  @override
+  String get sourceCopyBookUrl => 'Copy book link';
+
+  @override
+  String get sourceCopyTocUrl => 'Copy table-of-contents link';
+
+  @override
+  String get sourceCopyPlayUrl => 'Copy playback link';
+
+  @override
+  String get sourceClearCache => 'Clear cache';
+
+  @override
+  String get sourceNoCustomButton =>
+      'The source did not handle the custom button';
+
+  @override
   String get browserTitle => 'Browser';
 
   @override

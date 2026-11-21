@@ -1207,6 +1207,24 @@ class AppLocalizationsZh extends AppLocalizations {
   String get shareCopied => '已复制到剪贴板';
 
   @override
+  String get sourceCustomButton => '自定义按钮';
+
+  @override
+  String get sourceCopyBookUrl => '复制书籍链接';
+
+  @override
+  String get sourceCopyTocUrl => '复制目录链接';
+
+  @override
+  String get sourceCopyPlayUrl => '复制播放地址';
+
+  @override
+  String get sourceClearCache => '清除缓存';
+
+  @override
+  String get sourceNoCustomButton => '源未提供自定义按钮';
+
+  @override
   String get browserTitle => '浏览器';
 
   @override

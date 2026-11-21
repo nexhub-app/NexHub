@@ -917,9 +917,11 @@ class AnalyzeUrl {
           );
 
       // concurrentRate 限速（legado ConcurrentRateLimiter 等效，书源侧
-      // 包装——按源计数，媒体源链路零影响）。
+      // 包装——按源计数，媒体源链路零影响）。运行期 putConcurrent 覆盖优先。
+      final rateKey = source?.bookSourceUrl ?? url;
       await ConcurrentRateLimiter.gate(
-          source?.concurrentRate, source?.bookSourceUrl ?? url);
+          ConcurrentRateLimiter.effectiveRate(source?.concurrentRate, rateKey),
+          rateKey);
 
       Response<List<int>>? response;
       var attempt = 0;

@@ -80,7 +80,34 @@ extension _VideoMoreMenu on _VideoPlayerScreenState {
 
   /// 构建全部菜单条目（未过滤，渲染时按能力 / 条件显隐）。
   List<_PlayerMenuEntry> _buildMoreMenuEntries(AppLocalizations l10n) {
+    final PluginConfig? callbackSource = _callbackSource;
+    final bool shuyuanSource = callbackSource?.selectors?['xiaoshuo'] is Map;
+    final bool hasCustomButton =
+        callbackSource != null && shuyuanHasCustomButton(callbackSource);
     return <_PlayerMenuEntry>[
+      // ── 书源事件（legado 视频播放器菜单）：复制播放地址 / 自定义按钮 ──
+      _PlayerMenuEntry(
+        visibilityPredicate: () => shuyuanSource,
+        builder: (BuildContext ctx) => ListTile(
+          leading: const Icon(Icons.link_rounded),
+          title: Text(l10n.sourceCopyPlayUrl),
+          onTap: () {
+            Navigator.of(ctx).pop();
+            unawaited(_copyPlayUrl());
+          },
+        ),
+      ),
+      _PlayerMenuEntry(
+        visibilityPredicate: () => hasCustomButton,
+        builder: (BuildContext ctx) => ListTile(
+          leading: const Icon(Icons.extension_rounded),
+          title: Text(l10n.sourceCustomButton),
+          onTap: () {
+            Navigator.of(ctx).pop();
+            unawaited(_runCustomButton());
+          },
+        ),
+      ),
       // ── 媒体服务器（仅该来源显示）：码率档位 + 音轨 ──
       _PlayerMenuEntry(
         visibilityPredicate: () => _isMediaServer,
