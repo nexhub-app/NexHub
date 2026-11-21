@@ -121,30 +121,39 @@ class _AudioLyricsViewState extends State<AudioLyricsView> {
       itemCount: widget.lines.length,
       itemBuilder: (BuildContext context, int index) {
         final bool active = index == _activeIndex;
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: AppTokens.spaceXs),
-          child: InkWell(
-            key: ValueKey<int>(index),
-            borderRadius: BorderRadius.circular(AppTokens.radiusLg),
-            onTap: widget.onSeekMs == null
-                ? null
-                : () => widget.onSeekMs!(widget.lines[index].timestampMs),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppTokens.spaceMd,
-                vertical: 7,
-              ),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  widget.lines[index].text,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 19,
-                    height: 1.3,
-                    color: active ? Colors.white : Colors.white54,
-                    fontWeight: FontWeight.w600,
+        // 空间感：越靠近视口垂直中线越大，向上下两端递减；高亮行略加成，
+        // 保证停在视口上部 1/3 时仍是最大的一行。
+        return AnimatedBuilder(
+          animation: _scroll,
+          builder: (BuildContext context, Widget? child) => Transform.scale(
+            scale: (_scaleFor(index) + (active ? 0.06 : 0)).clamp(0.0, 1.06),
+            child: child,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: AppTokens.spaceXs),
+            child: InkWell(
+              key: ValueKey<int>(index),
+              borderRadius: BorderRadius.circular(AppTokens.radiusLg),
+              onTap: widget.onSeekMs == null
+                  ? null
+                  : () => widget.onSeekMs!(widget.lines[index].timestampMs),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: AppTokens.spaceMd,
+                  vertical: 7,
+                ),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    widget.lines[index].text,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 19,
+                      height: 1.3,
+                      color: active ? Colors.white : Colors.white54,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
               ),
@@ -153,5 +162,19 @@ class _AudioLyricsViewState extends State<AudioLyricsView> {
         );
       },
     );
+  }
+
+  /// 行中心距视口垂直中线的远近 → 缩放比例（中线 1.0，两端约 0.8）。
+  double _scaleFor(int index) {
+    if (!_scroll.hasClients) return 1;
+    final double viewport = _scroll.position.viewportDimension;
+    if (viewport <= 0) return 1;
+    final double itemCenter = _listTopPadding +
+        index * _lineExtent +
+        _lineExtent / 2 -
+        _scroll.offset;
+    final double distance =
+        ((itemCenter - viewport / 2).abs() / (viewport / 2)).clamp(0.0, 1.0);
+    return 1 - 0.2 * distance;
   }
 }

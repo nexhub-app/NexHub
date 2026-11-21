@@ -246,8 +246,13 @@ void main() {
               .hasMatch(audioMode),
           isTrue,
         );
-        expect(audioMode, contains('top: AppTokens.spaceLg'));
-        expect(audioMode, contains('bottom: AppTokens.spaceMd'));
+        // 传输行整体加高：上下留白再增一档。
+        expect(
+          RegExp(r'top:\s*AppTokens\.spaceXl,\s*'
+                  r'bottom:\s*AppTokens\.spaceLg')
+              .hasMatch(audioMode),
+          isTrue,
+        );
         // 播放键颜色三选项：封面取色 / 应用主题 / 纯色。
         expect(audioMode, contains('_playerSettings.audioPlayButtonColorMode'));
         expect(audioMode, contains('AudioPlayButtonColorMode.solid'));
@@ -325,6 +330,24 @@ void main() {
         );
         // 歌词页点击行跳转播放位置。
         expect(audioMode, contains('onSeekMs:'));
+      });
+
+      test('列表与歌词采用空间感：中线最大、上下两端递减', () {
+        final String audioMode = File(
+          'lib/features/player/presentation/video_player_audio_mode.dart',
+        ).readAsStringSync();
+        final String lyrics = File(
+          'lib/features/player/presentation/audio_lyrics_view.dart',
+        ).readAsStringSync();
+        for (final String src in <String>[audioMode, lyrics]) {
+          expect(src, contains('AnimatedBuilder('));
+          expect(src, contains('Transform.scale('));
+          expect(src, contains('viewport / 2'));
+          expect(src, contains('double _scaleFor(int index)'));
+        }
+        // 当前集 / 当前行略加成，停在中线附近时仍为最大。
+        expect(audioMode, contains('selected ? 0.04 : 0'));
+        expect(lyrics, contains('active ? 0.06 : 0'));
       });
 
       test('音频背景支持封面取色 / 应用主题 / 纯色', () {

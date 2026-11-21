@@ -152,8 +152,8 @@ extension _VideoAudioMode on _VideoPlayerScreenState {
                 ),
                 Padding(
                   padding: const EdgeInsets.only(
-                    top: AppTokens.spaceLg,
-                    bottom: AppTokens.spaceMd,
+                    top: AppTokens.spaceXl,
+                    bottom: AppTokens.spaceLg,
                   ),
                   // 左右等宽槽夹住播放键：暂停键严格居中；左组向右靠、
                   // 右组向左靠，层级由中心向两侧递减（72 → 48 → 22）。
@@ -860,49 +860,57 @@ class _AudioEpisodeListState extends State<_AudioEpisodeList> {
       itemBuilder: (BuildContext context, int index) {
         final bool selected = index == current;
         final String title = widget.episodes[index].title;
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 2),
-          child: Material(
-            color: selected
-                ? Colors.white.withValues(alpha: 0.12)
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(12),
-            child: InkWell(
+        // 空间感：越靠近视口垂直中线越大，向上下两端递减；当前集略加成。
+        return AnimatedBuilder(
+          animation: _scroll,
+          builder: (BuildContext context, Widget? child) => Transform.scale(
+            scale: (_scaleFor(index) + (selected ? 0.04 : 0)).clamp(0.0, 1.04),
+            child: child,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Material(
+              color: selected
+                  ? Colors.white.withValues(alpha: 0.12)
+                  : Colors.transparent,
               borderRadius: BorderRadius.circular(12),
-              onTap: selected ? null : () => widget.onSelect(index),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: AppTokens.spaceSm,
-                ),
-                child: Row(
-                  children: <Widget>[
-                    // 当前集前置播放状态图标；非当前集不显示序号。
-                    if (selected) ...<Widget>[
-                      Icon(
-                        widget.playing
-                            ? Icons.pause_rounded
-                            : Icons.play_arrow_rounded,
-                        size: 16,
-                        color: Colors.white,
-                      ),
-                      const SizedBox(width: AppTokens.spaceSm),
-                    ],
-                    Expanded(
-                      child: Text(
-                        title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: selected ? Colors.white : Colors.white70,
-                          fontSize: 15,
-                          height: 1.35,
-                          fontWeight:
-                              selected ? FontWeight.w600 : FontWeight.w400,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: selected ? null : () => widget.onSelect(index),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: AppTokens.spaceSm,
+                  ),
+                  child: Row(
+                    children: <Widget>[
+                      // 当前集前置播放状态图标；非当前集不显示序号。
+                      if (selected) ...<Widget>[
+                        Icon(
+                          widget.playing
+                              ? Icons.pause_rounded
+                              : Icons.play_arrow_rounded,
+                          size: 16,
+                          color: Colors.white,
+                        ),
+                        const SizedBox(width: AppTokens.spaceSm),
+                      ],
+                      Expanded(
+                        child: Text(
+                          title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: selected ? Colors.white : Colors.white70,
+                            fontSize: 15,
+                            height: 1.35,
+                            fontWeight:
+                                selected ? FontWeight.w600 : FontWeight.w400,
+                          ),
                         ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -910,5 +918,20 @@ class _AudioEpisodeListState extends State<_AudioEpisodeList> {
         );
       },
     );
+  }
+
+  /// 行中心距视口垂直中线的远近 → 缩放比例（中线 1.0，两端约 0.82）。
+  double _scaleFor(int index) {
+    if (!_scroll.hasClients) return 1;
+    final double viewport = _scroll.position.viewportDimension;
+    if (viewport <= 0) return 1;
+    final double itemCenter = widget.padding.top +
+        AppTokens.spaceMd +
+        index * _itemExtent +
+        _itemExtent / 2 -
+        _scroll.offset;
+    final double distance =
+        ((itemCenter - viewport / 2).abs() / (viewport / 2)).clamp(0.0, 1.0);
+    return 1 - 0.18 * distance;
   }
 }
