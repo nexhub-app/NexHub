@@ -4002,9 +4002,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     children: speeds
                         .map((s) => ListTile(
                               dense: true,
-                              // 选中态由标题栏 current 值提示，行内不再加 √，
-                              // 保证各行文字居中对齐一致。
-                              title: Center(child: Text('${s}x')),
+                              // 选中态=主题色强调（不加行内 √，保证居中行对齐一致）。
+                              title: Center(
+                                child: Text(
+                                  '${s}x',
+                                  style: s == current
+                                      ? TextStyle(
+                                          color: Theme.of(ctx)
+                                              .colorScheme
+                                              .primary)
+                                      : null,
+                                ),
+                              ),
                               onTap: () {
                                 unawaited(_controller.setPlaybackSpeed(s));
                                 _playerSettings =
@@ -4045,8 +4054,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               children: <Widget>[
                 ...options.map((s) => ListTile(
                       dense: true,
-                      // 行内不加 √，保持各行文字居中对齐一致。
-                      title: Center(child: Text('${s}x')),
+                      // 选中态=主题色强调（不加行内 √，保持居中对齐）。
+                      title: Center(
+                        child: Text(
+                          '${s}x',
+                          style: s == _playerSettings.longPressSpeed
+                              ? TextStyle(
+                                  color: Theme.of(sheetCtx)
+                                      .colorScheme
+                                      .primary)
+                              : null,
+                        ),
+                      ),
                       onTap: () => Navigator.pop(sheetCtx, s),
                     )),
                 const SizedBox(height: AppTokens.spaceSm),
