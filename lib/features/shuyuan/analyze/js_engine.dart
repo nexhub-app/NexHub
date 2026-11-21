@@ -426,6 +426,7 @@ class JsEngine {
       AppLog.instance.i('[书源JS] 大脚本求值开始 长度=${jsStr.length} '
           '片段=${_brief(jsStr)}');
     }
+    _seedDeterministicRandom(jsStr);
     final result = runtime.evaluate('eval(${jsonEncode(jsStr)})');
     if (watch != null) {
       AppLog.instance.i('[书源JS] 大脚本求值完成 长度=${jsStr.length} '
@@ -438,6 +439,36 @@ class JsEngine {
       _drainJavaBridge();
     }
     return result;
+  }
+
+  /// 书源脚本的随机源在重放轮之间必须可复现。
+  ///
+  /// legado 桥是同步的：一次求值就是一次真实请求，脚本里的随机 UUID、
+  /// jsLib 签名算法里的 `Math.random()` 只影响这一次。确定性重放却要把
+  /// 同一脚本跑多轮：若每轮随机序列不同，拼出的 URL/签名每轮都变，
+  /// 占位符缓存永远无法命中（多跳握手在轮次预算内不收敛，发现页分类
+  /// 直接报错）。这里按脚本内容散列定种子并逐次求值重置序列：同一脚本
+  /// 跨轮同序列（可收敛），单次求值内仍逐次推进（同轮多次 randomUUID
+  /// 互不相同）。种子只依赖脚本文本，跨阶段无关。
+  void _seedDeterministicRandom(String jsStr) {
+    var seed =
+        (jsStr.hashCode ^ (jsStr.length * 2654435761)) & 0x7fffffff;
+    if (seed == 0) seed = 1;
+    try {
+      runtime.evaluate(
+        'globalThis.__shuyuanRng = $seed >>> 0;'
+        'Math.random = function () {'
+        '  var x = globalThis.__shuyuanRng >>> 0;'
+        '  x ^= x << 13; x >>>= 0;'
+        '  x ^= x >>> 17;'
+        '  x ^= x << 5; x >>>= 0;'
+        '  globalThis.__shuyuanRng = x;'
+        '  return x / 4294967296;'
+        '};',
+      );
+    } catch (_) {
+      // 注入失败保持原生随机：脚本照常执行，只是重放可能不收敛。
+    }
   }
 
   /// 执行 jsLib 源码；整段脚本解析失败（Rhino 专有语法）时按兼容写法
