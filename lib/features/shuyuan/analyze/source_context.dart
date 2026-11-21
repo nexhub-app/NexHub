@@ -740,6 +740,7 @@ class ShuyuanSourceContext {
     ShuyuanSourceContext ctx,
     XiaoshuoBookSource source, {
     DateTime? deadline,
+    bool skipLoginCheck = false,
   }) async {
     var fetched = 0;
     // bodyAsBytes 与 java.ajax 可能记录同一 URL：按并集各抓一次，
@@ -796,7 +797,7 @@ class ShuyuanSourceContext {
           url: requestUrl,
           baseUrl: source.bookSourceUrl,
           source: source,
-        );
+        )..skipLoginCheck = skipLoginCheck;
         final resp = await analyzeUrl
             .getStrResponse()
             .timeout(const Duration(seconds: 45));

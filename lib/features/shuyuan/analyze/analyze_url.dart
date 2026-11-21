@@ -52,6 +52,17 @@ class AnalyzeUrl {
   String? requestType;
   int webViewDelayTime = 0;
 
+  /// 构造时的原始 URL 模板（`initUrl()` 重新解析的起点）。
+  late final String _rawUrl;
+
+  /// legado `AnalyzeUrl.ruleUrl`：`<js>`/`{{}}` 展开后、选项后缀剥离前的
+  /// 形态。loginCheckJs 里 `java.ruleUrl` 读它（重试请求定位用）。
+  String ruleUrl = '';
+
+  /// 重放请求不再级联执行 loginCheckJs：legado 只在宿主拿到首响应时
+  /// 跑一次检查，检查内部的 `java.getStrResponse()` 重取不应递归。
+  bool skipLoginCheck = false;
+
   /// 最近一次 [getStrResponse] 的原始响应字节（未解码）。
   /// `org.jsoup…bodyAsBytes()` 的 settle 重放需要无损二进制
   /// （AES 密文按 UTF-8 容错解码会丢字节，无法还原明文）。
@@ -99,6 +110,7 @@ class AnalyzeUrl {
     this.speakSpeed,
     Map<String, String>? headerMapF,
   }) {
+    _rawUrl = url;
     if (headerMapF != null) {
       headerMap.addAll(headerMapF);
       if (headerMapF.containsKey('proxy')) {
@@ -113,7 +125,17 @@ class AnalyzeUrl {
   void _initUrl() {
     analyzeJs();
     replaceKeyPageJs();
+    ruleUrl = url;
     analyzeUrl();
+  }
+
+  /// legado `AnalyzeUrl.initUrl()` 的再解析：回到原始模板重新展开。
+  /// loginCheckJs 里脚本在重试请求前调用，通常是让模板重新读当前会话
+  /// 状态（时间戳/随机数参数）；同步 JS 内无法回跳宿主，由宿主在求值前
+  /// 按脚本声明预执行一次。
+  void reinitUrl() {
+    url = _rawUrl;
+    _initUrl();
   }
 
   void analyzeJs() {
@@ -743,15 +765,15 @@ class AnalyzeUrl {
         );
       }
       final checkJs = source?.loginCheckJs;
-      if (checkJs != null && checkJs.trim().isNotEmpty) {
-        final code = _runLoginCheck(checkJs, 200, rendered,
-            url: url, sourceUrl: source?.bookSourceUrl ?? '');
-        if (code == 500) {
+      var out = rendered;
+      if (!skipLoginCheck && checkJs != null && checkJs.trim().isNotEmpty) {
+        final outcome = await _runLoginCheck(checkJs, 200, rendered);
+        if (outcome.code == 500) {
           throw ShuyuanLoginRequiredException(
               url: url, sourceName: source?.bookSourceName ?? '');
         }
+        if (outcome.body != null) out = outcome.body!;
       }
-      var out = rendered;
       if (sourceRegex != null && sourceRegex.isNotEmpty) {
         try {
           final regex = RegExp(sourceRegex, dotAll: true);
@@ -998,13 +1020,14 @@ class AnalyzeUrl {
       // loginCheckJs 消费（legado 五环节 check 语义）：书源声明的登录校验
       // 脚本，种子 result={code,body} 可改写；code==500 → 未登录。
       final checkJs = source?.loginCheckJs;
-      if (checkJs != null && checkJs.trim().isNotEmpty) {
-        final code = _runLoginCheck(checkJs, response.statusCode ?? 0, body,
-            url: url, sourceUrl: source?.bookSourceUrl ?? '');
-        if (code == 500) {
+      if (!skipLoginCheck && checkJs != null && checkJs.trim().isNotEmpty) {
+        final outcome =
+            await _runLoginCheck(checkJs, response.statusCode ?? 0, body);
+        if (outcome.code == 500) {
           throw ShuyuanLoginRequiredException(
               url: url, sourceName: source?.bookSourceName ?? '');
         }
+        if (outcome.body != null) body = outcome.body!;
       }
       if (response.redirects.isNotEmpty) {
         url = response.redirects.last.location.toString();
@@ -1051,6 +1074,8 @@ class AnalyzeUrl {
       // VerificationNavigator.isVerificationError 判定失败 → 不跳 WebView，
       // 列表解析空壳 → 没封面、也不触发验证（幻梦ACG _guard 滑块挑战即此坑）。
       if (e is VerificationRequiredException) rethrow;
+      // 登录失效同理：类型透传供上层识别并引导用户完成书源登录。
+      if (e is ShuyuanLoginRequiredException) rethrow;
       throw Exception('网络请求失败：$url，${e.toString()}');
     }
 
@@ -1659,68 +1684,172 @@ class AnalyzeUrl {
 
   /// loginCheckJs 求值：`result` 按 legado 的 StrResponse 鸭子类型构造。
   /// 源脚本普遍写 `result.body()` / `result.url()` / `result.code()`（方法
-  /// 调用，见幻梦轻说/太极小说），旧包装把 `body` 设成字符串属性导致
-  /// `result.body()` 抛 TypeError 整条脚本中断。这里：
+  /// 调用），旧包装把 `body` 设成字符串属性导致 `result.body()` 抛
+  /// TypeError 整条脚本中断。这里：
   /// - `body()` 返回正文；`body` 本身也可当字符串用（绑定了
   ///   `match/includes/trim` 等 String.prototype 方法与 toString）；
   /// - `url()/code()/message()/headers()` 齐备；
   /// - 赋值 `result.code = 500`（覆盖函数属性）或直接 `return 500` /
   ///   `return '500'` / `result = '500'` 仍可声明登录失效。
-  /// 返回合法 HTTP 状态码（100..599）才采信，否则维持原状态码——避免把
-  /// 正文里出现的数字误判成登录状态。
-  int _runLoginCheck(String js, int statusCode, String body,
-      {String url = '', String sourceUrl = ''}) {
+  ///
+  /// 对齐 legado 把 `java` 绑定为 AnalyzeUrl 的求值环境：脚本可经
+  /// `java.getStrResponse()` 重取当前地址（`java.initUrl()` 提前重解析
+  /// 模板），返回值替换 `result`；重取的响应体同样回传宿主替换原响应。
+  /// 重取走沙箱确定性重放（首轮记 op，宿主抓取后重放命中缓存），因此
+  /// 检查被改写为多轮循环——仅当本轮没有新增请求（或抓取无进展）才收敛。
+  Future<_LoginCheckOutcome> _runLoginCheck(
+      String js, int statusCode, String body) async {
     try {
       // 复用 per-source 引擎：loginCheckJs 每次请求都会求值，不能每次新建
-      // QuickJS 运行时（旧实现还从不 dispose）。上下文种子由 JsEngine.eval
-      // 统一注入，这里不再手动 evaluate，避免重复注入。
-      final engine = JsEngine.forSource(ShuyuanSourceContext.current?.sourceId);
-      final wrapped = 'var __lcBody = ${jsonEncode(body)};\n'
-          'var __lcUrl = ${jsonEncode(url)};\n'
-          'var result = new String(__lcBody);\n'
-          'result.__code = $statusCode;\n'
-          'result.body = (function () {\n'
-          '  var f = function () { return __lcBody; };\n'
-          '  f.toString = f.valueOf = function () { return __lcBody; };\n'
-          '  var names = Object.getOwnPropertyNames(String.prototype);\n'
-          '  for (var i = 0; i < names.length; i++) {\n'
-          '    var k = names[i];\n'
-          '    if (k === "constructor") continue;\n'
-          '    try {\n'
-          '      var d = Object.getOwnPropertyDescriptor(String.prototype, k);\n'
-          '      if (d && typeof d.value === "function") f[k] = d.value.bind(__lcBody);\n'
-          '    } catch (e) {}\n'
-          '  }\n'
-          '  try { Object.defineProperty(f, "length", { value: __lcBody.length }); } catch (e) {}\n'
-          '  return f;\n'
-          '})();\n'
-          'result.code = function () { return result.__code; };\n'
-          'result.url = function () { return __lcUrl; };\n'
-          'result.message = function () { return ""; };\n'
-          'result.headers = function () { return {}; };\n'
-          'var __lcOut = (function(){\n${js.trim()}\nreturn result;})();\n'
-          'JSON.stringify({o: (__lcOut !== null && typeof __lcOut === "object") '
-          '? __lcOut.code : __lcOut})';
-      final r = engine.eval(wrapped,
-          bindings: {'baseUrl': sourceUrl.isEmpty ? url : sourceUrl, 'key': ''});
-      if (r.isEmpty) return statusCode;
-      final decoded = jsonDecode(r);
-      if (decoded is! Map) return statusCode;
-      final raw = decoded['o'];
-      int? code;
-      if (raw is int) {
-        code = raw;
-      } else if (raw is num) {
-        code = raw.toInt();
-      } else if (raw is String) {
-        code = int.tryParse(raw.trim());
+      // QuickJS 运行时。上下文种子由 JsEngine.eval 统一注入。
+      final activeCtx = ShuyuanSourceContext.current;
+      final engine = JsEngine.forSource(activeCtx?.sourceId);
+      // `java.initUrl()`：legado 在调用点同步重解析 URL 模板；同步沙箱
+      // 无法回跳宿主，改为求值前预解析一次（脚本声明即生效）。
+      if (js.contains('initUrl(')) {
+        reinitUrl();
       }
-      if (code == null || code < 100 || code > 599) return statusCode;
-      return code;
+      final seed = jsonEncode(<String, dynamic>{
+        'ruleUrl': ruleUrl,
+        'url': url,
+        'headers': resolveRequestHeaders(),
+        'method': method?.toUpperCase() ?? '',
+        'body': this.body ?? '',
+      });
+      final base = (source?.bookSourceUrl ?? '').isNotEmpty
+          ? source!.bookSourceUrl
+          : (baseUrl?.isNotEmpty ?? false)
+              ? baseUrl!
+              : url;
+      final deadline = DateTime.now().add(const Duration(seconds: 60));
+      var code = statusCode;
+      String? bodyOverride;
+      for (var pass = 0; pass < 4; pass++) {
+        final before = activeCtx == null
+            ? const <String>{}
+            : <String>{
+                ...activeCtx.ajaxPending,
+                ...activeCtx.ajaxBytesPending,
+              };
+        final wrapped = 'var __lcBody = ${jsonEncode(body)};\n'
+            'var __lcUrl = ${jsonEncode(url)};\n'
+            'var result = new String(__lcBody);\n'
+            'result.__code = $statusCode;\n'
+            'result.body = (function () {\n'
+            '  var f = function () { return __lcBody; };\n'
+            '  f.toString = f.valueOf = function () { return __lcBody; };\n'
+            '  var names = Object.getOwnPropertyNames(String.prototype);\n'
+            '  for (var i = 0; i < names.length; i++) {\n'
+            '    var k = names[i];\n'
+            '    if (k === "constructor") continue;\n'
+            '    try {\n'
+            '      var d = Object.getOwnPropertyDescriptor(String.prototype, k);\n'
+            '      if (d && typeof d.value === "function") f[k] = d.value.bind(__lcBody);\n'
+            '    } catch (e) {}\n'
+            '  }\n'
+            '  try { Object.defineProperty(f, "length", { value: __lcBody.length }); } catch (e) {}\n'
+            '  return f;\n'
+            '})();\n'
+            'result.code = function () { return result.__code; };\n'
+            'result.url = function () { return __lcUrl; };\n'
+            'result.message = function () { return ""; };\n'
+            'result.headers = function () { return {}; };\n'
+            'globalThis.__syLoginBegin(${jsonEncode(seed)});\n'
+            'var __lcCode = null;\n'
+            'var __lcBodyOut = null;\n'
+            'var __lcOut;\n'
+            'var __lcSrc = ${jsonEncode(js.trim())};\n'
+            'try {\n'
+            // legado 取脚本完成值（Rhino eval）：尾表达式为 `result` 时即鸭子
+            // 响应，尾语句为 `java.getStrResponse()` 时其返回值直接替换响应。
+            '  try {\n'
+            '    __lcOut = eval(__lcSrc);\n'
+            '  } catch (__lcE) {\n'
+            // 顶层 `return` 在 eval 中是语法错误（Rhino 脚本常写）：改按函数
+            // 体编译，绑定 result 参数后取其返回值。语法错误发生在编译期，
+            // 此处重试不会重复执行已产生副作用的语句。
+            '    if (__lcE && __lcE.name === "SyntaxError") {\n'
+            '      __lcOut = new Function("result", __lcSrc)(result);\n'
+            '    } else { throw __lcE; }\n'
+            '  }\n'
+            '  if (__lcOut !== null && typeof __lcOut === "object") {\n'
+            '    try {\n'
+            '      __lcCode = (typeof __lcOut.code === "function")\n'
+            '        ? __lcOut.code() : __lcOut.code;\n'
+            '    } catch (e) {}\n'
+            '    if (typeof __lcOut.body === "function") {\n'
+            '      try { __lcBodyOut = String(__lcOut.body()); } catch (e) {}\n'
+            '    } else if (typeof __lcOut.body === "string") {\n'
+            '      __lcBodyOut = __lcOut.body;\n'
+            '    }\n'
+            '  } else if (__lcOut !== undefined) {\n'
+            '    __lcCode = __lcOut;\n'
+            '  }\n'
+            '} finally {\n'
+            '  globalThis.__syLoginEnd();\n'
+            '}\n'
+            'JSON.stringify({o: __lcCode, b: __lcBodyOut})';
+        final r = engine.eval(wrapped,
+            bindings: {'baseUrl': base, 'key': key ?? '', 'page': page});
+        final parsed = _parseLoginCheckResult(r, statusCode);
+        code = parsed.code;
+        if (parsed.body != null && !_hasReplayPlaceholder(parsed.body!)) {
+          bodyOverride = parsed.body;
+        }
+        if (activeCtx == null) break;
+        final after = <String>{
+          ...activeCtx.ajaxPending,
+          ...activeCtx.ajaxBytesPending,
+        };
+        final hasNewRequests = after.difference(before).isNotEmpty;
+        if (!hasNewRequests) break;
+        if (!DateTime.now().isBefore(deadline)) break;
+        final fetched = await ShuyuanSourceContext.settleAjax(
+          activeCtx,
+          source!,
+          deadline: deadline,
+          skipLoginCheck: true,
+        );
+        if (fetched == 0) break;
+      }
+      return _LoginCheckOutcome(code, bodyOverride);
     } catch (_) {
-      return statusCode;
+      return _LoginCheckOutcome(statusCode, null);
     }
   }
+
+  /// 解析检查脚本的 JSON 结果；非法状态码维持原状态码（避免把正文里
+  /// 出现的数字误判成登录状态）。
+  static _LoginCheckOutcome _parseLoginCheckResult(
+      String r, int statusCode) {
+    if (r.isEmpty) return _LoginCheckOutcome(statusCode, null);
+    final decoded = jsonDecode(r);
+    if (decoded is! Map) return _LoginCheckOutcome(statusCode, null);
+    final raw = decoded['o'];
+    int? code;
+    if (raw is int) {
+      code = raw;
+    } else if (raw is num) {
+      code = raw.toInt();
+    } else if (raw is String) {
+      code = int.tryParse(raw.trim());
+    }
+    if (code == null || code < 100 || code > 599) {
+      return _LoginCheckOutcome(statusCode, null);
+    }
+    final rawBody = decoded['b'];
+    return _LoginCheckOutcome(
+        code, rawBody is String ? rawBody : null);
+  }
+}
+
+/// loginCheckJs 求值结果：状态码 + 可选的改写响应体（legado 中检查脚本
+/// 返回的 StrResponse 会替换原响应继续参与解析）。
+class _LoginCheckOutcome {
+  const _LoginCheckOutcome(this.code, this.body);
+
+  final int code;
+  final String? body;
 }
 
 /// loginCheckJs 判定未登录（legado 语义：code==500）。上层据此引导用户

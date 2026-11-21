@@ -1019,6 +1019,108 @@ const String sourceContextJsPrelude = r'''
       syOp('refreshTocUrl', '', '');
       return null;
     };
+    // ── loginCheckJs 的 AnalyzeUrl 面 ──
+    // legado 在 loginCheckJs 里把 `java` 绑定为 AnalyzeUrl 本身（不是
+    // AnalyzeRule）：脚本可读 ruleUrl/url/headerMap，调用 initUrl() 重解析
+    // 模板、getStrResponse() 重取当前地址。沙箱按每次求值注入 __syLogin
+    // 状态复刻这一段，求值结束即清除（不影响其他规则上下文）。
+    global.__syLoginBegin = function (seedJson) {
+      var s = {};
+      try { s = JSON.parse(seedJson) || {}; } catch (e) {}
+      var hm = {};
+      var src = s.headers || {};
+      for (var k in src) hm[k] = String(src[k]);
+      Object.defineProperty(hm, 'get', {
+        value: function (n) { var v = hm[String(n)]; return v == null ? null : v; },
+        enumerable: false,
+      });
+      Object.defineProperty(hm, 'put', {
+        value: function (n, v) {
+          hm[String(n)] = v == null ? '' : String(v);
+          return v;
+        },
+        enumerable: false,
+      });
+      Object.defineProperty(hm, 'putAll', {
+        value: function (o) {
+          if (o && typeof o === 'object') {
+            for (var k2 in o) hm[String(k2)] = o[k2] == null ? '' : String(o[k2]);
+          }
+        },
+        enumerable: false,
+      });
+      Object.defineProperty(hm, 'remove', {
+        value: function (n) { var v = hm[String(n)]; delete hm[String(n)]; return v; },
+        enumerable: false,
+      });
+      Object.defineProperty(hm, 'containsKey', {
+        value: function (n) { return hm[String(n)] != null; },
+        enumerable: false,
+      });
+      Object.defineProperty(hm, 'toString', {
+        value: function () {
+          var p = [];
+          for (var k3 in hm) p.push(k3 + '=' + hm[k3]);
+          return '{' + p.join(', ') + '}';
+        },
+        enumerable: false,
+      });
+      global.__syLogin = {
+        ruleUrl: s.ruleUrl == null ? '' : String(s.ruleUrl),
+        url: s.url == null ? '' : String(s.url),
+        method: s.method == null ? '' : String(s.method),
+        body: s.body == null ? '' : String(s.body),
+        headerMap: hm,
+      };
+    };
+    global.__syLoginEnd = function () { global.__syLogin = null; };
+    Object.defineProperty(global.java, 'ruleUrl', {
+      configurable: true,
+      get: function () { return global.__syLogin ? global.__syLogin.ruleUrl : ''; },
+    });
+    Object.defineProperty(global.java, 'url', {
+      configurable: true,
+      get: function () { return global.__syLogin ? global.__syLogin.url : ''; },
+    });
+    Object.defineProperty(global.java, 'headerMap', {
+      configurable: true,
+      get: function () { return global.__syLogin ? global.__syLogin.headerMap : {}; },
+    });
+    global.java.initUrl = function () {
+      // 宿主在求值前已按脚本声明重解析模板（见 AnalyzeUrl._runLoginCheck）。
+      if (global.__syLogin) return null;
+      if (!global.__initUrlLogged) {
+        global.__initUrlLogged = true;
+        global.java.log('[java.initUrl] 非 loginCheckJs 环境无 URL 可重解析，已忽略');
+      }
+      return null;
+    };
+    var __syGetStrResponseBase = global.java.getStrResponse;
+    global.java.getStrResponse = function (jsStr, sourceRegex) {
+      var st = global.__syLogin;
+      if (!st) {
+        return __syGetStrResponseBase
+          ? __syGetStrResponseBase.apply(null, arguments) : '';
+      }
+      if (jsStr != null && String(jsStr).trim() !== '') {
+        global.java.log('[java.getStrResponse] loginCheckJs 的 jsStr 参数暂不消费，已忽略');
+      }
+      var extra = null;
+      if (st.method && st.method !== 'GET') {
+        extra = { method: st.method };
+        if (st.body) extra.body = st.body;
+      }
+      var key = syWithHeaders(st.url, st.headerMap, extra);
+      return syResp(key, global.java.__ajaxReq(key));
+    };
+    global.java.getResponse = function () {
+      if (global.__syLogin) return global.java.getStrResponse();
+      if (!global.__getResponseLogged) {
+        global.__getResponseLogged = true;
+        global.java.log('[java.getResponse] 非 loginCheckJs 环境无当前请求，已忽略');
+      }
+      return null;
+    };
     global.java.copyText = function (text) {
       var t = String(text == null ? '' : text);
       syOp('copyText', t, '');
