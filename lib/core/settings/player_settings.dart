@@ -32,6 +32,9 @@ enum UpscaleShaderMode { off, performance, quality }
 /// 音频模式背景：封面莫奈取色渐变 / 应用主题渐变 / 自定义纯色。
 enum AudioBackgroundMode { cover, theme, solid }
 
+/// 音频播放键配色：封面莫奈取色 / 应用主题 / 自定义纯色。
+enum AudioPlayButtonColorMode { cover, theme, solid }
+
 /// 播放器默认设置。
 class PlayerSettings {
   final DecodeMode decodeMode;
@@ -79,7 +82,10 @@ class PlayerSettings {
   /// 音频模式自定义纯色背景（ARGB）。
   final int audioBackgroundColor;
 
-  /// 音频播放键容器颜色（ARGB，0 = 跟随主题）。
+  /// 音频播放键配色风格（默认跟随应用主题）。
+  final AudioPlayButtonColorMode audioPlayButtonColorMode;
+
+  /// 音频播放键自定义纯色（ARGB；纯色模式下 0 回退主题容器色）。
   final int audioPlayButtonColor;
 
   const PlayerSettings({
@@ -111,6 +117,7 @@ class PlayerSettings {
     this.upscaleShader = UpscaleShaderMode.off,
     this.audioBackgroundMode = AudioBackgroundMode.cover,
     this.audioBackgroundColor = 0xFF1C1C24,
+    this.audioPlayButtonColorMode = AudioPlayButtonColorMode.theme,
     this.audioPlayButtonColor = 0,
   });
 
@@ -143,6 +150,7 @@ class PlayerSettings {
     UpscaleShaderMode? upscaleShader,
     AudioBackgroundMode? audioBackgroundMode,
     int? audioBackgroundColor,
+    AudioPlayButtonColorMode? audioPlayButtonColorMode,
     int? audioPlayButtonColor,
   }) =>
       PlayerSettings(
@@ -175,6 +183,8 @@ class PlayerSettings {
         upscaleShader: upscaleShader ?? this.upscaleShader,
         audioBackgroundMode: audioBackgroundMode ?? this.audioBackgroundMode,
         audioBackgroundColor: audioBackgroundColor ?? this.audioBackgroundColor,
+        audioPlayButtonColorMode:
+            audioPlayButtonColorMode ?? this.audioPlayButtonColorMode,
         audioPlayButtonColor:
             audioPlayButtonColor ?? this.audioPlayButtonColor,
       );
@@ -208,6 +218,7 @@ class PlayerSettings {
         'upscaleShader': upscaleShader.name,
         'audioBackgroundMode': audioBackgroundMode.name,
         'audioBackgroundColor': audioBackgroundColor,
+        'audioPlayButtonColorMode': audioPlayButtonColorMode.name,
         'audioPlayButtonColor': audioPlayButtonColor,
       };
 
@@ -262,6 +273,14 @@ class PlayerSettings {
         orElse: () => AudioBackgroundMode.cover,
       );
     }
+    AudioPlayButtonColorMode audioPlayButtonColorMode =
+        AudioPlayButtonColorMode.theme;
+    if (json['audioPlayButtonColorMode'] is String) {
+      audioPlayButtonColorMode = AudioPlayButtonColorMode.values.firstWhere(
+        (e) => e.name == json['audioPlayButtonColorMode'],
+        orElse: () => AudioPlayButtonColorMode.theme,
+      );
+    }
     return PlayerSettings(
       decodeMode: decodeMode,
       audioChannel: audioChannel,
@@ -295,6 +314,7 @@ class PlayerSettings {
       audioBackgroundMode: audioBackgroundMode,
       audioBackgroundColor:
           (json['audioBackgroundColor'] as num?)?.toInt() ?? 0xFF1C1C24,
+      audioPlayButtonColorMode: audioPlayButtonColorMode,
       audioPlayButtonColor:
           (json['audioPlayButtonColor'] as num?)?.toInt() ?? 0,
     );

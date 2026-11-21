@@ -53,6 +53,7 @@ extension _VideoAudioMode on _VideoPlayerScreenState {
       initialPosition: _position,
       backgroundMode: _playerSettings.audioBackgroundMode,
       backgroundColor: Color(_playerSettings.audioBackgroundColor),
+      onPageChanged: (int page) => _audioPageIndex.value = page,
       onSelectEpisode: (int index) => unawaited(_changeEpisode(index)),
       onSeek: (Duration position) => unawaited(_controller.seek(position)),
     );
@@ -60,100 +61,135 @@ extension _VideoAudioMode on _VideoPlayerScreenState {
 
   /// 音频模式底部控制栏：刻度进度条 + 两端时间 + 单行传输键。
   ///
-  /// 传输行按空间感排布——中央 72dp 播放键最大，两侧切集键次之，最外侧
-  /// 定时/倍速最小，整体垂直居中对齐。整栏盖在页面之上并拦截命中测试，
-  /// 左右滑动切页时不会跟随移动。
+  /// 仅在封面主页（页码 1）显示：滑到列表/歌词页时淡出并不拦截手势，
+  /// 因此横滑切页时底栏不会跟随。传输行按空间感排布——中央 72dp 播放键
+  /// 最大，两侧切集键次之，最外侧定时/倍速最小，整体垂直居中对齐。
   Widget _buildAudioBottomBar(AppLocalizations l10n) {
     final bool hasPrev = widget.episodes != null && _episodeIndex > 0;
     final bool hasNext =
         widget.episodes != null && _episodeIndex < widget.episodes!.length - 1;
-    final int customPlayColor = _playerSettings.audioPlayButtonColor;
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    final AudioPlayButtonColorMode colorMode =
+        _playerSettings.audioPlayButtonColorMode;
+    final Color? solidColor = colorMode == AudioPlayButtonColorMode.solid
+        ? (_playerSettings.audioPlayButtonColor == 0
+            ? scheme.primaryContainer
+            : Color(_playerSettings.audioPlayButtonColor))
+        : null;
     const TextStyle timeStyle = TextStyle(color: Colors.white54, fontSize: 11);
+
+    Widget playButton({ColorScheme? coverPalette}) => _AudioPlayButton(
+          key: const Key('player_audio_play_pause'),
+          playing: _isPlaying,
+          palette: coverPalette,
+          customColor: solidColor,
+          tooltip: _isPlaying ? l10n.pause : l10n.play,
+          onTap: () {
+            _cancelAutoNextCountdown();
+            _togglePlayPause();
+          },
+        );
+
+    // 封面取色模式：复用封面调色板缓存异步取色，未就绪时回退主题配色。
+    final Widget transportPlay = colorMode == AudioPlayButtonColorMode.cover
+        ? FutureBuilder<ColorScheme?>(
+            future: _audioCoverPalette(widget.coverUrl?.trim() ?? ''),
+            builder: (BuildContext context, AsyncSnapshot<ColorScheme?> snap) =>
+                playButton(coverPalette: snap.data),
+          )
+        : playButton();
 
     return Positioned(
       bottom: 0,
       left: 0,
       right: 0,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        child: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.bottomCenter,
-              end: Alignment.topCenter,
-              colors: <Color>[Colors.black54, Colors.transparent],
+      child: ValueListenableBuilder<int>(
+        valueListenable: _audioPageIndex,
+        builder: (BuildContext context, int page, Widget? child) {
+          final bool visible = page == 1;
+          return IgnorePointer(
+            ignoring: !visible,
+            child: AnimatedOpacity(
+              opacity: visible ? 1 : 0,
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              child: child,
             ),
-          ),
-          padding: EdgeInsets.only(
-            left: AppTokens.spaceXl,
-            right: AppTokens.spaceXl,
-            top: AppTokens.spaceSm,
-            bottom: MediaQuery.of(context).padding.bottom + AppTokens.spaceSm,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              _AudioProgressSlider(
-                position: _position,
-                duration: _duration,
-                onSeek: _onSeek,
+          );
+        },
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.bottomCenter,
+                end: Alignment.topCenter,
+                colors: <Color>[Colors.black54, Colors.transparent],
               ),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: <Widget>[
-                  Text(_formatDuration(_position), style: timeStyle),
-                  Text(_formatDuration(_duration), style: timeStyle),
-                ],
-              ),
-              Padding(
-                padding:
-                    const EdgeInsets.only(top: AppTokens.spaceLg, bottom: 4),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  crossAxisAlignment: CrossAxisAlignment.center,
+            ),
+            padding: EdgeInsets.only(
+              left: AppTokens.spaceXl,
+              right: AppTokens.spaceXl,
+              top: AppTokens.spaceSm,
+              bottom:
+                  MediaQuery.of(context).padding.bottom + AppTokens.spaceMd,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                _AudioProgressSlider(
+                  position: _position,
+                  duration: _duration,
+                  onSeek: _onSeek,
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: <Widget>[
-                    _AudioUtilityButton(
-                      key: const Key('player_sleep_timer'),
-                      icon: Icons.timer_outlined,
-                      label: l10n.playerTimer,
-                      tooltip: l10n.playerTimer,
-                      onTap: () => _showSleepTimerPicker(l10n),
-                    ),
-                    _AudioTransportButton(
-                      key: const Key('player_prev_ep'),
-                      icon: Icons.skip_previous_rounded,
-                      tooltip: l10n.playerPreviousEpisode,
-                      onTap: hasPrev ? _goPrevEpisode : null,
-                    ),
-                    _AudioPlayButton(
-                      key: const Key('player_audio_play_pause'),
-                      playing: _isPlaying,
-                      customColor: customPlayColor == 0
-                          ? null
-                          : Color(customPlayColor),
-                      tooltip: _isPlaying ? l10n.pause : l10n.play,
-                      onTap: () {
-                        _cancelAutoNextCountdown();
-                        _togglePlayPause();
-                      },
-                    ),
-                    _AudioTransportButton(
-                      key: const Key('player_next_ep'),
-                      icon: Icons.skip_next_rounded,
-                      tooltip: l10n.playerNextEpisode,
-                      onTap: hasNext ? _goNextEpisode : null,
-                    ),
-                    _AudioUtilityButton(
-                      key: const Key('player_quick_speed'),
-                      icon: Icons.speed_rounded,
-                      label: '${_controller.playbackSpeed}x',
-                      tooltip: l10n.playerPlaybackSpeed,
-                      onTap: () => _showSpeedPicker(l10n),
-                    ),
+                    Text(_formatDuration(_position), style: timeStyle),
+                    Text(_formatDuration(_duration), style: timeStyle),
                   ],
                 ),
-              ),
-            ],
+                Padding(
+                  padding: const EdgeInsets.only(
+                    top: AppTokens.spaceLg,
+                    bottom: AppTokens.spaceMd,
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: <Widget>[
+                      _AudioUtilityButton(
+                        key: const Key('player_sleep_timer'),
+                        icon: Icons.timer_outlined,
+                        label: l10n.playerTimer,
+                        tooltip: l10n.playerTimer,
+                        onTap: () => _showSleepTimerPicker(l10n),
+                      ),
+                      _AudioTransportButton(
+                        key: const Key('player_prev_ep'),
+                        icon: Icons.skip_previous_rounded,
+                        tooltip: l10n.playerPreviousEpisode,
+                        onTap: hasPrev ? _goPrevEpisode : null,
+                      ),
+                      transportPlay,
+                      _AudioTransportButton(
+                        key: const Key('player_next_ep'),
+                        icon: Icons.skip_next_rounded,
+                        tooltip: l10n.playerNextEpisode,
+                        onTap: hasNext ? _goNextEpisode : null,
+                      ),
+                      _AudioUtilityButton(
+                        key: const Key('player_quick_speed'),
+                        icon: Icons.speed_rounded,
+                        label: '${_controller.playbackSpeed}x',
+                        tooltip: l10n.playerPlaybackSpeed,
+                        onTap: () => _showSpeedPicker(l10n),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -173,6 +209,7 @@ class _AudioSurface extends StatefulWidget {
   final Duration initialPosition;
   final AudioBackgroundMode backgroundMode;
   final Color backgroundColor;
+  final ValueChanged<int> onPageChanged;
   final ValueChanged<int> onSelectEpisode;
   final ValueChanged<Duration> onSeek;
 
@@ -189,6 +226,7 @@ class _AudioSurface extends StatefulWidget {
     required this.initialPosition,
     required this.backgroundMode,
     required this.backgroundColor,
+    required this.onPageChanged,
     required this.onSelectEpisode,
     required this.onSeek,
   });
@@ -199,7 +237,6 @@ class _AudioSurface extends StatefulWidget {
 
 class _AudioSurfaceState extends State<_AudioSurface> {
   late final PageController _pager = PageController(initialPage: 1);
-  int _page = 1;
   ColorScheme? _palette;
   String _paletteUrl = '';
 
@@ -224,11 +261,6 @@ class _AudioSurfaceState extends State<_AudioSurface> {
         oldWidget.backgroundMode != widget.backgroundMode) {
       _refreshPalette();
     }
-    if (!_hasLyrics && _page == 2) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _pager.hasClients) _pager.jumpToPage(1);
-      });
-    }
   }
 
   void _refreshPalette() {
@@ -246,7 +278,7 @@ class _AudioSurfaceState extends State<_AudioSurface> {
 
   /// 底部歌词按钮快捷跳转（左滑同效果）。
   void showLyricsPage() {
-    if (!_hasLyrics || !_pager.hasClients) return;
+    if (!_pager.hasClients) return;
     _pager.animateToPage(
       2,
       duration: const Duration(milliseconds: 280),
@@ -254,12 +286,17 @@ class _AudioSurfaceState extends State<_AudioSurface> {
     );
   }
 
-  /// 页面上/下留白：顶部让出返回栏，底部让出控制栏（约 216dp）。
-  EdgeInsets _pagePadding(BuildContext context) {
+  /// 页面上/下留白：顶部让出返回栏；封面页底部让出控制栏（约 216dp），
+  /// 列表/歌词页无控制栏，只留安全区。
+  EdgeInsets _pagePadding(
+    BuildContext context, {
+    bool leaveControlsSpace = true,
+  }) {
     final MediaQueryData media = MediaQuery.of(context);
     return EdgeInsets.only(
       top: media.padding.top + 72,
-      bottom: media.padding.bottom + 216,
+      bottom: media.padding.bottom +
+          (leaveControlsSpace ? 216 : AppTokens.spaceXl),
     );
   }
 
@@ -268,7 +305,7 @@ class _AudioSurfaceState extends State<_AudioSurface> {
     final List<Widget> pages = <Widget>[
       _buildEpisodePage(context),
       _buildCoverPage(context),
-      if (_hasLyrics) _buildLyricsPage(context),
+      _buildLyricsPage(context),
     ];
     return Stack(
       fit: StackFit.expand,
@@ -276,7 +313,7 @@ class _AudioSurfaceState extends State<_AudioSurface> {
         _buildBackground(context),
         PageView(
           controller: _pager,
-          onPageChanged: (int page) => setState(() => _page = page),
+          onPageChanged: widget.onPageChanged,
           children: pages,
         ),
       ],
@@ -379,16 +416,41 @@ class _AudioSurfaceState extends State<_AudioSurface> {
   }
 
   Widget _buildLyricsPage(BuildContext context) {
-    final EdgeInsets padding = _pagePadding(context);
+    final EdgeInsets padding =
+        _pagePadding(context, leaveControlsSpace: false);
+    final AppLocalizations l10n = AppLocalizations.of(context);
     return Padding(
       padding: EdgeInsets.only(top: padding.top, bottom: padding.bottom),
-      child: AudioLyricsView(
-        key: const Key('player_audio_lyrics_page'),
-        lines: widget.lyrics,
-        positionStream: widget.positionStream,
-        initialPosition: widget.initialPosition,
-        onSeekMs: (int ms) => widget.onSeek(Duration(milliseconds: ms)),
-      ),
+      child: _hasLyrics
+          ? AudioLyricsView(
+              key: const Key('player_audio_lyrics_page'),
+              lines: widget.lyrics,
+              positionStream: widget.positionStream,
+              initialPosition: widget.initialPosition,
+              onSeekMs: (int ms) =>
+                  widget.onSeek(Duration(milliseconds: ms)),
+            )
+          : Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  const Icon(
+                    Icons.lyrics_outlined,
+                    size: 42,
+                    color: Colors.white38,
+                  ),
+                  const SizedBox(height: AppTokens.spaceSm),
+                  Text(
+                    l10n.audioLyricsEmptyHint,
+                    key: const Key('player_audio_lyrics_empty'),
+                    style: const TextStyle(
+                      color: Colors.white54,
+                      fontSize: 15,
+                    ),
+                  ),
+                ],
+              ),
+            ),
     );
   }
 
@@ -399,7 +461,7 @@ class _AudioSurfaceState extends State<_AudioSurface> {
       fallbackTitle: widget.episodeTitle,
       currentIndex: widget.currentIndex,
       playing: widget.playing,
-      padding: _pagePadding(context),
+      padding: _pagePadding(context, leaveControlsSpace: false),
       onSelect: widget.onSelectEpisode,
     );
   }
@@ -570,7 +632,10 @@ class _AudioPlayButton extends StatelessWidget {
   final bool playing;
   final String tooltip;
 
-  /// 设置页自定义的按钮颜色；null 时跟随主题播放态配色。
+  /// 封面取色模式下的封面调色板；null 时用应用主题配色。
+  final ColorScheme? palette;
+
+  /// 纯色模式下的自定义容器色；非 null 时优先于 [palette]/主题。
   final Color? customColor;
   final VoidCallback onTap;
 
@@ -578,6 +643,7 @@ class _AudioPlayButton extends StatelessWidget {
     super.key,
     required this.playing,
     required this.tooltip,
+    this.palette,
     this.customColor,
     required this.onTap,
   });
@@ -585,13 +651,14 @@ class _AudioPlayButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ColorScheme scheme = Theme.of(context).colorScheme;
+    final ColorScheme tones = palette ?? scheme;
     final Color container = customColor ??
-        (playing ? scheme.primaryContainer : scheme.secondaryContainer);
+        (playing ? tones.primaryContainer : tones.secondaryContainer);
     final Color content = customColor != null
         ? (ThemeData.estimateBrightnessForColor(customColor!) == Brightness.dark
             ? Colors.white
             : Colors.black87)
-        : (playing ? scheme.onPrimaryContainer : scheme.onSecondaryContainer);
+        : (playing ? tones.onPrimaryContainer : tones.onSecondaryContainer);
     return Tooltip(
       message: tooltip,
       child: AnimatedContainer(
@@ -724,10 +791,45 @@ class _AudioEpisodeListState extends State<_AudioEpisodeList> {
 
   @override
   Widget build(BuildContext context) {
-    final bool empty = widget.episodes.isEmpty;
-    final int count = empty ? 1 : widget.episodes.length;
+    if (widget.episodes.isEmpty) {
+      final AppLocalizations l10n = AppLocalizations.of(context);
+      return Padding(
+        padding: EdgeInsets.only(
+          top: widget.padding.top,
+          bottom: widget.padding.bottom,
+        ),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              const Icon(
+                Icons.queue_music_rounded,
+                size: 42,
+                color: Colors.white38,
+              ),
+              const SizedBox(height: AppTokens.spaceSm),
+              Text(
+                l10n.audioEpisodesEmptyHint,
+                key: const Key('player_audio_episodes_empty'),
+                style: const TextStyle(color: Colors.white54, fontSize: 15),
+              ),
+              if (widget.fallbackTitle.trim().isNotEmpty) ...<Widget>[
+                const SizedBox(height: AppTokens.spaceXs),
+                Text(
+                  widget.fallbackTitle,
+                  maxLines: 2,
+                  textAlign: TextAlign.center,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white38, fontSize: 13),
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
+    }
     final int current =
-        empty ? 0 : widget.currentIndex.clamp(0, widget.episodes.length - 1);
+        widget.currentIndex.clamp(0, widget.episodes.length - 1);
     return ListView.builder(
       controller: _scroll,
       itemExtent: _itemExtent,
@@ -737,11 +839,10 @@ class _AudioEpisodeListState extends State<_AudioEpisodeList> {
         left: AppTokens.spaceLg,
         right: AppTokens.spaceLg,
       ),
-      itemCount: count,
+      itemCount: widget.episodes.length,
       itemBuilder: (BuildContext context, int index) {
         final bool selected = index == current;
-        final String title =
-            empty ? widget.fallbackTitle : widget.episodes[index].title;
+        final String title = widget.episodes[index].title;
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 2),
           child: Material(
@@ -751,7 +852,7 @@ class _AudioEpisodeListState extends State<_AudioEpisodeList> {
             borderRadius: BorderRadius.circular(12),
             child: InkWell(
               borderRadius: BorderRadius.circular(12),
-              onTap: empty || selected ? null : () => widget.onSelect(index),
+              onTap: selected ? null : () => widget.onSelect(index),
               child: Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 14,

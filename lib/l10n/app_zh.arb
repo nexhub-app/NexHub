@@ -1255,11 +1255,19 @@
   },
   "audioPlayButtonColorTitle": "播放按钮颜色",
   "@audioPlayButtonColorTitle": {
-    "description": "Audio play/pause button container color"
+    "description": "Audio play/pause button color style"
   },
-  "audioFollowTheme": "跟随主题",
-  "@audioFollowTheme": {
-    "description": "Follow the app theme color"
+  "audioPlayButtonSolidColorTitle": "按钮颜色",
+  "@audioPlayButtonSolidColorTitle": {
+    "description": "Audio play/pause button custom solid color"
+  },
+  "audioLyricsEmptyHint": "暂无歌词",
+  "@audioLyricsEmptyHint": {
+    "description": "Hint on the audio lyrics page when no lyrics"
+  },
+  "audioEpisodesEmptyHint": "暂无列表",
+  "@audioEpisodesEmptyHint": {
+    "description": "Hint on the audio episode list page when empty"
   },
   "playerSubtitleFontSize": "字幕字体大小",
   "@playerSubtitleFontSize": {

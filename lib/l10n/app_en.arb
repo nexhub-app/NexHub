@@ -1268,11 +1268,19 @@
   },
   "audioPlayButtonColorTitle": "Play Button Color",
   "@audioPlayButtonColorTitle": {
-    "description": "Audio play/pause button container color"
+    "description": "Audio play/pause button color style"
   },
-  "audioFollowTheme": "Follow Theme",
-  "@audioFollowTheme": {
-    "description": "Follow the app theme color"
+  "audioPlayButtonSolidColorTitle": "Button Color",
+  "@audioPlayButtonSolidColorTitle": {
+    "description": "Audio play/pause button custom solid color"
+  },
+  "audioLyricsEmptyHint": "No lyrics yet",
+  "@audioLyricsEmptyHint": {
+    "description": "Hint on the audio lyrics page when no lyrics"
+  },
+  "audioEpisodesEmptyHint": "No episodes yet",
+  "@audioEpisodesEmptyHint": {
+    "description": "Hint on the audio episode list page when empty"
   },
   "playerSubtitleFontSize": "Subtitle Font Size",
   "@playerSubtitleFontSize": {

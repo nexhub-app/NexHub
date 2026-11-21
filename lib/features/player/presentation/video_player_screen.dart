@@ -619,6 +619,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   final GlobalKey<_AudioSurfaceState> _audioSurfaceKey =
       GlobalKey<_AudioSurfaceState>();
 
+  /// 音频三页当前页码（1 = 封面主页）：底栏只在该页显示。
+  final ValueNotifier<int> _audioPageIndex = ValueNotifier<int>(1);
+
   /// 手势起点系统亮度（0..1），用于左竖滑按 delta 计算新亮度。
   double _dragStartBrightness = 0;
 
@@ -3999,12 +4002,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                     children: speeds
                         .map((s) => ListTile(
                               dense: true,
+                              // 选中态由标题栏 current 值提示，行内不再加 √，
+                              // 保证各行文字居中对齐一致。
                               title: Center(child: Text('${s}x')),
-                              // 选中态统一：primary 色 check（与设置页弹层一致）。
-                              trailing: (s == current)
-                                  ? Icon(Icons.check_rounded,
-                                      color: Theme.of(ctx).colorScheme.primary)
-                                  : null,
                               onTap: () {
                                 unawaited(_controller.setPlaybackSpeed(s));
                                 _playerSettings =
@@ -4045,11 +4045,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               children: <Widget>[
                 ...options.map((s) => ListTile(
                       dense: true,
+                      // 行内不加 √，保持各行文字居中对齐一致。
                       title: Center(child: Text('${s}x')),
-                      trailing: s == _playerSettings.longPressSpeed
-                          ? Icon(Icons.check_rounded,
-                              color: Theme.of(sheetCtx).colorScheme.primary)
-                          : null,
                       onTap: () => Navigator.pop(sheetCtx, s),
                     )),
                 const SizedBox(height: AppTokens.spaceSm),
@@ -4183,6 +4180,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // 退出时 PiP 已结束（PiP 模式不会触发 dispose），安全清理。
     unawaited(PipActionsBridge.instance.clearActions());
     _resolveProgress.dispose();
+    _audioPageIndex.dispose();
     unawaited(_castService.disconnect());
     _focusNode.dispose();
     // _controller 可能未创建（如 _init 在创建前就抛异常退出），需判空避免
@@ -4850,8 +4848,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             else
               const Spacer(),
             // 音频模式歌词入口（底栏已取消工具行，入口收进顶栏；
-            // 无歌词时不显示）。
-            if (_audioMode && _lyricLines.isNotEmpty)
+            // 歌词页常显，无歌词时页内显示空态提示）。
+            if (_audioMode)
               topBarBtn(
                 key: const Key('player_audio_lyrics'),
                 icon: Icons.lyrics_rounded,

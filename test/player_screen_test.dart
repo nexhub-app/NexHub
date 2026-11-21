@@ -177,8 +177,15 @@ void main() {
         expect(moreMenu, contains('_showLyricsSheet(l10n)'));
         expect(moreMenu,
             contains('_audioSurfaceKey.currentState?.showLyricsPage()'));
-        // 歌词入口收进音频顶栏（底栏工具行已取消）。
+        // 歌词入口收进音频顶栏（底栏工具行已取消），歌词页常显故无条件显示。
         expect(screen, contains("Key('player_audio_lyrics')"));
+        expect(
+          RegExp(r"if \(_audioMode\)\s*topBarBtn\(\s*"
+                  r"key: const Key\('player_audio_lyrics'\)")
+              .hasMatch(screen),
+          isTrue,
+          reason: '歌词页常显，音频模式下歌词入口不能依赖有无歌词',
+        );
         expect(screen,
             contains('_audioSurfaceKey.currentState?.showLyricsPage()'));
         final String audioMode = File(
@@ -204,8 +211,8 @@ void main() {
         // 传输行：定时在上一集左边、倍速在下一集右边，中间播放键最大。
         final int timer = audioMode.indexOf("Key('player_sleep_timer')");
         final int prev = audioMode.indexOf("Key('player_prev_ep')");
-        final int play = audioMode.indexOf(
-            "Key('player_audio_play_pause')", audioMode.indexOf('_buildAudioBottomBar'));
+        // 播放键 Key 定义在局部构造器里，Row 内以 transportPlay 引用，按引用定位。
+        final int play = audioMode.indexOf('transportPlay,', prev);
         final int next = audioMode.indexOf("Key('player_next_ep')", play);
         final int speed =
             audioMode.indexOf("Key('player_quick_speed')", next);
@@ -216,8 +223,26 @@ void main() {
         expect(next, lessThan(speed));
         // 整栏拦截命中测试：左右滑动只翻页，底栏不跟随。
         expect(audioMode, contains('behavior: HitTestBehavior.opaque'));
-        // 播放键颜色可由设置页自定义（0 = 跟随主题）。
-        expect(audioMode, contains('_playerSettings.audioPlayButtonColor'));
+        // 底栏仅在封面主页（页码 1）可见：其余页淡出且不拦截手势。
+        expect(audioMode, contains('ValueListenableBuilder<int>'));
+        expect(audioMode, contains('final bool visible = page == 1;'));
+        expect(audioMode, contains('ignoring: !visible'));
+        expect(audioMode, contains('AnimatedOpacity('));
+        // 底栏加高：容器底部留白与传输行上下留白增大。
+        expect(
+          RegExp(r'bottom:\s*MediaQuery\.of\(context\)\.padding\.bottom\s*'
+                  r'\+\s*AppTokens\.spaceMd')
+              .hasMatch(audioMode),
+          isTrue,
+        );
+        expect(audioMode, contains('top: AppTokens.spaceLg'));
+        expect(audioMode, contains('bottom: AppTokens.spaceMd'));
+        // 播放键颜色三选项：封面取色 / 应用主题 / 纯色。
+        expect(audioMode, contains('_playerSettings.audioPlayButtonColorMode'));
+        expect(audioMode, contains('AudioPlayButtonColorMode.solid'));
+        expect(audioMode, contains('customColor: solidColor'));
+        expect(audioMode, contains('AudioPlayButtonColorMode.cover'));
+        expect(audioMode, contains('_audioCoverPalette('));
         expect(audioMode, contains('ThemeData.estimateBrightnessForColor'));
       });
 
@@ -259,7 +284,7 @@ void main() {
         expect(audioMode, isNot(contains('_buildPageDots')));
       });
 
-      test('音频三页：列表 / 封面 / 歌词，封面为初始页', () {
+      test('音频三页：列表 / 封面 / 歌词常显，封面为初始页', () {
         final String audioMode = File(
           'lib/features/player/presentation/video_player_audio_mode.dart',
         ).readAsStringSync();
@@ -268,9 +293,25 @@ void main() {
         expect(audioMode, contains('Key(\'player_audio_episode_list\')'));
         expect(audioMode, contains('Key(\'player_audio_lyrics_page\')'));
         expect(audioMode, contains('AudioLyricsView('));
-        // 无歌词时只剩两页（封面 + 列表）。
+        // 三页常显：无论有无歌词/选集都构建列表/封面/歌词页。
         expect(
-            audioMode, contains('if (_hasLyrics) _buildLyricsPage(context)'));
+          RegExp(r'_buildEpisodePage\(context\),\s*'
+                  r'_buildCoverPage\(context\),\s*'
+                  r'_buildLyricsPage\(context\),')
+              .hasMatch(audioMode),
+          isTrue,
+          reason: '列表页与歌词页必须常显（无内容时页内给空态提示）',
+        );
+        // 无歌词 / 无选集时页内常驻空态提示。
+        expect(audioMode, contains('Key(\'player_audio_lyrics_empty\')'));
+        expect(audioMode, contains('l10n.audioLyricsEmptyHint'));
+        expect(audioMode, contains('Key(\'player_audio_episodes_empty\')'));
+        expect(audioMode, contains('l10n.audioEpisodesEmptyHint'));
+        // 当前页码回传屏幕状态，供底栏仅首页显示。
+        expect(
+          audioMode,
+          contains('onPageChanged: (int page) => _audioPageIndex.value = page'),
+        );
         // 歌词页点击行跳转播放位置。
         expect(audioMode, contains('onSeekMs:'));
       });

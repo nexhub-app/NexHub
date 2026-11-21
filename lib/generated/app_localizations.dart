@@ -5090,17 +5090,29 @@ abstract class AppLocalizations {
   /// **'Background Color'**
   String get audioBackgroundColorTitle;
 
-  /// Audio play/pause button container color
+  /// Audio play/pause button color style
   ///
   /// In en, this message translates to:
   /// **'Play Button Color'**
   String get audioPlayButtonColorTitle;
 
-  /// Follow the app theme color
+  /// Audio play/pause button custom solid color
   ///
   /// In en, this message translates to:
-  /// **'Follow Theme'**
-  String get audioFollowTheme;
+  /// **'Button Color'**
+  String get audioPlayButtonSolidColorTitle;
+
+  /// Hint on the audio lyrics page when no lyrics
+  ///
+  /// In en, this message translates to:
+  /// **'No lyrics yet'**
+  String get audioLyricsEmptyHint;
+
+  /// Hint on the audio episode list page when empty
+  ///
+  /// In en, this message translates to:
+  /// **'No episodes yet'**
+  String get audioEpisodesEmptyHint;
 
   /// Subtitle font size
   ///

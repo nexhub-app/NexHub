@@ -170,6 +170,16 @@ class _SettingsPlayerScreenState extends State<SettingsPlayerScreen> {
     };
   }
 
+  /// 播放键配色沿用它同背景一致的三选项文案（封面/主题/纯色）。
+  String _audioPlayButtonColorLabel(
+      AppLocalizations l10n, AudioPlayButtonColorMode m) {
+    return switch (m) {
+      AudioPlayButtonColorMode.cover => l10n.audioBackgroundCover,
+      AudioPlayButtonColorMode.theme => l10n.audioBackgroundTheme,
+      AudioPlayButtonColorMode.solid => l10n.audioBackgroundSolid,
+    };
+  }
+
   /// 字幕位置（存储值为 'top' / 'center' / 'bottom'）。
   String _subtitlePositionLabel(AppLocalizations l10n, String p) {
     return switch (p) {
@@ -274,25 +284,18 @@ class _SettingsPlayerScreenState extends State<SettingsPlayerScreen> {
     _update(_settings.copyWith(audioBackgroundColor: selected));
   }
 
-  /// 音频播放/暂停键颜色选择器（0 = 跟随主题）。
+  /// 音频播放/暂停键颜色选择器（纯色模式下的自定义色）。
   Future<void> _pickAudioPlayButtonColor() async {
     final l10n = AppLocalizations.of(context);
     final ColorScheme scheme = Theme.of(context).colorScheme;
-    final bool followTheme = _settings.audioPlayButtonColor == 0;
-    final int initial = followTheme
+    final int initial = _settings.audioPlayButtonColor == 0
         ? scheme.primaryContainer.toARGB32()
         : _settings.audioPlayButtonColor;
     final int? selected = await showDialog<int>(
       context: context,
       builder: (ctx) => _RgbColorDialog(
-        title: l10n.audioPlayButtonColorTitle,
+        title: l10n.audioPlayButtonSolidColorTitle,
         initial: initial,
-        allowFollowTheme: true,
-        presets: <int>[
-          scheme.primaryContainer.toARGB32(),
-          scheme.secondaryContainer.toARGB32(),
-          scheme.primary.toARGB32(),
-        ],
       ),
     );
     if (selected == null) return;
@@ -866,51 +869,68 @@ class _SettingsPlayerScreenState extends State<SettingsPlayerScreen> {
                           ),
                         ),
                       ),
-                      // 播放键颜色：默认跟随主题，可自定义（RGB 滑块）。
-                      Padding(
-                        padding: const EdgeInsets.symmetric(
-                            vertical: AppTokens.spaceXs),
-                        child: Row(
-                          children: <Widget>[
-                            Expanded(
-                              child: Text(
-                                l10n.audioPlayButtonColorTitle,
-                                style: Theme.of(context).textTheme.bodyMedium,
+                      // 播放键配色：与背景风格同样的三选项（封面/主题/纯色）。
+                      _chipSection(
+                        context,
+                        l10n.audioPlayButtonColorTitle,
+                        AudioPlayButtonColorMode.values.map((m) {
+                          return ChoiceChip(
+                            label: Text(_audioPlayButtonColorLabel(l10n, m)),
+                            selected:
+                                _settings.audioPlayButtonColorMode == m,
+                            onSelected: (_) {
+                              AppHaptics.selectionClick();
+                              _update(_settings.copyWith(
+                                  audioPlayButtonColorMode: m));
+                            },
+                          );
+                        }).toList(),
+                        key: const ValueKey<String>(
+                            'player.audioPlayButtonColorMode'),
+                      ),
+                      // 纯色按钮颜色：选中「纯色」时平滑展开。
+                      SettingsExpand(
+                        visible: _settings.audioPlayButtonColorMode ==
+                            AudioPlayButtonColorMode.solid,
+                        padding: EdgeInsets.zero,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              vertical: AppTokens.spaceXs),
+                          child: Row(
+                            children: <Widget>[
+                              Expanded(
+                                child: Text(
+                                  l10n.audioPlayButtonSolidColorTitle,
+                                  style:
+                                      Theme.of(context).textTheme.bodyMedium,
+                                ),
                               ),
-                            ),
-                            IconButton(
-                              key: const ValueKey<String>(
-                                  'player.audioPlayButtonColor'),
-                              tooltip: l10n.audioPlayButtonColorTitle,
-                              onPressed: _pickAudioPlayButtonColor,
-                              icon: Container(
-                                width: 26,
-                                height: 26,
-                                decoration: BoxDecoration(
-                                  color: _settings.audioPlayButtonColor == 0
-                                      ? Theme.of(context)
+                              IconButton(
+                                key: const ValueKey<String>(
+                                    'player.audioPlayButtonColor'),
+                                tooltip: l10n.audioPlayButtonSolidColorTitle,
+                                onPressed: _pickAudioPlayButtonColor,
+                                icon: Container(
+                                  width: 26,
+                                  height: 26,
+                                  decoration: BoxDecoration(
+                                    color: _settings.audioPlayButtonColor == 0
+                                        ? Theme.of(context)
+                                            .colorScheme
+                                            .primaryContainer
+                                        : Color(
+                                            _settings.audioPlayButtonColor),
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: Theme.of(context)
                                           .colorScheme
-                                          .primaryContainer
-                                      : Color(_settings.audioPlayButtonColor),
-                                  shape: BoxShape.circle,
-                                  border: Border.all(
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .outlineVariant,
+                                          .outlineVariant,
+                                    ),
                                   ),
                                 ),
-                                child: _settings.audioPlayButtonColor == 0
-                                    ? Icon(
-                                        Icons.palette_outlined,
-                                        size: 14,
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .onPrimaryContainer,
-                                      )
-                                    : null,
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                     ],
@@ -925,19 +945,16 @@ class _SettingsPlayerScreenState extends State<SettingsPlayerScreen> {
 
 /// RGB 自定义颜色弹窗：R/G/B 三通道滑块 + 预设色块 + 实时预览。
 ///
-/// 确认返回 ARGB int；取消返回 null；[allowFollowTheme] 时「跟随主题」
-/// 返回 0（调用方约定 0 = 跟随主题）。
+/// 确认返回 ARGB int；取消返回 null。
 class _RgbColorDialog extends StatefulWidget {
   final String title;
   final int initial;
   final List<int> presets;
-  final bool allowFollowTheme;
 
   const _RgbColorDialog({
     required this.title,
     required this.initial,
     this.presets = const <int>[],
-    this.allowFollowTheme = false,
   });
 
   @override
@@ -1047,12 +1064,6 @@ class _RgbColorDialogState extends State<_RgbColorDialog> {
         ],
       ),
       actions: <Widget>[
-        if (widget.allowFollowTheme)
-          TextButton(
-            key: const ValueKey<String>('audio_rgb_follow_theme'),
-            onPressed: () => Navigator.of(context).pop(0),
-            child: Text(l10n.audioFollowTheme),
-          ),
         TextButton(
           onPressed: () => Navigator.of(context).pop(),
           child: Text(l10n.cancel),
