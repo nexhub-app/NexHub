@@ -2613,6 +2613,28 @@ class AppLocalizationsEn extends AppLocalizations {
   String get playerDefaultAutoPlay => 'Default Auto-play Next';
 
   @override
+  String get playerAudioGroup => 'Audio Playback';
+
+  @override
+  String get playerAudioGroupDesc =>
+      'Background style for audio-only playback.';
+
+  @override
+  String get audioBackgroundTitle => 'Background Style';
+
+  @override
+  String get audioBackgroundCover => 'Cover Colors';
+
+  @override
+  String get audioBackgroundTheme => 'App Theme';
+
+  @override
+  String get audioBackgroundSolid => 'Solid Color';
+
+  @override
+  String get audioBackgroundColorTitle => 'Background Color';
+
+  @override
   String get playerSubtitleFontSize => 'Subtitle Font Size';
 
   @override
@@ -2674,6 +2696,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get subtitleShadowColorLabel => 'Shadow Color';
+
+  @override
+  String get subtitleColors => 'Colors';
 
   @override
   String get subtitlePosition => 'Position';
@@ -4303,13 +4328,32 @@ class AppLocalizationsEn extends AppLocalizations {
   String get playerCoreGroup => 'Playback Core';
 
   @override
+  String get playerCoreGroupDesc =>
+      'Default decode mode, audio channel, aspect ratio, upscale shader, speed and auto-play.';
+
+  @override
   String get playerSubtitleGroup => 'Subtitle';
+
+  @override
+  String get playerSubtitleGroupDesc =>
+      'Subtitle font size, border, colors, position and offset defaults.';
 
   @override
   String get playerGestureGroup => 'Gesture & Control';
 
   @override
+  String get playerGestureGroupDesc =>
+      'Screen orientation, seek multiplier, long-press speed-up and control bar defaults.';
+
+  @override
   String get playerScreenshotGroup => 'Screenshot';
+
+  @override
+  String get playerScreenshotGroupDesc => 'Where screenshots are saved.';
+
+  @override
+  String get playerResetConfirm =>
+      'Reset all player settings to default? This cannot be undone.';
 
   @override
   String get novelDefaultGroupTitle => 'Novel Defaults';

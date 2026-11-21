@@ -116,7 +116,12 @@ extension _VideoMoreMenu on _VideoPlayerScreenState {
           title: Text(l10n.playerLyric),
           onTap: () {
             Navigator.pop(ctx);
-            _showLyricsSheet(l10n);
+            // 音频模式歌词是独立页（左滑同效）；视频模式保持原有底部弹层。
+            if (_audioMode) {
+              _audioSurfaceKey.currentState?.showLyricsPage();
+            } else {
+              _showLyricsSheet(l10n);
+            }
           },
         ),
       ),
@@ -199,16 +204,18 @@ extension _VideoMoreMenu on _VideoPlayerScreenState {
       ),
       // 画中画（从顶栏移入更多菜单）。floating 社区版支持 Android + 鸿蒙
       // （鸿蒙可用性由插件运行时检测，不可用时点击提示降级）。
+      // 音频模式无画面，PiP 无意义 → 隐藏。
       _PlayerMenuEntry(
-          builder: (BuildContext ctx) => ListTile(
-            leading: const Icon(Icons.picture_in_picture_rounded),
-            title: Text(l10n.playerPip),
-            onTap: () {
-              Navigator.pop(ctx);
-              _togglePip(l10n);
-            },
-          ),
+        visibilityPredicate: () => !_audioMode,
+        builder: (BuildContext ctx) => ListTile(
+          leading: const Icon(Icons.picture_in_picture_rounded),
+          title: Text(l10n.playerPip),
+          onTap: () {
+            Navigator.pop(ctx);
+            _togglePip(l10n);
+          },
         ),
+      ),
       // 解码模式（hwdec 属 mpv 属性系能力，Web / NoOp 后端隐藏）
       _PlayerMenuEntry(
         requiresCapability: PlayerCapability.hwdec,
@@ -252,9 +259,10 @@ extension _VideoMoreMenu on _VideoPlayerScreenState {
           },
         ),
       ),
-      // 超分辨率 shader 档位（无清晰度源时提升观感）
+      // 超分辨率 shader 档位（无清晰度源时提升观感；音频模式无画面 → 隐藏）
       _PlayerMenuEntry(
         requiresCapability: PlayerCapability.upscaleShader,
+        visibilityPredicate: () => !_audioMode,
         builder: (BuildContext ctx) => ListTile(
           leading: const Icon(Icons.auto_awesome_rounded),
           title: Text(l10n.playerUpscaleShader),
@@ -380,8 +388,9 @@ extension _VideoMoreMenu on _VideoPlayerScreenState {
           },
         ),
       ),
-      // 截图保存路径设置。
+      // 截图保存路径设置（音频模式无截图入口 → 隐藏）。
       _PlayerMenuEntry(
+        visibilityPredicate: () => !_audioMode,
         builder: (BuildContext ctx) => ListTile(
           leading: const Icon(Icons.folder_open_rounded),
           title: Text(l10n.screenshotPathSetting),
@@ -400,8 +409,9 @@ extension _VideoMoreMenu on _VideoPlayerScreenState {
           },
         ),
       ),
-      // 跳过片头/片尾设置
+      // 跳过片头/片尾设置（音频模式无跳片概念 → 隐藏）
       _PlayerMenuEntry(
+        visibilityPredicate: () => !_audioMode,
         builder: (BuildContext ctx) => ListTile(
           leading: const Icon(Icons.skip_next_rounded),
           title: Text(l10n.playerSkipOpEd),
@@ -560,17 +570,19 @@ extension _VideoMoreMenu on _VideoPlayerScreenState {
               style: Theme.of(context).textTheme.titleMedium,
             ),
           ),
-          // 投屏入口（打开设备选择面板）。
-          IconButton(
-            icon: Icon(Icons.cast_rounded,
-                color:
-                    _isCasting ? Theme.of(context).colorScheme.primary : null),
-            tooltip: l10n.cast,
-            onPressed: () {
-              Navigator.pop(context);
-              _showCastSheet(l10n);
-            },
-          ),
+          // 投屏入口（打开设备选择面板；音频模式隐藏）。
+          if (!_audioMode)
+            IconButton(
+              icon: Icon(Icons.cast_rounded,
+                  color: _isCasting
+                      ? Theme.of(context).colorScheme.primary
+                      : null),
+              tooltip: l10n.cast,
+              onPressed: () {
+                Navigator.pop(context);
+                _showCastSheet(l10n);
+              },
+            ),
           IconButton(
             icon: const Icon(Icons.close_rounded),
             onPressed: () => Navigator.of(context).maybePop(),

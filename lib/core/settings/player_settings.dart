@@ -29,6 +29,9 @@ enum SeekMultiplier { half, normal, double }
 /// 超分辨率 shader 档位：off 关闭 / performance 效率 / quality 质量。
 enum UpscaleShaderMode { off, performance, quality }
 
+/// 音频模式背景：封面莫奈取色渐变 / 应用主题渐变 / 自定义纯色。
+enum AudioBackgroundMode { cover, theme, solid }
+
 /// 播放器默认设置。
 class PlayerSettings {
   final DecodeMode decodeMode;
@@ -36,9 +39,11 @@ class PlayerSettings {
   final PlayerAspectRatio aspectRatio;
   final double playbackSpeed;
   final bool autoPlayNext;
+
   /// 自动选线路（默认开启）：进入剧集时优先用「按集记忆」选过的线路；
   /// 播放卡死/失败后自动轮换到其它候选线路重试，不弹「链接失效」让用户手点。
   final bool autoSelectLine;
+
   /// 自动连播倒计时秒数：播完一集后弹「N 秒后播放下一集」可取消，
   /// 0 = 立即连播（保持旧行为）。
   final int autoPlayCountdownSeconds;
@@ -46,10 +51,12 @@ class PlayerSettings {
   final PlayerLockOrientation lockOrientation;
   final SeekMultiplier seekMultiplier;
   final bool longPressSpeedUp;
+
   /// 长按加速时切换到的自定义倍速（默认 2.0x）。
   final double longPressSpeed;
   final double defaultVolume;
   final String screenshotSavePath;
+
   /// 隐藏控制栏后底部是否保留细进度条（默认开启）。
   final bool showBottomProgress;
   final double subtitleScale;
@@ -62,8 +69,15 @@ class PlayerSettings {
   final String subtitleAssMode;
   final int subtitleDelayMs;
   final bool subtitleVisible;
+
   /// 超分辨率 shader 档位（默认关闭）。
   final UpscaleShaderMode upscaleShader;
+
+  /// 音频模式背景风格。
+  final AudioBackgroundMode audioBackgroundMode;
+
+  /// 音频模式自定义纯色背景（ARGB）。
+  final int audioBackgroundColor;
 
   const PlayerSettings({
     this.decodeMode = DecodeMode.auto,
@@ -92,6 +106,8 @@ class PlayerSettings {
     this.subtitleDelayMs = 0,
     this.subtitleVisible = true,
     this.upscaleShader = UpscaleShaderMode.off,
+    this.audioBackgroundMode = AudioBackgroundMode.cover,
+    this.audioBackgroundColor = 0xFF1C1C24,
   });
 
   PlayerSettings copyWith({
@@ -121,6 +137,8 @@ class PlayerSettings {
     int? subtitleDelayMs,
     bool? subtitleVisible,
     UpscaleShaderMode? upscaleShader,
+    AudioBackgroundMode? audioBackgroundMode,
+    int? audioBackgroundColor,
   }) =>
       PlayerSettings(
         decodeMode: decodeMode ?? this.decodeMode,
@@ -141,8 +159,7 @@ class PlayerSettings {
         showBottomProgress: showBottomProgress ?? this.showBottomProgress,
         subtitleScale: subtitleScale ?? this.subtitleScale,
         subtitleBorderSize: subtitleBorderSize ?? this.subtitleBorderSize,
-        subtitleShadowOffset:
-            subtitleShadowOffset ?? this.subtitleShadowOffset,
+        subtitleShadowOffset: subtitleShadowOffset ?? this.subtitleShadowOffset,
         subtitleColor: subtitleColor ?? this.subtitleColor,
         subtitleBorderColor: subtitleBorderColor ?? this.subtitleBorderColor,
         subtitleShadowColor: subtitleShadowColor ?? this.subtitleShadowColor,
@@ -151,6 +168,8 @@ class PlayerSettings {
         subtitleDelayMs: subtitleDelayMs ?? this.subtitleDelayMs,
         subtitleVisible: subtitleVisible ?? this.subtitleVisible,
         upscaleShader: upscaleShader ?? this.upscaleShader,
+        audioBackgroundMode: audioBackgroundMode ?? this.audioBackgroundMode,
+        audioBackgroundColor: audioBackgroundColor ?? this.audioBackgroundColor,
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -180,6 +199,8 @@ class PlayerSettings {
         'subtitleDelayMs': subtitleDelayMs,
         'subtitleVisible': subtitleVisible,
         'upscaleShader': upscaleShader.name,
+        'audioBackgroundMode': audioBackgroundMode.name,
+        'audioBackgroundColor': audioBackgroundColor,
       };
 
   factory PlayerSettings.fromJson(Map<String, dynamic> json) {
@@ -226,6 +247,13 @@ class PlayerSettings {
         orElse: () => UpscaleShaderMode.off,
       );
     }
+    AudioBackgroundMode audioBackgroundMode = AudioBackgroundMode.cover;
+    if (json['audioBackgroundMode'] is String) {
+      audioBackgroundMode = AudioBackgroundMode.values.firstWhere(
+        (e) => e.name == json['audioBackgroundMode'],
+        orElse: () => AudioBackgroundMode.cover,
+      );
+    }
     return PlayerSettings(
       decodeMode: decodeMode,
       audioChannel: audioChannel,
@@ -235,35 +263,30 @@ class PlayerSettings {
       autoSelectLine: json['autoSelectLine'] as bool? ?? true,
       autoPlayCountdownSeconds:
           (json['autoPlayCountdownSeconds'] as num?)?.toInt() ?? 0,
-      subtitleFontSize:
-          (json['subtitleFontSize'] as num?)?.toDouble() ?? 16.0,
+      subtitleFontSize: (json['subtitleFontSize'] as num?)?.toDouble() ?? 16.0,
       lockOrientation: lockOrientation,
       seekMultiplier: seekMultiplier,
       longPressSpeedUp: json['longPressSpeedUp'] as bool? ?? true,
-      longPressSpeed:
-          (json['longPressSpeed'] as num?)?.toDouble() ?? 2.0,
-      defaultVolume:
-          (json['defaultVolume'] as num?)?.toDouble() ?? 100.0,
-      screenshotSavePath:
-          json['screenshotSavePath'] as String? ?? '',
+      longPressSpeed: (json['longPressSpeed'] as num?)?.toDouble() ?? 2.0,
+      defaultVolume: (json['defaultVolume'] as num?)?.toDouble() ?? 100.0,
+      screenshotSavePath: json['screenshotSavePath'] as String? ?? '',
       showBottomProgress: json['showBottomProgress'] as bool? ?? true,
-      subtitleScale:
-          (json['subtitleScale'] as num?)?.toDouble() ?? 1.0,
+      subtitleScale: (json['subtitleScale'] as num?)?.toDouble() ?? 1.0,
       subtitleBorderSize:
           (json['subtitleBorderSize'] as num?)?.toDouble() ?? 1.5,
       subtitleShadowOffset:
           (json['subtitleShadowOffset'] as num?)?.toDouble() ?? 2.0,
       subtitleColor: json['subtitleColor'] as String? ?? 'FFFFFF',
-      subtitleBorderColor:
-          json['subtitleBorderColor'] as String? ?? '000000',
-      subtitleShadowColor:
-          json['subtitleShadowColor'] as String? ?? '000000',
-      subtitlePosition:
-          json['subtitlePosition'] as String? ?? 'bottom',
+      subtitleBorderColor: json['subtitleBorderColor'] as String? ?? '000000',
+      subtitleShadowColor: json['subtitleShadowColor'] as String? ?? '000000',
+      subtitlePosition: json['subtitlePosition'] as String? ?? 'bottom',
       subtitleAssMode: json['subtitleAssMode'] as String? ?? 'yes',
       subtitleDelayMs: json['subtitleDelayMs'] as int? ?? 0,
       subtitleVisible: json['subtitleVisible'] as bool? ?? true,
       upscaleShader: upscaleShader,
+      audioBackgroundMode: audioBackgroundMode,
+      audioBackgroundColor:
+          (json['audioBackgroundColor'] as num?)?.toInt() ?? 0xFF1C1C24,
     );
   }
 }
@@ -343,10 +366,9 @@ class EpisodePlayerSettingsStore {
   /// 写入某剧集的单个覆盖字段（只存用户实际改过的项）。
   Future<void> setField(String itemId, String field, Object? value) async {
     final all = await _loadAll();
-    final overrides =
-        all[itemId] is Map<String, dynamic>
-            ? all[itemId]! as Map<String, dynamic>
-            : <String, dynamic>{};
+    final overrides = all[itemId] is Map<String, dynamic>
+        ? all[itemId]! as Map<String, dynamic>
+        : <String, dynamic>{};
     overrides[field] = value;
     all[itemId] = overrides;
     await _backend.set(_key, jsonEncode(all));

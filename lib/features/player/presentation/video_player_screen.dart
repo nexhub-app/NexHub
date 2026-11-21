@@ -60,6 +60,7 @@ import '../../../core/widgets/web_favorite_action.dart';
 import '../../shuyuan/model/source_callback_result.dart';
 import '../../shuyuan/presentation/shuyuan_callback_host.dart';
 import '../../verification/presentation/webview_verification_screen.dart';
+import 'audio_lyrics_view.dart';
 import '../../../core/settings/danmaku_config.dart';
 import '../../../core/theme/app_tokens.dart';
 import '../../../core/utils/app_log.dart';
@@ -91,6 +92,7 @@ import 'danmaku_source_sheet.dart';
 import 'danmaku_match_sheet.dart';
 import 'subtitle_panel.dart';
 import 'translated_subtitle_overlay.dart';
+import 'audio_cover_art.dart';
 import 'package:nexhub/core/widgets/app_alert_dialog.dart';
 part 'video_player_gestures.dart';
 part 'video_player_lines.dart';
@@ -102,6 +104,7 @@ part 'video_player_screenshot.dart';
 part 'video_player_danmaku_input.dart';
 part 'video_player_widgets.dart';
 part 'video_player_lyrics.dart';
+part 'video_player_audio_mode.dart';
 
 /// 发送弹幕时可选择的预设颜色（与主流弹幕站一致）。
 const List<Color> _danmakuPresetColors = <Color>[
@@ -177,6 +180,11 @@ class VideoPlayerScreen extends StatefulWidget {
   /// 接续恢复：起播后是否播放（对端暂停状态原样迁移）。
   final bool initialPlaying;
 
+  /// 音频源（legado `bookSourceType == 1`）进入音频模式界面：封面 + 曲目
+  /// 信息替代视频画面，隐藏锁定/截图/画面比例/弹幕/字幕/PiP 等视频专属项。
+  /// 仅影响呈现层，播放内核与后台音频服务不变。
+  final bool isAudio;
+
   /// 媒体服务器播放控制器：非空时为媒体服务器直连播放——
   /// 进度只上报服务器（不写本地历史 box，§2.5）、续播 seek 用服务器进度、
   /// 弹幕入口隐藏、退出兜底上报 Stopped 并按 ≥90% 标记已看；
@@ -203,6 +211,7 @@ class VideoPlayerScreen extends StatefulWidget {
     this.restoreProgress = true,
     this.initialPositionMs,
     this.initialPlaying = true,
+    this.isAudio = false,
     this.mediaServerPlayback,
   });
 
@@ -604,6 +613,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   /// 当前手势轴（横滑 / 左竖滑 / 右竖滑），锁定后直到 onEnd 才重置。
   _GestureAxis _dragAxis = _GestureAxis.none;
+
+  /// 音频模式三页界面（列表 / 封面 / 歌词）的全局键：控制栏歌词按钮与
+  /// 更多菜单都需要跨页切到歌词页。
+  final GlobalKey<_AudioSurfaceState> _audioSurfaceKey =
+      GlobalKey<_AudioSurfaceState>();
 
   /// 手势起点系统亮度（0..1），用于左竖滑按 delta 计算新亮度。
   double _dragStartBrightness = 0;
@@ -3646,14 +3660,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
       _toastNoCustomButton();
       return;
     }
-    final SourceCallbackResult? r = await _runSourceCallback('clickCustomButton');
+    final SourceCallbackResult? r =
+        await _runSourceCallback('clickCustomButton');
     if (r?.runDefault == true && mounted) _toastNoCustomButton();
   }
 
   void _toastNoCustomButton() {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(AppLocalizations.of(context).sourceNoCustomButton)),
+      SnackBar(
+          content: Text(AppLocalizations.of(context).sourceNoCustomButton)),
     );
   }
 
@@ -3696,6 +3712,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void _toggleUi() {
     // PiP 小窗内不响应显隐切换：小窗放不下控制层，弹出即铺满画面。
     if (_inPip) return;
+    // 音频模式控制栏常驻（对齐听书面板），不随点击显隐。
+    if (_audioMode) return;
     // 双击后 600ms 内屏蔽单击，防止双击手势的尾随单击误触显隐控制栏。
     if (DateTime.now().difference(_lastDoubleTapAt) <
         const Duration(milliseconds: 600)) {
@@ -3715,6 +3733,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// 暂停后找不到播放键。
   void _scheduleUiHide() {
     _uiHideTimer?.cancel();
+    // 音频模式控制栏不自动隐藏：页面上没有显隐入口，隐藏后无法找回。
+    if (_audioMode) return;
     if (_disposed || !mounted) return;
     // 拖动进度 / 菜单打开期间持有控制栏，不安排自动隐藏。
     if (_panelHoldCount > 0) return;
@@ -4206,9 +4226,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
         builder: (BuildContext c, AsyncSnapshot<void> snap) {
           if (snap.connectionState != ConnectionState.done) {
             // 初始化转圈期间叠加解析进度条（功能3），让用户看到"找视频地址"的进度。
+            // 音频模式无画面可看，只保留顶部进度条，不弹全屏加载符号。
             return Stack(
               children: <Widget>[
-                const Center(child: CircularProgressIndicator()),
+                if (!widget.isAudio)
+                  const Center(child: CircularProgressIndicator()),
                 Positioned(
                   top: 0,
                   left: 0,
@@ -4335,63 +4357,73 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               // 视频画面 + 手势系统（双击 中=播放/暂停·左=快退·右=快进 / 左竖滑亮度 / 右竖滑音量 / 横滑 seek 预览）
               GestureDetector(
                 behavior: HitTestBehavior.opaque,
-                // 功能1：单击显隐控制栏。
-                onTap: _toggleUi,
+                // 功能1：单击显隐控制栏。音频模式控制栏常驻，单击不响应。
+                onTap: _audioMode ? null : _toggleUi,
                 // 桌面 PiP 模式：拖动视频区域任意处 = 移动窗口（窗口已隐藏标题栏，
                 // 这是 PiP 小窗的移动入口）；此时横滑 seek / 竖滑亮度音量停用。
                 onPanStart: _desktopPipActive
                     ? (DragStartDetails _) => _pipDragWindow()
                     : null,
                 // 功能4：长按切自定义倍速，松手恢复（受 longPressSpeedUp 开关控制）。
-                onLongPressStart: (_) => _onLongPressSpeedStart(),
-                onLongPressEnd: (_) => _onLongPressSpeedEnd(),
+                // 音频模式长按无画面反馈，不注册。
+                onLongPressStart:
+                    _audioMode ? null : (_) => _onLongPressSpeedStart(),
+                onLongPressEnd:
+                    _audioMode ? null : (_) => _onLongPressSpeedEnd(),
                 // 双击：左=快退 10s；中=播放/暂停；右=快进 10s（锁定态忽略）。
                 // 连续双击同方向累加（10s→20s→30s，900ms 无后续双击或
                 // 换方向则重置），指示器按累加秒数显示。
-                onDoubleTapDown: (TapDownDetails d) {
-                  if (_controller.isLocked) return;
-                  // 双击跳转 / 暂停：轻震确认已识别为双击。
-                  AppHaptics.light();
-                  final width = context.size?.width ?? 0;
-                  final dx = d.localPosition.dx;
-                  final int direction =
-                      dx < width / 3 ? -1 : (dx > width * 2 / 3 ? 1 : 0);
-                  final now = DateTime.now();
-                  // 900ms 无后续双击或方向变化 → 重置计数；同方向连击 → 累加（上限 3 次）。
-                  if (now.difference(_lastDoubleTapAt) >
-                          const Duration(milliseconds: 900) ||
-                      direction != _doubleTapDirection) {
-                    _doubleTapCount = 1;
-                    _doubleTapDirection = direction;
-                  } else {
-                    _doubleTapCount = (_doubleTapCount + 1).clamp(1, 3);
-                  }
-                  _lastDoubleTapAt = now;
-                  if (direction < 0) {
-                    final seconds = 10 * _doubleTapCount;
-                    unawaited(_seekBy(Duration(seconds: -seconds)));
-                    _showGestureIndicator('-${seconds}s');
-                  } else if (direction > 0) {
-                    final seconds = 10 * _doubleTapCount;
-                    unawaited(_seekBy(Duration(seconds: seconds)));
-                    _showGestureIndicator('+${seconds}s');
-                  } else {
-                    // 中间三分之一：播放/暂停
-                    _togglePlayPause();
-                  }
-                },
-                onVerticalDragStart: _desktopPipActive
+                onDoubleTapDown: _audioMode
+                    ? null
+                    : (TapDownDetails d) {
+                        if (_controller.isLocked) return;
+                        // 双击跳转 / 暂停：轻震确认已识别为双击。
+                        AppHaptics.light();
+                        final width = context.size?.width ?? 0;
+                        final dx = d.localPosition.dx;
+                        final int direction =
+                            dx < width / 3 ? -1 : (dx > width * 2 / 3 ? 1 : 0);
+                        final now = DateTime.now();
+                        // 900ms 无后续双击或方向变化 → 重置计数；同方向连击 → 累加（上限 3 次）。
+                        if (now.difference(_lastDoubleTapAt) >
+                                const Duration(milliseconds: 900) ||
+                            direction != _doubleTapDirection) {
+                          _doubleTapCount = 1;
+                          _doubleTapDirection = direction;
+                        } else {
+                          _doubleTapCount = (_doubleTapCount + 1).clamp(1, 3);
+                        }
+                        _lastDoubleTapAt = now;
+                        if (direction < 0) {
+                          final seconds = 10 * _doubleTapCount;
+                          unawaited(_seekBy(Duration(seconds: -seconds)));
+                          _showGestureIndicator('-${seconds}s');
+                        } else if (direction > 0) {
+                          final seconds = 10 * _doubleTapCount;
+                          unawaited(_seekBy(Duration(seconds: seconds)));
+                          _showGestureIndicator('+${seconds}s');
+                        } else {
+                          // 中间三分之一：播放/暂停
+                          _togglePlayPause();
+                        }
+                      },
+                // 音频模式由三页 PageView / 列表自行消费拖拽：横滑要留给翻页、
+                // 竖滑要留给列表滚动，故不挂速度/亮度/seek 手势。
+                onVerticalDragStart: _desktopPipActive || _audioMode
                     ? null
                     : (DragStartDetails d) {
                         if (_controller.isLocked) return;
                         final width = context.size?.width ?? 1;
-                        _dragAxis = d.localPosition.dx < width / 2
-                            ? _GestureAxis.verticalLeft
-                            : _GestureAxis.verticalRight;
+                        // 音频模式无画面：左半区竖滑不再调屏幕亮度，
+                        // 两半区统一调音量。
+                        _dragAxis =
+                            (!_audioMode && d.localPosition.dx < width / 2)
+                                ? _GestureAxis.verticalLeft
+                                : _GestureAxis.verticalRight;
                         _dragStartBrightness = _brightness;
                         _dragStartVolume = _controller.volume;
                       },
-                onVerticalDragUpdate: _desktopPipActive
+                onVerticalDragUpdate: _desktopPipActive || _audioMode
                     ? null
                     : (DragUpdateDetails d) {
                         if (_controller.isLocked) return;
@@ -4406,12 +4438,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                           unawaited(_setVolume(_dragStartVolume + delta * 100));
                         }
                       },
-                onVerticalDragEnd: _desktopPipActive
+                onVerticalDragEnd: _desktopPipActive || _audioMode
                     ? null
                     : (_) {
                         _dragAxis = _GestureAxis.none;
                       },
-                onHorizontalDragStart: _desktopPipActive
+                onHorizontalDragStart: _desktopPipActive || _audioMode
                     ? null
                     : (DragStartDetails d) {
                         if (_controller.isLocked) return;
@@ -4423,7 +4455,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         _seekDragCancelled = false;
                         _seekDragCancelledFeedback = false;
                       },
-                onHorizontalDragUpdate: _desktopPipActive
+                onHorizontalDragUpdate: _desktopPipActive || _audioMode
                     ? null
                     : (DragUpdateDetails d) {
                         if (_controller.isLocked) return;
@@ -4467,7 +4499,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         _showGestureIndicator(
                             '${_formatDuration(_seekPreview)} / ${_formatDuration(_duration)}');
                       },
-                onHorizontalDragEnd: _desktopPipActive
+                onHorizontalDragEnd: _desktopPipActive || _audioMode
                     ? null
                     : (_) {
                         if (_controller.isLocked) {
@@ -4491,7 +4523,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                         _seekDragVerticalDelta = 0;
                       },
                 child: Center(
-                  child: _buildVideoSurface(),
+                  child:
+                      _audioMode ? _buildAudioSurface() : _buildVideoSurface(),
                 ),
               ),
 
@@ -4501,7 +4534,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 child: IgnorePointer(
                   child: DanmakuOverlay(
                     key: _danmakuKey,
-                    enabled: _danmakuOn && !pipMode,
+                    enabled: !_audioMode && _danmakuOn && !pipMode,
                     controller: _danmakuController,
                   ),
                 ),
@@ -4509,7 +4542,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
               // 视频实时翻译字幕覆盖层（PiP 小窗 / 锁定态停用；译文显示于
               // 底部，控制栏可见时抬高避让。整层 IgnorePointer 不影响手势）。
-              if (!pipMode && !_controller.isLocked)
+              if (!pipMode && !_controller.isLocked && !_audioMode)
                 Positioned(
                   left: 0,
                   right: 0,
@@ -4529,7 +4562,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               if (!_controller.isLocked && !pipMode) _buildGestureIndicator(),
 
               // 跳过片头/片尾悬浮按钮（右下角，控制栏显示时抬高避让）。
-              if (!_controller.isLocked && !pipMode && _showSkipOpButton)
+              if (!_controller.isLocked &&
+                  !pipMode &&
+                  !_audioMode &&
+                  _showSkipOpButton)
                 Positioned(
                   right: AppTokens.spaceLg,
                   bottom: _uiVisible ? 96 : 28,
@@ -4538,7 +4574,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                       icon: Icons.fast_forward_rounded,
                       onTap: _skipIntro),
                 ),
-              if (!_controller.isLocked && !pipMode && _showSkipEdButton)
+              if (!_controller.isLocked &&
+                  !pipMode &&
+                  !_audioMode &&
+                  _showSkipEdButton)
                 Positioned(
                   right: AppTokens.spaceLg,
                   bottom: _uiVisible ? 96 : 28,
@@ -4549,7 +4588,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 ),
 
               // 功能2：缓冲加载动画（播放中缓冲时显示中央转圈）+ 实时网速。
-              if (_isBuffering && !_controller.isLocked)
+              // 音频模式不显示加载转圈（播放键自身表达状态，对齐 md3）。
+              if (_isBuffering && !_controller.isLocked && !_audioMode)
                 Center(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
@@ -4602,7 +4642,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
               // 左边缘锁定按钮（控制层可见时显示；锁定时仍作为解锁入口）。
               // 纵向与画面正中的播放钮同高（Alignment.center），横向错开不遮挡。
-              if (_uiVisible && !pipMode)
+              if (_uiVisible && !pipMode && !_audioMode)
                 Positioned(
                   left: AppTokens.spaceLg,
                   top: 0,
@@ -4622,8 +4662,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                   ),
                 ),
 
-              // 右边缘截图按钮（控制层可见时显示；锁定态 / PiP 小窗隐藏，避免误触）
-              if (_uiVisible && !_controller.isLocked && !pipMode)
+              // 右边缘截图按钮（控制层可见时显示；锁定态 / PiP 小窗 / 音频模式隐藏）
+              if (_uiVisible &&
+                  !_controller.isLocked &&
+                  !pipMode &&
+                  !_audioMode)
                 Positioned(
                   right: AppTokens.spaceLg,
                   top: 0,
@@ -4654,7 +4697,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
                 // 两侧逐帧按钮（暂停时显示）：固定三槽位 Row，中央按钮恒居
                 // 中间槽位——不能用条件子树切换，否则其 State 被重建、形变
                 // 动画（依赖跨状态保持挂载）会被打断。
-                if (!pipMode)
+                // 音频模式不显示中央播放钮（会压住封面）：底部传输栏与
+                // 双击画面播放/暂停仍是完整控制入口。
+                if (!pipMode && !_audioMode)
                   Align(
                     alignment: Alignment.center,
                     child: Row(
@@ -4789,40 +4834,45 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               icon: Icons.arrow_back_rounded,
               onPressed: () => Navigator.of(context).pop(),
             ),
-            // 滚动媒体名 + 集数（长标题自动横向滚动）
-            Expanded(
-              child: _MarqueeText(
-                text: _episodeTitle,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w500,
+            // 滚动媒体名 + 集数（长标题自动横向滚动）；音频页标题在封面页
+            // 居中展示，顶栏只留返回与更多。
+            if (!_audioMode)
+              Expanded(
+                child: _MarqueeText(
+                  text: _episodeTitle,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              )
+            else
+              const Spacer(),
+            // 投屏 / 字幕为视频专属，音频模式隐藏
+            if (!_audioMode)
+              topBarBtn(
+                key: const Key('player_cast'),
+                icon: Icons.cast_rounded,
+                color: _isCasting ? Colors.amber : Colors.white,
+                tooltip: l10n.playerCast,
+                onPressed: () => _showCastSheet(l10n),
+              ),
+            if (!_audioMode)
+              topBarBtn(
+                key: const Key('player_subtitle'),
+                icon: _controller.subtitleVisible
+                    ? Icons.subtitles_rounded
+                    : Icons.subtitles_rounded,
+                tooltip: l10n.playerSubtitle,
+                onPressed: () => SubtitlePanel.show(
+                  context,
+                  controller: _controller,
+                  defaults: _playerSettings,
+                  translator: _subtitleTranslator,
+                  videoPath: _playUrl,
                 ),
               ),
-            ),
-            // 投屏（鸿蒙经原生 @ohos.net.mdns 发现，见 cast_service.dart）
-            topBarBtn(
-              key: const Key('player_cast'),
-              icon: Icons.cast_rounded,
-              color: _isCasting ? Colors.amber : Colors.white,
-              tooltip: l10n.playerCast,
-              onPressed: () => _showCastSheet(l10n),
-            ),
-            // 字幕
-            topBarBtn(
-              key: const Key('player_subtitle'),
-              icon: _controller.subtitleVisible
-                  ? Icons.subtitles_rounded
-                  : Icons.subtitles_rounded,
-              tooltip: l10n.playerSubtitle,
-              onPressed: () => SubtitlePanel.show(
-                context,
-                controller: _controller,
-                defaults: _playerSettings,
-                translator: _subtitleTranslator,
-                videoPath: _playUrl,
-              ),
-            ),
             // 收藏按钮（顶栏收藏，仅 favoriteType 提供时显示）
             if (widget.favoriteType != null)
               topBarBtn(
@@ -4848,6 +4898,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   }
 
   Widget _buildBottomBar(AppLocalizations l10n) {
+    // 音频模式使用独立底栏（大播放键 / 刻度进度条 / 工具行），
+    // 不复用视频底栏的时间两端布局与拖拽预览。
+    if (_audioMode) return _buildAudioBottomBar(l10n);
     final hasPrev = widget.episodes != null && _episodeIndex > 0;
     final hasNext =
         widget.episodes != null && _episodeIndex < widget.episodes!.length - 1;
@@ -4939,7 +4992,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     final List<Widget> utilityButtons = <Widget>[
       speedButton,
       aspectButton,
-      // 手动旋转：自动判定失误时的兜底（仅手机端；桌面窗口自由缩放无需旋转）。
+      // 手动旋转：自动判定失误时的兜底（仅手机端）。
       if (showRotate)
         _ControlButton(
           key: const Key('player_rotate'),

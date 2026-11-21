@@ -2565,6 +2565,27 @@ class AppLocalizationsZh extends AppLocalizations {
   String get playerDefaultAutoPlay => '默认自动连播';
 
   @override
+  String get playerAudioGroup => '音频播放';
+
+  @override
+  String get playerAudioGroupDesc => '纯音频播放时的背景样式等默认行为。';
+
+  @override
+  String get audioBackgroundTitle => '背景风格';
+
+  @override
+  String get audioBackgroundCover => '封面取色';
+
+  @override
+  String get audioBackgroundTheme => '应用主题';
+
+  @override
+  String get audioBackgroundSolid => '纯色';
+
+  @override
+  String get audioBackgroundColorTitle => '背景颜色';
+
+  @override
   String get playerSubtitleFontSize => '字幕字体大小';
 
   @override
@@ -2626,6 +2647,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get subtitleShadowColorLabel => '阴影颜色';
+
+  @override
+  String get subtitleColors => '颜色';
 
   @override
   String get subtitlePosition => '位置';
@@ -4214,13 +4238,28 @@ class AppLocalizationsZh extends AppLocalizations {
   String get playerCoreGroup => '播放核心';
 
   @override
+  String get playerCoreGroupDesc => '默认解码方式、声道、画面比例、超分档位、倍速与自动连播。';
+
+  @override
   String get playerSubtitleGroup => '字幕';
+
+  @override
+  String get playerSubtitleGroupDesc => '字幕字号、边框、颜色、位置与偏移等默认外观。';
 
   @override
   String get playerGestureGroup => '手势与控制';
 
   @override
+  String get playerGestureGroupDesc => '屏幕方向、快进倍率、长按倍速与控制栏等默认手势行为。';
+
+  @override
   String get playerScreenshotGroup => '截图';
+
+  @override
+  String get playerScreenshotGroupDesc => '截图保存位置等默认行为。';
+
+  @override
+  String get playerResetConfirm => '确定要将所有播放器设置恢复为默认吗？此操作不可恢复。';
 
   @override
   String get novelDefaultGroupTitle => '小说默认';

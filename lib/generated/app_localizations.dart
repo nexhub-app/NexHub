@@ -5048,6 +5048,48 @@ abstract class AppLocalizations {
   /// **'Default Auto-play Next'**
   String get playerDefaultAutoPlay;
 
+  /// Audio playback settings group
+  ///
+  /// In en, this message translates to:
+  /// **'Audio Playback'**
+  String get playerAudioGroup;
+
+  /// No description provided for @playerAudioGroupDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Background style for audio-only playback.'**
+  String get playerAudioGroupDesc;
+
+  /// Audio mode background style
+  ///
+  /// In en, this message translates to:
+  /// **'Background Style'**
+  String get audioBackgroundTitle;
+
+  /// Audio background from cover colors
+  ///
+  /// In en, this message translates to:
+  /// **'Cover Colors'**
+  String get audioBackgroundCover;
+
+  /// Audio background from app theme
+  ///
+  /// In en, this message translates to:
+  /// **'App Theme'**
+  String get audioBackgroundTheme;
+
+  /// Audio background solid color
+  ///
+  /// In en, this message translates to:
+  /// **'Solid Color'**
+  String get audioBackgroundSolid;
+
+  /// Audio background custom color
+  ///
+  /// In en, this message translates to:
+  /// **'Background Color'**
+  String get audioBackgroundColorTitle;
+
   /// Subtitle font size
   ///
   /// In en, this message translates to:
@@ -5173,6 +5215,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Shadow Color'**
   String get subtitleShadowColorLabel;
+
+  /// No description provided for @subtitleColors.
+  ///
+  /// In en, this message translates to:
+  /// **'Colors'**
+  String get subtitleColors;
 
   /// No description provided for @subtitlePosition.
   ///
@@ -8186,11 +8234,23 @@ abstract class AppLocalizations {
   /// **'Playback Core'**
   String get playerCoreGroup;
 
+  /// No description provided for @playerCoreGroupDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Default decode mode, audio channel, aspect ratio, upscale shader, speed and auto-play.'**
+  String get playerCoreGroupDesc;
+
   /// Player settings group: subtitle
   ///
   /// In en, this message translates to:
   /// **'Subtitle'**
   String get playerSubtitleGroup;
+
+  /// No description provided for @playerSubtitleGroupDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Subtitle font size, border, colors, position and offset defaults.'**
+  String get playerSubtitleGroupDesc;
 
   /// Player settings group: gesture and control
   ///
@@ -8198,11 +8258,29 @@ abstract class AppLocalizations {
   /// **'Gesture & Control'**
   String get playerGestureGroup;
 
+  /// No description provided for @playerGestureGroupDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Screen orientation, seek multiplier, long-press speed-up and control bar defaults.'**
+  String get playerGestureGroupDesc;
+
   /// Player settings group: screenshot
   ///
   /// In en, this message translates to:
   /// **'Screenshot'**
   String get playerScreenshotGroup;
+
+  /// No description provided for @playerScreenshotGroupDesc.
+  ///
+  /// In en, this message translates to:
+  /// **'Where screenshots are saved.'**
+  String get playerScreenshotGroupDesc;
+
+  /// No description provided for @playerResetConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Reset all player settings to default? This cannot be undone.'**
+  String get playerResetConfirm;
 
   /// No description provided for @novelDefaultGroupTitle.
   ///

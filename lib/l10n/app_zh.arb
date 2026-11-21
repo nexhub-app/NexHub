@@ -1228,6 +1228,31 @@
   "@playerDefaultAutoPlay": {
     "description": "Default auto-play next"
   },
+  "playerAudioGroup": "音频播放",
+  "@playerAudioGroup": {
+    "description": "Audio playback settings group"
+  },
+  "playerAudioGroupDesc": "纯音频播放时的背景样式等默认行为。",
+  "audioBackgroundTitle": "背景风格",
+  "@audioBackgroundTitle": {
+    "description": "Audio mode background style"
+  },
+  "audioBackgroundCover": "封面取色",
+  "@audioBackgroundCover": {
+    "description": "Audio background from cover colors"
+  },
+  "audioBackgroundTheme": "应用主题",
+  "@audioBackgroundTheme": {
+    "description": "Audio background from app theme"
+  },
+  "audioBackgroundSolid": "纯色",
+  "@audioBackgroundSolid": {
+    "description": "Audio background solid color"
+  },
+  "audioBackgroundColorTitle": "背景颜色",
+  "@audioBackgroundColorTitle": {
+    "description": "Audio background custom color"
+  },
   "playerSubtitleFontSize": "字幕字体大小",
   "@playerSubtitleFontSize": {
     "description": "Subtitle font size"
@@ -1267,6 +1292,7 @@
   "subtitleTextColor": "文字颜色",
   "subtitleBorderColorLabel": "边框颜色",
   "subtitleShadowColorLabel": "阴影颜色",
+  "subtitleColors": "颜色",
   "subtitlePosition": "位置",
   "subtitleAssOverride": "覆盖 ASS/SSA 样式",
   "subtitleTrackN": "轨道 {n}",
@@ -2334,18 +2360,23 @@
   "@playerCoreGroup": {
     "description": "Player settings group: core playback"
   },
+  "playerCoreGroupDesc": "默认解码方式、声道、画面比例、超分档位、倍速与自动连播。",
   "playerSubtitleGroup": "字幕",
   "@playerSubtitleGroup": {
     "description": "Player settings group: subtitle"
   },
+  "playerSubtitleGroupDesc": "字幕字号、边框、颜色、位置与偏移等默认外观。",
   "playerGestureGroup": "手势与控制",
   "@playerGestureGroup": {
     "description": "Player settings group: gesture and control"
   },
+  "playerGestureGroupDesc": "屏幕方向、快进倍率、长按倍速与控制栏等默认手势行为。",
   "playerScreenshotGroup": "截图",
   "@playerScreenshotGroup": {
     "description": "Player settings group: screenshot"
   },
+  "playerScreenshotGroupDesc": "截图保存位置等默认行为。",
+  "playerResetConfirm": "确定要将所有播放器设置恢复为默认吗？此操作不可恢复。",
   "novelDefaultGroupTitle": "小说默认",
   "novelDefaultPageTurnAnimation": "翻页动画",
   "novelDefaultFontSize": "默认字号",

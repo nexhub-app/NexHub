@@ -130,6 +130,167 @@ void main() {
       });
     });
 
+    group('audio mode flag (source-level)', () {
+      test('isAudio defaults to false (video path unchanged)', () {
+        const screen = VideoPlayerScreen(
+          title: 'test',
+          episode: Episode(id: 'e1', title: 'ep1', url: '/e1'),
+          sourceId: 'src1',
+          itemId: 'item1',
+        );
+        expect(screen.isAudio, isFalse);
+      });
+
+      test('isAudio passes through for audio sources', () {
+        const screen = VideoPlayerScreen(
+          title: 'test',
+          episode: Episode(id: 'e1', title: 'ep1', url: '/e1'),
+          sourceId: 'src1',
+          itemId: 'item1',
+          isAudio: true,
+        );
+        expect(screen.isAudio, isTrue);
+      });
+    });
+
+    group('audio mode UI guards (source-level)', () {
+      test('音频模式以封面层替代视频画面且带独立控制栏', () {
+        final String screen = File(
+          'lib/features/player/presentation/video_player_screen.dart',
+        ).readAsStringSync();
+        expect(
+          RegExp(r'_audioMode\s*\?\s*_buildAudioSurface\(\)\s*:\s*_buildVideoSurface\(\)')
+              .hasMatch(screen),
+          isTrue,
+          reason: '音频模式必须用封面层替换视频画面（否则音频黑屏）',
+        );
+        // 视频底栏不承载音频控件：音频模式早退到独立底栏。
+        expect(
+          screen,
+          contains('if (_audioMode) return _buildAudioBottomBar(l10n);'),
+        );
+        // 视频模式保留原歌词弹层入口，不被音频三页替换。
+        expect(screen, contains("part 'video_player_lyrics.dart';"));
+        final String moreMenu = File(
+          'lib/features/player/presentation/video_player_more_menu.dart',
+        ).readAsStringSync();
+        expect(moreMenu, contains('_showLyricsSheet(l10n)'));
+        expect(moreMenu,
+            contains('_audioSurfaceKey.currentState?.showLyricsPage()'));
+        final String audioMode = File(
+          'lib/features/player/presentation/video_player_audio_mode.dart',
+        ).readAsStringSync();
+        expect(audioMode, contains("Key('player_audio_lyrics')"));
+        expect(audioMode,
+            contains('_audioSurfaceKey.currentState?.showLyricsPage()'));
+        expect(audioMode, contains('AudioCoverArt('));
+        expect(audioMode, contains('bool get _audioMode => widget.isAudio;'));
+      });
+
+      test('音频控制栏：刻度进度条 + 72dp 播放键 + 工具行', () {
+        final String audioMode = File(
+          'lib/features/player/presentation/video_player_audio_mode.dart',
+        ).readAsStringSync();
+        expect(audioMode, contains('class _AudioProgressSlider'));
+        // 松手提交 seek（无视频式拖拽预览气泡）。
+        expect(audioMode, contains('onHorizontalDragEnd: (_) => _commit()'));
+        expect(audioMode, contains('class _AudioPlayButton'));
+        expect(audioMode, contains('width: 72'));
+        expect(audioMode, contains("Key('player_audio_play_pause')"));
+        expect(audioMode, contains("Key('player_sleep_timer')"));
+        expect(audioMode, contains('void showEpisodesPage()'));
+        // 工具行跳歌曲页：小节目标为第 0 页（列表）、第 2 页（歌词）。
+        expect(audioMode, contains('animateToPage('));
+      });
+
+      test('音频模式控制栏常驻：单击/双击/长按与自动隐藏关闭', () {
+        final String screen = File(
+          'lib/features/player/presentation/video_player_screen.dart',
+        ).readAsStringSync();
+        expect(screen, contains('onTap: _audioMode ? null : _toggleUi'));
+        expect(
+          RegExp(r'onDoubleTapDown: _audioMode\s*\?\s*null').hasMatch(screen),
+          isTrue,
+          reason: '音频双击分区 seek 会与翻页/列表手势冲突',
+        );
+        expect(
+          RegExp(r'onLongPressStart:\s*_audioMode \? null').hasMatch(screen),
+          isTrue,
+        );
+        expect(
+          RegExp(r'void _toggleUi\(\) \{[\s\S]*?if \(_audioMode\) return;')
+              .hasMatch(screen),
+          isTrue,
+          reason: '音频控制栏没有显隐入口，必须拒绝单击切换',
+        );
+        expect(
+          RegExp(r'void _scheduleUiHide\(\) \{[\s\S]*?if \(_audioMode\) return;')
+              .hasMatch(screen),
+          isTrue,
+          reason: '音频控制栏不能自动隐藏（隐藏后无法找回）',
+        );
+      });
+
+      test('封面页：宽度驱动大封面 + 书名/章节名，无页码点', () {
+        final String audioMode = File(
+          'lib/features/player/presentation/video_player_audio_mode.dart',
+        ).readAsStringSync();
+        // 边长取可用宽度与 0.55×可用高度的较小值。
+        expect(audioMode, contains('availableHeight * 0.55'));
+        expect(audioMode, contains('showChapter'));
+        expect(audioMode, isNot(contains('_buildPageDots')));
+      });
+
+      test('音频三页：列表 / 封面 / 歌词，封面为初始页', () {
+        final String audioMode = File(
+          'lib/features/player/presentation/video_player_audio_mode.dart',
+        ).readAsStringSync();
+        // 主界面（封面）居中：initialPage 1，左滑歌词、右滑列表。
+        expect(audioMode, contains('PageController(initialPage: 1)'));
+        expect(audioMode, contains('Key(\'player_audio_episode_list\')'));
+        expect(audioMode, contains('Key(\'player_audio_lyrics_page\')'));
+        expect(audioMode, contains('AudioLyricsView('));
+        // 无歌词时只剩两页（封面 + 列表）。
+        expect(
+            audioMode, contains('if (_hasLyrics) _buildLyricsPage(context)'));
+        // 歌词页点击行跳转播放位置。
+        expect(audioMode, contains('onSeekMs:'));
+      });
+
+      test('音频背景支持封面取色 / 应用主题 / 纯色', () {
+        final String audioMode = File(
+          'lib/features/player/presentation/video_player_audio_mode.dart',
+        ).readAsStringSync();
+        expect(audioMode, contains('ColorScheme.fromImageProvider'));
+        expect(audioMode, contains('AudioBackgroundMode.solid'));
+        expect(audioMode, contains('AudioBackgroundMode.cover'));
+      });
+
+      test('音频模式禁用拖动 seek 手势并隐藏加载转圈', () {
+        final String screen = File(
+          'lib/features/player/presentation/video_player_screen.dart',
+        ).readAsStringSync();
+        // 横滑 seek / 竖滑亮度音量在音频模式不注册（手势留给翻页与滚动）。
+        expect(
+          RegExp(r'onHorizontalDragStart: _desktopPipActive \|\| _audioMode')
+              .hasMatch(screen),
+          isTrue,
+        );
+        expect(
+          RegExp(r'onVerticalDragStart: _desktopPipActive \|\| _audioMode')
+              .hasMatch(screen),
+          isTrue,
+        );
+        // 缓冲转圈与初始化转圈在音频模式不显示。
+        expect(
+          RegExp(r'_isBuffering && !_controller\.isLocked && !_audioMode')
+              .hasMatch(screen),
+          isTrue,
+        );
+        expect(screen, contains('if (!widget.isAudio)'));
+      });
+    });
+
     group('stable Keys exist in source', () {
       // 稳定 Key（const Key('player_xxx')）在 video_player_screen.dart 中定义。
       // 完整 widget pump 受阻于 media_kit，Key 字符串由源码 grep 验证。

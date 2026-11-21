@@ -1241,6 +1241,31 @@
   "@playerDefaultAutoPlay": {
     "description": "Default auto-play next"
   },
+  "playerAudioGroup": "Audio Playback",
+  "@playerAudioGroup": {
+    "description": "Audio playback settings group"
+  },
+  "playerAudioGroupDesc": "Background style for audio-only playback.",
+  "audioBackgroundTitle": "Background Style",
+  "@audioBackgroundTitle": {
+    "description": "Audio mode background style"
+  },
+  "audioBackgroundCover": "Cover Colors",
+  "@audioBackgroundCover": {
+    "description": "Audio background from cover colors"
+  },
+  "audioBackgroundTheme": "App Theme",
+  "@audioBackgroundTheme": {
+    "description": "Audio background from app theme"
+  },
+  "audioBackgroundSolid": "Solid Color",
+  "@audioBackgroundSolid": {
+    "description": "Audio background solid color"
+  },
+  "audioBackgroundColorTitle": "Background Color",
+  "@audioBackgroundColorTitle": {
+    "description": "Audio background custom color"
+  },
   "playerSubtitleFontSize": "Subtitle Font Size",
   "@playerSubtitleFontSize": {
     "description": "Subtitle font size"
@@ -1280,6 +1305,7 @@
   "subtitleTextColor": "Text Color",
   "subtitleBorderColorLabel": "Border Color",
   "subtitleShadowColorLabel": "Shadow Color",
+  "subtitleColors": "Colors",
   "subtitlePosition": "Position",
   "subtitleAssOverride": "Override ASS/SSA Style",
   "subtitleTrackN": "Track {n}",
@@ -2358,18 +2384,23 @@
   "@playerCoreGroup": {
     "description": "Player settings group: core playback"
   },
+  "playerCoreGroupDesc": "Default decode mode, audio channel, aspect ratio, upscale shader, speed and auto-play.",
   "playerSubtitleGroup": "Subtitle",
   "@playerSubtitleGroup": {
     "description": "Player settings group: subtitle"
   },
+  "playerSubtitleGroupDesc": "Subtitle font size, border, colors, position and offset defaults.",
   "playerGestureGroup": "Gesture & Control",
   "@playerGestureGroup": {
     "description": "Player settings group: gesture and control"
   },
+  "playerGestureGroupDesc": "Screen orientation, seek multiplier, long-press speed-up and control bar defaults.",
   "playerScreenshotGroup": "Screenshot",
   "@playerScreenshotGroup": {
     "description": "Player settings group: screenshot"
   },
+  "playerScreenshotGroupDesc": "Where screenshots are saved.",
+  "playerResetConfirm": "Reset all player settings to default? This cannot be undone.",
   "novelDefaultGroupTitle": "Novel Defaults",
   "novelDefaultPageTurnAnimation": "Page Turn Animation",
   "novelDefaultFontSize": "Default font size",
