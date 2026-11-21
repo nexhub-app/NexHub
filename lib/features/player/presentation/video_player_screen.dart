@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:canvas_danmaku/canvas_danmaku.dart' as cd;
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart' show AudioTrack;
 import 'package:nexhub/generated/app_localizations.dart';

@@ -2,6 +2,7 @@
 library;
 
 import 'dart:async';
+import 'dart:ui' show PointerDeviceKind;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -161,6 +162,34 @@ void main() {
           reason: '翻动后允许暂时不居中');
 
       // 静置 3 秒后当前行自动回到中线（第 0 行回中即顶部极限 0）。
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pumpAndSettle();
+      expect(scrollable.position.pixels, lessThan(1));
+    });
+
+    testWidgets('滚轮翻动后停稳约 3 秒同样回中', (WidgetTester tester) async {
+      final StreamController<Duration> positions =
+          StreamController<Duration>.broadcast();
+      addTearDown(positions.close);
+      final List<AudioLyricLine> lines = <AudioLyricLine>[
+        for (int i = 0; i <= 30; i++) AudioLyricLine(i * 1000, '行 $i'),
+      ];
+
+      await tester.pumpWidget(_host(lines: lines, stream: positions.stream));
+      await tester.pumpAndSettle();
+
+      final TestPointer pointer = TestPointer(1, PointerDeviceKind.mouse);
+      await tester.sendEventToBinding(
+        pointer.hover(tester.getCenter(find.byType(ListView))),
+      );
+      await tester.sendEventToBinding(pointer.scroll(const Offset(0, 300)));
+      await tester.pumpAndSettle();
+
+      final ScrollableState scrollable =
+          tester.state<ScrollableState>(find.byType(Scrollable));
+      expect(scrollable.position.pixels, greaterThan(100),
+          reason: '滚轮翻动后允许暂时不居中');
+
       await tester.pump(const Duration(seconds: 3));
       await tester.pumpAndSettle();
       expect(scrollable.position.pixels, lessThan(1));

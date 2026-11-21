@@ -863,14 +863,18 @@ class _AudioEpisodeListState extends State<_AudioEpisodeList> {
     );
   }
 
-  /// 用户拖动/甩动结束后静置数秒回中；程序化滚动不触发。
+  /// 用户翻动（拖拽/滚轮/触控板）期间暂停自动跟随，停稳数秒后回中；
+  /// 程序化滚动不会改变滚动方向，故不会触发。
   bool _onScrollNotification(ScrollNotification notification) {
-    if (notification is ScrollStartNotification &&
-        notification.dragDetails != null) {
+    if (notification is UserScrollNotification &&
+        notification.direction != ScrollDirection.idle) {
       _userScrolling = true;
       _idleTimer?.cancel();
       _idleTimer = null;
-    } else if (notification is ScrollEndNotification && _userScrolling) {
+    } else if (_userScrolling &&
+        (notification is ScrollEndNotification ||
+            (notification is UserScrollNotification &&
+                notification.direction == ScrollDirection.idle))) {
       _userScrolling = false;
       _idleTimer?.cancel();
       _idleTimer = Timer(_idleRecenterDelay, () {

@@ -375,8 +375,9 @@ void main() {
           'lib/features/player/presentation/audio_lyrics_view.dart',
         ).readAsStringSync();
         for (final String src in <String>[audioMode, lyrics]) {
-          expect(src, contains('ScrollEndNotification'));
-          expect(src, contains('dragDetails != null'));
+          // 拖拽/滚轮/触控板都视为用户翻动；程序化滚动不改变方向。
+          expect(src, contains('UserScrollNotification'));
+          expect(src, contains('ScrollDirection.idle'));
           expect(src, contains('Duration(seconds: 3)'));
           // 回中目标：当前项中心对齐视口垂直中线。
           expect(src, contains('viewportDimension / 2'));
