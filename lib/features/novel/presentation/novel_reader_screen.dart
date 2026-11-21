@@ -629,6 +629,13 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     return overlaid;
   }
 
+  /// 当前章显示名（正文规则里 `book.durChapterTitle` 的数据源）。
+  String get _currentChapterTitle {
+    final chs = _effectiveChapters;
+    if (chs.isEmpty) return '';
+    return chs[_chapterIndex.clamp(0, chs.length - 1)].title;
+  }
+
   ScrollController? _scrollController;
 
   /// 滚动模式「无缝连排」的章节缓冲段（按章节升序）。
@@ -3098,6 +3105,9 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
           nextChapterUrl: nextChapterUrl,
           // 目录章节名：标题规则剥图后为空时回落到它（legado BookChapter）。
           chapterTitle: chapter.title,
+          // 阅读进度：规则里 book.durChapterIndex/durChapterTitle 可读。
+          durChapterIndex: _chapterIndex,
+          durChapterTitle: _currentChapterTitle,
         );
         paragraphs = fetched.blocks;
         // 标题规则结果覆盖显示名（legado 回写 BookChapter.title）。
@@ -3223,6 +3233,8 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
         nextChapterUrl: nextChapterUrl,
         renderedHtml: renderedHtml,
         chapterTitle: chapter.title,
+        durChapterIndex: _chapterIndex,
+        durChapterTitle: _currentChapterTitle,
       );
       final paragraphs = fetched.blocks;
       _recordContentTitle(index, fetched.title);
@@ -3667,6 +3679,8 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       chapterUrl: ep.url,
       nextChapterUrl: nextChapterUrl,
       chapterTitle: ep.title,
+      durChapterIndex: _chapterIndex,
+      durChapterTitle: _currentChapterTitle,
     );
     _recordContentTitle(index, fetched.title);
     return fetched.blocks;

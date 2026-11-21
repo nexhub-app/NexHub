@@ -30,6 +30,8 @@ class FakeNovelMediaApiService extends MediaApiService {
     String? nextChapterUrl,
     String? renderedHtml,
     String? chapterTitle,
+    int? durChapterIndex,
+    String? durChapterTitle,
   }) async {
     await Future<void>.delayed(const Duration(milliseconds: 20));
     return const <NovelBlock>[
@@ -50,6 +52,8 @@ class FakeNovelMediaApiService extends MediaApiService {
     String? nextChapterUrl,
     String? renderedHtml,
     String? chapterTitle,
+    int? durChapterIndex,
+    String? durChapterTitle,
   }) async {
     final blocks = await fetchNovelContent(
       source,
@@ -58,6 +62,8 @@ class FakeNovelMediaApiService extends MediaApiService {
       nextChapterUrl: nextChapterUrl,
       renderedHtml: renderedHtml,
       chapterTitle: chapterTitle,
+      durChapterIndex: durChapterIndex,
+      durChapterTitle: durChapterTitle,
     );
     // 模拟源声明了 `ruleContent.title`：阅读器应以规则结果覆盖目录章节名。
     return NovelContentResult(blocks, title: '正文规则标题');

@@ -39,6 +39,8 @@ class _FakeNovelMediaApiService extends MediaApiService {
     String? nextChapterUrl,
     String? renderedHtml,
     String? chapterTitle,
+    int? durChapterIndex,
+    String? durChapterTitle,
   }) async {
     await Future<void>.delayed(const Duration(milliseconds: 20));
     // 长段 + 短段 + 章节标题混合：既触发跨页断行与寡行回退，也覆盖
@@ -67,6 +69,8 @@ class _FakeNovelMediaApiService extends MediaApiService {
     String? nextChapterUrl,
     String? renderedHtml,
     String? chapterTitle,
+    int? durChapterIndex,
+    String? durChapterTitle,
   }) async {
     final blocks = await fetchNovelContent(
       source,
@@ -75,6 +79,8 @@ class _FakeNovelMediaApiService extends MediaApiService {
       nextChapterUrl: nextChapterUrl,
       renderedHtml: renderedHtml,
       chapterTitle: chapterTitle,
+      durChapterIndex: durChapterIndex,
+      durChapterTitle: durChapterTitle,
     );
     return NovelContentResult(blocks);
   }

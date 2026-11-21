@@ -143,6 +143,19 @@ class ShuyuanNovelResolver
     return ctx;
   }
 
+  /// legado Book.durChapterIndex / durChapterTitle：规则上下文暴露的阅读
+  /// 进度字段（脚本里 `book.durChapterIndex` 可读）。调用方经 vars 传入；
+  /// 缺省的阶段保持已有值（legado 的 Book 对象跨阶段持久，进度不会因
+  /// 一次目录/搜索请求被清零）。
+  void _seedReaderProgress(ShuyuanSourceContext ctx, Map<String, String> vars) {
+    final index = vars['durChapterIndex'];
+    if (index != null) {
+      ctx.bookInfo['durChapterIndex'] = '${int.tryParse(index) ?? 0}';
+    }
+    final title = vars['durChapterTitle'];
+    if (title != null) ctx.bookInfo['durChapterTitle'] = title;
+  }
+
   /// 重放轮次上限（安全阀）：正常多跳脚本 3–6 轮即收敛。
   static const int _maxReplayPasses = 16;
 
@@ -179,6 +192,7 @@ class ShuyuanNovelResolver
     final ctx = await _contextFor(source);
     // 源 URL / jsLib（引擎首次 eval 前预执行）/ `source.<field>` 快照。
     ctx.bindSource(bookSource);
+    _seedReaderProgress(ctx, vars);
 
     return ShuyuanSourceContext.run(ctx, () async {
       final replayWatch = Stopwatch()..start();
@@ -374,6 +388,7 @@ class ShuyuanNovelResolver
     // WebView 回灌路径永远没有登录态。
     final ctx = await _contextFor(source);
     ctx.bindSource(bookSource);
+    _seedReaderProgress(ctx, vars);
     // 渲染回灌同样从干净的重放缓存开始，避免命中上一阶段的旧响应。
     ctx.clearStageCaches();
     JsEngine.resetReplayCachesFor(source.id);

@@ -338,7 +338,7 @@ const String sourceContextJsPrelude = r'''
     setVariable: function (v) { return book.putVariable('__variable', v); },
   };
   ['name', 'author', 'bookUrl', 'intro', 'kind', 'coverUrl', 'lastChapter',
-   'tocUrl', 'wordCount', 'origin']
+   'tocUrl', 'wordCount', 'origin', 'durChapterTitle']
       .forEach(function (f) {
         Object.defineProperty(book, f, {
           get: function () { return syCtx().bookInfo[f] || ''; },
@@ -355,6 +355,16 @@ const String sourceContextJsPrelude = r'''
   Object.defineProperty(book, 'type', {
     get: function () {
       var v = syCtx().bookInfo.type;
+      var n = parseInt(v, 10);
+      return isNaN(n) ? 0 : n;
+    },
+  });
+  // legado Book.durChapterIndex 也是 Int（阅读进度章序号）；规则里参与
+  // 数值比较/拼接，按数字返回，缺省 0。durChapterTitle 按字符串字段处理
+  // （见上方字段表）。
+  Object.defineProperty(book, 'durChapterIndex', {
+    get: function () {
+      var v = syCtx().bookInfo.durChapterIndex;
       var n = parseInt(v, 10);
       return isNaN(n) ? 0 : n;
     },

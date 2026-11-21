@@ -719,6 +719,8 @@ class MediaApiService {
   /// [novelId] 注入 `{id}`，[chapterUrl] 注入 `{chapter}`/`{url}`。
   /// [nextChapterUrl] 注入 `{nextChapterUrl}`：正文规则内 JS 可读，书源
   /// 解析层据此在多页跟随遇到下一章地址时停止（legado 防串章停止点）。
+  /// [durChapterIndex]/[durChapterTitle] 为阅读进度（legado `book` 对象的
+  /// `durChapterIndex`/`durChapterTitle`），规则里可按需读取。
   /// 返回 [List<NovelBlock>]：文本段与插图共存，供阅读器图文混排。
   Future<List<NovelBlock>> fetchNovelContent(
     PluginConfig source, {
@@ -727,6 +729,8 @@ class MediaApiService {
     String? nextChapterUrl,
     String? renderedHtml,
     String? chapterTitle,
+    int? durChapterIndex,
+    String? durChapterTitle,
   }) async {
     final r = await fetchNovelContentDetailed(
       source,
@@ -735,6 +739,8 @@ class MediaApiService {
       nextChapterUrl: nextChapterUrl,
       renderedHtml: renderedHtml,
       chapterTitle: chapterTitle,
+      durChapterIndex: durChapterIndex,
+      durChapterTitle: durChapterTitle,
     );
     return r.blocks;
   }
@@ -750,6 +756,8 @@ class MediaApiService {
     String? nextChapterUrl,
     String? renderedHtml,
     String? chapterTitle,
+    int? durChapterIndex,
+    String? durChapterTitle,
   }) async {
     final vars = <String, String>{
       'id': novelId,
@@ -757,6 +765,11 @@ class MediaApiService {
       'url': chapterUrl,
       'nextChapterUrl': nextChapterUrl ?? '',
       'chapterTitle': chapterTitle ?? '',
+      // 未传时不落 vars（解析层保持上一阶段已知进度，对齐 legado 的
+      // 持久 Book 对象；新书/无进度默认 0）。
+      if (durChapterIndex != null) 'durChapterIndex': '$durChapterIndex',
+      if (durChapterTitle != null && durChapterTitle.isNotEmpty)
+        'durChapterTitle': durChapterTitle,
     };
     if (renderedHtml != null && renderedHtml.isNotEmpty) {
       final r = await _resolveFromRenderedHtml(
