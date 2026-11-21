@@ -153,7 +153,7 @@ extension _VideoAudioMode on _VideoPlayerScreenState {
                 Padding(
                   padding: const EdgeInsets.only(
                     top: AppTokens.spaceXl,
-                    bottom: AppTokens.spaceLg,
+                    bottom: AppTokens.spaceXl,
                   ),
                   // 左右等宽槽夹住播放键：暂停键严格居中；左组向右靠、
                   // 右组向左靠，层级由中心向两侧递减（72 → 48 → 22）。
@@ -864,7 +864,7 @@ class _AudioEpisodeListState extends State<_AudioEpisodeList> {
         return AnimatedBuilder(
           animation: _scroll,
           builder: (BuildContext context, Widget? child) => Transform.scale(
-            scale: (_scaleFor(index) + (selected ? 0.04 : 0)).clamp(0.0, 1.04),
+            scale: (_scaleFor(index) + (selected ? 0.1 : 0)).clamp(0.0, 1.1),
             child: child,
           ),
           child: Padding(
@@ -920,7 +920,7 @@ class _AudioEpisodeListState extends State<_AudioEpisodeList> {
     );
   }
 
-  /// 行中心距视口垂直中线的远近 → 缩放比例（中线 1.0，两端约 0.82）。
+  /// 行中心距视口垂直中线的远近 → 缩放比例（中线 1.0，两端约 0.72）。
   double _scaleFor(int index) {
     if (!_scroll.hasClients) return 1;
     final double viewport = _scroll.position.viewportDimension;
@@ -932,6 +932,6 @@ class _AudioEpisodeListState extends State<_AudioEpisodeList> {
         _scroll.offset;
     final double distance =
         ((itemCenter - viewport / 2).abs() / (viewport / 2)).clamp(0.0, 1.0);
-    return 1 - 0.18 * distance;
+    return 1 - 0.28 * distance;
   }
 }

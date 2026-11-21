@@ -249,7 +249,7 @@ void main() {
         // 传输行整体加高：上下留白再增一档。
         expect(
           RegExp(r'top:\s*AppTokens\.spaceXl,\s*'
-                  r'bottom:\s*AppTokens\.spaceLg')
+                  r'bottom:\s*AppTokens\.spaceXl')
               .hasMatch(audioMode),
           isTrue,
         );
@@ -346,8 +346,8 @@ void main() {
           expect(src, contains('double _scaleFor(int index)'));
         }
         // 当前集 / 当前行略加成，停在中线附近时仍为最大。
-        expect(audioMode, contains('selected ? 0.04 : 0'));
-        expect(lyrics, contains('active ? 0.06 : 0'));
+        expect(audioMode, contains('selected ? 0.1 : 0'));
+        expect(lyrics, contains('active ? 0.14 : 0'));
       });
 
       test('音频背景支持封面取色 / 应用主题 / 纯色', () {

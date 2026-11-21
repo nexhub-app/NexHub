@@ -126,7 +126,7 @@ class _AudioLyricsViewState extends State<AudioLyricsView> {
         return AnimatedBuilder(
           animation: _scroll,
           builder: (BuildContext context, Widget? child) => Transform.scale(
-            scale: (_scaleFor(index) + (active ? 0.06 : 0)).clamp(0.0, 1.06),
+            scale: (_scaleFor(index) + (active ? 0.14 : 0)).clamp(0.0, 1.14),
             child: child,
           ),
           child: Padding(
@@ -164,7 +164,7 @@ class _AudioLyricsViewState extends State<AudioLyricsView> {
     );
   }
 
-  /// 行中心距视口垂直中线的远近 → 缩放比例（中线 1.0，两端约 0.8）。
+  /// 行中心距视口垂直中线的远近 → 缩放比例（中线 1.0，两端约 0.68）。
   double _scaleFor(int index) {
     if (!_scroll.hasClients) return 1;
     final double viewport = _scroll.position.viewportDimension;
@@ -175,6 +175,6 @@ class _AudioLyricsViewState extends State<AudioLyricsView> {
         _scroll.offset;
     final double distance =
         ((itemCenter - viewport / 2).abs() / (viewport / 2)).clamp(0.0, 1.0);
-    return 1 - 0.2 * distance;
+    return 1 - 0.32 * distance;
   }
 }
