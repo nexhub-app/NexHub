@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart' as crypto;
@@ -112,12 +113,16 @@ class SourceRepository extends ChangeNotifier {
     if (_customOrder.isEmpty) return list;
     final byId = <String, PluginConfig>{for (final c in list) c.id: c};
     final ordered = <PluginConfig>[];
+    final placed = <String>{};
     for (final id in _customOrder) {
       final c = byId[id];
-      if (c != null) ordered.add(c);
+      if (c != null) {
+        ordered.add(c);
+        placed.add(id);
+      }
     }
     for (final c in list) {
-      if (!ordered.contains(c)) ordered.add(c);
+      if (!placed.contains(c.id)) ordered.add(c);
     }
     return ordered;
   }
@@ -189,6 +194,9 @@ class SourceRepository extends ChangeNotifier {
 
   /// 批量解析混合源文本，返回可导入的 [PluginConfig] 列表（仅含校验通过者）。
   ///
+  /// 大文本（多 MB、上千源）建议用 [parseMixedSourcesAsync]：解析放后台
+  /// isolate，主线程只等待结果，避免解析期间 UI 冻结。
+  ///
   /// 支持输入形态：
   /// - 单个 PluginConfig（Map）
   /// - JSON 数组（PluginConfig 与通用书源格式可混排）
@@ -209,6 +217,14 @@ class SourceRepository extends ChangeNotifier {
       service.close();
     }
   }
+
+  /// [parseMixedSources] 的后台 isolate 版：大文件/网络书源列表（可达数 MB、
+  /// 上千源）的 jsonDecode + 逐源转换在主线程是秒级冻结，挪到后台执行。
+  static Future<List<PluginConfig>> parseMixedSourcesAsync(String raw) =>
+      compute(_parseMixedSourcesIsolate, raw);
+
+  static List<PluginConfig> _parseMixedSourcesIsolate(String raw) =>
+      parseMixedSources(raw);
 
   static List<PluginConfig> _parseMixedWithService(
     String text,
@@ -362,7 +378,7 @@ class SourceRepository extends ChangeNotifier {
   /// - 新版本 **<** 已安装版本 → 跳过，**不覆盖**（防止误装旧版把新源冲掉）。
   /// 源作者发新版只需把 JSON 里的 `version` 调大，用户重新导入即自动升级。
   void addSource(PluginConfig config) {
-    config = _withLegadoIdentity(config);
+    config = config.copyWith(id: _legadoUrlIndex().resolveId(config));
     // 重新导入一个「曾被屏蔽的内置源」时，取消屏蔽使其重新出现。
     if (_configs.any((c) => c.id == config.id) &&
         _suppressedBuiltins.contains(config.id)) {
@@ -393,52 +409,68 @@ class SourceRepository extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 书源身份对齐 legado：`bookSourceUrl` 精确字符串即主键
-  /// （BookSource @PrimaryKey + BookSourceDao REPLACE）。
+  /// 批量导入用户源（书源/通用源的批量导入入口）。
+  ///
+  /// 与逐个调用 [addSource] 等价，但整批只做**一次**持久化与**一次**
+  /// [notifyListeners]：逐个导入时每次都会把全量导入列表重新 jsonEncode
+  /// 写盘（O(N²)，上千源时主线程冻结数十秒甚至被系统判定无响应杀死），
+  /// 且每源一次通知引发整页重建风暴。批量导入把这些合并为一拍。
+  ///
+  /// 返回实际入库数量（新增 + 替换；低版本被跳过的不计）。
+  int addSources(List<PluginConfig> configs) {
+    final index = _legadoUrlIndex();
+    var saved = 0;
+    for (final raw in configs) {
+      final config = raw.copyWith(id: index.resolveId(raw));
+      // 重新导入一个「曾被屏蔽的内置源」时，取消屏蔽使其重新出现。
+      if (_configs.any((c) => c.id == config.id) &&
+          _suppressedBuiltins.contains(config.id)) {
+        _unsuppressBuiltin(config.id);
+      }
+      final idx = _imported.indexWhere((c) => c.id == config.id);
+      if (idx >= 0) {
+        final existing = _imported[idx];
+        if (config.version < existing.version) {
+          debugPrint('[SourceRepository] skip import ${config.id}: '
+              'v${config.version} < installed v${existing.version}');
+          continue; // 低版本不覆盖高版本
+        }
+        _imported[idx] = config; // 高版本或同版本 → 替换
+        index.record(config, wasPresent: true);
+        final override = _stateOverrides[config.id];
+        if (override != null) {
+          _applyOverride(
+            config.id,
+            enabled: override['enabled'] as bool?,
+            isHidden: override['isHidden'] as bool?,
+          );
+        }
+      } else {
+        _imported.add(config);
+        index.record(config, wasPresent: false);
+      }
+      saved++;
+    }
+    if (saved > 0) {
+      _persistImported();
+      notifyListeners();
+    }
+    return saved;
+  }
+
+  /// 书源 URL 身份索引：`bookSourceUrl` 精确字符串即主键（对齐 legado
+  /// BookSource @PrimaryKey + BookSourceDao REPLACE）。
   ///
   /// 旧 id 由 URL 归一化生成（去 scheme、非字母数字折叠、截断 60 字符），
-  /// 仅尾斜杠/`#` 片段/非 ASCII 字符不同的源会撞成同一 id，被 [addSource]
-  /// 按 id 覆盖而在在线列表中消失。入库时校正：
+  /// 仅尾斜杠/`#` 片段/非 ASCII 字符不同的源会撞成同一 id，被导入
+  /// 按 id 覆盖而在在线列表中消失。解析身份时校正：
   /// - 同 URL 已入库 → 复用其 id（历史/进度中的 sourceId 引用不变）；
   /// - id 被另一个书源占用 → 确定性追加 URL 哈希后缀，重复导入收敛到同 id。
-  PluginConfig _withLegadoIdentity(PluginConfig config) {
-    final url = _shuyuanUrlOf(config);
-    if (url == null) return config;
-
-    for (final c in _imported) {
-      if (c.id != config.id && _shuyuanUrlOf(c) == url) {
-        return config.copyWith(id: c.id);
-      }
-    }
-    for (final c in _configs) {
-      if (c.id != config.id && _shuyuanUrlOf(c) == url) {
-        return config.copyWith(id: c.id);
-      }
-    }
-
-    final owner = _findByIdInRepo(config.id);
-    if (owner == null) return config;
-    final ownerUrl = _shuyuanUrlOf(owner);
-    // 非书源占用或同一源：维持既有按 id 覆盖语义。
-    if (ownerUrl == null || ownerUrl == url) return config;
-
-    final suffixed = '${config.id}_${_shortUrlHash(url)}';
-    final suffixedOwner = _findByIdInRepo(suffixed);
-    if (suffixedOwner == null || _shuyuanUrlOf(suffixedOwner) == url) {
-      return config.copyWith(id: suffixed);
-    }
-    return config.copyWith(id: '${config.id}_${_fullUrlHash(url)}');
-  }
-
-  PluginConfig? _findByIdInRepo(String id) {
-    for (final c in _imported) {
-      if (c.id == id) return c;
-    }
-    for (final c in _configs) {
-      if (c.id == id) return c;
-    }
-    return null;
-  }
+  ///
+  /// 单次导入 O(N) 与线性扫描同级；批量导入复用同一索引把整体降到 O(N)。
+  /// 构建顺序与既有扫描语义一致（先导入列表后内置列表，首个命中者持有身份）。
+  _LegadoUrlIndex _legadoUrlIndex() =>
+      _LegadoUrlIndex(_imported, _configs);
 
   /// 书源原始 `bookSourceUrl`（legado 身份键）；非书源返回 null。
   static String? _shuyuanUrlOf(PluginConfig config) {
@@ -569,21 +601,12 @@ class SourceRepository extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_importedKey);
     if (raw != null) {
-      try {
-        final list = jsonDecode(raw) as List<dynamic>;
-        var migrated = false;
-        for (final e in list) {
-          final configJson = e as Map<String, dynamic>;
-          // 旧版适配器注入的默认 Referer 会随配置持久化，导致图片请求被
-          // 签名 CDN 拒绝（封面全灰）。载入时清理并回写一次。
-          if (ShuyuanAdapter.migrateLegacyInjectedReferer(configJson)) {
-            migrated = true;
-          }
-          _imported.add(PluginConfig.fromJson(configJson));
-        }
-        if (migrated) await _persistImported();
-      } catch (_) {
-        // 损坏数据忽略
+      // 大库启动：全量 JSON 解码 + 逐源转换放后台 isolate（同写盘理由）。
+      final decoded = await compute(_decodeImportedSources, raw);
+      if (decoded != null) {
+        _imported.addAll(decoded.configs);
+        // 迁移回写为 fire-and-forget：写盘队列保证串行落地。
+        if (decoded.migrated) _persistImported();
       }
     }
 
@@ -724,14 +747,173 @@ class SourceRepository extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _persistImported() async {
-    final prefs = await SharedPreferences.getInstance();
-    final list = _imported.map((c) => c.toJson()).toList();
-    await prefs.setString(_importedKey, jsonEncode(list));
+  /// 导入源写盘状态：写盘进行中又有变更时置脏，本轮结束后补写一次。
+  /// 既合并同帧高频导入的重复全量编码，也避免多个异步写盘乱序落地
+  /// （旧实现并发写盘时后完成的旧快照可能覆盖新快照，导致入库丢源）。
+  bool _persistRunning = false;
+  bool _persistPending = false;
+
+  void _persistImported() {
+    if (_persistRunning) {
+      _persistPending = true;
+      return;
+    }
+    _persistRunning = true;
+    unawaited(_runPersistImported());
+  }
+
+  Future<void> _runPersistImported() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      // 浅拷贝 toJson 在主线程（以引用为主，代价低）；全量字符串编码
+      // 放后台 isolate——大库（上千源、数十 MB JSON）的 jsonEncode 在
+      // 主线程是数百毫秒到秒级的冻结。
+      final snapshot = _imported.map((c) => c.toJson()).toList();
+      final encoded = await compute(jsonEncode, snapshot);
+      await prefs.setString(_importedKey, encoded);
+    } catch (e) {
+      debugPrint('[SourceRepository] persist imported failed: $e');
+    } finally {
+      _persistRunning = false;
+      if (_persistPending) {
+        _persistPending = false;
+        _persistImported();
+      }
+    }
   }
 
   Future<void> _persistStateOverrides() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_stateOverridesKey, jsonEncode(_stateOverrides));
+  }
+}
+
+/// isolate 入口：启动时在后台解码导入源 JSON（含旧 Referer 注入迁移）。
+///
+/// 返回 null 表示数据损坏（与旧实现一致：忽略损坏数据）。
+({List<PluginConfig> configs, bool migrated})? _decodeImportedSources(
+  String raw,
+) {
+  try {
+    final list = jsonDecode(raw) as List<dynamic>;
+    var migrated = false;
+    final out = <PluginConfig>[];
+    for (final e in list) {
+      final configJson = e is Map<String, dynamic>
+          ? e
+          : Map<String, dynamic>.from(e as Map);
+      // 旧版适配器注入的默认 Referer 会随配置持久化，导致图片请求被
+      // 签名 CDN 拒绝（封面全灰）。载入时清理并回写一次。
+      if (ShuyuanAdapter.migrateLegacyInjectedReferer(configJson)) {
+        migrated = true;
+      }
+      out.add(PluginConfig.fromJson(configJson));
+    }
+    return (configs: out, migrated: migrated);
+  } catch (_) {
+    return null;
+  }
+}
+
+/// 书源身份规则索引：把「逐源扫描（先导入后内置）」蒸馏为两张查找表，
+/// [resolveId] 与原逐条扫描逐分支等价，[record] 在源入库后增量维护，
+/// 使批量导入整体 O(N)。
+class _LegadoUrlIndex {
+  /// 导入列表（随导入动态维护）：url → 持有者 id 列表（按列表顺序）。
+  final Map<String, List<String>> _importedUrlHolders =
+      <String, List<String>>{};
+
+  /// 导入列表：id → 首个出现者的书源 URL（仅书源占用者记录）。
+  final Map<String, String> _importedIdToUrl = <String, String>{};
+
+  /// 导入列表全部 id（含非书源占用者）。
+  final Set<String> _importedIds = <String>{};
+
+  /// 内置列表（快照，导入过程中不变）。
+  final Map<String, List<String>> _builtinUrlHolders =
+      <String, List<String>>{};
+  final Map<String, String> _builtinIdToUrl = <String, String>{};
+  final Set<String> _builtinIds = <String>{};
+
+  _LegadoUrlIndex(
+    Iterable<PluginConfig> imported,
+    Iterable<PluginConfig> builtins,
+  ) {
+    _addAll(imported, _importedUrlHolders, _importedIdToUrl, _importedIds);
+    _addAll(builtins, _builtinUrlHolders, _builtinIdToUrl, _builtinIds);
+  }
+
+  static void _addAll(
+    Iterable<PluginConfig> configs,
+    Map<String, List<String>> urlHolders,
+    Map<String, String> idToUrl,
+    Set<String> idsSeen,
+  ) {
+    for (final c in configs) {
+      final url = SourceRepository._shuyuanUrlOf(c);
+      if (url != null) {
+        urlHolders.putIfAbsent(url, () => <String>[]).add(c.id);
+      }
+      // 首个出现者持有 id 的占用身份（含非书源：仅记入 idsSeen）。
+      if (idsSeen.add(c.id) && url != null) {
+        idToUrl[c.id] = url;
+      }
+    }
+  }
+
+  /// id 的占用者（先导入后内置）：返回 (占用者的书源 URL, 是否被占用)。
+  /// 占用者为非书源时 url 为 null 但 found 为 true。
+  (String?, bool) _ownerLookup(String id) {
+    if (_importedIds.contains(id)) {
+      return (_importedIdToUrl[id], true);
+    }
+    if (_builtinIds.contains(id)) {
+      return (_builtinIdToUrl[id], true);
+    }
+    return (null, false);
+  }
+
+  /// 解析导入源的最终身份 id（与原逐源扫描语义逐分支一致）：
+  /// - 同 URL 已被其他 id 持有（先导入后内置，首个命中）→ 复用其 id；
+  /// - id 未被占用 / 占用者非书源 / 占用者即同一 URL → 维持原 id；
+  /// - id 被其他书源占用 → 确定性追加 URL 哈希后缀（短哈希再撞则全长哈希）。
+  String resolveId(PluginConfig config) {
+    final url = SourceRepository._shuyuanUrlOf(config);
+    if (url == null) return config.id;
+
+    for (final holder in _importedUrlHolders[url] ?? const <String>[]) {
+      if (holder != config.id) return holder;
+    }
+    for (final holder in _builtinUrlHolders[url] ?? const <String>[]) {
+      if (holder != config.id) return holder;
+    }
+
+    final (ownerUrl, found) = _ownerLookup(config.id);
+    if (!found || ownerUrl == null || ownerUrl == url) return config.id;
+
+    final suffixed = '${config.id}_${SourceRepository._shortUrlHash(url)}';
+    final (suffixedUrl, suffixedFound) = _ownerLookup(suffixed);
+    if (!suffixedFound || suffixedUrl == url) return suffixed;
+    return '${config.id}_${SourceRepository._fullUrlHash(url)}';
+  }
+
+  /// 源入库（新增或替换）后增量维护导入侧索引，
+  /// 使同批后续源的解析看到最新状态（与逐源重扫等价）。
+  void record(PluginConfig config, {required bool wasPresent}) {
+    final url = SourceRepository._shuyuanUrlOf(config);
+    final previousUrl = _importedIdToUrl[config.id];
+    if (wasPresent && previousUrl != null && previousUrl != url) {
+      _importedUrlHolders[previousUrl]?.remove(config.id);
+    }
+    _importedIds.add(config.id);
+    if (url == null) {
+      _importedIdToUrl.remove(config.id);
+      return;
+    }
+    _importedIdToUrl[config.id] = url;
+    _importedUrlHolders
+        .putIfAbsent(url, () => <String>[])
+      ..remove(config.id)
+      ..add(config.id);
   }
 }

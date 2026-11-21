@@ -208,7 +208,8 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
       httpClient.close();
 
       // 统一批量解析：URL 返回合并 JSON（小说+媒体+漫画）也能一次导入。
-      final configs = SourceRepository.parseMixedSources(text);
+      // 后台 isolate 解析：大书源列表主线程解析会冻结 UI。
+      final configs = await SourceRepository.parseMixedSourcesAsync(text);
 
       if (!mounted) return;
       if (configs.isEmpty) {
@@ -421,7 +422,8 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
         final text = await readSourceText(path);
         // 统一批量解析：单 PluginConfig / JSON 数组（小说+媒体+漫画混排）/
         // 通用书源格式 / XML 等，一个文件可解析出多个源。
-        final configs = SourceRepository.parseMixedSources(text);
+        // 后台 isolate 解析：大文件主线程解析会冻结 UI。
+        final configs = await SourceRepository.parseMixedSourcesAsync(text);
         if (configs.isEmpty) {
           items.add(ImportPreviewItem(
             path: path,
@@ -532,13 +534,14 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
 
   /// 确认导入选中的预览项（由独立预览页回传）。
   void _importSelected(List<ImportPreviewItem> selected) {
-    int successCount = 0;
-    for (final item in selected) {
-      try {
-        context.read<SourceRepository>().addSource(item.config!);
-        successCount++;
-      } on Object {/* 单个失败不影响其他 */}
-    }
+    // 批量入库：整批一次持久化 + 一次通知（逐个 addSource 的写盘/通知
+    // 风暴在大库导入时冻结主线程）。
+    final configs = selected
+        .where((item) => item.config != null)
+        .map((item) => item.config!)
+        .toList();
+    final successCount =
+        configs.isEmpty ? 0 : context.read<SourceRepository>().addSources(configs);
 
     if (mounted) {
       final l10n = AppLocalizations.of(context);

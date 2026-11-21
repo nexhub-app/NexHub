@@ -76,11 +76,12 @@ class _SourceImportScreenState extends State<SourceImportScreen> {
       _previews = const <PluginConfig>[];
       _selectedPreviewIndices = const <int>{};
     });
+    final repo = context.read<SourceRepository>();
     try {
       // 统一批量解析：支持单源 / JSON 数组（小说+媒体+漫画混排）/
       // 通用书源格式 / 包装对象 / NDJSON / XML，一次导入多种类型。
-      final list = SourceRepository.parseMixedSources(text);
-      final repo = context.read<SourceRepository>();
+      // 后台 isolate 解析：大文件（上千源）主线程解析会冻结 UI。
+      final list = await SourceRepository.parseMixedSourcesAsync(text);
       final filtered = list.where((c) => !repo.isAgeBlocked(c)).toList();
       _ageBlockedCount = list.length - filtered.length;
       if (mounted) {
@@ -172,7 +173,7 @@ class _SourceImportScreenState extends State<SourceImportScreen> {
         if (rawUrl != null && rawUrl.isNotEmpty) {
           try {
             final t = await HttpFetcher.instance.getHtml(rawUrl);
-            out.addAll(SourceRepository.parseMixedSources(t));
+            out.addAll(await SourceRepository.parseMixedSourcesAsync(t));
           } on Object {
             // 单源下载失败不影响其余源
           }
@@ -180,7 +181,9 @@ class _SourceImportScreenState extends State<SourceImportScreen> {
         }
         // 无 rawUrl：条目本身即一份源配置
         try {
-          out.addAll(SourceRepository.parseMixedSources(jsonEncode(e)));
+          out.addAll(await SourceRepository.parseMixedSourcesAsync(
+            jsonEncode(e),
+          ));
         } on Object {
           // 跳过无法解析的条目
         }
@@ -292,9 +295,9 @@ class _SourceImportScreenState extends State<SourceImportScreen> {
       );
       return;
     }
-    for (final c in importable) {
-      repo.addSource(c);
-    }
+    // 批量入库：整批一次持久化 + 一次通知（逐个 addSource 的写盘/通知风暴
+    // 在大库导入时冻结主线程）。
+    repo.addSources(importable);
     // 必须在 pop() 之前捕获 ScaffoldMessenger 与文案，否则 pop 后 context
     // 正在被拆解，再调用 ScaffoldMessenger.of(context)/AppLocalizations.of(context)
     // 会访问已失效的 element 树，触发「used after being disposed / wrong build

@@ -13,6 +13,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:xml/xml.dart';
 
 import 'model/book_source.dart';
@@ -60,6 +61,15 @@ class ShuyuanSource {
   final int weight;
   final String? exploreScreen;
 
+  /// 事件回调开关（legado BookSource.eventListener）：为 true 且
+  /// callBackJs 非空时，客户端事件（阅读开始/换章/详情页点击/自定义
+  /// 按钮等）才执行源脚本；脚本返回假值则回退默认动作。
+  final bool eventListener;
+
+  /// 自定义按钮显隐（legado BookSource.customButton）：详情页/阅读器
+  /// 的「自定义按钮」入口按此字段展示。
+  final bool customButton;
+
   /// 原始书源 JSON 整图（导入保真的根本保证：任何 legado 字段——含本模型
   /// 尚未建模的未知扩展——都随 selectors['xiaoshuo'] 持久化，运行期
   /// [ShuyuanSource.fromJson] 可再次完整解析）。
@@ -104,6 +114,8 @@ class ShuyuanSource {
     this.respondTime = 180000,
     this.weight = 0,
     this.exploreScreen,
+    this.eventListener = false,
+    this.customButton = false,
     this.raw,
     this.filters,
     this.homeSections,
@@ -155,6 +167,8 @@ class ShuyuanSource {
       respondTime: respondTime,
       weight: weight,
       exploreScreen: exploreScreen,
+      eventListener: eventListener,
+      customButton: customButton,
     );
   }
 
@@ -209,6 +223,8 @@ class ShuyuanSource {
       respondTime: _asInt(json['respondTime']) ?? 180000,
       weight: _asInt(json['weight']) ?? 0,
       exploreScreen: _asJsString(json['exploreScreen']),
+      eventListener: json['eventListener'] == true,
+      customButton: json['customButton'] == true,
       // 整图保留原始 JSON：导入不丢字段（含未知扩展）的根本保证。
       raw: json,
       filters: _parseRuleDynamic(json['filters']),
@@ -247,6 +263,8 @@ class ShuyuanSource {
         if (respondTime != 180000) 'respondTime': respondTime,
         if (weight != 0) 'weight': weight,
         if (exploreScreen != null) 'exploreScreen': exploreScreen,
+        if (eventListener) 'eventListener': eventListener,
+        if (customButton) 'customButton': customButton,
         if (filters != null) 'filters': filters,
         if (homeSections != null) 'homeSections': homeSections,
       };
@@ -359,7 +377,7 @@ class ShuyuanSourceService {
     // 已解码对象（List/Map），重新序列化回 JSON 文本再交给解析器。
     final raw = response.data;
     final content = _coerceToString(raw);
-    return _parseSourceContent(content);
+    return parseSourcesInBackground(content);
   }
 
   /// 将 Dio 响应体统一转为字符串：已解码对象重新序列化为 JSON 文本。
@@ -380,13 +398,25 @@ class ShuyuanSourceService {
   Future<List<ShuyuanSource>> fetchSourcesFromFile(String filePath) async {
     final file = File(filePath);
     final content = await file.readAsString();
-    return _parseSourceContent(content);
+    return parseSourcesInBackground(content);
   }
 
   /// 解析书源内容字符串。
   List<ShuyuanSource> parseSources(String content) {
     return _parseSourceContent(content);
   }
+
+  /// 后台 isolate 版解析：社区书源文件可达数 MB、上千源，主线程
+  /// jsonDecode + 逐源转换是秒级冻结，导入页统一走本入口。
+  ///
+  /// 解析为纯函数（无网络、无共享状态），跨 isolate 安全。
+  static Future<List<ShuyuanSource>> parseSourcesInBackground(
+    String content,
+  ) =>
+      compute(_parseSourcesIsolate, content);
+
+  static List<ShuyuanSource> _parseSourcesIsolate(String content) =>
+      ShuyuanSourceService().parseSources(content);
 
   /// 处理 `xiaoshuo://import/bookSource?src=...` 形式的导入 URL。
   String _resolveUrl(String url) {

@@ -255,7 +255,8 @@ class _SourceManagerPanelState extends State<SourceManagerPanel> {
       try {
         final raw = await readSourceText(path);
         // 统一批量解析：支持小说(通用书源格式)源，且一个文件可含多个源。
-        final configs = SourceRepository.parseMixedSources(raw);
+        // 后台 isolate 解析：大文件主线程解析会冻结 UI。
+        final configs = await SourceRepository.parseMixedSourcesAsync(raw);
         if (configs.isEmpty) {
           items.add(_ImportPreviewItem(
             path: path,
@@ -459,14 +460,16 @@ class _SourceManagerPanelState extends State<SourceManagerPanel> {
     final l10n = AppLocalizations.of(context);
     final repo = context.read<SourceRepository>();
     final total = _selectedPreviewIndices.length;
-    int success = 0;
-    for (final i in _selectedPreviewIndices) {
-      final item = _previewItems[i];
-      if (item.isValid && item.config != null) {
-        repo.addSource(item.config!);
-        success++;
-      }
-    }
+    // 批量入库：整批一次持久化 + 一次通知（逐个 addSource 的写盘/通知
+    // 风暴在大库导入时冻结主线程）。
+    final configs = _selectedPreviewIndices
+        .where((i) => i >= 0 && i < _previewItems.length)
+        .map((i) => _previewItems[i])
+        .where((item) => item.isValid && item.config != null)
+        .map((item) => item.config!)
+        .toList();
+    final success =
+        configs.isEmpty ? 0 : repo.addSources(configs);
     if (!mounted) return;
     setState(() {
       _previewMode = false;

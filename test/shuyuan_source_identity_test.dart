@@ -120,4 +120,71 @@ void main() {
       expect(_names(repo), containsAll(<String>['长A', '长B']));
     });
   });
+
+  group('addSources 批量导入与逐个 addSource 语义一致', () {
+    test('混合变体合集：最终 id 序列与逐个导入完全一致', () {
+      final batch = <PluginConfig>[
+        _legado('甲', 'https://a.example.com'),
+        _legado('乙', 'https://a.example.com/'),
+        _legado('丙', '🐧'),
+        _legado('丁', '爱发电'),
+        // 与甲同 URL：应替换甲而非新增
+        _legado('甲改名', 'https://a.example.com'),
+        // 同归一化 id 的两个不同 URL（scheme 差异）：后者补后缀共存
+        _legado('己1', 'https://c.example.com'),
+        _legado('己2', 'http://c.example.com'),
+      ];
+
+      final seqRepo = SourceRepository();
+      for (final c in batch) {
+        seqRepo.addSource(c);
+      }
+      final batchRepo = SourceRepository();
+      final saved = batchRepo.addSources(batch);
+
+      expect(batchRepo.all.map((c) => c.id), seqRepo.all.map((c) => c.id));
+      expect(batchRepo.all.map((c) => c.name), seqRepo.all.map((c) => c.name));
+      expect(saved, batch.length);
+    });
+
+    test('同批同 URL 重复收敛为一个（首个 id），返回入库计数', () {
+      final repo = SourceRepository();
+      final saved = repo.addSources(<PluginConfig>[
+        _legado('源A', 'https://www.example.com/'),
+        _legado('源B', 'https://www.example.com/'),
+        _legado('源C', 'https://other.example.com/'),
+      ]);
+
+      expect(saved, 2);
+      expect(_names(repo), hasLength(2));
+      expect(_names(repo), containsAll(<String>['源A', '源C']));
+    });
+
+    test('批量重复导入稳定：数量与 id 均不漂移', () {
+      final batch = <PluginConfig>[
+        _legado('甲', 'https://a.example.com'),
+        _legado('乙', 'https://a.example.com/'),
+        _legado('丙', '🐧'),
+      ];
+      final repo = SourceRepository();
+      repo.addSources(batch);
+      final idsAfterFirst = repo.all.map((c) => c.id).toList();
+
+      repo.addSources(batch);
+      expect(repo.all, hasLength(3));
+      expect(repo.all.map((c) => c.id).toList(), idsAfterFirst);
+    });
+
+    test('版本保护：低版本不覆盖高版本，不计入返回值', () {
+      final repo = SourceRepository();
+      repo.addSource(_legado('高版本', 'https://www.example.com'));
+
+      final saved = repo.addSources(<PluginConfig>[
+        _legado('高版本', 'https://www.example.com'),
+      ]);
+
+      expect(saved, 0);
+      expect(repo.all.map((c) => c.name), <String>['高版本']);
+    });
+  });
 }

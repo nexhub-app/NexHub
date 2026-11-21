@@ -119,7 +119,8 @@ class _ShuyuanImportScreenState extends State<ShuyuanImportScreen> {
       _selectedUrls.clear();
     });
     try {
-      final sources = _service.parseSources(text);
+      // 后台 isolate 解析：大书源列表（上千源）在主线程解析会冻结 UI。
+      final sources = await ShuyuanSourceService.parseSourcesInBackground(text);
       if (!mounted) return;
       _setParsed(sources);
     } catch (e) {
@@ -158,23 +159,18 @@ class _ShuyuanImportScreenState extends State<ShuyuanImportScreen> {
   void _saveAll() {
     final repo = context.read<SourceRepository>();
     final l10n = AppLocalizations.of(context);
-    final selected = _parsed
+    final configs = _parsed
         .where((s) =>
             s.isValid &&
             _isNovelSupported(s) &&
             _selectedUrls.contains(s.bookSourceUrl))
+        .map(ShuyuanAdapter.toPluginConfig)
         .toList();
-    if (selected.isEmpty) return;
+    if (configs.isEmpty) return;
 
-    int saved = 0;
-    for (final source in selected) {
-      final config = ShuyuanAdapter.toPluginConfig(source);
-      final before = repo.all.length;
-      repo.addSource(config);
-      if (repo.all.length > before) {
-        saved++;
-      }
-    }
+    // 批量入库：整批一次持久化 + 一次通知。逐个 addSource 时每源都全量
+    // 重新序列化写盘并通知，上千源会冻结主线程数十秒甚至被系统杀死。
+    final saved = repo.addSources(configs);
 
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -276,6 +272,54 @@ class _ShuyuanImportScreenState extends State<ShuyuanImportScreen> {
   }
 
   Widget _buildInputArea(AppLocalizations l10n, ColorScheme scheme) {
+    // 解析出预览列表后：输入区固定在顶部，列表用 builder 懒加载——
+    // 大书源文件（上千源）一次性构建全部卡片会长时间冻结 UI 甚至 OOM。
+    if (!_loading && _error == null && _parsed.isNotEmpty) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              AppTokens.spaceLg,
+              0,
+              AppTokens.spaceLg,
+              AppTokens.spaceMd,
+            ),
+            child: switch (_mode) {
+              _ShuyuanImportMode.url => _buildUrlInput(l10n),
+              _ShuyuanImportMode.file => _buildFileInput(l10n, scheme),
+              _ShuyuanImportMode.json => _buildJsonInput(l10n),
+            },
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              AppTokens.spaceLg,
+              0,
+              AppTokens.spaceLg,
+              AppTokens.spaceSm,
+            ),
+            child: Text(
+              l10n.shuyuanImportPreview(_parsed.length),
+              style: Theme.of(context).textTheme.labelMedium,
+            ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              padding: EdgeInsets.fromLTRB(
+                AppTokens.spaceLg,
+                0,
+                AppTokens.spaceLg,
+                context.glassBarBottomInset,
+              ),
+              itemCount: _parsed.length,
+              itemBuilder: (BuildContext context, int index) =>
+                  _buildSourceCard(_parsed[index], scheme),
+            ),
+          ),
+        ],
+      );
+    }
+
     return ListView(
       padding: EdgeInsets.fromLTRB(
         AppTokens.spaceLg,
@@ -310,8 +354,6 @@ class _ShuyuanImportScreenState extends State<ShuyuanImportScreen> {
               }
             },
           )
-        else if (_parsed.isNotEmpty)
-          _buildPreviewList(l10n, scheme)
         else
           _buildEmptyHint(l10n, scheme),
       ],
@@ -375,21 +417,6 @@ class _ShuyuanImportScreenState extends State<ShuyuanImportScreen> {
             label: Text(l10n.shuyuanImportParse),
           ),
         ),
-      ],
-    );
-  }
-
-  // ── 预览列表 ──
-  Widget _buildPreviewList(AppLocalizations l10n, ColorScheme scheme) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: <Widget>[
-        Text(
-          l10n.shuyuanImportPreview(_parsed.length),
-          style: Theme.of(context).textTheme.labelMedium,
-        ),
-        const SizedBox(height: AppTokens.spaceSm),
-        ..._parsed.map((s) => _buildSourceCard(s, scheme)),
       ],
     );
   }
