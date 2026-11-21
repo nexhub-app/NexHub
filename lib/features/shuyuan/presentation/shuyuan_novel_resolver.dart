@@ -14,11 +14,13 @@
 library;
 
 import 'dart:convert';
+import 'dart:typed_data';
 
 import '../../../core/models/category_entry.dart';
 import '../../../core/models/episode.dart';
 import '../../../core/models/explore_kind.dart';
 import '../../../core/models/media_item.dart';
+import '../../../core/models/web_file_item.dart';
 import '../../../core/models/novel_block.dart'
     show
         NovelBlock,
@@ -48,6 +50,7 @@ import '../analyze/js_engine.dart';
 import '../analyze/analyze_rule.dart';
 import '../analyze/analyze_url.dart';
 import '../analyze/source_context.dart';
+import '../analyze/web_file_naming.dart';
 import '../shuyuan_adapter.dart';
 import '../shuyuan_explore_info_store.dart';
 import '../shuyuan_explore_kinds_store.dart';
@@ -317,6 +320,10 @@ class ShuyuanNovelResolver
         return await _handleComicImages(source, bookSource, vars);
       case 'pay':
         return await _handlePayAction(source, bookSource, vars);
+      case 'webFiles':
+        return await _handleWebFiles(source, bookSource, vars);
+      case 'webFileDownload':
+        return await _handleWebFileDownload(source, bookSource, vars);
       case 'callback':
         return await _handleSourceCallback(source, bookSource, vars);
       default:
@@ -545,6 +552,22 @@ class ShuyuanNovelResolver
           headers: renderedAnalyze.resolveRequestHeaders(),
           lyric: lyric.isEmpty ? null : lyric,
         );
+      case 'webFiles':
+        // 文件类书源：用渲染后 HTML 解析详情与下载地址列表（WebView 验证后
+        // 回灌，不再回落 resolve 重抓）。
+        final webFileId = vars['id'] ?? vars['detailUrl'] ?? '';
+        if (webFileId.isEmpty) return const <WebFileItem>[];
+        final webFileBook = _seedFor(webFileId) ??
+            XiaoshuoBook(bookUrl: webFileId, name: '');
+        BookInfo.analyzeBookInfo(
+          bookSource: bookSource,
+          book: webFileBook,
+          baseUrl: webFileId,
+          redirectUrl: webFileId,
+          body: html,
+        );
+        _rememberBookInfo(webFileBook);
+        return _webFilesFromBook(source, bookSource, webFileBook);
       default:
         return resolve(source, apiName, vars: vars);
       }
@@ -1615,6 +1638,109 @@ class ShuyuanNovelResolver
       url: analyzeUrl.url,
       headers: analyzeUrl.resolveRequestHeaders(),
     );
+  }
+
+  // ── 文件类书源（legado bookSourceType=3）──
+
+  /// 下载地址列表（legado BookInfoViewModel.loadWebFile）。
+  ///
+  /// 详情阶段已把 `ruleBookInfo.downloadUrls` 解析进书对象；缓存未命中时
+  /// 拉一次详情页。名字从 URL 路径或 HEAD 响应头解析，失败按
+  /// 「书名 作者：作者.后缀」兜底。
+  Future<List<WebFileItem>> _handleWebFiles(
+    PluginConfig source,
+    XiaoshuoBookSource bookSource,
+    Map<String, String> vars,
+  ) async {
+    final id = vars['id'] ?? vars['detailUrl'] ?? '';
+    if (id.isEmpty) {
+      throw ArgumentError('webFiles requires vars["id"]');
+    }
+    XiaoshuoBook? book = _bookInfoCache[id];
+    if (book == null || (book.downloadUrls?.isEmpty ?? true)) {
+      book = await _webBook.getBookInfo(
+        source: bookSource,
+        bookUrl: id,
+        seedBook: _seedFor(id),
+      );
+      _rememberBookInfo(book);
+    }
+    return _webFilesFromBook(source, bookSource, book);
+  }
+
+  Future<List<WebFileItem>> _webFilesFromBook(
+    PluginConfig source,
+    XiaoshuoBookSource bookSource,
+    XiaoshuoBook book,
+  ) async {
+    final urls = book.downloadUrls ?? const <String>[];
+    if (urls.isEmpty) {
+      throw SourceResolveException(
+        sourceId: source.id,
+        apiName: 'webFiles',
+        message: '下载链接为空',
+      );
+    }
+    final String fallbackBase = book.author.trim().isEmpty
+        ? book.name
+        : '${book.name} 作者：${book.author}';
+    final out = <WebFileItem>[];
+    for (final String raw in urls) {
+      final AnalyzeUrl analyzeUrl = AnalyzeUrl(
+        url: raw,
+        baseUrl: book.bookUrl,
+        source: bookSource,
+      );
+      final String? resolvedName = await resolveWebFileName(analyzeUrl);
+      final String requestType = (analyzeUrl.requestType ?? '').trim();
+      final String suffix = requestType.isNotEmpty ? requestType : 'txt';
+      out.add(WebFileItem(
+        url: raw,
+        name: resolvedName ?? '$fallbackBase.$suffix',
+      ));
+    }
+    return out;
+  }
+
+  /// 下载选中的文件（字节返回给宿主落盘导入）。
+  ///
+  /// 原始 URL 在下载时重新求值（legado 对 BookInfoWebFile.url 的处理），
+  /// 一次性签名/时间戳参数不会失效；[AnalyzeUrl] 负责源 header、UA、
+  /// Cookie 覆盖层与 data: URL。
+  Future<Uint8List> _handleWebFileDownload(
+    PluginConfig source,
+    XiaoshuoBookSource bookSource,
+    Map<String, String> vars,
+  ) async {
+    final rawUrl = vars['url'] ?? '';
+    if (rawUrl.isEmpty) {
+      throw ArgumentError('webFileDownload requires vars["url"]');
+    }
+    final AnalyzeUrl analyzeUrl = AnalyzeUrl(
+      url: rawUrl,
+      baseUrl: bookSource.bookSourceUrl,
+      source: bookSource,
+    );
+    try {
+      await analyzeUrl.getStrResponse();
+    } on SourceResolveException {
+      rethrow;
+    } catch (e) {
+      throw SourceResolveException(
+        sourceId: source.id,
+        apiName: 'webFileDownload',
+        message: '文件下载失败：$e',
+      );
+    }
+    final Uint8List? bytes = analyzeUrl.lastResponseBytes;
+    if (bytes == null || bytes.isEmpty) {
+      throw SourceResolveException(
+        sourceId: source.id,
+        apiName: 'webFileDownload',
+        message: '文件下载内容为空',
+      );
+    }
+    return bytes;
   }
 
   // ── 模型转换 ──

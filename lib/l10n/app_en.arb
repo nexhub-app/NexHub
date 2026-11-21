@@ -587,6 +587,14 @@
   "sourceCopyPlayUrl": "Copy playback link",
   "sourceClearCache": "Clear cache",
   "sourceNoCustomButton": "The source did not handle the custom button",
+  "sourceWebFilesTitle": "Files",
+  "@sourceWebFilesTitle": {
+    "description": "Bottom sheet title listing downloadable files of a file-type book source"
+  },
+  "sourceWebFileImporting": "Downloading and importing…",
+  "@sourceWebFileImporting": {
+    "description": "Progress label while downloading and importing a file-type book source file"
+  },
   "browserTitle": "Browser",
   "browserAddressHint": "Enter URL or search",
   "browserBack": "Back",

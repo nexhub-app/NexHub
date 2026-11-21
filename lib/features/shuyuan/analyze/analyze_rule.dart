@@ -308,7 +308,8 @@ class AnalyzeRule {
               result = js ?? '';
             }
           } else {
-            result = _executeRule(result, sourceRule.mode, st.rule, isUrl: isUrl);
+            result = _executeRule(result, sourceRule.mode, st.rule,
+                isUrl: isUrl, single: false);
           }
         }
         if (result != null && st.replaceRegex.isNotEmpty) {
@@ -356,7 +357,8 @@ class AnalyzeRule {
     return [];
   }
 
-  dynamic _executeRule(dynamic result, Mode mode, String rule, {bool isUrl = false}) {
+  dynamic _executeRule(dynamic result, Mode mode, String rule,
+      {bool isUrl = false, bool single = true}) {
     switch (mode) {
       case Mode.js:
         // legado 空脚本（如 `规则@js:`）等价于不转换，直接透传上游结果。
@@ -384,7 +386,9 @@ class AnalyzeRule {
         }
         final analyzer = _getJsoupAnalyzer(result);
         if (isUrl) {
-          return analyzer.getString0(rule);
+          // legado getStringList 的 Default 分支走 getStringList（全部命中）；
+          // 单值 getString 走 getString0（首个），避免多值按换行拼成假 URL。
+          return single ? analyzer.getString0(rule) : analyzer.getStringList(rule);
         }
         return analyzer.getString(rule);
     }

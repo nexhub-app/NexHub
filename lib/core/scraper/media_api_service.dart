@@ -16,6 +16,7 @@ import '../models/explore_kind.dart';
 import '../models/media_item.dart';
 import '../models/novel_block.dart';
 import '../models/plugin_config.dart';
+import '../models/web_file_item.dart';
 import '../novel/novel_pay_result.dart';
 import '../resolver/builtin_resolver.dart';
 import '../resolver/resolver_registry.dart';
@@ -788,6 +789,61 @@ class MediaApiService {
           vars: vars,
         );
     return _asContentResult(r);
+  }
+
+  /// 源是否为文件类书源（legado `bookSourceType == 3`）。
+  ///
+  /// 只读 selectors 判断，不触发解析；供详情页与读按钮切换逻辑使用。
+  bool isWebFileSource(PluginConfig source) {
+    final Object? xiaoshuo = source.selectors?['xiaoshuo'];
+    if (xiaoshuo is! Map) return false;
+    final Object? type = xiaoshuo['bookSourceType'];
+    return type == 3 || type == '3';
+  }
+
+  /// 文件类书源的下载链接列表（legado `ruleBookInfo.downloadUrls`）。
+  ///
+  /// [bookId] 注入 `id`/`bookUrl`；[renderedHtml] 非空时按渲染后 HTML
+  /// 回灌解析（详情页 WebView 验证/交互场景），否则走常规解析链。
+  Future<List<WebFileItem>> fetchWebFiles(
+    PluginConfig source,
+    String bookId, {
+    String? renderedHtml,
+  }) async {
+    final vars = <String, String>{'id': bookId, 'bookUrl': bookId};
+    final dynamic r;
+    if (renderedHtml != null && renderedHtml.isNotEmpty) {
+      r = await _resolveFromRenderedHtml(
+        source,
+        'webFiles',
+        renderedHtml,
+        vars: vars,
+      );
+    } else {
+      r = await registry
+          .find(source, 'webFiles')
+          .resolve(source, 'webFiles', vars: vars);
+    }
+    if (r is! List) return const <WebFileItem>[];
+    return <WebFileItem>[
+      for (final e in r)
+        if (e is WebFileItem)
+          e
+        else if (e is Map)
+          WebFileItem.fromJson(Map<String, dynamic>.from(e)),
+    ];
+  }
+
+  /// 下载文件类书源的一个文件，返回原始字节。
+  ///
+  /// [url] 为 `downloadUrls` 求值后的地址（下载时重新求值，短时效
+  /// 签名参数不会失效）；由宿主落盘后走本地书导入流程。
+  Future<Uint8List> downloadWebFile(PluginConfig source, String url) async {
+    final r = await registry
+        .find(source, 'webFileDownload')
+        .resolve(source, 'webFileDownload', vars: <String, String>{'url': url});
+    if (r is Uint8List) return r;
+    throw UnsupportedError('webFileDownload route did not return bytes: $r');
   }
 
   /// 源是否声明了章节购买动作（legado `ruleContent.payAction`）。

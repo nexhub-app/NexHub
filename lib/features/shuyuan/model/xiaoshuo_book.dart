@@ -20,6 +20,10 @@ class XiaoshuoBook {
   String? updateTime;
   List<String>? recommendations;
 
+  /// 文件类书源（legado bookSourceType=3）的下载地址列表：
+  /// `ruleBookInfo.downloadUrls` 按 isUrl 求值的结果（多个链接返回多条）。
+  List<String>? downloadUrls;
+
   XiaoshuoBook({
     required this.bookUrl,
     required this.name,
@@ -37,6 +41,7 @@ class XiaoshuoBook {
     this.bookStatus,
     this.updateTime,
     this.recommendations,
+    this.downloadUrls,
   });
 
   factory XiaoshuoBook.fromJson(Map<String, dynamic> json) {
@@ -59,6 +64,9 @@ class XiaoshuoBook {
       recommendations: (json['recommendations'] as List<dynamic>?)
           ?.map((e) => e.toString())
           .toList(),
+      downloadUrls: (json['downloadUrls'] as List<dynamic>?)
+          ?.map((e) => e.toString())
+          .toList(),
     );
   }
 
@@ -78,6 +86,7 @@ class XiaoshuoBook {
         if (bookStatus != null) 'bookStatus': bookStatus,
         if (updateTime != null) 'updateTime': updateTime,
         if (recommendations != null) 'recommendations': recommendations,
+        if (downloadUrls != null) 'downloadUrls': downloadUrls,
       };
 
   void putVariable(String key, String value) {

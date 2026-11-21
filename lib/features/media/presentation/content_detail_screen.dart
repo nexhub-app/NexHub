@@ -44,6 +44,7 @@ import '../../../core/history/media_watched_manager.dart';
 import '../../../core/models/episode.dart';
 import '../../../core/models/media_item.dart';
 import '../../../core/models/plugin_config.dart';
+import '../../../core/models/web_file_item.dart';
 import '../../../core/navigation/app_page_route.dart';
 import '../../../core/novel/novel_toc_cache.dart';
 import '../../../core/novel/novel_toc_store.dart';
@@ -83,6 +84,7 @@ import '../../novel/presentation/novel_reader_screen.dart';
 import '../../player/presentation/video_player_screen.dart';
 import '../../shuyuan/model/source_callback_result.dart';
 import '../../shuyuan/presentation/shuyuan_callback_host.dart';
+import '../../shuyuan/presentation/shuyuan_web_file_picker.dart';
 import '../../verification/presentation/webview_verification_screen.dart';
 import 'series_detail_screen.dart';
 
@@ -143,6 +145,11 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
 
   /// 渲染后回灌的整页 HTML（重试抓取时复用源选择器解析）。
   String? _renderedHtml;
+
+  /// 文件类书源（legado `bookSourceType == 3`）：无章节目录，
+  /// 详情阶段直接取下载链接列表。
+  bool _webFileSource = false;
+  List<WebFileItem> _webFiles = const <WebFileItem>[];
 
   /// detail 路由拉回的完整条目；初始为 [widget.item]。
   late MediaItem _fetchedDetail;
@@ -342,55 +349,78 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
     _chapters = const <Episode>[];
     _chaptersFromCache = false;
     _chaptersLoading = _isNovel;
+    // 文件类书源（bookSourceType=3）没有章节目录：详情阶段取下载链接，
+    // 读按钮改开文件列表（md3 BookInfoViewModel.loadWebFile）。
+    _webFileSource = _isNovel && service.isWebFileSource(source);
+    _webFiles = const <WebFileItem>[];
 
-    // 目录 / 剧集抓取：小说额外接入渐进批次回调（超长目录首屏快显）。
-    _episodesFuture = switch (_sourceType) {
-      SourceType.mangaSource =>
-        service.fetchChapters(source, id, renderedHtml: _renderedHtml),
-      SourceType.novelSource => service.fetchNovelChapters(
-          source,
-          id,
-          renderedHtml: _renderedHtml,
-          onProgress: _throttledChapterBatch,
-        ),
-      SourceType.animeSource ||
-      SourceType.videoSource ||
-      SourceType.audioSource =>
-        service.fetchEpisodes(
-          source,
-          id,
-          title: widget.item.title,
-          detailUrl: widget.item.detailUrl,
-          renderedHtml: _renderedHtml,
-        ),
-    };
-
-    _episodesFuture.then((List<Episode> list) {
-      if (!mounted) return;
-      setState(() {
-        _chapters = list;
-        _chaptersLoading = false;
-        _chaptersFromCache = false;
+    if (_webFileSource) {
+      _chaptersLoading = false;
+      _episodesFuture = service
+          .fetchWebFiles(source, id, renderedHtml: _renderedHtml)
+          .then((List<WebFileItem> files) {
+        if (mounted) setState(() => _webFiles = files);
+        return const <Episode>[];
       });
-      // 小说：写入 TOC 缓存（fire-and-forget），供下次被验证拦截时兜底；
-      // 同时写回共享目录源，使阅读器与详情页目录保持一致。
-      if (_isNovel) {
-        unawaited(_tocCache.write(sid, id, list));
-        _publishToc();
-      }
-    }).catchError((Object error) {
-      if (!mounted) return;
-      setState(() => _chaptersLoading = false);
-      if (error is WebViewHtmlRequest) {
-        setState(() => _htmlCaptureRequest = error);
-      } else if (error is VerificationRequiredException) {
-        setState(() => _verificationError = error);
-      }
-      // 小说：当次抓取失败且渐进批次也没抓到 → 读 TOC 缓存兜底回填。
-      if (_isNovel && _chapters.isEmpty) {
-        unawaited(_backfillFromTocCache(sid, id));
-      }
-    });
+      _episodesFuture.then((List<Episode> _) {}).catchError((Object error) {
+        if (!mounted) return;
+        setState(() => _chaptersLoading = false);
+        if (error is WebViewHtmlRequest) {
+          setState(() => _htmlCaptureRequest = error);
+        } else if (error is VerificationRequiredException) {
+          setState(() => _verificationError = error);
+        }
+      });
+    } else {
+      // 目录 / 剧集抓取：小说额外接入渐进批次回调（超长目录首屏快显）。
+      _episodesFuture = switch (_sourceType) {
+        SourceType.mangaSource =>
+          service.fetchChapters(source, id, renderedHtml: _renderedHtml),
+        SourceType.novelSource => service.fetchNovelChapters(
+            source,
+            id,
+            renderedHtml: _renderedHtml,
+            onProgress: _throttledChapterBatch,
+          ),
+        SourceType.animeSource ||
+        SourceType.videoSource ||
+        SourceType.audioSource =>
+          service.fetchEpisodes(
+            source,
+            id,
+            title: widget.item.title,
+            detailUrl: widget.item.detailUrl,
+            renderedHtml: _renderedHtml,
+          ),
+      };
+
+      _episodesFuture.then((List<Episode> list) {
+        if (!mounted) return;
+        setState(() {
+          _chapters = list;
+          _chaptersLoading = false;
+          _chaptersFromCache = false;
+        });
+        // 小说：写入 TOC 缓存（fire-and-forget），供下次被验证拦截时兜底；
+        // 同时写回共享目录源，使阅读器与详情页目录保持一致。
+        if (_isNovel) {
+          unawaited(_tocCache.write(sid, id, list));
+          _publishToc();
+        }
+      }).catchError((Object error) {
+        if (!mounted) return;
+        setState(() => _chaptersLoading = false);
+        if (error is WebViewHtmlRequest) {
+          setState(() => _htmlCaptureRequest = error);
+        } else if (error is VerificationRequiredException) {
+          setState(() => _verificationError = error);
+        }
+        // 小说：当次抓取失败且渐进批次也没抓到 → 读 TOC 缓存兜底回填。
+        if (_isNovel && _chapters.isEmpty) {
+          unawaited(_backfillFromTocCache(sid, id));
+        }
+      });
+    }
 
     // detail 路由：补全列表页缺失的元数据。
     if (source.routes.containsKey('detail')) {
@@ -552,6 +582,17 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
     } on Object {
       // 错误态由 FutureBuilder / 警告条展示。
     }
+  }
+
+  /// 文件类书源：打开下载列表，选中后下载并导入本地书。
+  Future<void> _openWebFiles(PluginConfig source) async {
+    await openShuyuanWebFilePicker(
+      context,
+      source: source,
+      bookName: _fetchedDetail.title,
+      bookAuthor: _fetchedDetail.author ?? '',
+      files: _webFiles,
+    );
   }
 
   // ───────────────────── 书源事件回调（legado SourceCallBack） ─────────────────────
@@ -1514,13 +1555,14 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
           tooltip: l10n.subTabFavorite,
           onPressed: _onFavoritePressed,
         ),
-        IconButton(
-          icon: Icon(isDl ? Icons.download_done_rounded : Icons.download_rounded),
-          tooltip: l10n.download,
-          // 始终可点：未全部下载时继续挑选剩余章节，已全部下载时
-          // 由 _startDownload 给出「已下载」提示。
-          onPressed: _startDownload,
-        ),
+        if (!_webFileSource)
+          IconButton(
+            icon: Icon(isDl ? Icons.download_done_rounded : Icons.download_rounded),
+            tooltip: l10n.download,
+            // 始终可点：未全部下载时继续挑选剩余章节，已全部下载时
+            // 由 _startDownload 给出「已下载」提示。
+            onPressed: _startDownload,
+          ),
         IconButton(
           icon: const Icon(Icons.share_rounded),
           tooltip: l10n.share,
@@ -1649,12 +1691,20 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
           )
         else
           FilledButton.icon(
-            onPressed:
-                episodes.isEmpty ? null : () => _openContent(episodes.first, 0),
-            icon: Icon(_isChapterBased
-                ? Icons.auto_stories_rounded
-                : Icons.play_arrow_rounded),
-            label: Text(_isChapterBased ? l10n.readChapter : l10n.play),
+            onPressed: ((_webFileSource ? _webFiles.isEmpty : episodes.isEmpty) ||
+                    source == null)
+                ? null
+                : () => _webFileSource
+                    ? _openWebFiles(source)
+                    : _openContent(episodes.first, 0),
+            icon: Icon(_webFileSource
+                ? Icons.folder_open_rounded
+                : (_isChapterBased
+                    ? Icons.auto_stories_rounded
+                    : Icons.play_arrow_rounded)),
+            label: Text(_webFileSource
+                ? l10n.sourceWebFilesTitle
+                : (_isChapterBased ? l10n.readChapter : l10n.play)),
           ),
         // 系列入口：仅当 detail 路由返回了季列表时显示。
         if (_fetchedDetail.seasons != null &&

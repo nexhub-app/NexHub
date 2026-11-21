@@ -1225,6 +1225,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sourceNoCustomButton => '源未提供自定义按钮';
 
   @override
+  String get sourceWebFilesTitle => '文件列表';
+
+  @override
+  String get sourceWebFileImporting => '正在下载并导入…';
+
+  @override
   String get browserTitle => '浏览器';
 
   @override

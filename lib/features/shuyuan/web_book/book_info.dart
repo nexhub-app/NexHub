@@ -7,6 +7,8 @@ import '../analyze/analyze_rule.dart';
 import '../analyze/html_formatter.dart';
 import '../analyze/source_context.dart';
 import '../analyze/string_utils.dart';
+import '../../../core/scraper/verification_detector.dart'
+    show SourceResolveException;
 import '../../../core/utils/app_log.dart';
 
 class BookInfo {
@@ -160,23 +162,45 @@ class BookInfo {
       } catch (_) {}
     }
 
-    if (bookInfoRule.tocUrl != null && bookInfoRule.tocUrl!.isNotEmpty) {
-      try {
-        final tocUrl = analyzeRule.getString(bookInfoRule.tocUrl!, isUrl: true);
-        if (tocUrl.isNotEmpty) {
-          book.tocUrl = tocUrl;
-        }
-      } catch (_) {}
-    }
+    // 对照 legado BookInfo：文件类书源（bookSourceType=3）没有目录，
+    // 详情阶段解析下载地址列表；为空直接失败（md3 抛「下载链接为空」），
+    // 否则用户会看到一个没有任何可读文件的详情页。
+    final bool isWebFile = bookSource.bookSourceType == 3;
+    if (isWebFile) {
+      final urls = analyzeRule.getStringList(
+        bookInfoRule.downloadUrls,
+        isUrl: true,
+      );
+      book.downloadUrls =
+          urls.map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+      AppLog.instance.d('[书源详情] 文件下载链接='
+          '${(book.downloadUrls ?? const <String>[]).length}条');
+      if (book.downloadUrls == null || book.downloadUrls!.isEmpty) {
+        throw SourceResolveException(
+          sourceId: bookSource.bookSourceUrl,
+          apiName: 'bookInfo',
+          message: '下载链接为空',
+        );
+      }
+    } else {
+      if (bookInfoRule.tocUrl != null && bookInfoRule.tocUrl!.isNotEmpty) {
+        try {
+          final tocUrl = analyzeRule.getString(bookInfoRule.tocUrl!, isUrl: true);
+          if (tocUrl.isNotEmpty) {
+            book.tocUrl = tocUrl;
+          }
+        } catch (_) {}
+      }
 
-    // 对照 legado BookInfo：目录地址回落到详情页**原始** URL（baseUrl）；
-    // 回落到详情页自身时，详情响应体即目录页 HTML，缓存进 tocHtml 供目录
-    // 阶段直接解析（省一次请求，也覆盖详情页只有一次性 Cookie/签名的站点）。
-    if (book.tocUrl == null || book.tocUrl!.isEmpty) {
-      book.tocUrl = baseUrl;
-    }
-    if (book.tocUrl == baseUrl) {
-      book.tocHtml = body;
+      // 对照 legado BookInfo：目录地址回落到详情页**原始** URL（baseUrl）；
+      // 回落到详情页自身时，详情响应体即目录页 HTML，缓存进 tocHtml 供目录
+      // 阶段直接解析（省一次请求，也覆盖详情页只有一次性 Cookie/签名的站点）。
+      if (book.tocUrl == null || book.tocUrl!.isEmpty) {
+        book.tocUrl = baseUrl;
+      }
+      if (book.tocUrl == baseUrl) {
+        book.tocHtml = body;
+      }
     }
 
     // 变量回写：详情规则新 @put/java.put 的变量并入暂存，供目录/正文

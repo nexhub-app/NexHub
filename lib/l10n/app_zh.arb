@@ -574,6 +574,14 @@
   "sourceCopyPlayUrl": "复制播放地址",
   "sourceClearCache": "清除缓存",
   "sourceNoCustomButton": "源未提供自定义按钮",
+  "sourceWebFilesTitle": "文件列表",
+  "@sourceWebFilesTitle": {
+    "description": "Bottom sheet title listing downloadable files of a file-type book source"
+  },
+  "sourceWebFileImporting": "正在下载并导入…",
+  "@sourceWebFileImporting": {
+    "description": "Progress label while downloading and importing a file-type book source file"
+  },
   "browserTitle": "浏览器",
   "browserAddressHint": "输入网址或搜索",
   "browserBack": "后退",

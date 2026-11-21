@@ -1254,6 +1254,12 @@ class AppLocalizationsEn extends AppLocalizations {
       'The source did not handle the custom button';
 
   @override
+  String get sourceWebFilesTitle => 'Files';
+
+  @override
+  String get sourceWebFileImporting => 'Downloading and importing…';
+
+  @override
   String get browserTitle => 'Browser';
 
   @override

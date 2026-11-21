@@ -2468,6 +2468,18 @@ abstract class AppLocalizations {
   /// **'The source did not handle the custom button'**
   String get sourceNoCustomButton;
 
+  /// Bottom sheet title listing downloadable files of a file-type book source
+  ///
+  /// In en, this message translates to:
+  /// **'Files'**
+  String get sourceWebFilesTitle;
+
+  /// Progress label while downloading and importing a file-type book source file
+  ///
+  /// In en, this message translates to:
+  /// **'Downloading and importing…'**
+  String get sourceWebFileImporting;
+
   /// No description provided for @browserTitle.
   ///
   /// In en, this message translates to:
