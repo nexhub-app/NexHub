@@ -724,21 +724,6 @@ class SourceRepository extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 一键启用所有源（内置 + 导入）：启用未弃用、非演示的源，返回本次新启用的数量。
-  Future<int> enableRecommendedSources() async {
-    final targets = all.where(
-      (c) => !c.isDeprecated && !c.id.toLowerCase().contains('example'),
-    );
-    var enabledCount = 0;
-    for (final c in targets) {
-      if (!c.isEnabled) {
-        await setEnabled(c.id, true);
-        enabledCount++;
-      }
-    }
-    return enabledCount;
-  }
-
   Future<void> _persistImported() async {
     final prefs = await SharedPreferences.getInstance();
     final list = _imported.map((c) => c.toJson()).toList();

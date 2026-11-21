@@ -7,7 +7,6 @@ import '../../../core/models/media_item.dart';
 import '../../../core/models/plugin_config.dart';
 import '../../../core/services/media_server/media_server_auth.dart';
 import '../../../core/services/media_server/media_server_client.dart';
-import '../../../core/services/source_repository.dart';
 import '../../../core/widgets/bookshelf_content.dart';
 import '../../../core/local/local_content_actions.dart'
     show openDownloadedWorkFolder, openSearchResultEntry;
@@ -152,15 +151,11 @@ class MediaHomeScreen extends StatelessWidget {
               MediaServerBrowseTile(server: s),
           ],
           onAddSource: navigateToCollectApiImport,
-          onEnableRecommended:
-              () => context.read<SourceRepository>().enableRecommendedSources(),
           onSourceTap: (PluginConfig source) => Navigator.of(context).push(
             AppPageRoute<void>(
               builder: (_) => MediaOnlineListScreen(
                 initialSource: source,
                 onAddSource: navigateToCollectApiImport,
-                onEnableRecommended: () =>
-                    context.read<SourceRepository>().enableRecommendedSources(),
               ),
             ),
           ),
@@ -173,8 +168,6 @@ class MediaHomeScreen extends StatelessWidget {
                 initialCategoryUrl: categoryUrl,
                 initialCategoryTitle: title,
                 onAddSource: navigateToCollectApiImport,
-                onEnableRecommended: () =>
-                    context.read<SourceRepository>().enableRecommendedSources(),
               ),
             ),
           ),

@@ -6248,24 +6248,6 @@ abstract class AppLocalizations {
   /// **'Sync favorites and progress across devices'**
   String get cloudSyncFeatureSync;
 
-  /// No description provided for @enableRecommendedSources.
-  ///
-  /// In en, this message translates to:
-  /// **'Enable Recommended Sources'**
-  String get enableRecommendedSources;
-
-  /// No description provided for @enableRecommendedSourcesHint.
-  ///
-  /// In en, this message translates to:
-  /// **'Enable all available recommended sources at once'**
-  String get enableRecommendedSourcesHint;
-
-  /// Toast after enabling recommended sources
-  ///
-  /// In en, this message translates to:
-  /// **'Enabled {count} recommended sources'**
-  String recommendedSourcesEnabled(int count);
-
   /// No description provided for @castToDevice.
   ///
   /// In en, this message translates to:

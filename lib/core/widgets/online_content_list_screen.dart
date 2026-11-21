@@ -97,7 +97,6 @@ class OnlineContentListScreen extends StatefulWidget {
     this.resolveFilters,
     this.onSearch,
     this.onAddSource,
-    this.onEnableRecommended,
     this.verificationHandler,
     this.initialGrid = true,
     this.emptyIcon = Icons.video_library_rounded,
@@ -126,7 +125,6 @@ class OnlineContentListScreen extends StatefulWidget {
   final void Function(MediaItem item, String? heroTag) onItemTap;
   final VoidCallback? onSearch;
   final VoidCallback? onAddSource;
-  final VoidCallback? onEnableRecommended;
   final VerifyCallback? verificationHandler;
   final bool initialGrid;
   final IconData emptyIcon;
@@ -1275,14 +1273,8 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
         body: AppEmptyState(
           icon: widget.emptyIcon,
           message: l10n.emptySources,
-          actionLabel: widget.onEnableRecommended != null
-              ? l10n.enableRecommendedSources
-              : l10n.addSource,
-          onAction: widget.onEnableRecommended ?? widget.onAddSource,
-          secondaryActionLabel:
-              widget.onEnableRecommended != null ? l10n.addSource : null,
-          onSecondaryAction:
-              widget.onEnableRecommended != null ? widget.onAddSource : null,
+          actionLabel: l10n.addSource,
+          onAction: widget.onAddSource,
         ),
       );
     }

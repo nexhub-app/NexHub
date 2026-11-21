@@ -1,6 +1,5 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:nexhub/generated/app_localizations.dart';
-import 'package:provider/provider.dart';
 
 import '../../../core/local/local_content_manager.dart';
 import '../../../core/local/local_content_actions.dart';
@@ -8,7 +7,6 @@ import '../../../core/models/bookshelf_filter.dart';
 import '../../../core/models/media_item.dart';
 import '../../../core/models/plugin_config.dart';
 import '../../../core/navigation/app_navigator.dart';
-import '../../../core/services/source_repository.dart';
 import '../../../core/widgets/bookshelf_content.dart';
 import '../../../core/widgets/library_shell.dart';
 import '../../../core/widgets/module_source_search_screen.dart';
@@ -125,15 +123,11 @@ class ComicHomeScreen extends StatelessWidget {
       onlineBody: OnlineSourceBrowserScreen(
         sourceType: SourceType.mangaSource,
         onAddSource: navigateToCollectApiImport,
-        onEnableRecommended:
-            () => context.read<SourceRepository>().enableRecommendedSources(),
         onSourceTap: (PluginConfig source) => Navigator.of(context).push(
           AppPageRoute<void>(
             builder: (_) => MangaOnlineListScreen(
               initialSource: source,
               onAddSource: navigateToCollectApiImport,
-              onEnableRecommended:
-                  () => context.read<SourceRepository>().enableRecommendedSources(),
             ),
           ),
         ),
@@ -146,8 +140,6 @@ class ComicHomeScreen extends StatelessWidget {
               initialCategoryUrl: categoryUrl,
               initialCategoryTitle: title,
               onAddSource: navigateToCollectApiImport,
-              onEnableRecommended:
-                  () => context.read<SourceRepository>().enableRecommendedSources(),
             ),
           ),
         ),

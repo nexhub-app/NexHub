@@ -3192,17 +3192,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get cloudSyncFeatureSync => '多端同步收藏与进度';
 
   @override
-  String get enableRecommendedSources => '启用推荐源';
-
-  @override
-  String get enableRecommendedSourcesHint => '一键开启所有可用的推荐源';
-
-  @override
-  String recommendedSourcesEnabled(int count) {
-    return '已启用 $count 个推荐源';
-  }
-
-  @override
   String get castToDevice => '投屏到设备';
 
   @override

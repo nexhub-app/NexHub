@@ -678,8 +678,6 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
             message: l10n.sourceListEmpty,
             actionLabel: l10n.addSource,
             onAction: () => _switchTab(_SourceTab.network),
-            secondaryActionLabel: l10n.enableRecommendedSources,
-            onSecondaryAction: () => _enableRecommended(l10n),
           );
         }
         // 有前置区块（媒体服务器配置）时，空状态放在区块下方仍可达。
@@ -700,8 +698,6 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
                 message: l10n.sourceListEmpty,
                 actionLabel: l10n.addSource,
                 onAction: () => _switchTab(_SourceTab.network),
-                secondaryActionLabel: l10n.enableRecommendedSources,
-                onSecondaryAction: () => _enableRecommended(l10n),
               ),
             ),
           ],
@@ -733,7 +729,6 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
     // 分类间不再支持横滑）。
     return Column(
       children: <Widget>[
-        if (sources.isNotEmpty) _buildEnableRecommendedTile(l10n),
         Padding(
           padding: const EdgeInsets.symmetric(
             horizontal: AppTokens.spaceLg,
@@ -1512,39 +1507,6 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
         ),
       ],
     );
-  }
-
-  Widget _buildEnableRecommendedTile(AppLocalizations l10n) {
-    final repo = context.read<SourceRepository>();
-    final hasDisabled = repo.all.any(
-      (c) =>
-          !c.isDeprecated &&
-          !c.id.toLowerCase().contains('example') &&
-          !c.isEnabled,
-    );
-    if (!hasDisabled) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(bottom: AppTokens.spaceSm),
-      child: AppCard(
-        onTap: () => _enableRecommended(l10n),
-        child: ListTile(
-          leading: const Icon(Icons.playlist_add_check_rounded),
-          title: Text(l10n.enableRecommendedSources),
-          subtitle: Text(l10n.enableRecommendedSourcesHint),
-          trailing: const Icon(Icons.chevron_right_rounded),
-        ),
-      ),
-    );
-  }
-
-  Future<void> _enableRecommended(AppLocalizations l10n) async {
-    final count =
-        await context.read<SourceRepository>().enableRecommendedSources();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(l10n.recommendedSourcesEnabled(count))),
-      );
-    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════

@@ -1667,17 +1667,6 @@
   "cloudSyncNotConfigured": "Not configured, tap to set up",
   "cloudSyncFeatureWebdav": "WebDAV backup",
   "cloudSyncFeatureSync": "Sync favorites and progress across devices",
-  "enableRecommendedSources": "Enable Recommended Sources",
-  "enableRecommendedSourcesHint": "Enable all available recommended sources at once",
-  "recommendedSourcesEnabled": "Enabled {count} recommended sources",
-  "@recommendedSourcesEnabled": {
-    "description": "Toast after enabling recommended sources",
-    "placeholders": {
-      "count": {
-        "type": "int"
-      }
-    }
-  },
   "castToDevice": "Cast to device",
   "castingTo": "Casting to {device}",
   "@castingTo": {

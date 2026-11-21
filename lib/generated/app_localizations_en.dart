@@ -3257,18 +3257,6 @@ class AppLocalizationsEn extends AppLocalizations {
       'Sync favorites and progress across devices';
 
   @override
-  String get enableRecommendedSources => 'Enable Recommended Sources';
-
-  @override
-  String get enableRecommendedSourcesHint =>
-      'Enable all available recommended sources at once';
-
-  @override
-  String recommendedSourcesEnabled(int count) {
-    return 'Enabled $count recommended sources';
-  }
-
-  @override
   String get castToDevice => 'Cast to device';
 
   @override

@@ -21,14 +21,12 @@ class NovelOnlineListScreen extends StatelessWidget {
       this.initialSource,
       this.initialCategoryUrl,
       this.initialCategoryTitle,
-      this.onAddSource,
-      this.onEnableRecommended});
+      this.onAddSource});
 
   final PluginConfig? initialSource;
   final String? initialCategoryUrl;
   final String? initialCategoryTitle;
   final VoidCallback? onAddSource;
-  final VoidCallback? onEnableRecommended;
 
   @override
   Widget build(BuildContext context) {
@@ -44,7 +42,6 @@ class NovelOnlineListScreen extends StatelessWidget {
       initialCategoryUrl: initialCategoryUrl,
       initialCategoryTitle: initialCategoryTitle,
       onAddSource: onAddSource,
-      onEnableRecommended: onEnableRecommended,
       verificationHandler: handleVerificationRequest,
       emptyIcon: Icons.menu_book_rounded,
       fetchItems: (PluginConfig source,

@@ -39,7 +39,6 @@ class OnlineSourceBrowserScreen extends StatefulWidget {
       onCategoryTap;
 
   final VoidCallback? onAddSource;
-  final VoidCallback? onEnableRecommended;
 
   /// 列表顶部前置的媒体服务器入口行（每台服务器一个）。
   /// 未配置服务器时传空列表 / null → 完全隐藏（在线列表回到纯源列表）。
@@ -53,7 +52,6 @@ class OnlineSourceBrowserScreen extends StatefulWidget {
     required this.onSourceTap,
     this.onCategoryTap,
     this.onAddSource,
-    this.onEnableRecommended,
     this.mediaServerTiles,
   });
 
@@ -88,14 +86,8 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
       body = AppEmptyState(
         icon: widget.emptyIcon,
         message: l10n.emptySources,
-        actionLabel: widget.onEnableRecommended != null
-            ? l10n.enableRecommendedSources
-            : l10n.addSource,
-        onAction: widget.onEnableRecommended ?? widget.onAddSource,
-        secondaryActionLabel:
-            widget.onEnableRecommended != null ? l10n.addSource : null,
-        onSecondaryAction:
-            widget.onEnableRecommended != null ? widget.onAddSource : null,
+        actionLabel: l10n.addSource,
+        onAction: widget.onAddSource,
       );
     } else {
       final Widget list = ListView.builder(

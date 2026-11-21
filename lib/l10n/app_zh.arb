@@ -1646,17 +1646,6 @@
   "cloudSyncNotConfigured": "未配置，点击设置",
   "cloudSyncFeatureWebdav": "WebDAV 备份",
   "cloudSyncFeatureSync": "多端同步收藏与进度",
-  "enableRecommendedSources": "启用推荐源",
-  "enableRecommendedSourcesHint": "一键开启所有可用的推荐源",
-  "recommendedSourcesEnabled": "已启用 {count} 个推荐源",
-  "@recommendedSourcesEnabled": {
-    "description": "Toast after enabling recommended sources",
-    "placeholders": {
-      "count": {
-        "type": "int"
-      }
-    }
-  },
   "castToDevice": "投屏到设备",
   "castingTo": "正在投屏到 {device}",
   "@castingTo": {
