@@ -221,6 +221,17 @@ void main() {
         expect(prev, lessThan(play));
         expect(play, lessThan(next));
         expect(next, lessThan(speed));
+        // 暂停键严格居中：左右各一个等宽 Expanded 槽，左组右对齐、右组左对齐，
+        // 中心向外层级递减（72 → 48 → 22），整体垂直居中。
+        expect(audioMode.lastIndexOf('Expanded(', timer), greaterThan(0),
+            reason: '左侧组需要独立 Expanded 槽才能让播放键几何居中');
+        expect(audioMode, contains('mainAxisAlignment: MainAxisAlignment.end'));
+        expect(audioMode.indexOf('Expanded(', play), greaterThan(play),
+            reason: '右侧组同样需要等宽 Expanded 槽');
+        expect(
+          audioMode,
+          contains('crossAxisAlignment: CrossAxisAlignment.center'),
+        );
         // 整栏拦截命中测试：左右滑动只翻页，底栏不跟随。
         expect(audioMode, contains('behavior: HitTestBehavior.opaque'));
         // 底栏仅在封面主页（页码 1）可见：其余页淡出且不拦截手势。

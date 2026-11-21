@@ -63,7 +63,8 @@ extension _VideoAudioMode on _VideoPlayerScreenState {
   ///
   /// 仅在封面主页（页码 1）显示：滑到列表/歌词页时淡出并不拦截手势，
   /// 因此横滑切页时底栏不会跟随。传输行按空间感排布——中央 72dp 播放键
-  /// 最大，两侧切集键次之，最外侧定时/倍速最小，整体垂直居中对齐。
+  /// 最大，两侧切集键次之，最外侧定时/倍速最小，整体垂直居中对齐；
+  /// 左右等宽槽夹住播放键，暂停键水平严格居中。
   Widget _buildAudioBottomBar(AppLocalizations l10n) {
     final bool hasPrev = widget.episodes != null && _episodeIndex > 0;
     final bool hasNext =
@@ -154,36 +155,52 @@ extension _VideoAudioMode on _VideoPlayerScreenState {
                     top: AppTokens.spaceLg,
                     bottom: AppTokens.spaceMd,
                   ),
+                  // 左右等宽槽夹住播放键：暂停键严格居中；左组向右靠、
+                  // 右组向左靠，层级由中心向两侧递减（72 → 48 → 22）。
                   child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: <Widget>[
-                      _AudioUtilityButton(
-                        key: const Key('player_sleep_timer'),
-                        icon: Icons.timer_outlined,
-                        label: l10n.playerTimer,
-                        tooltip: l10n.playerTimer,
-                        onTap: () => _showSleepTimerPicker(l10n),
-                      ),
-                      _AudioTransportButton(
-                        key: const Key('player_prev_ep'),
-                        icon: Icons.skip_previous_rounded,
-                        tooltip: l10n.playerPreviousEpisode,
-                        onTap: hasPrev ? _goPrevEpisode : null,
+                      Expanded(
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: <Widget>[
+                            _AudioUtilityButton(
+                              key: const Key('player_sleep_timer'),
+                              icon: Icons.timer_outlined,
+                              label: l10n.playerTimer,
+                              tooltip: l10n.playerTimer,
+                              onTap: () => _showSleepTimerPicker(l10n),
+                            ),
+                            _AudioTransportButton(
+                              key: const Key('player_prev_ep'),
+                              icon: Icons.skip_previous_rounded,
+                              tooltip: l10n.playerPreviousEpisode,
+                              onTap: hasPrev ? _goPrevEpisode : null,
+                            ),
+                          ],
+                        ),
                       ),
                       transportPlay,
-                      _AudioTransportButton(
-                        key: const Key('player_next_ep'),
-                        icon: Icons.skip_next_rounded,
-                        tooltip: l10n.playerNextEpisode,
-                        onTap: hasNext ? _goNextEpisode : null,
-                      ),
-                      _AudioUtilityButton(
-                        key: const Key('player_quick_speed'),
-                        icon: Icons.speed_rounded,
-                        label: '${_controller.playbackSpeed}x',
-                        tooltip: l10n.playerPlaybackSpeed,
-                        onTap: () => _showSpeedPicker(l10n),
+                      Expanded(
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: <Widget>[
+                            _AudioTransportButton(
+                              key: const Key('player_next_ep'),
+                              icon: Icons.skip_next_rounded,
+                              tooltip: l10n.playerNextEpisode,
+                              onTap: hasNext ? _goNextEpisode : null,
+                            ),
+                            _AudioUtilityButton(
+                              key: const Key('player_quick_speed'),
+                              icon: Icons.speed_rounded,
+                              label: '${_controller.playbackSpeed}x',
+                              tooltip: l10n.playerPlaybackSpeed,
+                              onTap: () => _showSpeedPicker(l10n),
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
