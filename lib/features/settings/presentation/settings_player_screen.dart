@@ -249,9 +249,9 @@ class _SettingsPlayerScreenState extends State<SettingsPlayerScreen> {
     }
   }
 
-  /// 音频模式纯色背景选择器（暗色预设网格）。
+  /// 音频模式纯色背景选择器（预设色 + RGB 自定义）。
   Future<void> _pickAudioBackgroundColor() async {
-    const List<int> colors = <int>[
+    const List<int> presets = <int>[
       0xFF1C1C24,
       0xFF101820,
       0xFF0F1B2A,
@@ -262,51 +262,41 @@ class _SettingsPlayerScreenState extends State<SettingsPlayerScreen> {
       0xFF000000,
     ];
     final l10n = AppLocalizations.of(context);
-    final int current = _settings.audioBackgroundColor;
     final int? selected = await showDialog<int>(
       context: context,
-      builder: (ctx) => AppAlertDialog(
-        title: Text(l10n.audioBackgroundColorTitle),
-        content: Wrap(
-          spacing: 12,
-          runSpacing: 12,
-          children: colors.map((int value) {
-            final bool active = value == current;
-            return GestureDetector(
-              key:
-                  ValueKey<String>('audio_bg_color_${value.toRadixString(16)}'),
-              onTap: () => Navigator.pop(ctx, value),
-              child: Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: Color(value),
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: active
-                        ? Theme.of(ctx).colorScheme.primary
-                        : Theme.of(ctx).colorScheme.outlineVariant,
-                    width: active ? 3 : 1,
-                  ),
-                ),
-                child: active
-                    ? Icon(Icons.check_rounded,
-                        size: 20, color: Theme.of(ctx).colorScheme.primary)
-                    : null,
-              ),
-            );
-          }).toList(),
-        ),
-        actions: <Widget>[
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text(l10n.cancel),
-          ),
-        ],
+      builder: (ctx) => _RgbColorDialog(
+        title: l10n.audioBackgroundColorTitle,
+        initial: _settings.audioBackgroundColor,
+        presets: presets,
       ),
     );
     if (selected == null) return;
     _update(_settings.copyWith(audioBackgroundColor: selected));
+  }
+
+  /// 音频播放/暂停键颜色选择器（0 = 跟随主题）。
+  Future<void> _pickAudioPlayButtonColor() async {
+    final l10n = AppLocalizations.of(context);
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    final bool followTheme = _settings.audioPlayButtonColor == 0;
+    final int initial = followTheme
+        ? scheme.primaryContainer.toARGB32()
+        : _settings.audioPlayButtonColor;
+    final int? selected = await showDialog<int>(
+      context: context,
+      builder: (ctx) => _RgbColorDialog(
+        title: l10n.audioPlayButtonColorTitle,
+        initial: initial,
+        allowFollowTheme: true,
+        presets: <int>[
+          scheme.primaryContainer.toARGB32(),
+          scheme.secondaryContainer.toARGB32(),
+          scheme.primary.toARGB32(),
+        ],
+      ),
+    );
+    if (selected == null) return;
+    _update(_settings.copyWith(audioPlayButtonColor: selected));
   }
 
   /// 恢复默认（与漫画阅读器设置页同款：AppBar 按钮 → 确认弹窗 → 整体回默认）。
@@ -876,12 +866,237 @@ class _SettingsPlayerScreenState extends State<SettingsPlayerScreen> {
                           ),
                         ),
                       ),
+                      // 播放键颜色：默认跟随主题，可自定义（RGB 滑块）。
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                            vertical: AppTokens.spaceXs),
+                        child: Row(
+                          children: <Widget>[
+                            Expanded(
+                              child: Text(
+                                l10n.audioPlayButtonColorTitle,
+                                style: Theme.of(context).textTheme.bodyMedium,
+                              ),
+                            ),
+                            IconButton(
+                              key: const ValueKey<String>(
+                                  'player.audioPlayButtonColor'),
+                              tooltip: l10n.audioPlayButtonColorTitle,
+                              onPressed: _pickAudioPlayButtonColor,
+                              icon: Container(
+                                width: 26,
+                                height: 26,
+                                decoration: BoxDecoration(
+                                  color: _settings.audioPlayButtonColor == 0
+                                      ? Theme.of(context)
+                                          .colorScheme
+                                          .primaryContainer
+                                      : Color(_settings.audioPlayButtonColor),
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .outlineVariant,
+                                  ),
+                                ),
+                                child: _settings.audioPlayButtonColor == 0
+                                    ? Icon(
+                                        Icons.palette_outlined,
+                                        size: 14,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onPrimaryContainer,
+                                      )
+                                    : null,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
                 ],
               ),
             )
           : const Center(child: CircularProgressIndicator()),
+    );
+  }
+}
+
+/// RGB 自定义颜色弹窗：R/G/B 三通道滑块 + 预设色块 + 实时预览。
+///
+/// 确认返回 ARGB int；取消返回 null；[allowFollowTheme] 时「跟随主题」
+/// 返回 0（调用方约定 0 = 跟随主题）。
+class _RgbColorDialog extends StatefulWidget {
+  final String title;
+  final int initial;
+  final List<int> presets;
+  final bool allowFollowTheme;
+
+  const _RgbColorDialog({
+    required this.title,
+    required this.initial,
+    this.presets = const <int>[],
+    this.allowFollowTheme = false,
+  });
+
+  @override
+  State<_RgbColorDialog> createState() => _RgbColorDialogState();
+}
+
+class _RgbColorDialogState extends State<_RgbColorDialog> {
+  late double _r;
+  late double _g;
+  late double _b;
+
+  @override
+  void initState() {
+    super.initState();
+    _apply(widget.initial);
+  }
+
+  void _apply(int argb) {
+    final Color c = Color(argb);
+    _r = c.r * 255.0;
+    _g = c.g * 255.0;
+    _b = c.b * 255.0;
+  }
+
+  int get _value => Color.from(
+        alpha: 1.0,
+        red: _r / 255.0,
+        green: _g / 255.0,
+        blue: _b / 255.0,
+      ).toARGB32();
+
+  String get _hex =>
+      '#${(_value & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}';
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
+    return AppAlertDialog(
+      scrollable: true,
+      title: Text(widget.title),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Container(
+                key: const ValueKey<String>('audio_rgb_preview'),
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: Color(_value),
+                  borderRadius: BorderRadius.circular(AppTokens.radiusSm),
+                  border: Border.all(
+                      color: Theme.of(context).colorScheme.outlineVariant),
+                ),
+              ),
+              const SizedBox(width: AppTokens.spaceMd),
+              Text(_hex, style: Theme.of(context).textTheme.titleMedium),
+            ],
+          ),
+          if (widget.presets.isNotEmpty) ...<Widget>[
+            const SizedBox(height: AppTokens.spaceMd),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: widget.presets.map((int value) {
+                final bool active = value == _value;
+                return GestureDetector(
+                  key: ValueKey<String>(
+                      'audio_color_preset_${value.toRadixString(16)}'),
+                  onTap: () {
+                    AppHaptics.selectionClick();
+                    setState(() => _apply(value));
+                  },
+                  child: Container(
+                    width: 34,
+                    height: 34,
+                    decoration: BoxDecoration(
+                      color: Color(value),
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: active
+                            ? Theme.of(context).colorScheme.primary
+                            : Theme.of(context).colorScheme.outlineVariant,
+                        width: active ? 3 : 1,
+                      ),
+                    ),
+                    child: active
+                        ? Icon(
+                            Icons.check_rounded,
+                            size: 18,
+                            color: Theme.of(context).colorScheme.primary,
+                          )
+                        : null,
+                  ),
+                );
+              }).toList(),
+            ),
+          ],
+          const SizedBox(height: AppTokens.spaceXs),
+          _channelSlider('R', _r, (double v) => setState(() => _r = v),
+              key: const ValueKey<String>('audio_rgb_slider_r')),
+          _channelSlider('G', _g, (double v) => setState(() => _g = v),
+              key: const ValueKey<String>('audio_rgb_slider_g')),
+          _channelSlider('B', _b, (double v) => setState(() => _b = v),
+              key: const ValueKey<String>('audio_rgb_slider_b')),
+        ],
+      ),
+      actions: <Widget>[
+        if (widget.allowFollowTheme)
+          TextButton(
+            key: const ValueKey<String>('audio_rgb_follow_theme'),
+            onPressed: () => Navigator.of(context).pop(0),
+            child: Text(l10n.audioFollowTheme),
+          ),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(l10n.cancel),
+        ),
+        FilledButton(
+          key: const ValueKey<String>('audio_rgb_confirm'),
+          onPressed: () => Navigator.of(context).pop(_value),
+          child: Text(MaterialLocalizations.of(context).okButtonLabel),
+        ),
+      ],
+    );
+  }
+
+  Widget _channelSlider(
+    String label,
+    double value,
+    ValueChanged<double> onChanged, {
+    Key? key,
+  }) {
+    return Row(
+      key: key,
+      children: <Widget>[
+        SizedBox(
+          width: 16,
+          child: Text(label, style: Theme.of(context).textTheme.labelMedium),
+        ),
+        Expanded(
+          child: Slider(
+            value: value,
+            min: 0,
+            max: 255,
+            divisions: 255,
+            onChanged: onChanged,
+          ),
+        ),
+        SizedBox(
+          width: 32,
+          child: Text(
+            value.round().toString(),
+            textAlign: TextAlign.end,
+            style: Theme.of(context).textTheme.labelSmall,
+          ),
+        ),
+      ],
     );
   }
 }

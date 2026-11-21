@@ -1253,6 +1253,14 @@
   "@audioBackgroundColorTitle": {
     "description": "Audio background custom color"
   },
+  "audioPlayButtonColorTitle": "播放按钮颜色",
+  "@audioPlayButtonColorTitle": {
+    "description": "Audio play/pause button container color"
+  },
+  "audioFollowTheme": "跟随主题",
+  "@audioFollowTheme": {
+    "description": "Follow the app theme color"
+  },
   "playerSubtitleFontSize": "字幕字体大小",
   "@playerSubtitleFontSize": {
     "description": "Subtitle font size"

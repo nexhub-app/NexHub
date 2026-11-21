@@ -5090,6 +5090,18 @@ abstract class AppLocalizations {
   /// **'Background Color'**
   String get audioBackgroundColorTitle;
 
+  /// Audio play/pause button container color
+  ///
+  /// In en, this message translates to:
+  /// **'Play Button Color'**
+  String get audioPlayButtonColorTitle;
+
+  /// Follow the app theme color
+  ///
+  /// In en, this message translates to:
+  /// **'Follow Theme'**
+  String get audioFollowTheme;
+
   /// Subtitle font size
   ///
   /// In en, this message translates to:

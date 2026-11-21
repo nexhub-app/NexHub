@@ -4849,6 +4849,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               )
             else
               const Spacer(),
+            // 音频模式歌词入口（底栏已取消工具行，入口收进顶栏；
+            // 无歌词时不显示）。
+            if (_audioMode && _lyricLines.isNotEmpty)
+              topBarBtn(
+                key: const Key('player_audio_lyrics'),
+                icon: Icons.lyrics_rounded,
+                tooltip: l10n.playerLyric,
+                onPressed: () =>
+                    _audioSurfaceKey.currentState?.showLyricsPage(),
+              ),
             // 投屏 / 字幕为视频专属，音频模式隐藏
             if (!_audioMode)
               topBarBtn(

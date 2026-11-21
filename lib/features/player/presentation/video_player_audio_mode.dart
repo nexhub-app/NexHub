@@ -58,120 +58,103 @@ extension _VideoAudioMode on _VideoPlayerScreenState {
     );
   }
 
-  /// 音频模式底部控制栏：刻度进度条 + 两端时间 + 传输键 + 工具行。
+  /// 音频模式底部控制栏：刻度进度条 + 两端时间 + 单行传输键。
   ///
-  /// 与视频底栏分离：音频没有自动隐藏、没有中央播放钮，进度直接拖动提交，
-  /// 避免音频页出现视频式 seek 预览与加载转圈。
+  /// 传输行按空间感排布——中央 72dp 播放键最大，两侧切集键次之，最外侧
+  /// 定时/倍速最小，整体垂直居中对齐。整栏盖在页面之上并拦截命中测试，
+  /// 左右滑动切页时不会跟随移动。
   Widget _buildAudioBottomBar(AppLocalizations l10n) {
     final bool hasPrev = widget.episodes != null && _episodeIndex > 0;
     final bool hasNext =
         widget.episodes != null && _episodeIndex < widget.episodes!.length - 1;
-    final bool hasEpisodes = (widget.episodes?.length ?? 0) > 1;
+    final int customPlayColor = _playerSettings.audioPlayButtonColor;
     const TextStyle timeStyle = TextStyle(color: Colors.white54, fontSize: 11);
 
     return Positioned(
       bottom: 0,
       left: 0,
       right: 0,
-      child: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.bottomCenter,
-            end: Alignment.topCenter,
-            colors: <Color>[Colors.black54, Colors.transparent],
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.bottomCenter,
+              end: Alignment.topCenter,
+              colors: <Color>[Colors.black54, Colors.transparent],
+            ),
           ),
-        ),
-        padding: EdgeInsets.only(
-          left: AppTokens.spaceXl,
-          right: AppTokens.spaceXl,
-          top: AppTokens.spaceSm,
-          bottom: MediaQuery.of(context).padding.bottom + AppTokens.spaceSm,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            _AudioProgressSlider(
-              position: _position,
-              duration: _duration,
-              onSeek: _onSeek,
-            ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: <Widget>[
-                Text(_formatDuration(_position), style: timeStyle),
-                Text(_formatDuration(_duration), style: timeStyle),
-              ],
-            ),
-            Padding(
-              padding: const EdgeInsets.only(top: AppTokens.spaceLg, bottom: 4),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          padding: EdgeInsets.only(
+            left: AppTokens.spaceXl,
+            right: AppTokens.spaceXl,
+            top: AppTokens.spaceSm,
+            bottom: MediaQuery.of(context).padding.bottom + AppTokens.spaceSm,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              _AudioProgressSlider(
+                position: _position,
+                duration: _duration,
+                onSeek: _onSeek,
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: <Widget>[
-                  _AudioTransportButton(
-                    key: const Key('player_prev_ep'),
-                    icon: Icons.skip_previous_rounded,
-                    tooltip: l10n.playerPreviousEpisode,
-                    onTap: hasPrev ? _goPrevEpisode : null,
-                  ),
-                  _AudioPlayButton(
-                    key: const Key('player_audio_play_pause'),
-                    playing: _isPlaying,
-                    tooltip: _isPlaying ? l10n.pause : l10n.play,
-                    onTap: () {
-                      _cancelAutoNextCountdown();
-                      _togglePlayPause();
-                    },
-                  ),
-                  _AudioTransportButton(
-                    key: const Key('player_next_ep'),
-                    icon: Icons.skip_next_rounded,
-                    tooltip: l10n.playerNextEpisode,
-                    onTap: hasNext ? _goNextEpisode : null,
-                  ),
+                  Text(_formatDuration(_position), style: timeStyle),
+                  Text(_formatDuration(_duration), style: timeStyle),
                 ],
               ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: AppTokens.spaceLg),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: <Widget>[
-                  _AudioUtilityButton(
-                    key: const Key('player_quick_speed'),
-                    icon: Icons.speed_rounded,
-                    label: '${_controller.playbackSpeed}x',
-                    tooltip: l10n.playerPlaybackSpeed,
-                    onTap: () => _showSpeedPicker(l10n),
-                  ),
-                  if (_lyricLines.isNotEmpty)
+              Padding(
+                padding:
+                    const EdgeInsets.only(top: AppTokens.spaceLg, bottom: 4),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: <Widget>[
                     _AudioUtilityButton(
-                      key: const Key('player_audio_lyrics'),
-                      icon: Icons.lyrics_rounded,
-                      label: l10n.playerLyric,
-                      tooltip: l10n.playerLyric,
-                      onTap: () =>
-                          _audioSurfaceKey.currentState?.showLyricsPage(),
+                      key: const Key('player_sleep_timer'),
+                      icon: Icons.timer_outlined,
+                      label: l10n.playerTimer,
+                      tooltip: l10n.playerTimer,
+                      onTap: () => _showSleepTimerPicker(l10n),
                     ),
-                  if (hasEpisodes)
+                    _AudioTransportButton(
+                      key: const Key('player_prev_ep'),
+                      icon: Icons.skip_previous_rounded,
+                      tooltip: l10n.playerPreviousEpisode,
+                      onTap: hasPrev ? _goPrevEpisode : null,
+                    ),
+                    _AudioPlayButton(
+                      key: const Key('player_audio_play_pause'),
+                      playing: _isPlaying,
+                      customColor: customPlayColor == 0
+                          ? null
+                          : Color(customPlayColor),
+                      tooltip: _isPlaying ? l10n.pause : l10n.play,
+                      onTap: () {
+                        _cancelAutoNextCountdown();
+                        _togglePlayPause();
+                      },
+                    ),
+                    _AudioTransportButton(
+                      key: const Key('player_next_ep'),
+                      icon: Icons.skip_next_rounded,
+                      tooltip: l10n.playerNextEpisode,
+                      onTap: hasNext ? _goNextEpisode : null,
+                    ),
                     _AudioUtilityButton(
-                      key: const Key('player_quick_episodes'),
-                      icon: Icons.queue_music_rounded,
-                      label: l10n.playerEpisodes,
-                      tooltip: l10n.playerEpisodes,
-                      onTap: () =>
-                          _audioSurfaceKey.currentState?.showEpisodesPage(),
+                      key: const Key('player_quick_speed'),
+                      icon: Icons.speed_rounded,
+                      label: '${_controller.playbackSpeed}x',
+                      tooltip: l10n.playerPlaybackSpeed,
+                      onTap: () => _showSpeedPicker(l10n),
                     ),
-                  _AudioUtilityButton(
-                    key: const Key('player_sleep_timer'),
-                    icon: Icons.timer_outlined,
-                    label: l10n.playerTimer,
-                    tooltip: l10n.playerTimer,
-                    onTap: () => _showSleepTimerPicker(l10n),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -266,16 +249,6 @@ class _AudioSurfaceState extends State<_AudioSurface> {
     if (!_hasLyrics || !_pager.hasClients) return;
     _pager.animateToPage(
       2,
-      duration: const Duration(milliseconds: 280),
-      curve: Curves.easeOutCubic,
-    );
-  }
-
-  /// 底部选集按钮快捷跳转（右滑同效果）。
-  void showEpisodesPage() {
-    if (!_pager.hasClients) return;
-    _pager.animateToPage(
-      0,
       duration: const Duration(milliseconds: 280),
       curve: Curves.easeOutCubic,
     );
@@ -596,22 +569,29 @@ class _AudioTransportButton extends StatelessWidget {
 class _AudioPlayButton extends StatelessWidget {
   final bool playing;
   final String tooltip;
+
+  /// 设置页自定义的按钮颜色；null 时跟随主题播放态配色。
+  final Color? customColor;
   final VoidCallback onTap;
 
   const _AudioPlayButton({
     super.key,
     required this.playing,
     required this.tooltip,
+    this.customColor,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
     final ColorScheme scheme = Theme.of(context).colorScheme;
-    final Color container =
-        playing ? scheme.primaryContainer : scheme.secondaryContainer;
-    final Color content =
-        playing ? scheme.onPrimaryContainer : scheme.onSecondaryContainer;
+    final Color container = customColor ??
+        (playing ? scheme.primaryContainer : scheme.secondaryContainer);
+    final Color content = customColor != null
+        ? (ThemeData.estimateBrightnessForColor(customColor!) == Brightness.dark
+            ? Colors.white
+            : Colors.black87)
+        : (playing ? scheme.onPrimaryContainer : scheme.onSecondaryContainer);
     return Tooltip(
       message: tooltip,
       child: AnimatedContainer(
@@ -619,7 +599,17 @@ class _AudioPlayButton extends StatelessWidget {
         curve: Curves.fastOutSlowIn,
         width: 72,
         height: 72,
-        decoration: BoxDecoration(color: container, shape: BoxShape.circle),
+        decoration: BoxDecoration(
+          color: container,
+          shape: BoxShape.circle,
+          boxShadow: const <BoxShadow>[
+            BoxShadow(
+              color: Colors.black38,
+              blurRadius: 18,
+              offset: Offset(0, 6),
+            ),
+          ],
+        ),
         child: Material(
           type: MaterialType.transparency,
           child: InkWell(

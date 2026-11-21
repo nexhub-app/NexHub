@@ -177,17 +177,18 @@ void main() {
         expect(moreMenu, contains('_showLyricsSheet(l10n)'));
         expect(moreMenu,
             contains('_audioSurfaceKey.currentState?.showLyricsPage()'));
+        // 歌词入口收进音频顶栏（底栏工具行已取消）。
+        expect(screen, contains("Key('player_audio_lyrics')"));
+        expect(screen,
+            contains('_audioSurfaceKey.currentState?.showLyricsPage()'));
         final String audioMode = File(
           'lib/features/player/presentation/video_player_audio_mode.dart',
         ).readAsStringSync();
-        expect(audioMode, contains("Key('player_audio_lyrics')"));
-        expect(audioMode,
-            contains('_audioSurfaceKey.currentState?.showLyricsPage()'));
         expect(audioMode, contains('AudioCoverArt('));
         expect(audioMode, contains('bool get _audioMode => widget.isAudio;'));
       });
 
-      test('音频控制栏：刻度进度条 + 72dp 播放键 + 工具行', () {
+      test('音频控制栏：刻度进度条 + 空间感传输行 + 固定不跟随翻页', () {
         final String audioMode = File(
           'lib/features/player/presentation/video_player_audio_mode.dart',
         ).readAsStringSync();
@@ -197,10 +198,27 @@ void main() {
         expect(audioMode, contains('class _AudioPlayButton'));
         expect(audioMode, contains('width: 72'));
         expect(audioMode, contains("Key('player_audio_play_pause')"));
-        expect(audioMode, contains("Key('player_sleep_timer')"));
-        expect(audioMode, contains('void showEpisodesPage()'));
-        // 工具行跳歌曲页：小节目标为第 0 页（列表）、第 2 页（歌词）。
-        expect(audioMode, contains('animateToPage('));
+        // 选集按钮已删除：底栏不再有选集入口，列表页仍可右滑到达。
+        expect(audioMode, isNot(contains('player_quick_episodes')));
+        expect(audioMode, isNot(contains('showEpisodesPage')));
+        // 传输行：定时在上一集左边、倍速在下一集右边，中间播放键最大。
+        final int timer = audioMode.indexOf("Key('player_sleep_timer')");
+        final int prev = audioMode.indexOf("Key('player_prev_ep')");
+        final int play = audioMode.indexOf(
+            "Key('player_audio_play_pause')", audioMode.indexOf('_buildAudioBottomBar'));
+        final int next = audioMode.indexOf("Key('player_next_ep')", play);
+        final int speed =
+            audioMode.indexOf("Key('player_quick_speed')", next);
+        expect(timer, greaterThan(0));
+        expect(timer, lessThan(prev));
+        expect(prev, lessThan(play));
+        expect(play, lessThan(next));
+        expect(next, lessThan(speed));
+        // 整栏拦截命中测试：左右滑动只翻页，底栏不跟随。
+        expect(audioMode, contains('behavior: HitTestBehavior.opaque'));
+        // 播放键颜色可由设置页自定义（0 = 跟随主题）。
+        expect(audioMode, contains('_playerSettings.audioPlayButtonColor'));
+        expect(audioMode, contains('ThemeData.estimateBrightnessForColor'));
       });
 
       test('音频模式控制栏常驻：单击/双击/长按与自动隐藏关闭', () {

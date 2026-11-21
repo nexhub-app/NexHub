@@ -2635,6 +2635,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get audioBackgroundColorTitle => 'Background Color';
 
   @override
+  String get audioPlayButtonColorTitle => 'Play Button Color';
+
+  @override
+  String get audioFollowTheme => 'Follow Theme';
+
+  @override
   String get playerSubtitleFontSize => 'Subtitle Font Size';
 
   @override

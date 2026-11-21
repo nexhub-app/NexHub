@@ -1266,6 +1266,14 @@
   "@audioBackgroundColorTitle": {
     "description": "Audio background custom color"
   },
+  "audioPlayButtonColorTitle": "Play Button Color",
+  "@audioPlayButtonColorTitle": {
+    "description": "Audio play/pause button container color"
+  },
+  "audioFollowTheme": "Follow Theme",
+  "@audioFollowTheme": {
+    "description": "Follow the app theme color"
+  },
   "playerSubtitleFontSize": "Subtitle Font Size",
   "@playerSubtitleFontSize": {
     "description": "Subtitle font size"

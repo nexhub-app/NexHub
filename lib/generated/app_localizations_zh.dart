@@ -2586,6 +2586,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get audioBackgroundColorTitle => '背景颜色';
 
   @override
+  String get audioPlayButtonColorTitle => '播放按钮颜色';
+
+  @override
+  String get audioFollowTheme => '跟随主题';
+
+  @override
   String get playerSubtitleFontSize => '字幕字体大小';
 
   @override

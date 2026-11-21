@@ -79,6 +79,9 @@ class PlayerSettings {
   /// 音频模式自定义纯色背景（ARGB）。
   final int audioBackgroundColor;
 
+  /// 音频播放键容器颜色（ARGB，0 = 跟随主题）。
+  final int audioPlayButtonColor;
+
   const PlayerSettings({
     this.decodeMode = DecodeMode.auto,
     this.audioChannel = AudioChannel.auto,
@@ -108,6 +111,7 @@ class PlayerSettings {
     this.upscaleShader = UpscaleShaderMode.off,
     this.audioBackgroundMode = AudioBackgroundMode.cover,
     this.audioBackgroundColor = 0xFF1C1C24,
+    this.audioPlayButtonColor = 0,
   });
 
   PlayerSettings copyWith({
@@ -139,6 +143,7 @@ class PlayerSettings {
     UpscaleShaderMode? upscaleShader,
     AudioBackgroundMode? audioBackgroundMode,
     int? audioBackgroundColor,
+    int? audioPlayButtonColor,
   }) =>
       PlayerSettings(
         decodeMode: decodeMode ?? this.decodeMode,
@@ -170,6 +175,8 @@ class PlayerSettings {
         upscaleShader: upscaleShader ?? this.upscaleShader,
         audioBackgroundMode: audioBackgroundMode ?? this.audioBackgroundMode,
         audioBackgroundColor: audioBackgroundColor ?? this.audioBackgroundColor,
+        audioPlayButtonColor:
+            audioPlayButtonColor ?? this.audioPlayButtonColor,
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -201,6 +208,7 @@ class PlayerSettings {
         'upscaleShader': upscaleShader.name,
         'audioBackgroundMode': audioBackgroundMode.name,
         'audioBackgroundColor': audioBackgroundColor,
+        'audioPlayButtonColor': audioPlayButtonColor,
       };
 
   factory PlayerSettings.fromJson(Map<String, dynamic> json) {
@@ -287,6 +295,8 @@ class PlayerSettings {
       audioBackgroundMode: audioBackgroundMode,
       audioBackgroundColor:
           (json['audioBackgroundColor'] as num?)?.toInt() ?? 0xFF1C1C24,
+      audioPlayButtonColor:
+          (json['audioPlayButtonColor'] as num?)?.toInt() ?? 0,
     );
   }
 }
