@@ -580,16 +580,6 @@ class AnalyzeUrl {
       } catch (_) {}
     }
     headerMap.forEach((k, v) => _putHeader(out, k, v));
-    final sharedCookie = HttpFetcher.instance.cookieHeaderForUrl(url);
-    if (sharedCookie != null && sharedCookie.isNotEmpty) {
-      final existing = _headerValue(out, 'Cookie');
-      _putHeader(
-          out,
-          'Cookie',
-          (existing != null && existing.isNotEmpty)
-              ? '$existing; $sharedCookie'
-              : sharedCookie);
-    }
     final activeCtx = ShuyuanSourceContext.current;
     if (activeCtx != null) {
       activeCtx.loginHeader.forEach((k, v) {
@@ -600,14 +590,14 @@ class AnalyzeUrl {
       if (overlay.isNotEmpty) {
         final overlayStr =
             overlay.entries.map((e) => '${e.key}=${e.value}').join('; ');
-        final existing = _headerValue(out, 'Cookie');
-        _putHeader(
-            out,
-            'Cookie',
-            (existing != null && existing.isNotEmpty)
-                ? '$existing; $overlayStr'
-                : overlayStr);
+        _putHeader(out, 'Cookie',
+            _mergeCookieStrings(_headerValue(out, 'Cookie'), overlayStr));
       }
+    }
+    final sharedCookie = HttpFetcher.instance.cookieHeaderForUrl(url);
+    if (sharedCookie != null && sharedCookie.isNotEmpty) {
+      _putHeader(out, 'Cookie',
+          _mergeCookieStrings(_headerValue(out, 'Cookie'), sharedCookie));
     }
     // 待重放占位符的头部对播放器无意义，剔除而不是把占位符发给 CDN。
     out.removeWhere((_, v) => _hasReplayPlaceholder(v));
@@ -840,6 +830,17 @@ class AnalyzeUrl {
       headers.forEach((k, v) => _putHeader(requestHeaders, k, v));
     }
 
+    // 注入对象上下文（P1-2）：登录头合并（source.putLoginHeader 语义）+
+    // per-source cookie 覆盖层按 host 合并（书源命名空间隔离——三通道设计，
+    // 只读合并进本次请求，不写全局罐）。activeCtx 已在函数入口取过。
+    // 覆盖层先于共享罐合并：显式 Cookie > per-source 覆盖层 > 共享罐。
+    if (activeCtx != null) {
+      activeCtx.loginHeader.forEach((k, v) {
+        if (k.isNotEmpty && v.isNotEmpty) _putHeader(requestHeaders, k, v);
+      });
+      _mergeCtxCookieOverlay(requestHeaders, url, activeCtx);
+    }
+
     // 复用 HttpFetcher 共享 Cookie 存储：验证系统在 WebView（内置浏览器）里被
     // 通过后，会话 Cookie 已由 HttpBrowserScreen 同步进 HttpFetcher；AnalyzeUrl
     // 用独立 Dio，不读那个 jar，若不回带，验证重试仍会被反爬系统拦截（之前
@@ -852,16 +853,6 @@ class AnalyzeUrl {
           'Cookie',
           _mergeCookieStrings(
               _headerValue(requestHeaders, 'Cookie'), sharedCookie));
-    }
-
-    // 注入对象上下文（P1-2）：登录头合并（source.putLoginHeader 语义）+
-    // per-source cookie 覆盖层按 host 合并（书源命名空间隔离——三通道设计，
-    // 只读合并进本次请求，不写全局罐）。activeCtx 已在函数入口取过。
-    if (activeCtx != null) {
-      activeCtx.loginHeader.forEach((k, v) {
-        if (k.isNotEmpty && v.isNotEmpty) _putHeader(requestHeaders, k, v);
-      });
-      _mergeCtxCookieOverlay(requestHeaders, url, activeCtx);
     }
 
     // 源 header 的 @js 可能调用 java.ajax：首轮拿到的是 __AJAX_n__ 占位符，
@@ -1146,16 +1137,20 @@ class AnalyzeUrl {
     return null;
   }
 
-  /// Cookie 请求头合并（legado `CookieManager.loadRequest` 语义）：按 cookie
-  /// 名合并，后到者（已存储/覆盖层）覆盖同名旧值，保留首次出现顺序。
-  /// 拼接方式会让同名 cookie 在头里重复出现，服务端取值不确定——存储的
-  /// 会话 cookie 必须能顶掉源里写死的同名旧值。
+  /// 合并两段 Cookie 字符串；**首参（显式 Cookie）优先**。
+  ///
+  /// 对齐 legado `AnalyzeUrl.setCookie()`：`mergeCookies(jarCookie,
+  /// headerMap["Cookie"])`——同名 Cookie 由后者（URL 选项/源 header 的
+  /// 显式值）覆盖罐里的值，即「urlOption 临时 cookie > 数据库 cookie」。
+  /// 签名类源把与 Cookie 绑定的签名头（如 Secret）和当时的 Cookie 值一起
+  /// 放进 URL 选项：若让罐里轮换后的新值覆盖显式旧值，服务端会因
+  /// 「签名与 Cookie 不一致」直接拒绝（200 + 业务错误码），整条链路失败。
   static String _mergeCookieStrings(String? existing, String incoming) {
     if (existing == null || existing.trim().isEmpty) return incoming;
     final merged = <String, String>{};
     final parts = <String>[
-      ...existing.split(';'),
       ...incoming.split(';'),
+      ...existing.split(';'),
     ];
     for (final part in parts) {
       final pair = part.trim();
