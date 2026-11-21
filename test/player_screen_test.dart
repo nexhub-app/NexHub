@@ -343,11 +343,26 @@ void main() {
           expect(src, contains('AnimatedBuilder('));
           expect(src, contains('Transform.scale('));
           expect(src, contains('viewport / 2'));
-          expect(src, contains('double _scaleFor(int index)'));
+          expect(src, contains('double _scaleFor(int index, double topPadding)'));
         }
         // 当前集 / 当前行略加成，停在中线附近时仍为最大。
         expect(audioMode, contains('selected ? 0.1 : 0'));
         expect(lyrics, contains('active ? 0.14 : 0'));
+      });
+
+      test('列表与歌词首尾项也能停在视口中线：对称半视口留白', () {
+        final String audioMode = File(
+          'lib/features/player/presentation/video_player_audio_mode.dart',
+        ).readAsStringSync();
+        final String lyrics = File(
+          'lib/features/player/presentation/audio_lyrics_view.dart',
+        ).readAsStringSync();
+        for (final String src in <String>[audioMode, lyrics]) {
+          expect(src, contains('_edgePaddingFor'));
+          expect(src, contains('constraints.maxHeight'));
+        }
+        expect(audioMode, contains('viewport / 2 - _itemExtent / 2'));
+        expect(lyrics, contains('viewport / 2 - _lineExtent / 2'));
       });
 
       test('工具键图标同一行对齐：固定图标槽，文字悬挂不参与对齐', () {
@@ -380,7 +395,7 @@ void main() {
           expect(src, contains('ScrollDirection.idle'));
           expect(src, contains('Duration(seconds: 3)'));
           // 回中目标：当前项中心对齐视口垂直中线。
-          expect(src, contains('viewportDimension / 2'));
+          expect(src, contains('viewport / 2'));
         }
         expect(audioMode, contains('_centerCurrent'));
         expect(lyrics, contains('_userScrolling'));

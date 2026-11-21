@@ -135,11 +135,60 @@ void main() {
 
       final ScrollableState scrollable =
           tester.state<ScrollableState>(find.byType(Scrollable));
-      // 顶部留白 8 + 行高 72、视口 400：第 10 行中心停在视口中线。
-      const double expected = 8 + 10 * 72 + 72 / 2 - 200;
+      // 顶部对称留白 400/2−72/2=164：第 10 行中心停在视口中线，滚动量 = 10×72。
+      const double expected = 10 * 72;
       expect(
         scrollable.position.pixels,
         moreOrLessEquals(expected, epsilon: 0.5),
+      );
+    });
+
+    testWidgets('首行也能停在视口中线', (WidgetTester tester) async {
+      final StreamController<Duration> positions =
+          StreamController<Duration>.broadcast();
+      addTearDown(positions.close);
+      final List<AudioLyricLine> lines = <AudioLyricLine>[
+        for (int i = 0; i <= 30; i++) AudioLyricLine(i * 1000, '行 $i'),
+      ];
+
+      await tester.pumpWidget(_host(lines: lines, stream: positions.stream));
+      await tester.pumpAndSettle();
+
+      final double mid = tester.getCenter(find.byType(AudioLyricsView)).dy;
+      expect(
+        tester.getCenter(find.text('行 0')).dy,
+        moreOrLessEquals(mid, epsilon: 1),
+      );
+      final ScrollableState scrollable =
+          tester.state<ScrollableState>(find.byType(Scrollable));
+      expect(scrollable.position.pixels, lessThan(1));
+    });
+
+    testWidgets('末行也能停在视口中线', (WidgetTester tester) async {
+      final StreamController<Duration> positions =
+          StreamController<Duration>.broadcast();
+      addTearDown(positions.close);
+      final List<AudioLyricLine> lines = <AudioLyricLine>[
+        for (int i = 0; i <= 30; i++) AudioLyricLine(i * 1000, '行 $i'),
+      ];
+
+      await tester.pumpWidget(_host(
+        lines: lines,
+        stream: positions.stream,
+        initial: const Duration(seconds: 30),
+      ));
+      await tester.pumpAndSettle();
+
+      final double mid = tester.getCenter(find.byType(AudioLyricsView)).dy;
+      expect(
+        tester.getCenter(find.text('行 30')).dy,
+        moreOrLessEquals(mid, epsilon: 1),
+      );
+      final ScrollableState scrollable =
+          tester.state<ScrollableState>(find.byType(Scrollable));
+      expect(
+        scrollable.position.pixels,
+        moreOrLessEquals(scrollable.position.maxScrollExtent, epsilon: 0.5),
       );
     });
 

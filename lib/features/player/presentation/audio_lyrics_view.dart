@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
@@ -31,8 +32,11 @@ class AudioLyricsView extends StatefulWidget {
 
 class _AudioLyricsViewState extends State<AudioLyricsView> {
   static const double _lineExtent = 72;
-  static const double _listTopPadding = AppTokens.spaceSm;
   static const Duration _idleRecenterDelay = Duration(seconds: 3);
+
+  /// 上下对称留白到半视口，首行/末行也能滚到视口中线。
+  static double _edgePaddingFor(double viewport) =>
+      math.max(0.0, viewport / 2 - _lineExtent / 2);
 
   final ScrollController _scroll = ScrollController();
   StreamSubscription<Duration>? _positionSub;
@@ -104,12 +108,13 @@ class _AudioLyricsViewState extends State<AudioLyricsView> {
 
   void _animateToActive(int index) {
     if (!mounted || index < 0 || !_scroll.hasClients) return;
+    final double viewport = _scroll.position.viewportDimension;
+    if (viewport <= 0) return;
     // 静置态：当前行停在视口垂直中线，配合空间感缩放成为最大一行。
-    final double target = (_listTopPadding +
-            index * _lineExtent +
-            _lineExtent / 2 -
-            _scroll.position.viewportDimension / 2)
-        .clamp(0.0, _scroll.position.maxScrollExtent);
+    final double edge = _edgePaddingFor(viewport);
+    final double target =
+        (edge + index * _lineExtent + _lineExtent / 2 - viewport / 2)
+            .clamp(0.0, _scroll.position.maxScrollExtent);
     _scroll.animateTo(
       target,
       duration: const Duration(milliseconds: 520),
@@ -151,56 +156,68 @@ class _AudioLyricsViewState extends State<AudioLyricsView> {
   Widget build(BuildContext context) {
     return NotificationListener<ScrollNotification>(
       onNotification: _onScrollNotification,
-      child: ListView.builder(
-        controller: _scroll,
-        itemExtent: _lineExtent,
-        padding: const EdgeInsets.symmetric(
-          horizontal: AppTokens.spaceLg,
-          vertical: _listTopPadding,
-        ),
-        itemCount: widget.lines.length,
-        itemBuilder: (BuildContext context, int index) {
-          final bool active = index == _activeIndex;
-          // 空间感：越靠近视口垂直中线越大，向上下两端递减；高亮行略加成，
-          // 静置回中后仍是最大的一行。
-          return AnimatedBuilder(
-            animation: _scroll,
-            builder: (BuildContext context, Widget? child) => Transform.scale(
-              scale: (_scaleFor(index) + (active ? 0.14 : 0)).clamp(0.0, 1.14),
-              child: child,
+      child: LayoutBuilder(
+        builder: (BuildContext context, BoxConstraints constraints) {
+          final double edge = _edgePaddingFor(constraints.maxHeight);
+          return ListView.builder(
+            controller: _scroll,
+            itemExtent: _lineExtent,
+            padding: EdgeInsets.only(
+              top: edge,
+              bottom: edge,
+              left: AppTokens.spaceLg,
+              right: AppTokens.spaceLg,
             ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                vertical: AppTokens.spaceXs,
-              ),
-              child: InkWell(
-                key: ValueKey<int>(index),
-                borderRadius: BorderRadius.circular(AppTokens.radiusLg),
-                onTap: widget.onSeekMs == null
-                    ? null
-                    : () => widget.onSeekMs!(widget.lines[index].timestampMs),
+            itemCount: widget.lines.length,
+            itemBuilder: (BuildContext context, int index) {
+              final bool active = index == _activeIndex;
+              // 空间感：越靠近视口垂直中线越大，向上下两端递减；高亮行略加成，
+              // 静置回中后仍是最大的一行。
+              return AnimatedBuilder(
+                animation: _scroll,
+                builder: (BuildContext context, Widget? child) =>
+                    Transform.scale(
+                  scale:
+                      (_scaleFor(index, edge) + (active ? 0.14 : 0)).clamp(
+                    0.0,
+                    1.14,
+                  ),
+                  child: child,
+                ),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
-                    horizontal: AppTokens.spaceMd,
-                    vertical: 7,
+                    vertical: AppTokens.spaceXs,
                   ),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      widget.lines[index].text,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 19,
-                        height: 1.3,
-                        color: active ? Colors.white : Colors.white54,
-                        fontWeight: FontWeight.w600,
+                  child: InkWell(
+                    key: ValueKey<int>(index),
+                    borderRadius: BorderRadius.circular(AppTokens.radiusLg),
+                    onTap: widget.onSeekMs == null
+                        ? null
+                        : () => widget.onSeekMs!(widget.lines[index].timestampMs),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: AppTokens.spaceMd,
+                        vertical: 7,
+                      ),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          widget.lines[index].text,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 19,
+                            height: 1.3,
+                            color: active ? Colors.white : Colors.white54,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                       ),
                     ),
                   ),
                 ),
-              ),
-            ),
+              );
+            },
           );
         },
       ),
@@ -208,11 +225,11 @@ class _AudioLyricsViewState extends State<AudioLyricsView> {
   }
 
   /// 行中心距视口垂直中线的远近 → 缩放比例（中线 1.0，两端约 0.68）。
-  double _scaleFor(int index) {
+  double _scaleFor(int index, double topPadding) {
     if (!_scroll.hasClients) return 1;
     final double viewport = _scroll.position.viewportDimension;
     if (viewport <= 0) return 1;
-    final double itemCenter = _listTopPadding +
+    final double itemCenter = topPadding +
         index * _lineExtent +
         _lineExtent / 2 -
         _scroll.offset;
