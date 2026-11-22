@@ -24,6 +24,204 @@ class AnalyzeByJsoup {
     return html_parser.parse('').documentElement!;
   }
 
+  // ---- jsoup 取值语义（legado AnalyzeByJSoup 依赖） ----
+  //
+  // legado 用 jsoup 的 `Element.text()/ownText()/attr()/getElementsByClass()`
+  // 取值，package:html 的同名能力语义不同，这里按 jsoup 实测行为逐项对齐：
+  //  - `text()`：ASCII 空白（含 &nbsp;）折叠为单空格；块级元素与 `<br>`
+  //    在进入时补一个空格，块级元素后紧跟文本节点时在离开时也补一个；
+  //    script/style 内容不参与；pre/plaintext/title/textarea 保留原始空白；
+  //    U+3000 原样保留，末尾按 ASCII 修剪。
+  //  - `ownText()`：只取直接文本节点（同样折叠），`<br>` 补空格，子元素忽略。
+  //  - `attr()`：属性名大小写不敏感。
+  //  - `class.X`：类名大小写不敏感、含自身；`tag.X`：标签名大小写不敏感、含自身。
+  static const Set<String> _jsoupBlockTags = {
+    'address', 'applet', 'article', 'aside', 'audio', 'blockquote', 'body',
+    'canvas', 'caption', 'center', 'col', 'colgroup', 'dd', 'del', 'details',
+    'dir', 'div', 'dl', 'dt', 'fieldset', 'figcaption', 'figure', 'footer',
+    'form', 'frame', 'frameset', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'head',
+    'header', 'hgroup', 'hr', 'html', 'ins', 'li', 'link', 'listing', 'main',
+    'marquee', 'math', 'menu', 'meta', 'nav', 'noframes', 'noscript', 'ol',
+    'p', 'plaintext', 'pre', 'script', 'section', 'style', 'svg', 'table',
+    'tbody', 'td', 'template', 'tfoot', 'th', 'thead', 'title', 'tr', 'ul',
+    'video',
+  };
+
+  static const Set<String> _jsoupPreserveTags = {
+    'pre',
+    'plaintext',
+    'title',
+    'textarea',
+  };
+
+  static bool _isJsoupActualWhitespace(int c) =>
+      c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0C || c == 0x0D || c == 0xA0;
+
+  // Java `Character.isWhitespace` 的近似（class 属性分词用）。
+  static bool _isJavaWhitespace(int c) =>
+      c == 0x20 || (c >= 0x09 && c <= 0x0D) || c == 0x1C || c == 0x1D ||
+      c == 0x1E || c == 0x1F;
+
+  /// jsoup `StringUtil.normaliseWhitespace`：空白连段折叠为单空格，不修剪。
+  static String _normaliseJsoupWhitespace(String text) {
+    final buf = StringBuffer();
+    var lastWasWs = false;
+    for (final c in text.codeUnits) {
+      if (_isJsoupActualWhitespace(c)) {
+        if (lastWasWs) continue;
+        buf.write(' ');
+        lastWasWs = true;
+      } else {
+        buf.writeCharCode(c);
+        lastWasWs = false;
+      }
+    }
+    return buf.toString();
+  }
+
+  /// jsoup `Element.text()`（legado `getResultLast("text")`）。
+  static String _jsoupText(Element root) {
+    final out = _JsoupTextBuf();
+    void walk(Element el) {
+      final name = (el.localName ?? '').toLowerCase();
+      final isBlock = _jsoupBlockTags.contains(name);
+      if (!out.isEmpty && out.last != 0x20 && (isBlock || name == 'br')) {
+        out.write(' ');
+      }
+      if (name != 'script' && name != 'style') {
+        final preserve = _jsoupPreserveTags.contains(name);
+        for (final node in el.nodes) {
+          if (node is Text) {
+            preserve ? out.write(node.text) : out.writeNormalised(node.text);
+          } else if (node is Element) {
+            walk(node);
+          }
+        }
+      }
+      if (isBlock && !out.isEmpty && out.last != 0x20 && _nextSiblingIsText(el)) {
+        out.write(' ');
+      }
+    }
+
+    walk(root);
+    return StringUtils.trimAscii(out.toString());
+  }
+
+  static bool _nextSiblingIsText(Element el) {
+    final parent = el.parentNode;
+    if (parent == null) return false;
+    final nodes = parent.nodes;
+    final index = nodes.indexOf(el);
+    return index >= 0 && index + 1 < nodes.length && nodes[index + 1] is Text;
+  }
+
+  /// jsoup `Element.ownText()`（legado `getResultLast("ownText")`）。
+  static String _jsoupOwnText(Element el) {
+    final out = _JsoupTextBuf();
+    final preserve =
+        _jsoupPreserveTags.contains((el.localName ?? '').toLowerCase());
+    for (final node in el.nodes) {
+      if (node is Text) {
+        preserve ? out.write(node.text) : out.writeNormalised(node.text);
+      } else if (node is Element &&
+          (node.localName ?? '').toLowerCase() == 'br' &&
+          !out.isEmpty &&
+          out.last != 0x20) {
+        out.write(' ');
+      }
+    }
+    return StringUtils.trimAscii(out.toString());
+  }
+
+  /// jsoup `Element.data()`：拼接 script/style 的数据节点内容。
+  static String _jsoupData(Element root) {
+    final buf = StringBuffer();
+    void walk(Element el) {
+      for (final node in el.nodes) {
+        if (node is! Element) continue;
+        final name = (node.localName ?? '').toLowerCase();
+        if (name == 'script' || name == 'style') {
+          buf.write(node.text);
+        } else {
+          walk(node);
+        }
+      }
+    }
+
+    walk(root);
+    return buf.toString();
+  }
+
+  /// jsoup `Element.attr()`：属性名大小写不敏感，缺失返回空串。
+  static String _attrJsoup(Element el, String name) {
+    final direct = el.attributes[name];
+    if (direct != null) return direct;
+    if (name.isEmpty) return '';
+    final lower = name.toLowerCase();
+    for (final entry in el.attributes.entries) {
+      if (entry.key.toString().toLowerCase() == lower) return entry.value;
+    }
+    return '';
+  }
+
+  /// jsoup `Element.hasClass()`：大小写不敏感；类名整体等于 class 属性
+  /// 或等于其中单个分词均命中。
+  static bool _hasClassJsoup(Element el, String className) {
+    if (className.isEmpty) return false;
+    final attr = _attrJsoup(el, 'class');
+    if (attr.isEmpty || attr.length < className.length) return false;
+    final want = className.toLowerCase();
+    if (attr.length == className.length) return attr.toLowerCase() == want;
+    var inClass = false;
+    var start = 0;
+    for (var i = 0; i < attr.length; i++) {
+      if (_isJavaWhitespace(attr.codeUnitAt(i))) {
+        if (inClass) {
+          if (i - start == className.length &&
+              attr.substring(start, i).toLowerCase() == want) {
+            return true;
+          }
+          inClass = false;
+        }
+      } else if (!inClass) {
+        inClass = true;
+        start = i;
+      }
+    }
+    return inClass &&
+        attr.length - start == className.length &&
+        attr.substring(start).toLowerCase() == want;
+  }
+
+  /// jsoup `Element.getElementsByClass()`：文档序遍历、含自身。
+  static List<Element> _collectByClass(Element root, String className) {
+    final result = <Element>[];
+    void walk(Element el) {
+      if (_hasClassJsoup(el, className)) result.add(el);
+      for (final child in el.children) {
+        walk(child);
+      }
+    }
+
+    walk(root);
+    return result;
+  }
+
+  /// jsoup `Element.getElementsByTag()`：标签名大小写不敏感、含自身。
+  static List<Element> _collectByTag(Element root, String tag) {
+    final name = tag.trim().toLowerCase();
+    final result = <Element>[];
+    void walk(Element el) {
+      if ((el.localName ?? '').toLowerCase() == name) result.add(el);
+      for (final child in el.children) {
+        walk(child);
+      }
+    }
+
+    walk(root);
+    return result;
+  }
+
   /// jsoup 伪选择器 `:contains(text)` 匹配（`package:html` 的 querySelectorAll
   /// 不支持该伪类，遇到会抛异常）。这里做通用降级：剥离所有 `:contains(...)`
   /// 片段拿到基础 CSS 选择器，先 querySelectorAll，再按元素文本包含过滤。
@@ -258,7 +456,9 @@ class AnalyzeByJsoup {
       try {
         final els =
             base.isEmpty ? parent.querySelectorAll('*') : parent.querySelectorAll(base);
-        return els.contains(el) && texts.every(el.text.contains);
+        if (!els.contains(el)) return false;
+        final text = _jsoupText(el);
+        return texts.every(text.contains);
       } catch (_) {
         return false;
       }
@@ -294,7 +494,7 @@ class AnalyzeByJsoup {
         }
       }
       for (final el in base) {
-        final text = el.text;
+        final text = _jsoupText(el);
         if (texts.every(text.contains) && !result.contains(el)) {
           result.add(el);
         }
@@ -476,24 +676,24 @@ class AnalyzeByJsoup {
           if (cond.name == 'lt' && p.$1 >= idx) return false;
           break;
         case 'contains':
-          if (!el.text
+          if (!_jsoupText(el)
               .toLowerCase()
               .contains(_unquote(arg).toLowerCase())) {
             return false;
           }
           break;
         case 'containsown':
-          if (!_ownText(el)
+          if (!_jsoupOwnText(el)
               .toLowerCase()
               .contains(_unquote(arg).toLowerCase())) {
             return false;
           }
           break;
         case 'matches':
-          if (!_regexMatch(arg, el.text)) return false;
+          if (!_regexMatch(arg, _jsoupText(el))) return false;
           break;
         case 'matchesown':
-          if (!_regexMatch(arg, _ownText(el))) return false;
+          if (!_regexMatch(arg, _jsoupOwnText(el))) return false;
           break;
         case 'empty':
           if (el.nodes.isNotEmpty) return false;
@@ -600,13 +800,6 @@ class AnalyzeByJsoup {
       return text.contains(_unquote(pattern));
     }
   }
-
-  // jsoup `Element.ownText()`：ASCII 空白折叠并修剪，U+3000 原样保留。
-  static String _ownText(Element el) => StringUtils.trimAscii(el.nodes
-      .whereType<Text>()
-      .map((n) => n.text)
-      .join()
-      .replaceAll(RegExp(r'[ \t\n\x0B\f\r]+'), ' '));
 
   static bool _querySingleMatch(Element el, String selector) {
     final parent = el.parent;
@@ -847,7 +1040,8 @@ class AnalyzeByJsoup {
     final elementsRule = sourceRule.elementsRule;
 
     if (elementsRule.isEmpty) {
-      return [_element.text.trim()];
+      // legado：空规则返回 `element.data()`（script/style 数据节点内容）。
+      return [_jsoupData(_element)];
     }
 
     final ruleAnalyzer = RuleAnalyzer(elementsRule);
@@ -909,8 +1103,8 @@ class AnalyzeByJsoup {
           lowerR == 'all') {
         return _getResultLast([_element], r);
       }
-      final attr = _element.attributes[r] ?? _element.attributes[lowerR];
-      if (attr != null && attr.isNotEmpty) return [attr];
+      final attr = _attrJsoup(_element, r);
+      if (attr.isNotEmpty) return [attr];
       final selected = _getElementsSingle(_element, r);
       return _getResultLast(selected, 'text');
     }
@@ -954,17 +1148,19 @@ class AnalyzeByJsoup {
     switch (lowerMethod) {
       case 'text':
         for (final el in elements) {
-          final text = el.text.trim();
+          final text = _jsoupText(el);
           if (text.isNotEmpty) result.add(text);
         }
         break;
       case 'textnodes':
         // legado getResultLast("textNodes")：同一元素的文本节点用 "\n"
         // 合并为一条结果；空节点跳过，元素整体为空则不产出。
+        // jsoup TextNode.text() 会折叠空白，再按 ASCII 修剪。
         for (final el in elements) {
           final tn = <String>[];
           for (final node in el.nodes.whereType<Text>()) {
-            final text = node.text.trim();
+            final text =
+                StringUtils.trimAscii(_normaliseJsoupWhitespace(node.text));
             if (text.isNotEmpty) tn.add(text);
           }
           if (tn.isNotEmpty) result.add(tn.join('\n'));
@@ -972,12 +1168,7 @@ class AnalyzeByJsoup {
         break;
       case 'owntext':
         for (final el in elements) {
-          final text = el.nodes
-              .whereType<Text>()
-              .map((n) => n.text.trim())
-              .where((s) => s.isNotEmpty)
-              .join(' ')
-              .trim();
+          final text = _jsoupOwnText(el);
           if (text.isNotEmpty) result.add(text);
         }
         break;
@@ -1009,8 +1200,9 @@ class AnalyzeByJsoup {
         break;
       default:
         // 属性提取：空值与重复值跳过（legado getResultLast else 分支）。
+        // jsoup `attr()` 属性名大小写不敏感。
         for (final el in elements) {
-          final attr = el.attributes[method] ?? '';
+          final attr = _attrJsoup(el, method);
           if (attr.trim().isNotEmpty && !result.contains(attr)) result.add(attr);
         }
         break;
@@ -1023,7 +1215,10 @@ class AnalyzeByJsoup {
     final lastAt = ruleStr.lastIndexOf('@');
     if (lastAt < 0) {
       final elements = _safeQuery(element, ruleStr);
-      return elements.map((e) => e.text.trim()).where((s) => s.isNotEmpty).toList();
+      return elements
+          .map(_jsoupText)
+          .where((s) => s.isNotEmpty)
+          .toList();
     }
     final selector = ruleStr.substring(0, lastAt).trim();
     final extractMethod = ruleStr.substring(lastAt + 1).trim();
@@ -1129,7 +1324,7 @@ class AnalyzeByJsoup {
       final el = elements.first;
       if (el is Element) {
         return {
-          'text': el.text.trim(),
+          'text': _jsoupText(el),
           'html': el.innerHtml,
           ...el.attributes,
         };
@@ -1175,19 +1370,17 @@ class _ElementsSingle {
         case 'children':
           elements = temp.children;
           break;
-        // legado 用 jsoup Collector 取 class/tag，**包含元素自身**：
-        // `class.onefourbox@tag.a` 选中 <a> 后，书源再写 `tag.a@href`
-        // 即取该 <a> 自身的 href。package:html 的 getElementsByClassName/
-        // getElementsByTagName 只查后代，缺自身会导致整类「列表项即目标
-        // 标签」的源取不到 URL（2026-11-15 蚂蚁阅读实测）。
+        // legado 用 jsoup Collector 取 class/tag，**包含元素自身**且类名/
+        // 标签名大小写不敏感：`class.onefourbox@tag.a` 选中 <a> 后，书源
+        // 再写 `tag.a@href` 即取该 <a> 自身的 href。
         case 'class':
           elements = rules.length > 1
-              ? _withSelfByClass(temp, rules[1])
+              ? AnalyzeByJsoup._collectByClass(temp, rules[1])
               : const <Element>[];
           break;
         case 'tag':
           elements = rules.length > 1
-              ? _withSelfByTag(temp, rules[1])
+              ? AnalyzeByJsoup._collectByTag(temp, rules[1])
               : const <Element>[];
           break;
         case 'id':
@@ -1285,31 +1478,6 @@ class _ElementsSingle {
     return elements;
   }
 
-  /// `class.X[ Y]` 命中自身时置于结果首位（jsoup 含自身的语义）。
-  /// 多个类名以空格分隔时为 AND 关系（对齐 jsoup hasClass 的多类支持）。
-  static List<Element> _withSelfByClass(Element temp, String classNames) {
-    final descendants = temp.getElementsByClassName(classNames);
-    final tokens = classNames
-        .trim()
-        .split(RegExp(r'\s+'))
-        .where((e) => e.isNotEmpty)
-        .toList();
-    final classes = temp.classes;
-    if (tokens.isNotEmpty && tokens.every(classes.contains)) {
-      return <Element>[temp, ...descendants];
-    }
-    return descendants;
-  }
-
-  /// `tag.X` 命中自身时置于结果首位（jsoup 含自身的语义）。
-  static List<Element> _withSelfByTag(Element temp, String tag) {
-    final descendants = temp.getElementsByTagName(tag);
-    if ((temp.localName ?? '').toLowerCase() == tag.trim().toLowerCase()) {
-      return <Element>[temp, ...descendants];
-    }
-    return descendants;
-  }
-
   static List<Element> _collectById(Element root, String id) {
     final result = <Element>[];
     void walk(Element el) {
@@ -1323,18 +1491,13 @@ class _ElementsSingle {
     return result;
   }
 
-  // Java `\s` 仅 ASCII 空白；jsoup `normaliseWhitespace` 同样不含 U+3000。
-  static String _ownText(Element el) => StringUtils.trimAscii(el.nodes
-      .whereType<Text>()
-      .map((n) => n.text)
-      .join()
-      .replaceAll(RegExp(r'[ \t\n\x0B\f\r]+'), ' '));
-
   static List<Element> _collectContainingOwnText(Element root, String text) {
     final needle = text.toLowerCase();
     final result = <Element>[];
     void walk(Element el) {
-      if (_ownText(el).toLowerCase().contains(needle)) result.add(el);
+      if (AnalyzeByJsoup._jsoupOwnText(el).toLowerCase().contains(needle)) {
+        result.add(el);
+      }
       for (final child in el.children) {
         walk(child);
       }
@@ -1444,5 +1607,40 @@ class _IndexRange {
   final int? start;
   final int? end;
   final int step;
+}
+
+/// 逐字符累积的文本缓冲，记录末字符以复用 jsoup 的「末位空格」判定。
+class _JsoupTextBuf {
+  final StringBuffer _buf = StringBuffer();
+  int last = -1;
+
+  bool get isEmpty => last == -1;
+
+  void write(String s) {
+    if (s.isEmpty) return;
+    _buf.write(s);
+    last = s.codeUnitAt(s.length - 1);
+  }
+
+  void writeNormalised(String s) {
+    var i = 0;
+    while (i < s.length) {
+      if (AnalyzeByJsoup._isJsoupActualWhitespace(s.codeUnitAt(i))) {
+        if (last != 0x20 && last != -1) write(' ');
+        i++;
+      } else {
+        var j = i + 1;
+        while (j < s.length &&
+            !AnalyzeByJsoup._isJsoupActualWhitespace(s.codeUnitAt(j))) {
+          j++;
+        }
+        write(s.substring(i, j));
+        i = j;
+      }
+    }
+  }
+
+  @override
+  String toString() => _buf.toString();
 }
 
