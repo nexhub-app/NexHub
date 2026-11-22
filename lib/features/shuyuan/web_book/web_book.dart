@@ -266,7 +266,7 @@ class WebBook {
       // legado WebBook.getBookInfoAwait：baseUrl 是请求前的书籍 URL，
       // redirectUrl 才是响应最终 URL（tocUrl 兜底/tocHtml 判定依赖前者）。
       baseUrl: bookUrl,
-      redirectUrl: analyzeUrl.url,
+      redirectUrl: analyzeUrl.lastFinalUrl ?? analyzeUrl.url,
       body: body,
     );
     return book;
@@ -399,7 +399,7 @@ class WebBook {
       );
       body = await analyzeUrl.applyLoginCheck(
           await analyzeUrl.getStrResponse());
-      tocBaseUrl = analyzeUrl.url;
+      tocBaseUrl = analyzeUrl.lastFinalUrl ?? analyzeUrl.url;
     }
     if (body.isEmpty) return <XiaoshuoBookChapter>[];
 
@@ -504,7 +504,8 @@ class WebBook {
             bookSource: source,
             book: book,
             baseUrl: url,
-            redirectUrl: pageAnalyze.url,
+            // legado 并发目录分页：redirectUrl 取响应最终地址（res.url）。
+            redirectUrl: pageAnalyze.lastFinalUrl ?? pageAnalyze.url,
             body: pageBody,
             getNextUrl: false,
             applyReverse: false,
@@ -610,7 +611,7 @@ class WebBook {
       firstBody = await analyzeUrl.applyLoginCheck(fetchedBody);
       AppLog.instance.i('[书源正文] 首页抓取完成 源=${source.bookSourceName} '
           '长度=${firstBody.length} 耗时=${fetchWatch.elapsedMilliseconds}ms');
-      firstBaseUrl = analyzeUrl.url;
+      firstBaseUrl = analyzeUrl.lastFinalUrl ?? analyzeUrl.url;
     }
     if (firstBody.isEmpty) {
       return BookContentResult(content: '', error: '正文为空');
@@ -680,7 +681,8 @@ class WebBook {
               book: book,
               bookChapter: chapter,
               baseUrl: url,
-              redirectUrl: analyze.url,
+              // legado 并发正文分页：redirectUrl 取响应最终地址（res.url）。
+              redirectUrl: analyze.lastFinalUrl ?? analyze.url,
               body: body,
               nextChapterUrl: nextChapterUrl,
               mediaSource: mediaSource,
@@ -736,7 +738,8 @@ class WebBook {
             book: book,
             bookChapter: chapter,
             baseUrl: nextUrl,
-            redirectUrl: pageAnalyze.url,
+            // legado 串行正文分页：redirectUrl 取响应最终地址（res.url）。
+            redirectUrl: pageAnalyze.lastFinalUrl ?? pageAnalyze.url,
             body: pageBody,
             nextChapterUrl: nextChapterUrl,
             mediaSource: mediaSource,
@@ -745,7 +748,7 @@ class WebBook {
           );
           blocks.addAll(pageContent);
           currentBaseUrl = nextUrl;
-          currentRedirectUrl = pageAnalyze.url;
+          currentRedirectUrl = pageAnalyze.lastFinalUrl ?? pageAnalyze.url;
           currentBody = pageBody;
         }
       }
