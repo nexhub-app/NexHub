@@ -933,6 +933,7 @@ const String sourceContextJsPrelude = r'''
         },
       },
     };
+    if (global.__syOrgJson) global.org.json = global.__syOrgJson;
     // java.webView(html, url, js)：无头 WebView 加载页面 / 注入 html、执行 js
     // 后返回整页 HTML。同步沙箱内不能真开 WebView，故与 ajax 同款重放：
     // 首轮记录 op 返回占位符，宿主 settle 抓取后写入 __webviewCache，重放命中。
@@ -3313,6 +3314,13 @@ const String javaExtensionsJsPrelude = r'''
     try {
       Object.defineProperty(cls, '__javaClass', { value: true });
       Object.defineProperty(cls, '__javaName', { value: name });
+      if (typeof cls.getName !== 'function') {
+        Object.defineProperty(cls, 'getName', {
+          value: function () { return name; },
+          enumerable: false,
+          configurable: true,
+        });
+      }
     } catch (e) {}
     return cls;
   }
@@ -4461,6 +4469,9 @@ const String javaExtensionsJsPrelude = r'''
     return new OkHttpRequestBody(body, mt);
   };
   OkHttpRequestBody.prototype.toString = function () { return this.__text; };
+  OkHttpRequestBody.prototype.contentType = function () {
+    return this.__mt || null;
+  };
 
   function OkHttpRequest() {
     this.__url = '';
@@ -4548,14 +4559,28 @@ const String javaExtensionsJsPrelude = r'''
     if (!url) throw new Error('okhttp: Request.url must be set');
     var method = String(req.__method || 'GET').toUpperCase();
     var body = null;
+    var bodyType = null;
     if (req.__body != null) {
-      body = req.__body instanceof OkHttpRequestBody
-          ? req.__body.__text : String(req.__body);
+      var rb = req.__body;
+      if (rb && typeof rb.contentType === 'function') {
+        bodyType = rb.contentType();
+      }
+      body = rb && rb.__text != null ? String(rb.__text) : String(rb);
+    }
+    var headers = {};
+    var hasHeaders = false;
+    for (var k in req.__headers) {
+      headers[k] = req.__headers[k];
+      hasHeaders = true;
+    }
+    // OkHttp 会把 RequestBody 的媒体类型写进 Content-Type（FormBody /
+    // MultipartBody 依赖这一点）；显式 header 优先。
+    if (bodyType != null && headers['Content-Type'] == null) {
+      headers['Content-Type'] = String(bodyType);
+      hasHeaders = true;
     }
     var opts = {};
-    var hasHeaders = false;
-    for (var k in req.__headers) { hasHeaders = true; break; }
-    if (hasHeaders) opts.headers = req.__headers;
+    if (hasHeaders) opts.headers = headers;
     if (method !== 'GET') opts.method = method;
     if (body != null) opts.body = body;
     var merged = jMergeUrlOpts(url, opts);
@@ -4705,12 +4730,492 @@ const String javaExtensionsJsPrelude = r'''
   };
   LegadoStrResponse.prototype.toString = function () { return this.__b; };
 
+  // ── JSON 类库面（org.json / fastjson / Gson）──
+  //
+  // Android 平台脚本常用 `importClass(Packages.org.json.JSONObject)` 或
+  // fastjson/Gson 处理 JSON。这里用原生 JSON 实现同语义的读写方法，
+  // 取值口径对齐 Android `org.json`（数值/布尔可解析字符串会被转换，
+  // 缺失键 get* 抛 JSONException、opt* 取默认值）。未实现的方法保持不存在。
+
+  function jJsonError(msg) { return new Error('JSONException: ' + msg); }
+  function jJsonOwn(m, k) { return Object.prototype.hasOwnProperty.call(m, k); }
+  function jJsonParseText(s) {
+    var str = String(s == null ? '' : s);
+    try {
+      return JSON.parse(str);
+    } catch (e) {
+      throw jJsonError('Unterminated or malformed JSON value');
+    }
+  }
+  function jJsonParseObjectText(s) {
+    var v = jJsonParseText(s);
+    if (v == null || typeof v !== 'object' || Array.isArray(v)) {
+      throw jJsonError('Value ' + String(s) + ' cannot be converted to JSONObject');
+    }
+    return v;
+  }
+  function jJsonParseArrayText(s) {
+    var v = jJsonParseText(s);
+    if (!Array.isArray(v)) {
+      throw jJsonError('Value ' + String(s) + ' cannot be converted to JSONArray');
+    }
+    return v;
+  }
+  function jJsonToNumber(v) {
+    if (typeof v === 'number') return v;
+    if (v != null && typeof v === 'object' && v instanceof Number) return Number(v);
+    if (typeof v === 'string') {
+      var n = parseFloat(v);
+      return isNaN(n) ? null : n;
+    }
+    return null;
+  }
+  function jJsonToInt(v) {
+    var n = jJsonToNumber(v);
+    return n == null ? null : (n < 0 ? Math.ceil(n) : Math.floor(n));
+  }
+  function jJsonToBool(v) {
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'string') {
+      var s = v.toLowerCase();
+      if (s === 'true') return true;
+      if (s === 'false') return false;
+    }
+    return null;
+  }
+
+  function JSONObject(arg) {
+    if (!(this instanceof JSONObject)) return new JSONObject(arg);
+    this.__m = {};
+    if (arg == null) return;
+    if (typeof arg === 'string') {
+      this.__m = jJsonParseObjectText(arg);
+      return;
+    }
+    if (arg && typeof arg === 'object' && arg.__m && typeof arg.__m === 'object') {
+      for (var k0 in arg.__m) {
+        if (jJsonOwn(arg.__m, k0)) this.__m[k0] = arg.__m[k0];
+      }
+      return;
+    }
+    if (typeof arg === 'object' && !Array.isArray(arg)) {
+      for (var k in arg) {
+        if (jJsonOwn(arg, k)) this.__m[k] = arg[k];
+      }
+      return;
+    }
+    throw jJsonError('Value ' + String(arg) + ' cannot be converted to JSONObject');
+  }
+  jmark(JSONObject, 'org.json.JSONObject');
+  JSONObject.prototype.get = function (name) {
+    var key = String(name);
+    if (!jJsonOwn(this.__m, key)) throw jJsonError('No value for ' + key);
+    return this.__m[key] == null ? null : this.__m[key];
+  };
+  JSONObject.prototype.opt = function (name) {
+    var key = String(name);
+    if (!jJsonOwn(this.__m, key)) return null;
+    return this.__m[key] == null ? null : this.__m[key];
+  };
+  JSONObject.prototype.has = function (name) {
+    return jJsonOwn(this.__m, String(name));
+  };
+  JSONObject.prototype.containsKey = function (name) { return this.has(name); };
+  JSONObject.prototype.isNull = function (name) {
+    var key = String(name);
+    return !jJsonOwn(this.__m, key) || this.__m[key] == null;
+  };
+  JSONObject.prototype.getString = function (name) {
+    var v = this.get(name);
+    if (v == null) throw jJsonError(name + ' is null');
+    return typeof v === 'string' ? v : String(v);
+  };
+  JSONObject.prototype.optString = function (name, fallback) {
+    var v = this.opt(name);
+    if (v == null) return fallback == null ? '' : String(fallback);
+    return typeof v === 'string' ? v : String(v);
+  };
+  JSONObject.prototype.getInt = function (name) {
+    var n = jJsonToInt(this.get(name));
+    if (n == null) throw jJsonError(name + ' is not an int');
+    return n;
+  };
+  JSONObject.prototype.optInt = function (name, fallback) {
+    var n = jJsonToInt(this.opt(name));
+    return n == null ? (fallback == null ? 0 : fallback) : n;
+  };
+  JSONObject.prototype.getLong = function (name) {
+    var n = jJsonToInt(this.get(name));
+    if (n == null) throw jJsonError(name + ' is not a long');
+    return n;
+  };
+  JSONObject.prototype.optLong = function (name, fallback) {
+    return this.optInt(name, fallback == null ? 0 : fallback);
+  };
+  JSONObject.prototype.getInteger = function (name) {
+    return jJsonToInt(this.opt(name));
+  };
+  JSONObject.prototype.getIntValue = function (name) {
+    return this.optInt(name, 0);
+  };
+  JSONObject.prototype.getDouble = function (name) {
+    var n = jJsonToNumber(this.get(name));
+    if (n == null) throw jJsonError(name + ' is not a double');
+    return n;
+  };
+  JSONObject.prototype.optDouble = function (name, fallback) {
+    var n = jJsonToNumber(this.opt(name));
+    return n == null ? (fallback == null ? NaN : fallback) : n;
+  };
+  JSONObject.prototype.getBoolean = function (name) {
+    var b = jJsonToBool(this.get(name));
+    if (b == null) throw jJsonError(name + ' is not a boolean');
+    return b;
+  };
+  JSONObject.prototype.optBoolean = function (name, fallback) {
+    var b = jJsonToBool(this.opt(name));
+    return b == null ? (fallback == null ? false : fallback) : b;
+  };
+  JSONObject.prototype.getBooleanValue = function (name) {
+    return this.optBoolean(name, false);
+  };
+  JSONObject.prototype.getJSONObject = function (name) {
+    var v = this.get(name);
+    if (v == null || typeof v !== 'object' || Array.isArray(v)) {
+      throw jJsonError(name + ' is not a JSONObject');
+    }
+    return new JSONObject(v);
+  };
+  JSONObject.prototype.optJSONObject = function (name) {
+    var v = this.opt(name);
+    return (v != null && typeof v === 'object' && !Array.isArray(v))
+        ? new JSONObject(v) : null;
+  };
+  JSONObject.prototype.getJSONArray = function (name) {
+    var v = this.get(name);
+    if (!Array.isArray(v)) throw jJsonError(name + ' is not a JSONArray');
+    return new JSONArray(v);
+  };
+  JSONObject.prototype.optJSONArray = function (name) {
+    var v = this.opt(name);
+    return Array.isArray(v) ? new JSONArray(v) : null;
+  };
+  JSONObject.prototype.put = function (name, value) {
+    this.__m[String(name)] = value;
+    return this;
+  };
+  JSONObject.prototype.remove = function (name) {
+    var key = String(name);
+    if (!jJsonOwn(this.__m, key)) return null;
+    var v = this.__m[key];
+    delete this.__m[key];
+    return v == null ? null : v;
+  };
+  JSONObject.prototype.keys = function () {
+    var keys = Object.keys(this.__m);
+    var i = 0;
+    return {
+      hasNext: function () { return i < keys.length; },
+      next: function () { return keys[i++]; },
+      remove: function () { throw new Error('UnsupportedOperationException'); },
+    };
+  };
+  JSONObject.prototype.keySet = function () { return Object.keys(this.__m); };
+  JSONObject.prototype.names = function () { return Object.keys(this.__m); };
+  JSONObject.prototype.length = function () { return Object.keys(this.__m).length; };
+  JSONObject.prototype.size = function () { return Object.keys(this.__m).length; };
+  JSONObject.prototype.isEmpty = function () {
+    return Object.keys(this.__m).length === 0;
+  };
+  JSONObject.prototype.toString = function () { return JSON.stringify(this.__m); };
+  JSONObject.prototype.toJSON = function () { return this.__m; };
+
+  function JSONArray(arg) {
+    if (!(this instanceof JSONArray)) return new JSONArray(arg);
+    this.__a = [];
+    if (arg == null) return;
+    if (typeof arg === 'string') {
+      this.__a = jJsonParseArrayText(arg);
+      return;
+    }
+    if (arg && typeof arg === 'object' && Array.isArray(arg.__a)) {
+      for (var i0 = 0; i0 < arg.__a.length; i0++) this.__a.push(arg.__a[i0]);
+      return;
+    }
+    if (typeof arg === 'object' && typeof arg.length === 'number') {
+      for (var i = 0; i < arg.length; i++) this.__a.push(arg[i]);
+      return;
+    }
+    throw jJsonError('Value ' + String(arg) + ' cannot be converted to JSONArray');
+  }
+  jmark(JSONArray, 'org.json.JSONArray');
+  function jJsonIndex(a, i, strict) {
+    var idx = jJsonToInt(i);
+    if (idx == null || idx < 0 || idx >= a.length) {
+      if (strict !== false) {
+        throw jJsonError('Index ' + i + ' out of range [0..' + a.length + ')');
+      }
+      return null;
+    }
+    return idx;
+  }
+  JSONArray.prototype.get = function (i) {
+    var idx = jJsonIndex(this.__a, i);
+    return this.__a[idx] == null ? null : this.__a[idx];
+  };
+  JSONArray.prototype.opt = function (i) {
+    var idx = jJsonIndex(this.__a, i, false);
+    if (idx == null) return null;
+    return this.__a[idx] == null ? null : this.__a[idx];
+  };
+  JSONArray.prototype.isNull = function (i) {
+    var idx = jJsonIndex(this.__a, i, false);
+    return idx == null || this.__a[idx] == null;
+  };
+  JSONArray.prototype.getString = function (i) {
+    var v = this.get(i);
+    if (v == null) throw jJsonError(i + ' is null');
+    return typeof v === 'string' ? v : String(v);
+  };
+  JSONArray.prototype.optString = function (i, fallback) {
+    var v = this.opt(i);
+    if (v == null) return fallback == null ? '' : String(fallback);
+    return typeof v === 'string' ? v : String(v);
+  };
+  JSONArray.prototype.getInt = function (i) {
+    var n = jJsonToInt(this.get(i));
+    if (n == null) throw jJsonError(i + ' is not an int');
+    return n;
+  };
+  JSONArray.prototype.optInt = function (i, fallback) {
+    var n = jJsonToInt(this.opt(i));
+    return n == null ? (fallback == null ? 0 : fallback) : n;
+  };
+  JSONArray.prototype.getLong = function (i) {
+    var n = jJsonToInt(this.get(i));
+    if (n == null) throw jJsonError(i + ' is not a long');
+    return n;
+  };
+  JSONArray.prototype.getDouble = function (i) {
+    var n = jJsonToNumber(this.get(i));
+    if (n == null) throw jJsonError(i + ' is not a double');
+    return n;
+  };
+  JSONArray.prototype.getBoolean = function (i) {
+    var b = jJsonToBool(this.get(i));
+    if (b == null) throw jJsonError(i + ' is not a boolean');
+    return b;
+  };
+  JSONArray.prototype.getJSONObject = function (i) {
+    var v = this.get(i);
+    if (v == null || typeof v !== 'object' || Array.isArray(v)) {
+      throw jJsonError(i + ' is not a JSONObject');
+    }
+    return new JSONObject(v);
+  };
+  JSONArray.prototype.optJSONObject = function (i) {
+    var v = this.opt(i);
+    return (v != null && typeof v === 'object' && !Array.isArray(v))
+        ? new JSONObject(v) : null;
+  };
+  JSONArray.prototype.getJSONArray = function (i) {
+    var v = this.get(i);
+    if (!Array.isArray(v)) throw jJsonError(i + ' is not a JSONArray');
+    return new JSONArray(v);
+  };
+  JSONArray.prototype.optJSONArray = function (i) {
+    var v = this.opt(i);
+    return Array.isArray(v) ? new JSONArray(v) : null;
+  };
+  JSONArray.prototype.put = function (a, b) {
+    if (arguments.length > 1) {
+      var idx = jJsonToInt(a);
+      if (idx == null || idx < 0 || idx > this.__a.length) {
+        throw jJsonError('Index ' + a + ' out of range [0..' + this.__a.length + ']');
+      }
+      if (idx === this.__a.length) this.__a.push(b);
+      else this.__a[idx] = b;
+      return this;
+    }
+    this.__a.push(a);
+    return this;
+  };
+  JSONArray.prototype.remove = function (i) {
+    var idx = jJsonIndex(this.__a, i, false);
+    if (idx == null) return null;
+    var out = this.__a.splice(idx, 1);
+    return out.length ? (out[0] == null ? null : out[0]) : null;
+  };
+  JSONArray.prototype.length = function () { return this.__a.length; };
+  JSONArray.prototype.size = function () { return this.__a.length; };
+  JSONArray.prototype.toString = function () { return JSON.stringify(this.__a); };
+  JSONArray.prototype.toJSON = function () { return this.__a; };
+
+  var FastjsonJSON = jmark(function FastjsonJSON() {},
+      'com.alibaba.fastjson.JSON');
+  FastjsonJSON.parse = function (s) {
+    var v = jJsonParseText(s);
+    if (Array.isArray(v)) return new JSONArray(v);
+    if (v != null && typeof v === 'object') return new JSONObject(v);
+    return v;
+  };
+  FastjsonJSON.parseObject = function (s) {
+    return new JSONObject(jJsonParseObjectText(s));
+  };
+  FastjsonJSON.parseArray = function (s) {
+    return new JSONArray(jJsonParseArrayText(s));
+  };
+  FastjsonJSON.toJSONString = function (o) {
+    return JSON.stringify(o == null ? null : o);
+  };
+
+  function Gson() {}
+  jmark(Gson, 'com.google.gson.Gson');
+  Gson.prototype.toJson = function (o) {
+    return JSON.stringify(o == null ? null : o);
+  };
+  Gson.prototype.fromJson = function (s) {
+    return jJsonParseText(s);
+  };
+  function GsonBuilder() {}
+  jmark(GsonBuilder, 'com.google.gson.GsonBuilder');
+  GsonBuilder.prototype.create = function () { return new Gson(); };
+  var GsonJsonParser = jmark(function GsonJsonParser() {},
+      'com.google.gson.JsonParser');
+  GsonJsonParser.parseString = function (s) { return jJsonParseText(s); };
+  GsonJsonParser.parse = GsonJsonParser.parseString;
+
+  // 注册类查找：`java.lang.Class.forName(类全名)`，命中返回已注册的类。
+  function JavaClass() {}
+  jmark(JavaClass, 'java.lang.Class');
+  JavaClass.forName = function (name) {
+    var parts = String(name == null ? '' : name).split('.');
+    var cur = Packages;
+    for (var i = 0; i < parts.length; i++) {
+      if (cur == null || typeof cur !== 'object') { cur = null; break; }
+      cur = cur[parts[i]];
+    }
+    if (!cur || !cur.__javaName) {
+      throw new Error('ClassNotFoundException: ' + String(name));
+    }
+    return cur;
+  };
+
+  // ── okhttp3 FormBody / MultipartBody（body 自带 Content-Type）──
+  function jFormEncode(s) {
+    return encodeURIComponent(String(s == null ? '' : s)).replace(/%20/g, '+');
+  }
+  function OkHttpFormBody(pairs) {
+    this.__text = '';
+    for (var i = 0; i < pairs.length; i++) {
+      if (i > 0) this.__text += '&';
+      this.__text += jFormEncode(pairs[i][0]) + '=' + jFormEncode(pairs[i][1]);
+    }
+  }
+  jmark(OkHttpFormBody, 'okhttp3.FormBody');
+  OkHttpFormBody.prototype.contentType = function () {
+    return new OkHttpMediaType('application/x-www-form-urlencoded');
+  };
+  OkHttpFormBody.prototype.toString = function () { return this.__text; };
+  function OkHttpFormBodyBuilder() {
+    if (!(this instanceof OkHttpFormBodyBuilder)) {
+      return new OkHttpFormBodyBuilder();
+    }
+    this.__pairs = [];
+  }
+  jmark(OkHttpFormBodyBuilder, 'okhttp3.FormBody.Builder');
+  OkHttpFormBody.Builder = OkHttpFormBodyBuilder;
+  OkHttpFormBodyBuilder.prototype.add = function (k, v) {
+    this.__pairs.push([String(k), String(v == null ? '' : v)]);
+    return this;
+  };
+  OkHttpFormBodyBuilder.prototype.addEncoded = OkHttpFormBodyBuilder.prototype.add;
+  OkHttpFormBodyBuilder.prototype.build = function () {
+    return new OkHttpFormBody(this.__pairs.slice());
+  };
+
+  function jMpQuote(s) {
+    return String(s == null ? '' : s)
+        .replace(/"/g, '%22').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+  }
+  function jMpPart(headers, body) {
+    return { __headers: headers, __body: String(body == null ? '' : body) };
+  }
+  function OkHttpMultipartBody(parts, type) {
+    var baseType = type ? String(type) : 'multipart/form-data';
+    // 边界由 parts 内容派生：同一脚本跨重放轮构建出同一 body（可命中缓存）。
+    var sig = baseType;
+    for (var i = 0; i < parts.length; i++) {
+      sig += '|' + JSON.stringify(parts[i].__headers) + '|' + parts[i].__body;
+    }
+    this.__boundary =
+        '----NexHubBoundary' + bytesToHex(md5Bytes(utf8Encode(sig))).substring(0, 16);
+    this.__text = '';
+    for (var j = 0; j < parts.length; j++) {
+      this.__text += '--' + this.__boundary + '\r\n';
+      var hs = parts[j].__headers;
+      for (var h = 0; h < hs.length; h++) {
+        this.__text += hs[h][0] + ': ' + hs[h][1] + '\r\n';
+      }
+      this.__text += '\r\n' + parts[j].__body + '\r\n';
+    }
+    this.__text += '--' + this.__boundary + '--\r\n';
+    this.__type = baseType + '; boundary=' + this.__boundary;
+  }
+  jmark(OkHttpMultipartBody, 'okhttp3.MultipartBody');
+  OkHttpMultipartBody.prototype.contentType = function () {
+    return new OkHttpMediaType(this.__type);
+  };
+  OkHttpMultipartBody.prototype.toString = function () { return this.__text; };
+  function OkHttpMultipartBodyBuilder() {
+    if (!(this instanceof OkHttpMultipartBodyBuilder)) {
+      return new OkHttpMultipartBodyBuilder();
+    }
+    this.__parts = [];
+    this.__type = 'multipart/form-data';
+  }
+  jmark(OkHttpMultipartBodyBuilder, 'okhttp3.MultipartBody.Builder');
+  OkHttpMultipartBody.Builder = OkHttpMultipartBodyBuilder;
+  OkHttpMultipartBodyBuilder.prototype.setType = function (mt) {
+    this.__type = String(mt == null ? '' : mt);
+    return this;
+  };
+  OkHttpMultipartBodyBuilder.prototype.addFormDataPart = function (name, a, b) {
+    var cd = 'form-data; name="' + jMpQuote(name) + '"';
+    if (arguments.length > 2) {
+      var body = b;
+      var headers = [['Content-Disposition',
+          cd + '; filename="' + jMpQuote(a) + '"']];
+      var ct = body && typeof body.contentType === 'function'
+          ? body.contentType() : null;
+      if (ct != null) headers.push(['Content-Type', String(ct)]);
+      this.__parts.push(jMpPart(headers, body && body.__text != null
+          ? body.__text : body));
+    } else {
+      this.__parts.push(jMpPart([['Content-Disposition', cd]], a));
+    }
+    return this;
+  };
+  OkHttpMultipartBodyBuilder.prototype.addPart = function (body, headers) {
+    var hs = [];
+    var ct = body && typeof body.contentType === 'function'
+        ? body.contentType() : null;
+    if (ct != null) hs.push(['Content-Type', String(ct)]);
+    this.__parts.push(jMpPart(hs, body && body.__text != null
+        ? body.__text : body));
+    return this;
+  };
+  OkHttpMultipartBodyBuilder.prototype.build = function () {
+    return new OkHttpMultipartBody(this.__parts.slice(), this.__type);
+  };
+
   // ── 包树 ──
   var P_java_util_zip = jpkg({ GZIPInputStream: GZIPInputStream });
   var P_java_lang = jpkg({
     String: JavaString,
     System: JavaSystem,
     Thread: JavaThread,
+    Class: JavaClass,
   });
   var P_java_util = jpkg({
     Base64: JavaBase64,
@@ -4753,6 +5258,8 @@ const String javaExtensionsJsPrelude = r'''
     Request: OkHttpRequest,
     RequestBody: OkHttpRequestBody,
     MediaType: OkHttpMediaType,
+    FormBody: OkHttpFormBody,
+    MultipartBody: OkHttpMultipartBody,
     OkHttpClient: OkHttpClient,
     Response: OkHttpResponse,
     Call: OkHttpCall,
@@ -4768,6 +5275,17 @@ const String javaExtensionsJsPrelude = r'''
     Connection: JsoupConnection,
   });
   var P_legado_http = jpkg({ StrResponse: LegadoStrResponse });
+  var P_org_json = jpkg({ JSONObject: JSONObject, JSONArray: JSONArray });
+  var P_com_fastjson = jpkg({
+    JSON: FastjsonJSON,
+    JSONObject: JSONObject,
+    JSONArray: JSONArray,
+  });
+  var P_com_gson = jpkg({
+    Gson: Gson,
+    GsonBuilder: GsonBuilder,
+    JsonParser: GsonJsonParser,
+  });
 
   var Packages = {
     java: {
@@ -4790,7 +5308,11 @@ const String javaExtensionsJsPrelude = r'''
         crypto: { digest: P_hutool_digest },
       },
     },
-    org: { jsoup: P_org_jsoup },
+    com: {
+      alibaba: { fastjson: P_com_fastjson },
+      google: { gson: P_com_gson },
+    },
+    org: { jsoup: P_org_jsoup, json: P_org_json },
     io: {
       legado: { app: { help: { http: P_legado_http } } },
     },
@@ -4818,6 +5340,14 @@ const String javaExtensionsJsPrelude = r'''
   };
 
   global.Packages = Packages;
+  // Rhino 顶层包名（org/com 直接可见）：`org.json.JSONObject`、
+  // `com.alibaba.fastjson.JSON` 等写法不经 Packages 也能解析。
+  // `org.jsoup` 由书源上下文预置在 global.org 上，这里只导出待合并的引用。
+  global.com = {
+    alibaba: { fastjson: P_com_fastjson },
+    google: { gson: P_com_gson },
+  };
+  global.__syOrgJson = P_org_json;
   global.JavaImporter = JavaImporter;
   // Rhino 顶层 importPackage/importClass（语料中基本用 JavaImporter，这里
   // 保留兼容；不覆盖已存在的同名全局，避免把 String 等 JS 内建顶掉）。
