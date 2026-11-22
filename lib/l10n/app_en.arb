@@ -1168,6 +1168,7 @@
   "playerOhosUnsupported": "Video playback isn't supported on HarmonyOS yet. This feature is being adapted.",
   "playerEpisodeSwitchFailed": "Failed to switch episode, please retry",
   "playerStallDetected": "Playback stalled, reconnecting…",
+  "playerLiveBadge": "LIVE",
   "playerRetry": "Retry",
   "playerNextEpisode": "Next episode",
   "playerPreviousEpisode": "Previous episode",

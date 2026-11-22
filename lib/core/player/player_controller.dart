@@ -8,9 +8,12 @@ import 'package:media_kit/media_kit.dart';
 import '../models/episode.dart';
 import '../platform/platform_service.dart';
 import '../settings/player_settings.dart' show UpscaleShaderMode;
+import '../utils/app_log.dart';
 import 'anime4k_shaders.dart';
 import 'demuxer_cache_policy.dart';
+import 'live_stream_policy.dart';
 import 'media_kit_backend.dart';
+import 'player_capability.dart';
 import 'subtitle_memory_store.dart';
 import 'video_player_backend.dart';
 
@@ -393,9 +396,72 @@ class PlayerController extends ChangeNotifier {
    // 后端不支持（NoOp / Web 降级），忽略。
     }
     await _backend.player.open(Media(openUrl, httpHeaders: headers));
+  // 新媒体打开：重置直播态并重新探测（切集 / 换线 / 重连都会走到这里；
+  // rtsp 等天生直播协议的缓存配方已在 prepareDemuxerForUrl 应用，此处
+  // 探测仍会确认 isLive 供 UI / 恢复逻辑使用）。
+    _isLive = false;
+    final generation = ++_openGeneration;
+    unawaited(_detectLiveStream(generation));
   // 记录当前媒体 URL，异步恢复字幕记忆（不阻塞打开，失败静默）。
     _subtitleMediaUrl = url;
     unawaited(_restoreSubtitles());
+  }
+
+ // ─────────────────────── 直播流识别 ───────────────────────
+
+ /// 当前媒体是否为直播流（open 后异步探测，见 [_detectLiveStream]）。
+  bool _isLive = false;
+
+ /// 是否直播流。UI 据此隐藏进度条 / 倍速语义适配，恢复逻辑据此放弃 seek。
+  bool get isLive => _isLive;
+
+ /// open 代次：每次 open() 递增，使上一轮探测循环立即失效退出。
+  int _openGeneration = 0;
+
+ /// open 后异步探测当前媒体是否为直播流。
+ ///
+ /// mpv 对直播 HLS（无 `EXT-X-ENDLIST`）/ 裸流不上报时长，表现为
+ /// `duration` 恒为 0 而位置在推进；持续超过 [LiveStreamPolicy.detectWindow]
+ /// 即判定为直播并应用直播缓存配方（小缓存快贴边缘 + 禁用强制可拖动）。
+ /// 时长晚到的慢速点播不受影响（duration > 0 即退出）。
+  Future<void> _detectLiveStream(int generation) async {
+ // 无属性查询能力的后端（Web / NoOp 降级）无法探测，保持点播行为。
+    if (!_backend.capabilities.contains(PlayerCapability.propertyQuery)) {
+      return;
+    }
+    final stopwatch = Stopwatch()..start();
+    var sawPositionAdvance = false;
+    Duration lastPosition = Duration.zero;
+    while (!_released &&
+        _openGeneration == generation &&
+        stopwatch.elapsed < const Duration(seconds: 15)) {
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      if (_openGeneration != generation) return;
+      if (_backend.player.state.duration > Duration.zero) {
+        return; // 时长已知：点播流，保持点播配方。
+      }
+      final position = _backend.player.state.position;
+      if (position > Duration.zero && position != lastPosition) {
+        sawPositionAdvance = true;
+        lastPosition = position;
+      }
+      if (sawPositionAdvance &&
+          stopwatch.elapsed >= LiveStreamPolicy.detectWindow) {
+        _isLive = true;
+        try {
+          await _backend.setLiveStreamMode(true);
+        } on Object {
+       // 配方应用失败不影响判定，仅失去直播优化。
+        }
+     // await 期间实例可能已释放（切集/退出竞态）：notifyListeners 对已
+     // dispose 的 ChangeNotifier 会断言崩溃，先复查。
+        if (_released) return;
+        AppLog.instance.i('[直播] 判定为直播流（duration 恒 0 且位置推进），'
+            '已应用直播缓存配方');
+        notifyListeners();
+        return;
+      }
+    }
   }
 
  /// 把本地裸路径归一化为 `file://` URI，便于 media_kit/mpv 稳定打开。
@@ -502,7 +568,9 @@ class PlayerController extends ChangeNotifier {
             .firstWhere((Duration d) => d > Duration.zero)
             .timeout(openReadyTimeout);
       } on Object {
-    // 超时或流异常：仍尝试 seek 一次，失败也不影响播放。
+    // 超时或流异常：直播流（duration 恒 0）放弃恢复——对直播流 seek 到
+    // 过去的时间点会被 mpv 拒绝或造成重新缓冲卡死，直接从直播边缘续播。
+        if (isLive) return;
       }
     }
     await seek(target);

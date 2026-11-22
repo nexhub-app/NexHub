@@ -4808,6 +4808,12 @@ abstract class AppLocalizations {
   /// **'Playback stalled, reconnecting…'**
   String get playerStallDetected;
 
+  /// No description provided for @playerLiveBadge.
+  ///
+  /// In en, this message translates to:
+  /// **'LIVE'**
+  String get playerLiveBadge;
+
   /// No description provided for @playerRetry.
   ///
   /// In en, this message translates to:

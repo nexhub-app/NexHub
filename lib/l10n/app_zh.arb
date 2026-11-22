@@ -1155,6 +1155,7 @@
   "playerOhosUnsupported": "鸿蒙版暂不支持视频播放，该功能正在适配中",
   "playerEpisodeSwitchFailed": "切换该剧集失败，请重试",
   "playerStallDetected": "播放卡顿，正在重连…",
+  "playerLiveBadge": "直播中",
   "playerRetry": "重试",
   "playerNextEpisode": "下一集",
   "playerPreviousEpisode": "上一集",

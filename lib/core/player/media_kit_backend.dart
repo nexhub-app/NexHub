@@ -1,6 +1,7 @@
 import 'package:media_kit/media_kit.dart';
 
 import 'demuxer_cache_policy.dart';
+import 'live_stream_policy.dart';
 import 'player_capability.dart';
 import 'video_player_backend.dart';
 
@@ -134,9 +135,54 @@ class MediaKitBackend extends VideoPlayerBackend {
   /// HLS（.m3u8）强制 `demuxer-lavf-format=hls`，跳过 FFmpeg 内容探测——
   /// 部分 CMS 媒体服务器的 m3u8 首段被误探为 mpegts 导致时长缺失 / 黑屏；
   /// 非 HLS 地址复位为自动探测，避免普通 mp4 被错误按 hls 解析。
+  ///
+  /// rtsp / rtmp 等天生直播协议在 open 前即应用直播配方（这些协议无可拖动
+  /// 时长，默认的 `force-seekable=yes` + 大缓存对直播有害）；m3u8 是否直播
+  /// 无法从地址判断，交给播放中探测（[setLiveStreamMode]）。
   Future<void> prepareDemuxerForUrl(String url) async {
     final isHls = url.toLowerCase().contains('.m3u8');
     await _setProperty('demuxer-lavf-format', isHls ? 'hls' : '');
+    if (LiveStreamPolicy.isLiveProtocolUrl(url)) {
+      await _applyLiveBudget();
+      await _setProperty('force-seekable', 'no');
+    }
+  }
+
+  /// 切换直播流模式。
+  ///
+  /// `true`：应用直播缓存配方并禁用强制可拖动（小缓存快贴直播边缘）；
+  /// `false`：恢复点播默认值（与 [_applyDefaultProperties] 一致）。
+  @override
+  Future<void> setLiveStreamMode(bool enabled) async {
+    if (enabled) {
+      await _applyLiveBudget();
+      await _setProperty('force-seekable', 'no');
+    } else {
+      await _setProperty('cache-secs', '${DemuxerCacheProfile.standard.cacheSecs}');
+      await _setProperty(
+        'demuxer-hysteresis-secs',
+        '${DemuxerCacheProfile.standard.hysteresisSecs}',
+      );
+      await _setProperty('demuxer-max-bytes', '${DemuxerCacheProfile.standard.maxBytes}');
+      await _setProperty(
+        'demuxer-max-back-bytes',
+        '${DemuxerCacheProfile.standard.maxBackBytes}',
+      );
+      await _setProperty('force-seekable', 'yes');
+    }
+  }
+
+  /// 应用直播缓存配方（cache-secs / 迟滞 / 字节预算；`cache=yes` 由默认属性
+  /// 已设置，秒数上限仅在缓存开启时生效）。
+  Future<void> _applyLiveBudget() async {
+    await _setProperty('cache', 'yes');
+    await _setProperty('cache-secs', '${LiveStreamPolicy.cacheSecs}');
+    await _setProperty('demuxer-hysteresis-secs', '${LiveStreamPolicy.hysteresisSecs}');
+    await _setProperty('demuxer-max-bytes', '${LiveStreamPolicy.maxBytes}');
+    await _setProperty(
+      'demuxer-max-back-bytes',
+      '${LiveStreamPolicy.maxBackBytes}',
+    );
   }
 
   @override

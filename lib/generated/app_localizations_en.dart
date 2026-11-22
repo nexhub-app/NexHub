@@ -2497,6 +2497,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get playerStallDetected => 'Playback stalled, reconnecting…';
 
   @override
+  String get playerLiveBadge => 'LIVE';
+
+  @override
   String get playerRetry => 'Retry';
 
   @override

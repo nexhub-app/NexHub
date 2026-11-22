@@ -58,6 +58,12 @@ abstract class VideoPlayerBackend {
     throw UnsupportedError('prepareDemuxerForUrl is not supported by this backend');
   }
 
+  /// 切换直播流模式（小缓存快贴边缘 + 禁用强制可拖动）。
+  ///
+  /// `true` 应用直播配方、`false` 恢复点播默认；播放中探测到直播流时
+  /// 运行时调用。默认实现空操作（降级后端无 mpv 属性能力），子类按需覆写。
+  Future<void> setLiveStreamMode(bool enabled) async {}
+
   /// 读取后端只读属性（如 mpv 的 `hwdec-current`）。
   ///
   /// 默认实现返回 null（不支持查询），子类按需覆写。

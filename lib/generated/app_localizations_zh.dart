@@ -2451,6 +2451,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get playerStallDetected => '播放卡顿，正在重连…';
 
   @override
+  String get playerLiveBadge => '直播中';
+
+  @override
   String get playerRetry => '重试';
 
   @override

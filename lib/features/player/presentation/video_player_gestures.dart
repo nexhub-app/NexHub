@@ -138,6 +138,8 @@ extension _VideoGestures on _VideoPlayerScreenState {
     }
     if (key == LogicalKeyboardKey.arrowLeft) {
       if (_controller.isLocked) return KeyEventResult.handled;
+      // 直播流（duration 恒 0）不支持 seek：左移会跳到缓冲区边缘之外卡死。
+      if (_duration == Duration.zero) return KeyEventResult.handled;
       final target = (_position - const Duration(seconds: 10));
       final clamped = target < Duration.zero ? Duration.zero : target;
       unawaited(_onSeek(clamped));
@@ -145,6 +147,9 @@ extension _VideoGestures on _VideoPlayerScreenState {
     }
     if (key == LogicalKeyboardKey.arrowRight) {
       if (_controller.isLocked) return KeyEventResult.handled;
+      // 直播流不支持 seek：duration 为 0 时旧逻辑会把目标 clamp 到 0
+      // （seek 到头打死播放）。
+      if (_duration == Duration.zero) return KeyEventResult.handled;
       final target = (_position + const Duration(seconds: 10));
       final clamped = target > _duration ? _duration : target;
       unawaited(_onSeek(clamped));

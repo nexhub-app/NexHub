@@ -312,6 +312,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   StreamSubscription<bool>? _completedSub;
   StreamSubscription<void>? _stallSub;
   StreamSubscription<String>? _decodeFallbackSub;
+  /// 底层流错误订阅：mpv 端流死亡（连接中断 / 直播流到期）可能既不触发
+  /// completed 也不满足 stall 检测条件（playing=false 时 stall 检测跳过），
+  /// 此前没有任何恢复路径——「断流卡死不恢复」的缺口，统一路由到自动重连。
+  StreamSubscription<String>? _errorSub;
 
   /// 标记 widget 已进入 deactivate/dispose 流程。仅用 [mounted] 不够：
   /// Flutter 在 deactivate() 阶段元素已「失活」但 [mounted] 仍为 true，此时
@@ -348,6 +352,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// 自动重连已耗尽：置位后由 UI 展示「视频链接已失效，点击重试」，用户手动触发
   /// 重新解析并重新打开播放器（拿到未过期的新直链）。
   bool _reconnectExhausted = false;
+
+  /// 上次自动重连时刻：成功恢复并稳定播放超过 90s 后重置重试计数，
+  /// 长时间直播观看多次网络抖动不会累积耗尽重连预算（死链场景位置不推进，
+  /// 不会误重置）。
+  DateTime _lastReconnectAt = DateTime.fromMillisecondsSinceEpoch(0);
 
   // ─────────────── 缓存策略降级 / 分级重试 ───────────────
 
@@ -513,6 +522,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   // ─────────────────────── 缓冲加载动画（功能2） ───────────────────────
   bool _isBuffering = false;
   StreamSubscription<bool>? _bufferingSub;
+
+  /// 连续缓冲看门狗定时器：缓冲持续超阈值（30s）触发自动重连，兜住
+  /// stall 检测覆盖不到的场景（mpv cache-pause 态 / 流死亡进 idle 时
+  /// stall 检测要求 playing=true 可能不满足）。seek 宽限期内不触发，
+  /// 不打断慢速 CDN 的正常重新缓冲。
+  Timer? _bufferingWatchdogTimer;
 
   /// 实时缓冲网速文本（缓冲时显示在转圈下方；null = 不可用）。
   String? _bufferingSpeedText;
@@ -1253,18 +1268,35 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _completedSub = _controller.completedStream.listen(_onCompleted);
     // 监听 stall（卡顿）事件：提示并自动重连
     _stallSub = _controller.stallStream.listen((_) => _onStall());
+    // 监听底层流错误：mpv 端流死亡可能既不触发 completed 也不满足 stall
+    // 条件（playing=false 时 stall 检测跳过），统一交由 [_onStreamError]
+    // 延迟确认后自动重连。
+    _errorSub = _controller.player.stream.error.listen((_) => _onStreamError());
     // 监听解码自动降级（花屏 / 硬解失败自愈）：提示并 re-open 生效
     _decodeFallbackSub =
         _controller.decodeFallbackStream.listen(_onDecodeFallback);
-    // 监听缓冲状态：缓冲中显示加载动画（功能2）+ 实时网速。
+    // 监听缓冲状态：缓冲中显示加载动画（功能2）+ 实时网速 + 连续缓冲看门狗。
     _bufferingSub = _controller.bufferingStream.listen((b) {
       if (_disposed || !mounted) return;
       setState(() => _isBuffering = b);
       // 缓冲开始轮询 mpv cache-speed 显示网速，结束停止。
       if (b) {
         _startSpeedProbe();
+        // 连续缓冲看门狗：30s 仍在缓冲则自动重连。直播流一次断流若只靠
+        // stall 检测（要求 playing=true 且位置冻结）可能漏检，此处兜底。
+        _bufferingWatchdogTimer?.cancel();
+        _bufferingWatchdogTimer = Timer(const Duration(seconds: 30), () {
+          if (_disposed || !mounted) return;
+          if (!_isBuffering || _reconnecting || _reconnectExhausted) return;
+          // seek / 重连后的重新缓冲属正常现象，宽限期内不打断。
+          if (_controller.isWithinSeekGrace) return;
+          AppLog.instance.w('[播放看门狗] 连续缓冲超 30s，触发自动重连');
+          unawaited(_reconnect());
+        });
       } else {
         _stopSpeedProbe();
+        _bufferingWatchdogTimer?.cancel();
+        _bufferingWatchdogTimer = null;
       }
     });
     // 播放状态同步：底层播放/暂停时同步 [_isPlaying]，驱动中央大播放按钮、
@@ -1749,6 +1781,15 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     // 记录可信的非零进度：open() 重置或缓冲瞬间可能产生 0 位置事件，
     // 不能据此把恢复点清零（避免重连后从头播放）。
     if (position > Duration.zero) _lastGoodPosition = position;
+    // 稳定播放（位置推进且非缓冲）超过 90s 后重置自动重连计数：直播场景
+    // 多次网络抖动不应累积耗尽重连预算；死链位置不推进，不会误重置。
+    if (_reconnectAttempts > 0 && !_isBuffering) {
+      final nowStable = DateTime.now();
+      if (nowStable.difference(_lastReconnectAt) >
+          const Duration(seconds: 90)) {
+        _reconnectAttempts = 0;
+      }
+    }
     if (_duration == Duration.zero) {
       _duration = _controller.duration;
     }
@@ -2156,6 +2197,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   /// 这里先等 `durationStream` 给出非零时长（最多 10 秒），再 seek；随后延迟
   /// 校验实际位置，偏差超过 3 秒说明首次 seek 被吞，补发一次。
   Future<void> _seekWhenReady(Duration target) async {
+    // 直播流无时长语义：跳过一切进度恢复——对直播流 seek 到保存的过时
+    // 时间点会被 mpv 拒绝或打死播放，直接从直播边缘续播。
+    if (_controller.isLive) return;
     if (_controller.duration <= Duration.zero) {
       try {
         await _controller.durationStream
@@ -2163,7 +2207,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
             // 按来源分级超时（原固定 10s 对媒体服务器冷启动不够）。
             .timeout(_readyTimeout);
       } on Object {
-        // 超时或流异常：仍尝试 seek 一次，失败也不影响正常播放。
+        // 超时或流异常：直播流（duration 恒 0）放弃恢复，点播仍尝试
+        // seek 一次，失败也不影响正常播放。
+        if (_controller.isLive) return;
       }
     }
     if (_disposed || !mounted) return;
@@ -2436,6 +2482,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   void _onCompleted(bool completed) {
     if (!mounted || _disposed) return;
     if (!completed) return;
+    // 直播流不存在「播完」：媒体结束事件实为断流（mpv end-file），走
+    // 自动重连从直播边缘续播，而不是清进度 / 推进集数 / 连播。
+    if (_controller.isLive) {
+      if (!_reconnecting && !_reconnectExhausted &&
+          !_controller.isWithinSeekGrace) {
+        AppLog.instance.w('[直播] 流结束事件，按断流自动重连');
+        unawaited(_reconnect());
+      }
+      return;
+    }
     if (_isMediaServer) {
       final session = _serverSession;
       if (session != null) {
@@ -3016,6 +3072,37 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     unawaited(_reconnect());
   }
 
+  /// 底层流错误处理：延迟确认 mpv 已进入 idle（文件因错误终止）才自动重连。
+  ///
+  /// 瞬态错误（可恢复的 demuxer 抖动 / 单帧失败）下播放会自行恢复，不去
+  /// 动播放器；真正断流时 mpv 进入 idle 态——此前这条路径上没有任何恢复
+  /// 手段（stall 检测要求 playing=true、缓冲看门狗要求 buffering=true，
+  /// idle 态两者皆不满足），表现为「断流后卡死不恢复」。不弹 SnackBar：
+  /// 错误可能成串出现，重连失败由 stall / 看门狗接管提示。
+  void _onStreamError() {
+    if (!mounted || _disposed) return;
+    if (_reconnecting || _reconnectExhausted) return;
+    if (_controller.isWithinSeekGrace) return;
+    unawaited(Future<void>.delayed(const Duration(seconds: 3), () async {
+      if (_disposed || !mounted || _reconnecting || _reconnectExhausted) {
+        return;
+      }
+      if (_controller.isWithinSeekGrace) return;
+      try {
+        final idle = await _controller.backend.getProperty('idle-active');
+     // mpv 字符串格式布尔为 yes/no（media_kit 个别版本回传 true/false），二者
+     // 都认；其余值按瞬态处理，不冒险重连。
+        if (idle != 'yes' && idle != 'true') {
+          return;
+        }
+      } on Object {
+        return; // 属性查询失败（平台不支持）按瞬态处理，不冒险重连。
+      }
+      AppLog.instance.w('[播放错误] 底层流错误进入 idle，触发自动重连');
+      unawaited(_reconnect());
+    }));
+  }
+
   /// 解码自动降级回调（PlayerController 检测到硬解异常后已切换 hwdec）：
   /// 提示用户并 re-open 当前地址——mpv 的 hwdec 属性对已在播的解码器
   /// 不一定即时生效，重新 open 才能确保新解码路径落地。
@@ -3092,6 +3179,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     if (_reconnecting || _reconnectExhausted || _disposed) return;
     _reconnecting = true;
     _reconnectAttempts++;
+    _lastReconnectAt = DateTime.now();
     try {
       final url = _playUrl;
       final headers = _playHeaders;
@@ -3142,6 +3230,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     Map<String, String>? headers,
     Duration resumeAt,
   ) async {
+    // 直播流重连：open() 会重置直播态，须在 stop() 前捕获。直播流跳过
+    // 恢复 seek——对直播流 seek 到断流前的过时时间戳会打死播放（重连
+    // 必败直至耗尽进错误页），重连后应从直播边缘续播。
+    final bool wasLive = _controller.isLive;
     // 清空可能卡死的播放状态，避免 open() 在异常态下无法重新拉流。
     try {
       await _controller.player.stop();
@@ -3151,14 +3243,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     await _controller.open(url, headers: headers);
     // 按来源分级超时等元数据（媒体服务器 30s / 直链 6s / 本地 5s）。
     await _waitUntilReady(_readyTimeout);
-    // 稳健 seek：open 后首帧/分片可能未到位，校验位置，接近 0 则重试。
-    for (var attempt = 0; attempt < 6; attempt++) {
-      await _controller.seek(resumeAt);
-      await Future<void>.delayed(const Duration(milliseconds: 400));
-      if (resumeAt <= Duration.zero) break;
-      final cur = _controller.position;
-      if (cur > Duration.zero && cur >= resumeAt - const Duration(seconds: 3)) {
-        break;
+    if (!wasLive) {
+      // 稳健 seek：open 后首帧/分片可能未到位，校验位置，接近 0 则重试。
+      for (var attempt = 0; attempt < 6; attempt++) {
+        await _controller.seek(resumeAt);
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        if (resumeAt <= Duration.zero) break;
+        final cur = _controller.position;
+        if (cur > Duration.zero &&
+            cur >= resumeAt - const Duration(seconds: 3)) {
+          break;
+        }
       }
     }
     await _controller.play();
@@ -3212,22 +3307,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   ///
   /// open() 之后 m3u8 需要重新拉取 playlist 与首段分片，元数据就绪前 seek 会失效，
   /// 因此重连恢复前先等到 duration 已知（或超时兜底）。
+  ///
+  /// 直播流（duration 恒 0 且位置推进，见 [PlayerController.isLive]）视为
+  /// 已就绪——否则点播的超时重开自愈会对直播流发起无谓的重开，拉长起播。
+  /// 轮询实现（原 durationStream 监听）以便同时感知直播判定完成。
   Future<bool> _waitUntilReady(Duration timeout) async {
     if (_controller.duration > Duration.zero) return true;
-    final completer = Completer<bool>();
-    late final StreamSubscription<Duration> sub;
-    final timer = Timer(timeout, () {
-      if (!completer.isCompleted) completer.complete(false);
-    });
-    sub = _controller.durationStream.listen((d) {
-      if (d > Duration.zero && !completer.isCompleted) {
-        completer.complete(true);
+    if (_controller.isLive) return true;
+    final deadline = DateTime.now().add(timeout);
+    while (!_disposed) {
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      if (_controller.duration > Duration.zero || _controller.isLive) {
+        return true;
       }
-    });
-    final result = await completer.future;
-    timer.cancel();
-    await sub.cancel();
-    return result;
+      if (DateTime.now().isAfter(deadline)) return false;
+    }
+    return false;
   }
 
   /// 按媒体来源分级的就绪等待超时。
@@ -3300,6 +3395,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
 
   /// resolve 当前网络 / 设备条件并应用到 mpv demuxer 缓存。
   Future<void> _applyDemuxerCachePolicy() async {
+    // 直播流保持直播缓存配方（小缓存快贴直播边缘），不受网络档位切换覆盖。
+    if (_controller.isLive) return;
     try {
       final bool metered = await _cachePolicyResolver.isMeteredNetwork();
       final bool lowMem = await _cachePolicyResolver.isLowMemoryDevice();
@@ -3859,6 +3956,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
   // ─────────────────────── 键盘快捷键 ───────────────────────
 
   Future<void> _onSeek(Duration position) async {
+    // 直播流（duration 恒 0）不支持 seek：任何 seek 目标对直播都无意义，
+    // 拖动 / 键盘路径已各自守卫，此处兜底防其他调用方误发 seek 打死播放。
+    if (_duration == Duration.zero) return;
     await _controller.seek(position);
     // 弹幕游标拨回目标位置附近（只重放窗口内弹幕），与 tick 用同一时间基准
     // （含 timeOffset），避免 seek 回看时把整条时间轴的弹幕一次性灌进屏幕。
@@ -4121,7 +4221,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _completedSub?.cancel();
     _stallSub?.cancel();
     _decodeFallbackSub?.cancel();
+    _errorSub?.cancel();
     _bufferingSub?.cancel();
+    _bufferingWatchdogTimer?.cancel();
     _playingSub?.cancel();
     _playingFalseDebounce?.cancel();
     _pipActionSub?.cancel();
@@ -4186,7 +4288,9 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     _completedSub?.cancel();
     _stallSub?.cancel();
     _decodeFallbackSub?.cancel();
+    _errorSub?.cancel();
     _bufferingSub?.cancel();
+    _bufferingWatchdogTimer?.cancel();
     _playingSub?.cancel();
     _playingFalseDebounce?.cancel();
     _pipActionSub?.cancel();
@@ -5140,30 +5244,55 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
               },
             ),
             // 进度条独占一行，时间分别放在进度条两端。
-            Row(
-              children: <Widget>[
-                Text(
-                  _formatDuration(_position),
-                  style: timeStyle,
+            // 直播流（duration 恒 0）无时长语义：进度条与时间只会误导
+            // （拖动必然打死流），整行替换为直播徽标。
+            if (_controller.isLive)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: <Widget>[
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.error,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: AppTokens.spaceSm),
+                    Text(
+                      AppLocalizations.of(context).playerLiveBadge,
+                      style: timeStyle,
+                    ),
+                  ],
                 ),
-                const SizedBox(width: AppTokens.spaceSm),
-                Expanded(
-                  child: SeekBar(
-                    position: _position,
-                    duration: _duration,
-                    onSeek: _onSeek,
-                    // 拖动期间持有控制栏，防止自动隐藏打断拖拽。
-                    onDragStart: _acquirePanelHold,
-                    onDragEnd: _releasePanelHold,
+              )
+            else
+              Row(
+                children: <Widget>[
+                  Text(
+                    _formatDuration(_position),
+                    style: timeStyle,
                   ),
-                ),
-                const SizedBox(width: AppTokens.spaceSm),
-                Text(
-                  _formatDuration(_duration),
-                  style: durationStyle,
-                ),
-              ],
-            ),
+                  const SizedBox(width: AppTokens.spaceSm),
+                  Expanded(
+                    child: SeekBar(
+                      position: _position,
+                      duration: _duration,
+                      onSeek: _onSeek,
+                      // 拖动期间持有控制栏，防止自动隐藏打断拖拽。
+                      onDragStart: _acquirePanelHold,
+                      onDragEnd: _releasePanelHold,
+                    ),
+                  ),
+                  const SizedBox(width: AppTokens.spaceSm),
+                  Text(
+                    _formatDuration(_duration),
+                    style: durationStyle,
+                  ),
+                ],
+              ),
             controlsRow,
           ],
         ),
