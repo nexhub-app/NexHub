@@ -2405,11 +2405,14 @@ const String javaExtensionsJsPrelude = r'''
   }
 
   // ── AsymmetricCrypto（legado java.createAsymmetricCrypto） ──
-  // 常用族：RSA + PKCS#1 v1.5（"RSA" / "RSA/ECB/PKCS1Padding"）与 NoPadding。
   // 密钥编码对齐 JCE：公钥 X.509 SPKI（X509EncodedKeySpec）、私钥 PKCS#8
-  // （PKCS8EncodedKeySpec），另宽容接受裸 PKCS#1 DER。QuickJS 无 BigInt，
-  // 本节自带 2^16 limb 大数与 Montgomery 模幂；OAEP/EC/DSA 返回空对象，
-  // 避免给出错误明文。
+  // （PKCS8EncodedKeySpec），另宽容接受裸 PKCS#1 DER。运算与填充在宿主侧
+  // 完成（JCE/Conscrypt 口径：PKCS#1 v1.5、NoPadding、OAEP-SHA*，OAEP
+  // 默认 MGF1 同主摘要、空标签；分块宽度同 legado）。QuickJS 无 BigInt，
+  // 纯 JS 私钥模幂要数秒，故与规则桥同用确定性重放：脚本按（变换/方向/
+  // 密钥/数据）登记待办并返回类型占位，JsEngine 在宿主用 Dart BigInt
+  // 计算后回填 __asymCache 并重跑，本轮命中缓存即得真值。本节的大数实现
+  // 仅供下方 Signature（SHA256withRSA）验签使用。
   function bnTrim(a) {
     var n = a.length;
     while (n > 1 && a[n - 1] === 0) n--;
@@ -2643,7 +2646,11 @@ const String javaExtensionsJsPrelude = r'''
     var n = derIntBytes(bytes, kids[1]);
     var e = derIntBytes(bytes, kids[2]);
     var d = derIntBytes(bytes, kids[3]);
-    return (n && e && d) ? { n: n, e: e, d: d } : null;
+    if (!n || !e || !d) return null;
+    // CRT 参数（p, q）供宿主侧私钥运算加速；缺失时退回 d 模幂。
+    var p = kids.length > 4 ? derIntBytes(bytes, kids[4]) : null;
+    var q = kids.length > 5 ? derIntBytes(bytes, kids[5]) : null;
+    return { n: n, e: e, d: d, p: p, q: q };
   }
 
   function rsaParsePrivateKey(bytes) {
@@ -2683,104 +2690,96 @@ const String javaExtensionsJsPrelude = r'''
     return em;
   }
 
-  function rsaPkcs1Unpad(em, blockType) {
-    if (!em || em.length < 11 || em[0] !== 0x00 || em[1] !== blockType) {
-      throw new Error('BadPaddingException: Decryption error');
-    }
-    var i = 2;
-    while (i < em.length && em[i] !== 0) i++;
-    if (i >= em.length || i - 2 < 8) {
-      throw new Error('BadPaddingException: Decryption error');
-    }
-    return em.slice(i + 1);
-  }
+  // 宿主排空协议（与 java 规则桥同构）：脚本登记 op，引擎计算后回填。
+  global.__asymReset = function () {
+    global.__asymCache = Object.create(null);
+    global.__asymPending = [];
+    global.__asymSeen = Object.create(null);
+  };
+  global.__asymDrain = function () {
+    var p = global.__asymPending || [];
+    global.__asymPending = [];
+    global.__asymSeen = Object.create(null);
+    return JSON.stringify(p);
+  };
+  global.__asymFill = function (json) {
+    var c = global.__asymCache;
+    if (!c) c = global.__asymCache = Object.create(null);
+    var m = JSON.parse(json);
+    for (var k in m) c[k] = m[k];
+  };
+
+  function asymKeyHex(v) { return v ? bytesToHex(v) : ''; }
 
   function makeAsymmetricCrypto(transformation) {
-    var empty = {
-      setPublicKey: function () { return empty; },
-      setPrivateKey: function () { return empty; },
-      decrypt: function () { return []; },
-      decryptStr: function () { return ''; },
-      decryptHex: function () { return []; },
-      decryptBase64: function () { return []; },
-      encrypt: function () { return []; },
-      encryptHex: function () { return ''; },
-      encryptBase64: function () { return ''; },
-    };
     var name = String(transformation == null || transformation === ''
         ? 'RSA' : transformation);
-    var segs = name.toUpperCase().split('/');
-    if (segs[0] !== 'RSA') return empty;
-    var padName = segs.length > 1 ? segs[segs.length - 1] : 'PKCS1PADDING';
-    if (padName !== 'PKCS1PADDING' && padName !== 'PKCS1' &&
-        padName !== 'NOPADDING') {
-      return empty;
+    var keyAlg = name.toUpperCase().split('/')[0];
+    // legado 构造时 KeyPairGenerator/KeyFactory 用算法名；非 RSA 的 Cipher
+    // （EC/DSA 明文族）在 JCE 里没有实现，运算时抛 NoSuchAlgorithmException
+    // （Conscrypt：Cannot find any provider supporting ...）。
+    if (keyAlg !== 'RSA') {
+      var boom = function () {
+        throw new Error('NoSuchAlgorithmException: '
+            + 'Cannot find any provider supporting ' + name);
+      };
+      var stub = {
+        setPublicKey: function () { return stub; },
+        setPrivateKey: function () { return stub; },
+        decrypt: boom,
+        decryptStr: boom,
+        decryptHex: boom,
+        decryptBase64: boom,
+        encrypt: boom,
+        encryptHex: boom,
+        encryptBase64: boom,
+      };
+      return stub;
     }
-    var pad = padName === 'NOPADDING' ? 'NONE' : 'PKCS1';
 
     var publicKey = null;
     var privateKey = null;
-    var cachedKey = null;
-    var cachedCtx = null;
 
-    function contextFor(key) {
-      if (cachedKey !== key) {
-        var n = bnFromBytes(key.n);
-        var ctx = montContext(n);
-        ctx.keySize = Math.ceil(bnBitLength(n) / 8);
-        cachedKey = key;
-        cachedCtx = ctx;
-      }
-      return cachedCtx;
-    }
-
-    function rsaBlock(key, usePublicKey, encrypt, block) {
-      var ctx = contextFor(key);
-      var k = ctx.keySize;
-      var exp = bnFromBytes(usePublicKey ? key.e : key.d);
-      if (encrypt) {
-        var em;
-        if (pad === 'NONE') {
-          em = block.slice();
-          if (em.length > k) {
-            throw new Error('Data must not be longer than ' + k + ' bytes');
-          }
-          while (em.length < k) em.unshift(0);
-        } else {
-          em = rsaPkcs1Pad(block, k, usePublicKey ? 2 : 1);
-        }
-        var c = bnModPow(bnFromBytes(em), exp, ctx);
-        return bnToBytes(c, k);
-      }
-      if (pad !== 'NONE' && block.length !== k) {
-        throw new Error('RSA decrypt block size must be ' + k);
-      }
-      var m = bnModPow(bnFromBytes(block), exp, ctx);
-      var out = bnToBytes(m, k);
-      if (pad === 'NONE') return out;
-      return rsaPkcs1Unpad(out, usePublicKey ? 1 : 2);
-    }
-
-    function cryptData(usePublicKey, encrypt, data) {
+    // 命中宿主结果；未命中则按（变换/方向/密钥/数据）登记待办并返回 null。
+    // 随机填充（PKCS#1 PS / OAEP seed）只在宿主算一次，重放轮稳定。
+    function run(op, usePublicKey, data) {
       var key = usePublicKey ? publicKey : privateKey;
-      if (!key) throw new Error('RSA key not set');
-      var ctx = contextFor(key);
-      var k = ctx.keySize;
-      var blockSize = encrypt
-          ? (pad === 'NONE' ? k : k - 11)
-          : k;
-      if (!encrypt && data.length === 0) return [];
-      var out = [];
-      if (data.length <= blockSize) {
-        var one = rsaBlock(key, usePublicKey, encrypt, data);
-        return one.map(signedByte);
+      if (!key) {
+        throw new Error('InvalidKeyException: RSA '
+            + (usePublicKey ? 'public' : 'private') + ' key not set');
       }
-      for (var off = 0; off < data.length; off += blockSize) {
-        var chunk = data.slice(off, Math.min(off + blockSize, data.length));
-        var part = rsaBlock(key, usePublicKey, encrypt, chunk);
-        for (var i = 0; i < part.length; i++) out.push(part[i]);
+      var dataHex = bytesToHex(data);
+      var keySig = asymKeyHex(key.n) + '|' + asymKeyHex(key.e) + '|'
+          + asymKeyHex(key.d) + '|' + asymKeyHex(key.p) + '|' + asymKeyHex(key.q);
+      var cacheKey = name + '|' + op + '|' + (usePublicKey ? 1 : 0) + '|'
+          + ruleHash(keySig + '#' + dataHex);
+      var cache = global.__asymCache;
+      if (!cache) cache = global.__asymCache = Object.create(null);
+      if (cache[cacheKey] !== undefined) {
+        var hit = cache[cacheKey];
+        if (hit.e) throw new Error(hit.e);
+        return hexToBytes(hit.v);
       }
-      return out.map(signedByte);
+      var seen = global.__asymSeen;
+      if (!seen) seen = global.__asymSeen = Object.create(null);
+      if (!seen[cacheKey]) {
+        seen[cacheKey] = true;
+        var pend = global.__asymPending;
+        if (!pend) pend = global.__asymPending = [];
+        pend.push({
+          k: cacheKey,
+          t: name,
+          o: op,
+          u: usePublicKey ? 1 : 0,
+          n: asymKeyHex(key.n),
+          e: asymKeyHex(key.e),
+          d: asymKeyHex(key.d),
+          p: asymKeyHex(key.p),
+          q: asymKeyHex(key.q),
+          data: dataHex
+        });
+      }
+      return null;
     }
 
     // Kotlin `usePublicKey: Boolean? = true`：仅显式 false/null 走私钥。
@@ -2800,44 +2799,50 @@ const String javaExtensionsJsPrelude = r'''
           : bytesFromB64(s).map(function (b) { return b & 0xff; });
     }
 
+    function bytesOrEmpty(op, usePublicKey, data) {
+      var out = run(op, usePublicKey, data);
+      return out == null ? [] : out;
+    }
+
     var api = {
       setPublicKey: function (key) {
         publicKey = rsaParsePublicKey(anyToBytes(key));
-        if (!publicKey) throw new Error('Invalid RSA public key');
+        if (!publicKey) throw new Error('InvalidKeySpecException: invalid RSA public key');
         return api;
       },
       setPrivateKey: function (key) {
         privateKey = rsaParsePrivateKey(anyToBytes(key));
-        if (!privateKey) throw new Error('Invalid RSA private key');
+        if (!privateKey) throw new Error('InvalidKeySpecException: invalid RSA private key');
         return api;
       },
       decrypt: function (data, usePublicKey) {
-        return cryptData(usePubFlag(usePublicKey), false, decodeInput(data));
+        return bytesOrEmpty('decrypt', usePubFlag(usePublicKey), decodeInput(data));
       },
       decryptStr: function (data, usePublicKey) {
-        return utf8Decode(
-            cryptData(usePubFlag(usePublicKey), false, decodeInput(data)));
+        var out = run('decrypt', usePubFlag(usePublicKey), decodeInput(data));
+        return out == null ? '' : utf8Decode(out);
       },
       decryptHex: function (data, usePublicKey) {
-        return cryptData(usePubFlag(usePublicKey), false,
+        return bytesOrEmpty('decrypt', usePubFlag(usePublicKey),
             hexToBytes(String(data == null ? '' : data))
                 .map(function (b) { return b & 0xff; }));
       },
       decryptBase64: function (data, usePublicKey) {
-        return cryptData(usePubFlag(usePublicKey), false,
+        return bytesOrEmpty('decrypt', usePubFlag(usePublicKey),
             bytesFromB64(String(data == null ? '' : data))
                 .map(function (b) { return b & 0xff; }));
       },
       encrypt: function (data, usePublicKey) {
-        return cryptData(usePubFlag(usePublicKey), true, anyToBytes(data));
+        return bytesOrEmpty('encrypt', usePubFlag(usePublicKey), anyToBytes(data));
       },
       encryptHex: function (data, usePublicKey) {
-        return bytesToHex(cryptData(usePubFlag(usePublicKey), true,
-            anyToBytes(data)));
+        var out = run('encrypt', usePubFlag(usePublicKey), anyToBytes(data));
+        return out == null ? '' : bytesToHex(out);
       },
       encryptBase64: function (data, usePublicKey) {
-        return b64FromBytes(cryptData(usePubFlag(usePublicKey), true,
-            anyToBytes(data)).map(function (b) { return b & 0xff; }));
+        var out = run('encrypt', usePubFlag(usePublicKey), anyToBytes(data));
+        return out == null
+            ? '' : b64FromBytes(out.map(function (b) { return b & 0xff; }));
       },
     };
     return api;
@@ -4666,7 +4671,8 @@ const String javaExtensionsJsPrelude = r'''
     },
     // legado SymmetricCrypto 对象形态（百度小说等用链式 decryptStr）。
     createSymmetricCrypto: makeSymmetricCrypto,
-    // legado AsymmetricCrypto 对象形态（乐读小说用 setPublicKey + decryptStr）。
+    // legado AsymmetricCrypto 对象形态（乐读小说用 setPublicKey + decryptStr）；
+    // 运算经宿主排空协议（__asymDrain/__asymFill）完成，见 JsEngine。
     createAsymmetricCrypto: makeAsymmetricCrypto,
     // 字体反爬：解析 TTF（base64 / 字节数组），返回可查询字形轮廓的字体对象。
     queryTTF: function (data, useCache) {

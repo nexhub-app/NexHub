@@ -13,6 +13,7 @@ import '../../../core/js/js_runtime_factory.dart';
 
 import '../../../core/novel/novel_chinese_converter.dart';
 import '../../../core/utils/app_log.dart';
+import 'asymmetric_crypto_host.dart';
 import 'java_extensions.dart';
 import 'js_syntax_compat.dart';
 import 'jsoup_dom.dart';
@@ -223,7 +224,8 @@ class JsEngine {
           'globalThis.__ajaxMetaCache = Object.create(null);'
           'globalThis.__webviewCache = Object.create(null);'
           'globalThis.__browserAwaitCache = Object.create(null);'
-          'globalThis.__verificationCodeCache = Object.create(null);');
+          'globalThis.__verificationCodeCache = Object.create(null);'
+          'globalThis.__asymReset && globalThis.__asymReset();');
     } catch (_) {}
   }
 
@@ -269,6 +271,33 @@ class JsEngine {
       runtime.evaluate(
           'globalThis.__javaRuleFill && '
           'globalThis.__javaRuleFill(${jsonEncode(jsonEncode(values))});');
+    } catch (_) {}
+  }
+
+  /// AsymmetricCrypto 重放上限：每轮宿主计算解掉本轮登记的全部待办，
+  /// 链式调用（解密结果再当输入）按依赖深度逐轮收敛。
+  static const int _asymReplayRounds = 8;
+
+  /// 取走本轮脚本登记的 createAsymmetricCrypto 待办（按调用顺序）。
+  List<Map<String, dynamic>> _takeAsymOps() {
+    if (_runtime == null) return const [];
+    try {
+      final r = _runtime!.evaluate(
+          'globalThis.__asymDrain ? globalThis.__asymDrain() : "[]"');
+      if (r.isError) return const [];
+      final decoded = jsonDecode(r.stringResult);
+      if (decoded is! List) return const [];
+      return decoded.whereType<Map>().map(Map<String, dynamic>.from).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  void _fillAsymCache(Map<String, Map<String, String>> values) {
+    if (values.isEmpty) return;
+    try {
+      runtime.evaluate('globalThis.__asymFill && '
+          'globalThis.__asymFill(${jsonEncode(jsonEncode(values))});');
     } catch (_) {}
   }
 
@@ -427,7 +456,7 @@ class JsEngine {
           '片段=${_brief(jsStr)}');
     }
     _seedDeterministicRandom(jsStr);
-    final result = runtime.evaluate('eval(${jsonEncode(jsStr)})');
+    var result = runtime.evaluate('eval(${jsonEncode(jsStr)})');
     if (watch != null) {
       AppLog.instance.i('[书源JS] 大脚本求值完成 长度=${jsStr.length} '
           '耗时=${watch.elapsedMilliseconds}ms 错误=${result.isError}');
@@ -437,6 +466,25 @@ class JsEngine {
     // 完成值 undefined/null 的纯写脚本同样产生写操作（2026-11-14 实测）。
     if (jsStr.contains('java.') || ShuyuanSourceContext.current != null) {
       _drainJavaBridge();
+    }
+    // createAsymmetricCrypto：脚本首轮登记的操作在宿主用 Dart BigInt 计算
+    // （毫秒级）并回填 __asymCache，重跑脚本命中缓存得真值；每轮重放前
+    // 重置随机序列，保证多轮间脚本自身的 Math.random 与首轮一致。
+    for (var round = 0; round < _asymReplayRounds; round++) {
+      final ops = _takeAsymOps();
+      if (ops.isEmpty) break;
+      final fills = <String, Map<String, String>>{};
+      for (final op in ops) {
+        final key = op['k']?.toString() ?? '';
+        if (key.isEmpty) continue;
+        fills[key] = AsymmetricCryptoHost.execute(op);
+      }
+      _fillAsymCache(fills);
+      _seedDeterministicRandom(jsStr);
+      result = runtime.evaluate('eval(${jsonEncode(jsStr)})');
+      if (jsStr.contains('java.') || ShuyuanSourceContext.current != null) {
+        _drainJavaBridge();
+      }
     }
     return result;
   }

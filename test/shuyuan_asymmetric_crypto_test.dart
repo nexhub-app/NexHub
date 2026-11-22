@@ -2,7 +2,9 @@
 ///
 /// 固定向量由本地 JCE（JDK）生成，覆盖 legado AsymmetricCrypto 的常用路径：
 /// 默认 "RSA"（= RSA/ECB/PKCS1Padding）公私钥双向、NoPadding、字符串密文
-/// hex/base64 识别、超过单块上限的分块，及 OAEP/非 RSA/坏密钥的降级语义。
+/// hex/base64 识别、超过单块上限的分块，OAEP-SHA* 固定向量（MGF1 同主摘要，
+/// 与 Android Conscrypt 默认一致）、签名方向的 OAEP 拒绝、非 RSA 变换报错，
+/// 以及私钥运算改由宿主计算后的耗时。
 library;
 
 import 'dart:convert';
@@ -106,6 +108,72 @@ void main() {
       '6d8a8582c6d58ea9f381dac0a2f0f08751bee777100f0bf27b55416accac83c78512'
       '77cf';
 
+  // OAEP 固定向量：公钥加密、私钥解密；MGF1 与主摘要相同（Conscrypt 口径）。
+  const ctOaepPadding =
+      '10ba879c389978776944d1f62d01724edb3ab261334eafb406f0a55f43e2482d3274'
+      'd2a017208ad45476bd9dabfb107526c39d4e5f5d963a7f1ff5794d0d769b1888d16'
+      'b32cb402902c5bb0ef05a9b64205eec3ee727e1873e222ef8463558b0e59c5f138fb'
+      '4dd75f3c838fe6b09fe4ab510311ec9592e926512aab3a7a76a78456db57ed623fb1'
+      '8bcb3946a1e5a0c9719be21391005aff95933a038990a0bfa282c534a7bb02bf45a0'
+      '4dc6f3a36b203b80a4a88e7211146209d8edf56b1588279e40619818e57292b6ffed'
+      '4e49b92a2c83ea597327e5fbaa490181294530e29f6b96a86d2bf557429690fe6d28'
+      'd704e08a6e461cf6adbf11aa455285cad1a9a';
+  const ctOaepSha1 =
+      '7987bd0b8bece8224b5bbec805e31674e6dc680b0950b50603aa15dab185c9fdfde'
+      '157a71e243af22ce472c0c6c9d16c576da0e3a72c06d5e27ee2d2893334c38434fba'
+      '279d72e45b428838ebf601357f6d09fa528e0d813804df844df1769488f31b824655'
+      'c43392ed58d7da1caca1cb0f7be2a20bc9237585df5c14d38a0c3f834f88964f7a15'
+      'b7d1d79d4988894f1889619f3c250008e12dd7bb21de4caf9fba1d58313d5a95875c'
+      'a1d75c29caf1243a1d165998cda7c364b055a6a65bfc819fc6df9fff823ce67eb722'
+      '65aa8c3487c026bd7e7947430d72d36dbfe63ab736f49cbb9dc92a004028eb5296ed'
+      '0a4cda38584c5c93cb025795082ee9e09c410';
+  const ctOaepSha224 =
+      '7ff2247ee524309e9198676347f56cd8834a0466b20328d98d92408509c9eb5616e'
+      '5862ca27fbaff561bf48e4a3d7ad1c3b305e9b9e04edb37d4013eac1e5074d260eb0'
+      '7258cb54005d407f80829cf056678d9700e925f06ebe54b48e1f47411d5222cccc38'
+      '3a5b60e9c34a38a7341a38608eb1058c371e20465b3e48852045918d738b8f62ac19'
+      '7ea348c3c2bd4535b6b22ceb92045e70b6241e2990ed02f8ce94788385d4158da29e'
+      'a0148c124f649e7ffe4703061d1882be6dc9d771e3404535cbe49280ceda44266d04'
+      '14b761bfdf573eddcca29a1874b83ee443e057e7f8cb96edaf6048ef565aacbe232d'
+      '0bce00f2632ac7bc67913634b51936eccf185';
+  const ctOaepSha256 =
+      'a6cfdbd8c7597eab18d8a0916fe837cb53fa1b9a90eedf0f8304f5c5bb2f905995f'
+      'b71c4102ec380063e7265bee5a9a1886d9141e9f75d09046308395097757da9098a4'
+      '5f8002ded9cc0e6124ce766fba73eac6704bcfa654f96fff110717f396a90a724c22'
+      'f76c75d828bd00b1d666c1c716de09b951052496244bb786e6b18dadd1fb683a6f7d'
+      'dc77562276f618380811a84010ff27dfb08d00e63c855adad2c76c65a2ce8ed696dc'
+      '214e4b89a596257963407cd1f540b90800ca8d2fa0570e322d5a34b6e79f84f9d9b6'
+      '5ce88a35c27b870f1fecc99a8316e69ade234fa34b8763260ef5e7df95b89fd7ba2a'
+      '892061304612acc388da27c48d1f2694b4d9e';
+  const ctOaepSha384 =
+      '501375d4f077298ebad817efc0a75d8f3e6d5f41d31a9fc705ecc22a3865847439'
+      '205012a1cb309e0b7a7913682ea474448dc5920d04401d8c7920891ebfdbf807a456'
+      'b04d359d5e2e5860e757eb7ba873ceb61998c724f21ead5d006ac93b6bc752d9fe72'
+      '2c1b06a5f83f5b66db92270c76654533f5bd6174afe3fb4b495ec4cced07eafe2736'
+      '6afed429473775476cb28da8065e0edf16e54029d0eae6a287b534f6782599546c3a'
+      'f39ec6e95d5e3084cd93e7f2656bf1a59fb95df8fe1285900dbf249547e5949589f7'
+      'b3709cf3b5b64bdef1a0eeaf2dc389494ea7c7a3bc1c9ae02f605df5162ff973600a'
+      '95122a6f79dc77111591645b5cf683ef2f2808';
+  const ctOaepSha512 =
+      '460fbebbb128492e77bc3011365b117e5ff4c745bbd9a625290c5958a21913dc630'
+      '2b21616e093253b6e4730d0e2cec79e299d989162df7ab7994d3203c9dbd2855bcd'
+      'e5f0a5b0f0d0da9031e9c83dbc793df1ba52cae47fffd7646af3aa7d3b06fa4df8e8'
+      '3e28e8c7f5ffeae0a16b374c54ee3201789e6a887e850bda323df41ae6beec6e27a6'
+      '0adaaf0d3f50542841e142160244abab9aedcc295823de17694d2fb0dc77fd657246'
+      '594904d4c4a350f6b61818217dda38c8e913f16fe23701448993ba10a68f92e8f189'
+      'd020e0a25d72eb116cbf231e783167b447e8abc2109de95c873805dc2f27fd5b23ff'
+      '0c8f899166c8b6423a7d2e22e9b8f7709a4c05';
+  // 独立实现（Node/OpenSSL）生成的 SHA-256 + MGF1-SHA256 密文。
+  const ctNodeOaepSha256 =
+      '0f6ec8056d661a2ce0cc4b345af90183e3e57ff6687ab04546af0d3197c9a877f41b'
+      'c82ca52da7aab74021e0cb4ef71ca7ebc4721bcbcf79bb0e22b69281f13e4e7a5943'
+      'a1e04a4540692e175a92a2916f48f466b26032624a67586a0312cf03f12122db1118'
+      '706caee78785c4f9b1c18499d51a969d1729f187d147bf5569024be534e9beed90f3'
+      '5cfda79fafaa85351fdbcc59e4b98dcbb252286f913f1bfa0880cab3073d42c1f4d4'
+      'c64a71797933da5be6106d7aa9c3dd29dda1e57cc20e9d80280a73fe5ec7360b9a9'
+      'bb45df99b173f5e7b61f5ffb82a485e748750e268ff1d4739c0880e332e785db2f8c'
+      '2823ce42cee5c32c9046135e9534626d17e3b';
+
   const plain = '中文测试ABC123';
   final longText =
       List.generate(300, (i) => String.fromCharCode(65 + i % 26)).join();
@@ -165,6 +233,20 @@ void main() {
           rawHex);
     });
 
+    test('NoPadding 短块左补零（Conscrypt 口径），往返保留尾部数据', () {
+      final e = engine();
+      final out = e.eval("(function(){"
+          "var c=java.createAsymmetricCrypto('RSA/ECB/NoPadding');"
+          "c.setPublicKey(java.base64DecodeToByteArray('$pubB64'));"
+          "c.setPrivateKey(java.base64DecodeToByteArray('$privB64'));"
+          "var ct=c.encrypt('abc');"
+          "var pt=c.decrypt(ct, false);"
+          "return [ct.length, pt.length, pt[253]&0xff, pt[254]&0xff,"
+          "pt[255]&0xff].join('|');"
+          "})()");
+      expect(out, '256|256|97|98|99');
+    });
+
     test('解密分块：300 字节两块的密文按 keySize 逐块还原', () {
       final e = engine();
       expect(
@@ -188,16 +270,14 @@ void main() {
       expect(parts[1], longText);
     });
 
-    test('OAEP/非 RSA 返回空对象；未设密钥时报错并被规则层吞掉', () {
+    test('未设密钥的调用按异常吞掉（eval 为空串）', () {
       final e = engine();
+      expect(
+          e.eval("java.createAsymmetricCrypto('RSA').decryptStr('AAAA')"), '');
       expect(
           e.eval("java.createAsymmetricCrypto("
                   "'RSA/ECB/OAEPWithSHA-256AndMGF1Padding').decryptStr('AAAA')"),
           '');
-      expect(e.eval("java.createAsymmetricCrypto('EC').decryptStr('AAAA')"),
-          '');
-      expect(
-          e.eval("java.createAsymmetricCrypto('RSA').decryptStr('AAAA')"), '');
     });
 
     test('无效密钥 / 坏填充按 JCE 抛错（规则求值为空）', () {
@@ -214,6 +294,102 @@ void main() {
               ".setPublicKey(java.base64DecodeToByteArray('$pubB64'))"
               ".decryptStr('$zeroBlock')"),
           '');
+    });
+
+    test('私钥运算由宿主导出（毫秒级，不再是秒级）', () {
+      final e = engine();
+      final watch = Stopwatch()..start();
+      final out = e.eval("java.createAsymmetricCrypto('RSA')"
+          ".setPrivateKey(java.base64DecodeToByteArray('$privB64'))"
+          ".decryptStr('$ctPub2Hex', false)");
+      watch.stop();
+      // ignore: avoid_print
+      print('TIMING host priv-decrypt: ${watch.elapsedMilliseconds}ms');
+      expect(out, plain);
+      expect(watch.elapsedMilliseconds, lessThan(5000));
+    });
+  });
+
+  group('java.createAsymmetricCrypto（OAEP）', () {
+    test('OAEP-SHA* 固定向量解密（MGF1 同主摘要）', () {
+      final e = engine();
+      final vectors = <String, String>{
+        'RSA/ECB/OAEPPadding': ctOaepPadding,
+        'RSA/ECB/OAEPWithSHA-1AndMGF1Padding': ctOaepSha1,
+        'RSA/ECB/OAEPWithSHA-224AndMGF1Padding': ctOaepSha224,
+        'RSA/ECB/OAEPWithSHA-256AndMGF1Padding': ctOaepSha256,
+        'RSA/ECB/OAEPWithSHA-384AndMGF1Padding': ctOaepSha384,
+        'RSA/ECB/OAEPWithSHA-512AndMGF1Padding': ctOaepSha512,
+      };
+      vectors.forEach((transform, ct) {
+        expect(
+            e.eval("java.createAsymmetricCrypto('$transform')"
+                ".setPrivateKey(java.base64DecodeToByteArray('$privB64'))"
+                ".decryptStr('$ct', false)"),
+            plain,
+            reason: transform);
+      });
+    });
+
+    test('独立实现（OpenSSL）的 SHA-256 密文可解', () {
+      final e = engine();
+      expect(
+          e.eval("java.createAsymmetricCrypto("
+                  "'RSA/ECB/OAEPWithSHA-256AndMGF1Padding')"
+              ".setPrivateKey(java.base64DecodeToByteArray('$privB64'))"
+              ".decryptStr('$ctNodeOaepSha256', false)"),
+          plain);
+    });
+
+    test('OAEP 加密→私钥解密，单块 344 字符 base64', () {
+      final e = engine();
+      final out = e.eval("(function(){"
+          "var c=java.createAsymmetricCrypto("
+          "'RSA/ECB/OAEPWithSHA-256AndMGF1Padding');"
+          "c.setPublicKey(java.base64DecodeToByteArray('$pubB64'));"
+          "c.setPrivateKey(java.base64DecodeToByteArray('$privB64'));"
+          "var enc=c.encryptBase64('$plain');"
+          "return enc.length + '|' + c.decryptStr(enc, false);"
+          "})()");
+      expect(out, '344|$plain');
+    });
+
+    test('OAEP 按 k-2h-2 分块（SHA-1 单块 214 字节）；签名方向被拒绝', () {
+      final e = engine();
+      final text215 = List.filled(215, 'b').join();
+      final split = e.eval("(function(){"
+          "var c=java.createAsymmetricCrypto("
+          "'RSA/ECB/OAEPWithSHA-1AndMGF1Padding');"
+          "c.setPublicKey(java.base64DecodeToByteArray('$pubB64'));"
+          "c.setPrivateKey(java.base64DecodeToByteArray('$privB64'));"
+          "var enc=c.encryptBase64('$text215');"
+          "return enc.length + '|' + c.decryptStr(enc, false);"
+          "})()");
+      expect(split, '684|$text215');
+      final privEnc = e.eval("(function(){"
+          "var c=java.createAsymmetricCrypto('RSA/ECB/OAEPPadding');"
+          "c.setPublicKey(java.base64DecodeToByteArray('$pubB64'));"
+          "c.setPrivateKey(java.base64DecodeToByteArray('$privB64'));"
+          "try { c.encryptBase64('x', false); } catch (err) { return ''+err; }"
+          "return 'no-error';})()");
+      expect(privEnc, contains('Only public keys may be used to encrypt'));
+      final pubDec = e.eval("(function(){"
+          "var c=java.createAsymmetricCrypto("
+          "'RSA/ECB/OAEPWithSHA-256AndMGF1Padding');"
+          "c.setPublicKey(java.base64DecodeToByteArray('$pubB64'));"
+          "c.setPrivateKey(java.base64DecodeToByteArray('$privB64'));"
+          "try { c.decryptStr('$ctOaepSha256'); } catch (err) { return ''+err; }"
+          "return 'no-error';})()");
+      expect(pubDec, contains('Only private keys may be used to decrypt'));
+    });
+
+    test('非 RSA 变换按 NoSuchAlgorithmException 抛出（不再静默空对象）', () {
+      final e = engine();
+      final msg = e.eval("(function(){"
+          "try { java.createAsymmetricCrypto('EC').decrypt('AA'); }"
+          "catch (err) { return ''+err; }"
+          "return 'no-error';})()");
+      expect(msg, contains('NoSuchAlgorithmException'));
     });
   });
 }
