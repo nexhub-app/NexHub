@@ -6,8 +6,8 @@
 /// - `@js:`/`<js>` 脚本 → loginUi（RowUi）表单收集值写入 ctx.loginInfo →
 ///   执行脚本（mini-settle：脚本内 java.ajax 走确定性重放）。
 ///
-/// loginCheckJs 校验在 AnalyzeUrl 请求链路自动消费（code==500 →
-/// ShuyuanLoginRequiredException）。
+/// loginCheckJs 校验由 WebBook 五个入口对首响应消费
+/// （AnalyzeUrl.applyLoginCheck，code==500 → ShuyuanLoginRequiredException）。
 library;
 
 import 'dart:convert';

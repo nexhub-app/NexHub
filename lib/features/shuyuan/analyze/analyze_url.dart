@@ -59,9 +59,16 @@ class AnalyzeUrl {
   /// 形态。loginCheckJs 里 `java.ruleUrl` 读它（重试请求定位用）。
   String ruleUrl = '';
 
-  /// 重放请求不再级联执行 loginCheckJs：legado 只在宿主拿到首响应时
-  /// 跑一次检查，检查内部的 `java.getStrResponse()` 重取不应递归。
-  bool skipLoginCheck = false;
+  /// 请求头替换模式（legado `headerMapF` 语义）：true 时请求头只由
+  /// [headerMap] + 显式 headers 参数组成，不再叠加默认 UA/Accept、
+  /// 源 header 与登录头；Cookie 通道保留（legado `setCookie()` 在
+  /// headerMapF 下仍合并 CookieStore，显式 Cookie 优先）。
+  bool _headerMapReplaced = false;
+
+  /// 本实例最后一次真实抓取写入的阶段缓存键。loginCheck 重取同一地址前
+  /// 移除它：legado 的 `java.getStrResponse()` 是真实请求，不能命中首取
+  /// 写入的阶段缓存（否则重取原样返回旧墙页）。
+  String? _lastCacheKey;
 
   /// 最近一次 [getStrResponse] 的原始响应字节（未解码）。
   /// `org.jsoup…bodyAsBytes()` 的 settle 重放需要无损二进制
@@ -112,6 +119,7 @@ class AnalyzeUrl {
   }) {
     _rawUrl = url;
     if (headerMapF != null) {
+      _headerMapReplaced = true;
       headerMap.addAll(headerMapF);
       if (headerMapF.containsKey('proxy')) {
         proxy = headerMapF['proxy'];
@@ -235,8 +243,11 @@ class AnalyzeUrl {
     final paramMatch = paramPattern.firstMatch(originalUrl);
     final urlNoOption = paramMatch != null ? originalUrl.substring(0, paramMatch.start) : originalUrl;
 
-    // 基础 URL（去选项）：后续选项中的 js 可整体改写 url。
-    url = urlNoOption;
+    // 对齐 legado AnalyzeUrl.analyzeUrl：先绝对化再解析选项，选项 js 看到
+    // 的是绝对地址与刷新后的 baseUrl；js 结果直接采用，不再二次绝对化。
+    url = _getAbsoluteUrl(urlNoOption);
+    final legadoBase = _getBaseUrl(url);
+    if (legadoBase != null) baseUrl = legadoBase;
 
     if (paramMatch != null && urlNoOption.length != originalUrl.length) {
       final optionStr = originalUrl.substring(paramMatch.end - 1);
@@ -289,25 +300,23 @@ class AnalyzeUrl {
           }
         }
 
+        // 内部标记：JS 垫片（java.connect/get/post/head、Jsoup）声明本次
+        // 请求按 legado headerMapF 的替换语义发头。
+        if (option['_syHeaderMode'] == 'replace') {
+          _headerMapReplaced = true;
+        }
+
         final js = option['js']?.toString();
         if (js != null && js.isNotEmpty) {
-          final jsResult = _evalJs(js, urlNoOption);
-          url = jsResult;
+          url = _evalJs(js, url);
         }
       }
     }
 
-    // 参数编码必须在 Uri 绝对化**之前**：Dart 的 Uri.parse/resolve 会把 query
-    // 中的非 ASCII 字符自动按 UTF-8 百分号转义，之后再编码就拿到了已被错误
-    // 编码的值（GBK 站点无法纠正）。先按源声明 charset 编码完，再绝对化。
+    // 参数编码放在最后（legado analyzeQuery/analyzeFields 次序）。绝对化
+    // 由 [_getAbsoluteUrl] 保留原始 query，非 ASCII 值不会被提前转成
+    // UTF-8 百分号编码，GBK 站点仍按源声明 charset 编码。
     _encodeRequestParams();
-
-    url = _getAbsoluteUrl(url);
-
-    // 对齐 legado `NetworkUtils.getBaseUrl`：保留端口（`http://host:8080`
-    // 的 baseUrl 绑定/相对地址解析不能丢端口）；非 http(s) 时保持原值。
-    final legadoBase = _getBaseUrl(url);
-    if (legadoBase != null) baseUrl = legadoBase;
   }
 
   /// 按源声明的字符集对请求参数编码，逐行对齐 legado
@@ -521,9 +530,32 @@ class AnalyzeUrl {
     if (urlStr.startsWith('http')) return urlStr;
     if (urlStr.startsWith('data:')) return urlStr;
     if (urlStr.startsWith('javascript')) return '';
+    // legado 解析 base 前按首个逗号截断（URL 选项后缀残留）。
+    final baseNoOption = base.split(',').first;
+    // legado 用 java.net.URL(base, relative)：只解析 path，query/fragment
+    // 原样保留。Dart Uri.resolve 会把整串重新百分号编码（GBK 查询值会被
+    // 改成 UTF-8 字节），故拆出 path 交给 Uri，query/fragment 原样回拼。
+    final q = urlStr.indexOf('?');
+    final h = urlStr.indexOf('#');
+    var split = -1;
+    if (q >= 0 && h >= 0) {
+      split = q < h ? q : h;
+    } else if (q >= 0) {
+      split = q;
+    } else if (h >= 0) {
+      split = h;
+    }
+    final pathPart = split >= 0 ? urlStr.substring(0, split) : urlStr;
+    final suffix = split >= 0 ? urlStr.substring(split) : '';
+    if (pathPart.isEmpty && suffix.isEmpty) return baseNoOption;
     try {
-      // legado 解析 base 前按首个逗号截断（URL 选项后缀残留）。
-      return Uri.parse(base.split(',').first).resolve(urlStr).toString();
+      final baseUri = Uri.parse(baseNoOption);
+      if (pathPart.isEmpty) {
+        // `#frag`：保留 base 查询；`?query`：替换 base 查询。
+        if (suffix.startsWith('#')) return '$baseNoOption$suffix';
+        return '${baseNoOption.split('#').first}$suffix';
+      }
+      return '${baseUri.resolve(pathPart)}$suffix';
     } catch (_) {
       return urlStr;
     }
@@ -542,8 +574,9 @@ class AnalyzeUrl {
 
   String _evalJs(String jsCode, String currentResult) {
     try {
-      final analyzeRule = _urlRule ??= (AnalyzeRule(book: ruleData, chapter: chapter)
-        ..setBaseUrl(baseUrl));
+      final analyzeRule = _urlRule ??= AnalyzeRule(book: ruleData, chapter: chapter);
+      // baseUrl 可能在绝对化后被刷新、或 reinitUrl 后变化，每次求值前同步。
+      analyzeRule.setBaseUrl(baseUrl);
       // URL 内 JS 的宿主绑定（对齐 legado AnalyzeUrl.evalJS）：
       // 分页偏移（`page-1`）、关键词处理等表达式依赖 page/key。
       return analyzeRule.evalJs(jsCode, currentResult, extraBindings: {
@@ -573,7 +606,9 @@ class AnalyzeUrl {
   /// 同一套 Referer/UA/Cookie，否则 CDN 403 全程黑屏。
   Map<String, String> resolveRequestHeaders() {
     final out = <String, String>{};
-    if (source?.header != null && source!.header!.isNotEmpty) {
+    if (!_headerMapReplaced &&
+        source?.header != null &&
+        source!.header!.isNotEmpty) {
       try {
         _parseHeader(source!.header!)
             .forEach((k, v) => _putHeader(out, k, v));
@@ -582,9 +617,11 @@ class AnalyzeUrl {
     headerMap.forEach((k, v) => _putHeader(out, k, v));
     final activeCtx = ShuyuanSourceContext.current;
     if (activeCtx != null) {
-      activeCtx.loginHeader.forEach((k, v) {
-        if (k.isNotEmpty && v.isNotEmpty) _putHeader(out, k, v);
-      });
+      if (!_headerMapReplaced) {
+        activeCtx.loginHeader.forEach((k, v) {
+          if (k.isNotEmpty && v.isNotEmpty) _putHeader(out, k, v);
+        });
+      }
       final reqHost = Uri.tryParse(url)?.host ?? '';
       final overlay = activeCtx.cookiesForHost(reqHost);
       if (overlay.isNotEmpty) {
@@ -664,40 +701,50 @@ class AnalyzeUrl {
       // Cookie 回写覆盖层（不写全局 jar）。
       final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
       final webHeaders = <String, String>{};
-      try {
-        webHeaders['User-Agent'] = HttpFetcher.instance.userAgentForUrl(url);
-      } catch (_) {}
-      final rawHeader = source?.header ?? '';
-      if (rawHeader.isNotEmpty) {
+      if (!_headerMapReplaced) {
         try {
-          final sourceHeader = _parseHeader(rawHeader);
-          // 与下方 HTTP 分支同款语义：源 header 的 User-Agent 必须生效，
-          // 且要大小写不敏感地覆盖宿主 UA（源常写成 `user-agent`）。
-          // 直接 addAll 会让两个大小写不同的键并存 → WebView 用哪个不确定，
-          // registerHostUserAgent 注册到 HttpFetcher 的也仍是宿主 UA。
-          String? sourceUa;
-          for (final key in sourceHeader.keys.toList()) {
-            if (key.toLowerCase() == 'user-agent') {
-              sourceUa = sourceHeader.remove(key);
-              break;
-            }
-          }
-          if (sourceUa != null && sourceUa.isNotEmpty) {
-            webHeaders['User-Agent'] = sourceUa;
-          }
-          sourceHeader.forEach((k, v) => _putHeader(webHeaders, k, v));
+          webHeaders['User-Agent'] = HttpFetcher.instance.userAgentForUrl(url);
         } catch (_) {}
+        final rawHeader = source?.header ?? '';
+        if (rawHeader.isNotEmpty) {
+          try {
+            final sourceHeader = _parseHeader(rawHeader);
+            // 与下方 HTTP 分支同款语义：源 header 的 User-Agent 必须生效，
+            // 且要大小写不敏感地覆盖宿主 UA（源常写成 `user-agent`）。
+            // 直接 addAll 会让两个大小写不同的键并存 → WebView 用哪个不确定，
+            // registerHostUserAgent 注册到 HttpFetcher 的也仍是宿主 UA。
+            String? sourceUa;
+            for (final key in sourceHeader.keys.toList()) {
+              if (key.toLowerCase() == 'user-agent') {
+                sourceUa = sourceHeader.remove(key);
+                break;
+              }
+            }
+            if (sourceUa != null && sourceUa.isNotEmpty) {
+              webHeaders['User-Agent'] = sourceUa;
+            }
+            sourceHeader.forEach((k, v) => _putHeader(webHeaders, k, v));
+          } catch (_) {}
+        }
+      } else {
+        // 替换模式：WebView 只带 headerMap（legado BackstageWebView 拿到的
+        // 就是 headerMapF 替换后的那一份）。
+        headerMap.forEach((k, v) => _putHeader(webHeaders, k, v));
       }
       if (activeCtx != null) {
         if (host.isNotEmpty) {
           final overlay = activeCtx.cookiesForHost(host);
           if (overlay.isNotEmpty) {
-            webHeaders['Cookie'] =
-                overlay.entries.map((e) => '${e.key}=${e.value}').join('; ');
+            _putHeader(
+                webHeaders,
+                'Cookie',
+                _mergeCookieStrings(_headerValue(webHeaders, 'Cookie'),
+                    overlay.entries.map((e) => '${e.key}=${e.value}').join('; ')));
           }
         }
-        if (activeCtx.loginHeader.isNotEmpty) {
-          webHeaders.addAll(activeCtx.loginHeader);
+        if (!_headerMapReplaced && activeCtx.loginHeader.isNotEmpty) {
+          activeCtx.loginHeader
+              .forEach((k, v) => _putHeader(webHeaders, k, v));
         }
       }
       // 与下方 HTTP 分支同款护栏：源 header 的 @js 可能调用 java.ajax，首轮
@@ -707,7 +754,7 @@ class AnalyzeUrl {
       if (webHeaders.values.any(_hasReplayPlaceholder)) {
         throw Exception('请求头含待重放占位符，等待 settle 抓取：$url');
       }
-      final ua = webHeaders['User-Agent'];
+      final ua = _headerValue(webHeaders, 'User-Agent');
       if (host.isNotEmpty && ua != null && ua.isNotEmpty) {
         HttpFetcher.instance.registerHostUserAgent(host, ua);
       }
@@ -754,16 +801,7 @@ class AnalyzeUrl {
           webJs: webJs,
         );
       }
-      final checkJs = source?.loginCheckJs;
       var out = rendered;
-      if (!skipLoginCheck && checkJs != null && checkJs.trim().isNotEmpty) {
-        final outcome = await _runLoginCheck(checkJs, 200, rendered);
-        if (outcome.code == 500) {
-          throw ShuyuanLoginRequiredException(
-              url: url, sourceName: source?.bookSourceName ?? '');
-        }
-        if (outcome.body != null) out = outcome.body!;
-      }
       if (sourceRegex != null && sourceRegex.isNotEmpty) {
         try {
           final regex = RegExp(sourceRegex, dotAll: true);
@@ -778,50 +816,53 @@ class AnalyzeUrl {
       return out;
     }
 
-    // 全应用统一 UA（中心真源）：过验证的 UA 与后续 HttpFetcher 重试的 UA 必须一致，
-    // 否则反爬把 Cookie 绑定到 UA+IP，UA 漂移 → Cookie 失效 → 验证死循环。
-    // 最终 UA：默认中心化指纹 UA；若源 header 显式声明 UA（如笔趣阁移动端 UA），
-    // 则改用源的 UA——移动站点加固反爬后会拒绝桌面 UA，旧逻辑强制剥掉源 UA、
-    // 改用桌面 UA 正是「笔趣阁无需验证却被判 403/验证」的根因。
-    // 无论哪种 UA，都按 host 注册到 HttpFetcher，保证 WebView 验证与后续重试
-    // 复用同一 UA → 会话 Cookie 绑定一致，避免验证死循环。
-    final effectiveUa = HttpFetcher.instance.userAgentForUrl(url);
-    // 默认头不注入 Referer（legado AnalyzeUrl 同样只补 UA/Accept）；源要用
-    // 参考来源须在 header 里显式声明。bookSourceUrl 允许携带 `##备注` 后缀
-    // 且原样保存，把整串当默认 Referer 会因非 ASCII 头值让请求发送失败。
-    final requestHeaders = <String, String>{
-      'User-Agent': effectiveUa,
-      'Accept':
-          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-    };
+    final requestHeaders = <String, String>{};
+    if (!_headerMapReplaced) {
+      // 全应用统一 UA（中心真源）：过验证的 UA 与后续 HttpFetcher 重试的
+      // UA 必须一致，否则反爬把 Cookie 绑定到 UA+IP，UA 漂移 → Cookie 失效
+      // → 验证死循环。最终 UA：默认中心化指纹 UA；若源 header 显式声明 UA
+      // （如移动端 UA），则改用源的 UA——移动站点加固反爬后会拒绝桌面 UA。
+      // 无论哪种 UA，都按 host 注册到 HttpFetcher，保证 WebView 验证与后续
+      // 重试复用同一 UA → 会话 Cookie 绑定一致，避免验证死循环。
+      //
+      // 默认头不注入 Referer（legado AnalyzeUrl 同样只补 UA/Accept）；源要用
+      // 参考来源须在 header 里显式声明。bookSourceUrl 允许携带 `##备注` 后缀
+      // 且原样保存，把整串当默认 Referer 会因非 ASCII 头值让请求发送失败。
+      requestHeaders['User-Agent'] =
+          HttpFetcher.instance.userAgentForUrl(url);
+      requestHeaders['Accept'] =
+          'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8';
+      requestHeaders['Accept-Language'] = 'zh-CN,zh;q=0.9,en;q=0.8';
 
-    if (source?.header != null && source!.header!.isNotEmpty) {
-      try {
-        final sourceHeader = _parseHeader(source!.header!);
-        // 源 header 的 User-Agent 必须生效（尊重「源即插件」：源作者配的 UA 即意图）。
-        // 提取后按 host 注册到 HttpFetcher，使 WebView 验证复用同一 UA。
-        String? sourceUa;
-        for (final key in sourceHeader.keys.toList()) {
-          if (key.toLowerCase() == 'user-agent') {
-            sourceUa = sourceHeader.remove(key);
-            break;
+      if (source?.header != null && source!.header!.isNotEmpty) {
+        try {
+          final sourceHeader = _parseHeader(source!.header!);
+          // 源 header 的 User-Agent 必须生效（尊重「源即插件」：源作者配的
+          // UA 即意图）。提取后按 host 注册到 HttpFetcher，使 WebView 验证
+          // 复用同一 UA。
+          String? sourceUa;
+          for (final key in sourceHeader.keys.toList()) {
+            if (key.toLowerCase() == 'user-agent') {
+              sourceUa = sourceHeader.remove(key);
+              break;
+            }
           }
-        }
-        if (sourceUa != null && sourceUa.isNotEmpty) {
-          requestHeaders['User-Agent'] = sourceUa;
-          final host = Uri.tryParse(url)?.host;
-          if (host != null && host.isNotEmpty) {
-            HttpFetcher.instance.registerHostUserAgent(host, sourceUa);
+          if (sourceUa != null && sourceUa.isNotEmpty) {
+            requestHeaders['User-Agent'] = sourceUa;
+            final host = Uri.tryParse(url)?.host;
+            if (host != null && host.isNotEmpty) {
+              HttpFetcher.instance.registerHostUserAgent(host, sourceUa);
+            }
           }
-        }
-        sourceHeader.forEach((k, v) => _putHeader(requestHeaders, k, v));
-      } catch (_) {}
+          sourceHeader.forEach((k, v) => _putHeader(requestHeaders, k, v));
+        } catch (_) {}
+      }
     }
 
     // URL 选项 headers（书源 searchUrl 的 `,{"headers":{...}}` 声明 + POST
     // Content-Type 补全）此前从未并入实际请求，源声明的请求头全部丢失；
     // 此处统一并入（选项头在源 header 之后、显式 headers 参数之前生效）。
+    // 替换模式下它是唯一来源（headerMapF 已在构造时并入 headerMap）。
     if (headerMap.isNotEmpty) {
       headerMap.forEach((k, v) => _putHeader(requestHeaders, k, v));
     }
@@ -834,10 +875,13 @@ class AnalyzeUrl {
     // per-source cookie 覆盖层按 host 合并（书源命名空间隔离——三通道设计，
     // 只读合并进本次请求，不写全局罐）。activeCtx 已在函数入口取过。
     // 覆盖层先于共享罐合并：显式 Cookie > per-source 覆盖层 > 共享罐。
+    // 替换模式跳过登录头（legado headerMapF 已完全替换登录头来源）。
     if (activeCtx != null) {
-      activeCtx.loginHeader.forEach((k, v) {
-        if (k.isNotEmpty && v.isNotEmpty) _putHeader(requestHeaders, k, v);
-      });
+      if (!_headerMapReplaced) {
+        activeCtx.loginHeader.forEach((k, v) {
+          if (k.isNotEmpty && v.isNotEmpty) _putHeader(requestHeaders, k, v);
+        });
+      }
       _mergeCtxCookieOverlay(requestHeaders, url, activeCtx);
     }
 
@@ -1018,18 +1062,6 @@ class AnalyzeUrl {
         body = _evalJs(bodyJs!, body);
       }
 
-      // loginCheckJs 消费（legado 五环节 check 语义）：书源声明的登录校验
-      // 脚本，种子 result={code,body} 可改写；code==500 → 未登录。
-      final checkJs = source?.loginCheckJs;
-      if (!skipLoginCheck && checkJs != null && checkJs.trim().isNotEmpty) {
-        final outcome =
-            await _runLoginCheck(checkJs, response.statusCode ?? 0, body);
-        if (outcome.code == 500) {
-          throw ShuyuanLoginRequiredException(
-              url: url, sourceName: source?.bookSourceName ?? '');
-        }
-        if (outcome.body != null) body = outcome.body!;
-      }
       if (response.redirects.isNotEmpty) {
         url = response.redirects.last.location.toString();
       }
@@ -1097,9 +1129,38 @@ class AnalyzeUrl {
     }
 
     if (activeCtx != null && cacheKey != null) {
+      _lastCacheKey = cacheKey;
       activeCtx.pageCachePut(cacheKey, body);
     }
     return body;
+  }
+
+  /// 入口级 loginCheck（legado WebBook 五个 await 入口的 `check` 语义）：
+  /// 书源声明 loginCheckJs 时，对**首响应**求值一次并返回可能被改写的响应体。
+  /// 仅在 WebBook 入口调用——分页、目录翻页、loginCheck 内部重取都不再触发，
+  /// 且脚本看到的 `url()`/`headers()` 是本次响应的最终地址与真实响应头。
+  Future<String> applyLoginCheck(String body) async {
+    final checkJs = source?.loginCheckJs;
+    if (checkJs == null || checkJs.trim().isEmpty) return body;
+    // 首取刚写入的阶段缓存先撤掉：检查脚本里的 getStrResponse() 必须走
+    // 真实重取（legado 无阶段缓存），否则只会拿回同一个响应。
+    final staged = _lastCacheKey;
+    if (staged != null) {
+      _lastCacheKey = null;
+      ShuyuanSourceContext.current?.pageCacheRemove(staged);
+    }
+    final outcome = await _runLoginCheck(
+      checkJs,
+      lastStatusCode ?? 200,
+      body,
+      responseUrl: lastFinalUrl ?? url,
+      responseHeaders: lastResponseHeaders,
+    );
+    if (outcome.code == 500) {
+      throw ShuyuanLoginRequiredException(
+          url: url, sourceName: source?.bookSourceName ?? '');
+    }
+    return outcome.body ?? body;
   }
 
   /// 阶段缓存键：同 URL 但 method/body/请求头/后处理不同时不能复用。
@@ -1703,7 +1764,12 @@ class AnalyzeUrl {
   /// 重取走沙箱确定性重放（首轮记 op，宿主抓取后重放命中缓存），因此
   /// 检查被改写为多轮循环——仅当本轮没有新增请求（或抓取无进展）才收敛。
   Future<_LoginCheckOutcome> _runLoginCheck(
-      String js, int statusCode, String body) async {
+    String js,
+    int statusCode,
+    String body, {
+    String? responseUrl,
+    Map<String, List<String>>? responseHeaders,
+  }) async {
     try {
       // 复用 per-source 引擎：loginCheckJs 每次请求都会求值，不能每次新建
       // QuickJS 运行时。上下文种子由 JsEngine.eval 统一注入。
@@ -1721,6 +1787,12 @@ class AnalyzeUrl {
         'method': method?.toUpperCase() ?? '',
         'body': this.body ?? '',
       });
+      // legado 里检查脚本拿到的是 StrResponse：url() 为重定向后的最终地址，
+      // headers() 为真实响应头（多值头取第一条，Java Map.get 同形）。
+      final lcHeaders = <String, String>{};
+      responseHeaders?.forEach((k, v) {
+        if (v.isNotEmpty) lcHeaders[k] = v.first;
+      });
       final base = (source?.bookSourceUrl ?? '').isNotEmpty
           ? source!.bookSourceUrl
           : (baseUrl?.isNotEmpty ?? false)
@@ -1737,7 +1809,7 @@ class AnalyzeUrl {
                 ...activeCtx.ajaxBytesPending,
               };
         final wrapped = 'var __lcBody = ${jsonEncode(body)};\n'
-            'var __lcUrl = ${jsonEncode(url)};\n'
+            'var __lcUrl = ${jsonEncode(responseUrl ?? url)};\n'
             'var result = new String(__lcBody);\n'
             'result.__code = $statusCode;\n'
             'result.body = (function () {\n'
@@ -1758,7 +1830,15 @@ class AnalyzeUrl {
             'result.code = function () { return result.__code; };\n'
             'result.url = function () { return __lcUrl; };\n'
             'result.message = function () { return ""; };\n'
-            'result.headers = function () { return {}; };\n'
+            'result.headers = function () {\n'
+            '  var m = ${jsonEncode(lcHeaders)};\n'
+            '  Object.defineProperty(m, "get", { value: function (n) {\n'
+            '    var l = String(n).toLowerCase();\n'
+            '    for (var k in m) if (k.toLowerCase() === l) return m[k];\n'
+            '    return null;\n'
+            '  }, enumerable: false });\n'
+            '  return m;\n'
+            '};\n'
             'globalThis.__syLoginBegin(${jsonEncode(seed)});\n'
             'var __lcCode = null;\n'
             'var __lcBodyOut = null;\n'
@@ -1813,7 +1893,6 @@ class AnalyzeUrl {
           activeCtx,
           source!,
           deadline: deadline,
-          skipLoginCheck: true,
         );
         if (fetched == 0) break;
       }

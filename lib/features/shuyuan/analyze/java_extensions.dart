@@ -796,7 +796,11 @@ const String sourceContextJsPrelude = r'''
       return out;
     };
     global.java.connect = function (urlStr, header, callTimeout) {
-      var key = syWithHeaders(urlStr, header, null);
+      // legado JsExtensions.connect(url, header)：headerMapF 整体替换请求头。
+      // 仅在 header 解析成功时进入替换模式（解析失败仍回退源 header）。
+      var h = syParseHeaders(header);
+      var key = syWithHeaders(urlStr, header,
+          h ? { _syHeaderMode: 'replace' } : null);
       return syResp(key, global.java.__ajaxReq(key));
     };
     // get 分派（legado 两个重载）：
@@ -808,14 +812,16 @@ const String sourceContextJsPrelude = r'''
     //   本身就是 URL，按「看起来像 URL 就发请求」会把它误当接口。
     global.java.get = function (a, b, c) {
       if (arguments.length >= 2) {
-        var key = syWithHeaders(a, b, { followRedirects: false });
+        var key = syWithHeaders(a, b,
+            { followRedirects: false, _syHeaderMode: 'replace' });
         return syResp(key, global.java.__ajaxReq(key));
       }
       var s = String(a == null ? '' : a);
       var v = syRuleGet(s);
       if (v !== '') return v;
       if (/^https?:\/\//i.test(s)) {
-        var key2 = syWithHeaders(s, null, { followRedirects: false });
+        var key2 = syWithHeaders(s, null,
+            { followRedirects: false, _syHeaderMode: 'replace' });
         return syResp(key2, global.java.__ajaxReq(key2));
       }
       return '';
@@ -824,14 +830,15 @@ const String sourceContextJsPrelude = r'''
     // 选项串在标记之前，headers/followRedirects 随 URL 一起保留）。
     // legado Jsoup requestBody 语义：空 body 也是 POST，不降级为 GET。
     global.java.post = function (urlStr, bodyStr, headers, timeout) {
-      var keyUrl = syWithHeaders(urlStr, headers, { followRedirects: false });
+      var keyUrl = syWithHeaders(urlStr, headers,
+          { followRedirects: false, _syHeaderMode: 'replace' });
       var b = bodyStr == null ? '' : String(bodyStr);
       var key = keyUrl + '||POST||' + b;
       return syResp(key, global.java.__ajaxReq(key));
     };
     global.java.head = function (urlStr, headers, timeout) {
       var key = syWithHeaders(urlStr, headers,
-          { followRedirects: false, method: 'HEAD' });
+          { followRedirects: false, method: 'HEAD', _syHeaderMode: 'replace' });
       return syResp(key, global.java.__ajaxReq(key));
     };
     // legado JsExtensions.importScript：取远端/本地脚本文本（远程 jsLib 里的
@@ -914,10 +921,9 @@ const String sourceContextJsPrelude = r'''
                 var isPost = req._method === 'POST' || req._data.length > 0;
                 var form = req._data.join('&');
                 if (isPost && !form) opts.method = 'POST';
-                var finalUrl = req._url;
-                if (req._url.indexOf(',{') < 0 && Object.keys(opts).length > 0) {
-                  finalUrl = req._url + ',' + JSON.stringify(opts);
-                }
+                // legado Jsoup 直连只发显式设置的头（不叠加源 header/默认头）。
+                opts._syHeaderMode = 'replace';
+                var finalUrl = syWithHeaders(req._url, null, opts);
                 var key = isPost && form
                     ? finalUrl + '||POST||' + form
                     : finalUrl;

@@ -113,8 +113,11 @@ void main() {
   test('connect().get() 与 java.get().parse() 返回可查询 Document', () {
     final ctx = ShuyuanSourceContext('src_jsoup_doc')
       ..ajaxCache['https://x.com/page'] = _html
-      // java.get(url) 走 Jsoup 口径：不跟随重定向（选项串随键保留）。
-      ..ajaxCache['https://x.com/page,{"followRedirects":false}'] = _html;
+      // Jsoup connect / java.get(url) 走替换头语义：不叠加源头，且不跟随
+      // 重定向（选项串随键保留）。
+      ..ajaxCache['https://x.com/page,{"_syHeaderMode":"replace"}'] = _html
+      ..ajaxCache['https://x.com/page,'
+              '{"followRedirects":false,"_syHeaderMode":"replace"}'] = _html;
     ShuyuanSourceContext.run(ctx, () {
       final e = JsEngine.forSource(ctx.sourceId);
       expect(

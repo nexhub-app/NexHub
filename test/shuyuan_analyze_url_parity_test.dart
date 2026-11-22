@@ -156,6 +156,34 @@ void main() {
     });
   });
 
+  group('URL 选项 js 次序（legado analyzeUrl：绝对化 → baseUrl → js）', () {
+    test('js 在绝对化后的 URL 上求值，结果不再二次绝对化', () {
+      final au = AnalyzeUrl(
+        url: "../next,{\"js\":\"result.startsWith('http') ? "
+            "result + '/abs' : result + '/rel'\"}",
+        baseUrl: 'http://h.test/a/b/',
+      );
+      expect(au.url, 'http://h.test/a/next/abs');
+    });
+
+    test('js 求值前 baseUrl 刷新为绝对化后的源根', () {
+      final au = AnalyzeUrl(
+        url: 'http://h.test/x,{"js":"result + \'?b=\' + baseUrl"}',
+        baseUrl: 'http://other.test/',
+      );
+      expect(au.url, 'http://h.test/x?b=http://h.test');
+    });
+
+    test('相对 URL 的原始 query 不被绝对化提前编码：GBK 仍按源声明', () {
+      final au = AnalyzeUrl(
+        url: 's?q={{key}},{"charset":"gbk"}',
+        key: '中文',
+        baseUrl: 'http://h.test/',
+      );
+      expect(au.url, 'http://h.test/s?q=%D6%D0%CE%C4');
+    });
+  });
+
   group('URL 选项消费（legado getStrResponseAwait）', () {
     test('type：响应体为原始字节 hex，且不做文本后处理', () async {
       final server = await _startServer(byteRoutes: {
@@ -229,6 +257,47 @@ void main() {
         baseUrl: 'http://h.test/',
       );
       expect(negative.webViewDelayTime, 0);
+    });
+  });
+
+  group('请求头替换语义（legado headerMapF/setHeaders）', () {
+    test('替换模式只发显式头：源声明头不叠加，Cookie/自定义头保留', () async {
+      final captured = <String, String>{};
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((req) {
+        req.headers.forEach((k, v) => captured[k.toLowerCase()] = v.join(','));
+        req.response
+          ..statusCode = 200
+          ..headers.contentType = ContentType.html
+          ..write('OK');
+        req.response.close();
+      });
+      try {
+        final source = XiaoshuoBookSource.fromJson(<String, dynamic>{
+          'bookSourceUrl': _origin(server),
+          'bookSourceName': 'replacement-headers',
+          'header': 'X-Source: src\nX-Shared: source',
+        });
+        final au = AnalyzeUrl(
+          url: '${_origin(server)}/h',
+          baseUrl: _origin(server),
+          source: source,
+          headerMapF: <String, String>{
+            'X-Custom': 'c',
+            'X-Shared': 'explicit',
+            'Cookie': 'sid=1',
+          },
+        );
+        expect(await au.getStrResponse(), 'OK');
+        expect(captured['x-source'], isNull);
+        expect(captured['x-custom'], 'c');
+        expect(captured['x-shared'], 'explicit');
+        expect(captured['cookie'], 'sid=1');
+        // 声明型请求头同样不再叠加源 header（播放器直链解析共用）。
+        expect(au.resolveRequestHeaders()['X-Source'], isNull);
+      } finally {
+        await server.close(force: true);
+      }
     });
   });
 

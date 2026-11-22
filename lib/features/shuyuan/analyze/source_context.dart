@@ -212,6 +212,13 @@ class ShuyuanSourceContext {
     }
   }
 
+  /// 移除单个页面缓存条目（loginCheck 重取同一地址前调用：legado 的
+  /// `java.getStrResponse()` 是真实请求，不能被本阶段首取的缓存顶掉）。
+  void pageCacheRemove(String key) {
+    final prev = pageCache.remove(key);
+    if (prev != null) _pageCacheChars -= prev.length;
+  }
+
   /// 阶段开始：清空重放相关的全部瞬态缓存（页面 / ajax / webview / 待抓取队列）。
   void clearStageCaches() {
     pageCache.clear();
@@ -809,7 +816,6 @@ class ShuyuanSourceContext {
     ShuyuanSourceContext ctx,
     XiaoshuoBookSource source, {
     DateTime? deadline,
-    bool skipLoginCheck = false,
   }) async {
     var fetched = 0;
     // bodyAsBytes 与 java.ajax 可能记录同一 URL：按并集各抓一次，
@@ -872,7 +878,7 @@ class ShuyuanSourceContext {
           url: requestUrl,
           baseUrl: source.bookSourceUrl,
           source: source,
-        )..skipLoginCheck = skipLoginCheck;
+        );
         final resp = await analyzeUrl
             .getStrResponse()
             .timeout(const Duration(seconds: 45));

@@ -84,7 +84,8 @@ class WebBook {
       page: page,
     );
 
-    final body = await analyzeUrl.getStrResponse();
+    var body = await analyzeUrl.getStrResponse();
+    body = await analyzeUrl.applyLoginCheck(body);
     if (body.isEmpty) return <SearchBook>[];
 
     return BookList.analyzeBookList(
@@ -204,7 +205,8 @@ class WebBook {
       page: page,
     );
 
-    final body = await analyzeUrl.getStrResponse();
+    var body = await analyzeUrl.getStrResponse();
+    body = await analyzeUrl.applyLoginCheck(body);
     if (body.isEmpty) return <XiaoshuoBook>[];
 
     final searchBooks = BookList.analyzeBookList(
@@ -249,7 +251,8 @@ class WebBook {
       itemContext: _bookItemContext(bookUrl),
     );
 
-    final body = await analyzeUrl.getStrResponse();
+    var body = await analyzeUrl.getStrResponse();
+    body = await analyzeUrl.applyLoginCheck(body);
 
     final book = (seedBook != null && seedBook.bookUrl == bookUrl)
         ? seedBook
@@ -391,7 +394,8 @@ class WebBook {
         ruleData: book,
         itemContext: _bookItemContext(book.bookUrl),
       );
-      body = await analyzeUrl.getStrResponse();
+      body = await analyzeUrl.applyLoginCheck(
+          await analyzeUrl.getStrResponse());
       tocBaseUrl = analyzeUrl.url;
     }
     if (body.isEmpty) return <XiaoshuoBookChapter>[];
@@ -594,10 +598,11 @@ class WebBook {
       // legado getStrResponseAwait(jsStr = ruleContent.webJs, sourceRegex = …)：
       // webJs 在 WebView 路径作为页内取值脚本（Java 直连分支不消费）。
       final fetchWatch = Stopwatch()..start();
-      firstBody = await analyzeUrl.getStrResponse(
+      final fetchedBody = await analyzeUrl.getStrResponse(
         jsStr: contentRule.webJs,
         sourceRegex: contentRule.sourceRegex,
       );
+      firstBody = await analyzeUrl.applyLoginCheck(fetchedBody);
       AppLog.instance.i('[书源正文] 首页抓取完成 源=${source.bookSourceName} '
           '长度=${firstBody.length} 耗时=${fetchWatch.elapsedMilliseconds}ms');
       firstBaseUrl = analyzeUrl.url;
@@ -622,8 +627,10 @@ class WebBook {
       body: firstBody,
       nextChapterUrl: nextChapterUrl,
       mediaSource: mediaSource,
-      // 标题规则在全部页拼接后执行一次（见下方 postRule）。
+      // 标题规则在全部页拼接后执行一次（见下方 postRule）；
+      // replaceRegex/缩进同样延后到整章 finalizeChapter。
       processTitle: false,
+      deferChapterPostProcess: true,
     );
     AppLog.instance.i('[书源正文] 内容规则解析完成 源=${source.bookSourceName} '
         '块=${firstContent.length} 耗时=${analyzeWatch.elapsedMilliseconds}ms');
@@ -684,6 +691,7 @@ class WebBook {
               nextChapterUrl: nextChapterUrl,
               mediaSource: mediaSource,
               processTitle: false,
+              deferChapterPostProcess: true,
             );
           },
         );
@@ -742,6 +750,7 @@ class WebBook {
             nextChapterUrl: nextChapterUrl,
             mediaSource: mediaSource,
             processTitle: false,
+            deferChapterPostProcess: true,
           );
           if (pageContent.isEmpty) break;
 
@@ -778,12 +787,10 @@ class WebBook {
           if (mediaSource) {
             chapter.putVariable('lyric', subContent);
           } else {
-            blocks.addAll(BookContent.formatAppendedContent(
+            blocks.addAll(BookContent.extractAppendedBlocks(
               content: subContent,
-              contentRule: contentRule,
               baseUrl: chapterUrl,
               redirectUrl: firstBaseUrl,
-              analyzeRule: postRule,
             ));
           }
         }
@@ -792,16 +799,22 @@ class WebBook {
     final appliedTitle =
         BookContent.applyChapterTitle(postRule, contentRule, chapter);
 
-    if (blocks.isEmpty) {
+    // legado BookContent 外层：全部页 + 附加正文拼接后只跑一次
+    // replaceRegex，再统一缩进（逐页阶段只做提取/清洗）。
+    final finalized = BookContent.finalizeChapter(
+      blocks: blocks,
+      contentRule: contentRule,
+      analyzeRule: postRule,
+      mediaSource: mediaSource,
+    );
+    if (finalized.isEmpty) {
       return BookContentResult(content: '', title: appliedTitle, error: '解析失败');
     }
 
     // 音频源歌词由 subContent 写入章节变量（md3 同源），随结果回传给播放器。
     final lyricText = chapter.getVariable('lyric').trim();
-    // 各子页已在 BookContent.analyzeContent 内完成清洗 / 缩进 / 去广告，
-    // 拼接后即为最终正文；此处不再二次归一化（避免重复缩进叠加）。
     return BookContentResult(
-      blocks: blocks,
+      blocks: finalized,
       title: appliedTitle,
       lyric: lyricText.isEmpty ? null : lyricText,
     );

@@ -86,12 +86,16 @@ void main() {
       final e = JsEngine();
       e.eval("java.post('https://x.com/p','a=1&b=2')");
       // java.post 走 legado Jsoup 口径：不跟随重定向（302 Location 是脚本
-      // 要的答案），选项串在 POST 标记之前。
-      expect(ctx.ajaxPending,
-          ['https://x.com/p,{"followRedirects":false}||POST||a=1&b=2']);
+      // 要的答案），选项串在 POST 标记之前，且请求头按 headerMapF 替换。
+      expect(ctx.ajaxPending, [
+        'https://x.com/p,'
+            '{"followRedirects":false,"_syHeaderMode":"replace"}'
+            '||POST||a=1&b=2'
+      ]);
       e.eval("java.post('https://x.com/p2','',{})");
       expect(ctx.ajaxPending.last,
-          'https://x.com/p2,{"followRedirects":false}||POST||');
+          'https://x.com/p2,'
+          '{"followRedirects":false,"_syHeaderMode":"replace"}||POST||');
     });
   });
 
@@ -101,8 +105,10 @@ void main() {
       final e = JsEngine();
       e.eval("java.connect('https://x.com/a', "
           "JSON.stringify({'Referer':'https://r.example'}))");
-      expect(ctx.ajaxPending,
-          ['https://x.com/a,{"headers":{"Referer":"https://r.example"}}']);
+      expect(ctx.ajaxPending, [
+        'https://x.com/a,{"headers":{"Referer":"https://r.example"},'
+            '"_syHeaderMode":"replace"}'
+      ]);
     });
   });
 
@@ -127,6 +133,7 @@ void main() {
       final opts = jsonDecode(key.substring(key.indexOf(',{') + 1)) as Map;
       expect(opts['headers'], {'X-A': '1'});
       expect(opts['followRedirects'], false);
+      expect(opts['_syHeaderMode'], 'replace');
     });
   });
 

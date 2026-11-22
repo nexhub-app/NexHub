@@ -235,25 +235,44 @@ void main() {
       expect(out, 'B正文');
     });
 
-    test('subContent 后处理：无替换不缩进，有替换按 legado 缩进', () {
+    test('subContent 与正文一起整章后处理：只替换一次并统一缩进', () {
       final ar = AnalyzeRule()..setContent('x');
-      final plain = BookContent.formatAppendedContent(
+      final appended = BookContent.extractAppendedBlocks(
         content: '附加段落',
-        contentRule: ContentRule(),
         baseUrl: 'https://src.test/c/1.html',
         redirectUrl: 'https://src.test/c/1.html',
-        analyzeRule: ar,
       );
-      expect(_texts(plain), <String>['附加段落']);
+      // 提取阶段不做替换/缩进，统一交给整章后处理。
+      expect(_texts(appended), <String>['附加段落']);
 
-      final replaced = BookContent.formatAppendedContent(
-        content: '附加段落',
+      final finalized = BookContent.finalizeChapter(
+        blocks: <NovelBlock>[
+          const NovelTextBlock('正文页一'),
+          ...appended,
+        ],
         contentRule: ContentRule(replaceRegex: '附加##追加'),
-        baseUrl: 'https://src.test/c/1.html',
-        redirectUrl: 'https://src.test/c/1.html',
         analyzeRule: ar,
+        mediaSource: false,
       );
-      expect(_texts(replaced), <String>['　　追加段落']);
+      expect(_texts(finalized), <String>['　　正文页一', '　　追加段落']);
+    });
+
+    test('整章 replaceRegex 在全部页拼接后执行（跨页规则可命中）', () {
+      const content = '第一页尾\n第二页头';
+      final ar = AnalyzeRule()..setContent(content);
+      final finalized = BookContent.finalizeChapter(
+        blocks: const <NovelBlock>[
+          NovelTextBlock('第一页尾'),
+          NovelTextBlock('第二页头'),
+        ],
+        contentRule: ContentRule(
+          replaceRegex: "@js:result.replace('页尾\\n第二页头', '合并')",
+        ),
+        analyzeRule: ar,
+        mediaSource: false,
+      );
+      // 逐页替换时两页各自孤立，跨页表达式不可能命中。
+      expect(_texts(finalized), <String>['　　第一合并']);
     });
   });
 
@@ -324,7 +343,7 @@ void main() {
         nextChapterUrl: '$origin/c1_3.html',
       );
       expect(_texts(result.blocks),
-          <String>['　　第一页', '　　第二页', '附加页']);
+          <String>['　　第一页', '　　第二页', '　　附加页']);
       expect(result.error, isNull);
       // 下一页地址等于 nextChapterUrl 时必须停止，不能抓取下一章。
       expect(paths, isNot(contains('/c1_3.html')));

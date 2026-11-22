@@ -149,6 +149,7 @@ class BookContent {
     String? nextChapterUrl,
     bool mediaSource = false,
     bool processTitle = true,
+    bool deferChapterPostProcess = false,
   }) {
     // legado WebBook.getContent：一级目录（卷章，URL 为标题占位）不解析正文
     // 规则，直接返回 `tag ?: ""`；阅读器调用方已过滤卷章，此处兜底避免误抓取。
@@ -191,7 +192,8 @@ class BookContent {
     // 分支）：正文即媒体直链或 DASH/MPD 清单文本，不做 fallback 选择器、
     // HTML 剥离与分块（MPD 的 XML 会被当标签删光 → 播放器拿不到地址）。
     if (mediaSource) {
-      if (contentRule.replaceRegex != null &&
+      if (!deferChapterPostProcess &&
+          contentRule.replaceRegex != null &&
           contentRule.replaceRegex!.isNotEmpty) {
         content = content.split('\n').map((line) => line.trim()).join('\n');
         content = applyReplaceRules(content, contentRule.replaceRegex!,
@@ -227,7 +229,12 @@ class BookContent {
           .replaceAll(RegExp(r'<p[^>]*>', caseSensitive: false), '\n');
     }
 
-    if (contentRule.replaceRegex != null && contentRule.replaceRegex!.isNotEmpty) {
+    // legado 的 replaceRegex 在整章（全部页拼接）之后只跑一次；分页抓取
+    // 场景由 web_book 传入 deferChapterPostProcess，逐页只做提取与清洗，
+    // 统一交给 [finalizeChapter]。
+    if (!deferChapterPostProcess &&
+        contentRule.replaceRegex != null &&
+        contentRule.replaceRegex!.isNotEmpty) {
       // 逐行 trim 后应用替换规则（对齐 legado：逐行 trim）
       content = content.split('\n').map((line) => line.trim()).join('\n');
       watch.reset();
@@ -260,7 +267,8 @@ class BookContent {
 
     // legado HtmlFormatter.formatKeepImg 对正文每一段统一补两个全角空格
     // （与 replaceRegex 是否声明无关）；幂等剥离源自带缩进后再统一加。
-    if (blocks.isNotEmpty) {
+    // 整章模式延后到 [finalizeChapter]，避免分页各自缩进。
+    if (!deferChapterPostProcess && blocks.isNotEmpty) {
       blocks = _applyIndentBlocks(blocks);
     }
 
@@ -299,29 +307,84 @@ class BookContent {
     }
   }
 
-  /// legado BookContent 外层 subContent：all 页拼接后对首页响应求值一次，
-  /// 作为附加正文追加（http 开头时先抓取）。legado 随后才对整段跑
-  /// replaceRegex/缩进，这里对附加段单独复现这两个后处理。
-  static List<NovelBlock> formatAppendedContent({
+  /// 附加正文（subContent）提取：只做 HTML 分块与去广告，不做
+  /// replaceRegex/缩进——与正文页一起交给 [finalizeChapter] 整章后处理。
+  static List<NovelBlock> extractAppendedBlocks({
     required String content,
-    required ContentRule contentRule,
     required String baseUrl,
     required String redirectUrl,
-    required AnalyzeRule analyzeRule,
   }) {
-    var text = content;
+    final blocks = _formatToBlocks(content, baseUrl, redirectUrl);
+    return _cleanContentAdsBlocks(blocks);
+  }
+
+  static final RegExp _inlineImgTagRegex = RegExp(
+    r'''<img[^>]*\ssrc\s*=\s*["']([^"']+)["'][^>]*>''',
+    caseSensitive: false,
+  );
+
+  /// 整章后处理（对齐 legado BookContent 外层：全部页拼接后只跑一次
+  /// replaceRegex，再统一缩进）。
+  ///
+  /// 非媒体源：图片块以内联 `<img src>` 参与整章串联，替换后的行若独占
+  /// 一个图片标记则还原为图片块；其余内容保持字面文本（replaceRegex 注入
+  /// 的标签不再二次剥除，与 legado 对字符串后处理的语义一致）。
+  /// 媒体源：正文即直链/清单，合并文本后只跑一次替换。
+  static List<NovelBlock> finalizeChapter({
+    required List<NovelBlock> blocks,
+    required ContentRule contentRule,
+    required AnalyzeRule analyzeRule,
+    required bool mediaSource,
+  }) {
+    if (blocks.isEmpty) return blocks;
     final replaceRule = contentRule.replaceRegex;
     final hasReplace = replaceRule != null && replaceRule.isNotEmpty;
+
+    if (mediaSource) {
+      var text =
+          blocks.whereType<NovelTextBlock>().map((b) => b.text).join('\n');
+      if (hasReplace) {
+        text = text.split('\n').map((line) => line.trim()).join('\n');
+        text = applyReplaceRules(text, replaceRule, analyzeRule: analyzeRule);
+      }
+      text = text.trim();
+      return text.isEmpty
+          ? const <NovelBlock>[]
+          : <NovelBlock>[NovelTextBlock(text)];
+    }
+
+    final imageByUrl = <String, NovelImageBlock>{};
+    final lines = <String>[];
+    for (final block in blocks) {
+      if (block is NovelTextBlock) {
+        lines.add(block.text);
+      } else if (block is NovelImageBlock) {
+        imageByUrl.putIfAbsent(block.url, () => block);
+        lines.add('<img src="${block.url}">');
+      }
+    }
+    var text = lines.join('\n');
     if (hasReplace) {
       text = text.split('\n').map((line) => line.trim()).join('\n');
       text = applyReplaceRules(text, replaceRule, analyzeRule: analyzeRule);
     }
-    var blocks = _formatToBlocks(text, baseUrl, redirectUrl);
-    blocks = _cleanContentAdsBlocks(blocks);
-    if (hasReplace && blocks.isNotEmpty) {
-      blocks = _applyIndentBlocks(blocks);
+
+    final out = <NovelBlock>[];
+    for (final line in text.split('\n')) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) continue;
+      final img = _inlineImgTagRegex.firstMatch(trimmed);
+      if (img != null && img.group(0) == trimmed) {
+        final url = img.group(1)!;
+        final origin = imageByUrl[url];
+        out.add(origin != null
+            ? NovelImageBlock(url, source: origin.source, style: origin.style)
+            : NovelImageBlock(url));
+      } else {
+        out.add(NovelTextBlock(line));
+      }
     }
-    return blocks;
+    return out.isEmpty ? const <NovelBlock>[] : _applyIndentBlocks(out);
   }
 
   static String _getContent(AnalyzeRule analyzeRule, String contentRule) {
