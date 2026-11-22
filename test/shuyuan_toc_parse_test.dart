@@ -137,7 +137,7 @@ void main() {
     });
   });
 
-  test('formatJs 绑定 chapter.title 与 1 起 index', () {
+  test('formatJs 在合并后单次执行：绑定 chapter.title 与 1 起 index', () {
     final source = _source(<String, dynamic>{
       'chapterList': '#list a',
       'chapterName': 'text',
@@ -151,7 +151,20 @@ void main() {
       redirectUrl: 'https://toc.test/',
       body: '<div id="list"><a href="/1">甲</a><a href="/2">乙</a></div>',
     );
+    // 解析阶段不执行 formatJs（legado 在整份目录定型后才跑）。
+    expect(chapters.map((c) => c.title), ['甲', '乙']);
+    BookChapterList.applyFormatJs(chapters, source.getTocRule().formatJs);
     expect(chapters.map((c) => c.title), ['甲#1', '乙#2']);
+  });
+
+  test('formatJs 的 gInt 整轮只初始化一次，脚本内自增跨章节延续', () {
+    final chapters = [
+      XiaoshuoBookChapter(bookUrl: '', url: '/1', title: '甲'),
+      XiaoshuoBookChapter(bookUrl: '', url: '/2', title: '乙'),
+      XiaoshuoBookChapter(bookUrl: '', url: '/3', title: '丙'),
+    ];
+    BookChapterList.applyFormatJs(chapters, "gInt++ + ':' + title");
+    expect(chapters.map((c) => c.title), ['0:甲', '1:乙', '2:丙']);
   });
 
   group('WebBook.getChapterList 网络链路', () {
@@ -214,6 +227,31 @@ void main() {
       );
       expect(chapters.map((c) => c.title), ['B2', 'B1', 'A2', 'A1']);
       expect(chapters.map((c) => c.index), [0, 1, 2, 3]);
+    });
+
+    test('多页目录 formatJs 在合并倒序后单次执行（gInt 不逐页重置）', () async {
+      server = await _startServer(<String, String>{
+        '/toc1.html': '<div id="list">'
+            '<a class="c" href="/c1">A1</a><a class="c" href="/c2">A2</a>'
+            '<a class="next" href="/toc2.html">下一页</a></div>',
+        '/toc2.html': '<div id="list">'
+            '<a class="c" href="/c3">B1</a><a class="c" href="/c4">B2</a>'
+            '</div>',
+      });
+      base = 'http://${server.address.host}:${server.port}';
+      final source = _source(<String, dynamic>{
+        'chapterList': '-#list a.c',
+        'chapterName': 'text',
+        'chapterUrl': '@href',
+        'nextTocUrl': '#list a.next@href',
+        'formatJs': "gInt++ + ':' + title",
+      });
+      final chapters = await fetch(
+        source,
+        _book('$base/detail.html')..tocUrl = '$base/toc1.html',
+      );
+      expect(chapters.map((c) => c.title),
+          ['0:B2', '1:B1', '2:A2', '3:A1']);
     });
   });
 }

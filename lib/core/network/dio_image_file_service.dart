@@ -40,11 +40,19 @@ class NexImageCacheManager extends CacheManager {
 
   /// 按源取管理器：源非 null 时其图片请求走该源的有效网络档案
   /// （ECH/mitm/代理与页面同路）。缓存目录按源隔离（源图片本就源专属）。
+  ///
+  /// [cover]=true 时另建一份封面专用管理器：书源 `coverDecodeJs` 只作用于
+  /// 封面字节（legado ImageUtils.decode isCover 分支），与正文插图共用缓存
+  /// 会让「已解码封面 → 正文图被误当封面解码」互相污染，故缓存目录与
+  /// 解码上下文一起按封面拆分。
   static final Map<String, NexImageCacheManager> _byKey = <String, NexImageCacheManager>{};
 
-  static NexImageCacheManager forSource(PluginConfig? source) {
+  static NexImageCacheManager forSource(
+    PluginConfig? source, {
+    bool cover = false,
+  }) {
     if (source == null) return instance;
-    final k = '${key}_${source.id}';
+    final k = cover ? '${key}_${source.id}_cover' : '${key}_${source.id}';
     return _byKey.putIfAbsent(k, () {
       return NexImageCacheManager._(k, () {
         try {
@@ -52,16 +60,24 @@ class NexImageCacheManager extends CacheManager {
         } on Object {
           return NetworkConfigService.instance.globalProfile;
         }
-      });
+      }, source: source, cover: cover);
     });
   }
 
-  NexImageCacheManager._(String cacheKey, EffectiveNetworkProfile? Function()? netProvider)
-      : super(Config(
+  NexImageCacheManager._(
+    String cacheKey,
+    EffectiveNetworkProfile? Function()? netProvider, {
+    PluginConfig? source,
+    bool cover = false,
+  }) : super(Config(
           cacheKey,
           stalePeriod: const Duration(days: 30),
           maxNrOfCacheObjects: 5000,
-          fileService: DioImageFileService(netProvider: netProvider),
+          fileService: DioImageFileService(
+            netProvider: netProvider,
+            decodeSource: source,
+            decodeCover: cover,
+          ),
         ));
 }
 
@@ -97,8 +113,16 @@ class DioImageFileService extends FileService {
   /// 源级网络档案提供者（每次请求动态取，档案变更即时生效）。
   final EffectiveNetworkProfile? Function()? netProvider;
 
-  DioImageFileService({EffectiveNetworkProfile? Function()? netProvider})
-      : netProvider = netProvider;
+  /// 封面解码上下文：非 null 且 [decodeCover] 为 true 时按源
+  /// `coverDecodeJs` 解码下载字节（legado ImageUtils.decode isCover 分支）。
+  final PluginConfig? decodeSource;
+  final bool decodeCover;
+
+  DioImageFileService({
+    this.netProvider,
+    this.decodeSource,
+    this.decodeCover = false,
+  });
 
   /// 聚合完整字节流（仅解密分支使用：AES-CBC 需要 IV + 完整密文体）。
   static Future<Uint8List> _collect(Stream<List<int>> stream) async {
@@ -264,11 +288,35 @@ class DioImageFileService extends FileService {
       final Uri? uri = Uri.tryParse(url);
       final bool encrypted =
           uri != null && ImageBytesDecryptRegistry.matchFor(uri) != null;
+      // 书源封面解码（legado coverDecodeJs）：密文封面可能以任意字节开头
+      // （含 '<'/'{'），不能走 isLikelyImagePayload 的明文闸门；改为缓冲
+      // 全量字节交给 shuyuan 层解码，解码结果再交给缓存层（磁盘缓存明文）。
+      final Uint8List? Function(PluginConfig, String, Uint8List)?
+          coverDecode = (!encrypted &&
+              decodeCover &&
+              decodeSource != null &&
+              ShuyuanImageDecodeHooks.coverResolver != null)
+          ? ShuyuanImageDecodeHooks.coverResolver
+          : null;
       // 非图片正文（拦截页/错误 JSON）直接判失败：与 legado「解码不通过绝不
       // 写入图片文件」对齐。否则坏文件会被缓存 30 天，之后每次重试都命中它，
       // 表现为封面/图片永久无法加载。
-      if (!encrypted && !isLikelyImagePayload(headProbe)) {
+      if (!encrypted && coverDecode == null && !isLikelyImagePayload(headProbe)) {
         throw HttpException('非图片响应（拦截页/错误页）', uri: uri);
+      }
+      if (coverDecode != null) {
+        final Uint8List fetched = await _collect(body.stream);
+        stallTimer?.cancel();
+        final Uint8List? plain = coverDecode(decodeSource!, url, fetched);
+        if (plain == null) {
+          throw HttpException('封面解码失败（coverDecodeJs）', uri: uri);
+        }
+        return HttpGetResponse(http.StreamedResponse(
+          Stream<Uint8List>.value(plain),
+          statusCode,
+          contentLength: plain.length,
+          headers: responseHeaders,
+        ));
       }
       // 源声明式图片解密（imageTransform）：命中注册 host 时缓冲全量字节解密
       // 后再交给缓存层（磁盘缓存的是明文，保存/分享自动继承）。未命中的源

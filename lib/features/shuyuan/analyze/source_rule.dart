@@ -3,12 +3,13 @@ library;
 
 import 'dart:convert';
 
-/// 规则模式：默认（CSS/默认）、XPath、JSON、JS、正则。
+/// 规则模式：默认（CSS/默认）、XPath、JSON、JS、后台 WebView JS、正则。
 enum Mode {
   defaultMode,
   xpath,
   json,
   js,
+  webJs,
   regex,
 }
 

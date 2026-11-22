@@ -2780,6 +2780,7 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
                         child: SourceImage(
                           url: item.coverUrl,
                           source: _source,
+                          isCover: true,
                           width: 40,
                           height: 56,
                           fit: BoxFit.cover,

@@ -456,6 +456,9 @@ class ShuyuanNovelResolver
             redirectUrl: id,
             body: html,
           );
+          // 与 WebBook.getChapterList 同口径：formatJs 单次全局执行。
+          BookChapterList.applyFormatJs(
+              chapters, bookSource.getTocRule().formatJs);
           // 漫画阅读器以 chapterId=Episode.id 回传图片请求，id 须为章节 URL。
           return episodesFromChapters(
             chapters,

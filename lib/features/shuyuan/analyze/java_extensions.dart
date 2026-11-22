@@ -940,22 +940,132 @@ const String sourceContextJsPrelude = r'''
       },
     };
     if (global.__syOrgJson) global.org.json = global.__syOrgJson;
-    // java.webView(html, url, js)：无头 WebView 加载页面 / 注入 html、执行 js
-    // 后返回整页 HTML。同步沙箱内不能真开 WebView，故与 ajax 同款重放：
+    // java.webView 家族（legado JsExtensions.webView / webViewGetSource /
+    // webViewGetOverrideUrl）：无头 WebView 加载页面 / 注入 html、执行 js
+    // 后返回结果。同步沙箱内不能真开 WebView，故与 ajax 同款重放：
     // 首轮记录 op 返回占位符，宿主 settle 抓取后写入 __webviewCache，重放命中。
-    global.java.webView = function (html, url, js) {
+    // sourceRegex（资源 URL 嗅探）与 overrideUrlRegex（跳转 URL 拦截）由宿主
+    // 在 settleWebview 里分别按 args[5]/args[6] 解读；cacheFirst 是 legado 的
+    // Android WebView cacheMode 开关，重放宿主无缓存层，接受但不参与。
+    function syWebviewReplay(prefix, html, url, js, delayTime, sourceRegex,
+        overrideUrlRegex, sp, op) {
       var h = html == null ? '' : String(html);
       var u = url == null ? '' : String(url);
       var j = js == null ? '' : String(js);
+      var src = sourceRegex == null ? '' : String(sourceRegex);
+      var ovr = overrideUrlRegex == null ? '' : String(overrideUrlRegex);
+      var delay = parseInt(delayTime, 10);
+      if (!(delay > 0)) delay = 0;
       if (!h && !u) return '';
-      // 键用内容哈希：html/js 可能很长，不能直接当键存放/传输。
-      var key = 'wv:' + syHash(h + '\u0001' + u + '\u0001' + j) + ':' +
-          (h.length + u.length + j.length);
+      // 键用内容哈希：html/js 可能很长，不能直接当键存放/传输。嗅探正则
+      // 参与键，避免同页面不同嗅探目标（或与整页 HTML 结果）互相命中。
+      var key = prefix + syHash(h + '\u0001' + u + '\u0001' + j + '\u0001' +
+          src + '\u0001' + ovr) + ':' +
+          (h.length + u.length + j.length + src.length + ovr.length);
       var c = global.__webviewCache;
       if (c && c[key] != null) return c[key];
-      syOp('webview', key, JSON.stringify([h, u, j]));
+      syOp('webview', key, JSON.stringify(
+          [h, u, j, String(delay), '', src, ovr]));
       global.__wvN = (global.__wvN || 0) + 1;
-      return '__WEBVIEW_' + global.__wvN + '__';
+      return sp + (global.__wvN) + op;
+    }
+    global.java.webView = function (html, url, js) {
+      return syWebviewReplay('wv:', html, url, js, 0, '', '', '__WEBVIEW_', '__');
+    };
+    // webViewGetSource(html, url, js, sourceRegex, cacheFirst, delayTime)：
+    // 返回 WebView 内嗅探到的资源 URL（如视频真实地址）。
+    global.java.webViewGetSource = function (html, url, js, sourceRegex,
+        cacheFirst, delayTime) {
+      return syWebviewReplay('wvs:', html, url, js, delayTime, sourceRegex,
+          '', '__WEBVIEW_SRC_', '__');
+    };
+    // webViewGetOverrideUrl(html, url, js, overrideUrlRegex, cacheFirst, delayTime)：
+    // 返回被 shouldOverrideUrlLoading 拦截的跳转 URL。
+    global.java.webViewGetOverrideUrl = function (html, url, js,
+        overrideUrlRegex, cacheFirst, delayTime) {
+      return syWebviewReplay('wvo:', html, url, js, delayTime, '',
+          overrideUrlRegex, '__WEBVIEW_OVR_', '__');
+    };
+    // java.getReadBookConfig()/getThemeConfig()：legado 返回当前阅读/主题
+    // 配置的 GSON JSON 串。重放层拿不到宿主实时样式，返回 legado 默认值
+    // （day 主题 + 默认排版），保证调用方 JSON.parse 后字段齐全、不会因
+    // 函数缺失整段规则失败。
+    global.java.getReadBookConfig = function () {
+      return JSON.stringify({
+        name: '默认',
+        bgStr: '#EEEEEE',
+        bgStrNight: '#000000',
+        bgStrEInk: '#FFFFFF',
+        bgAlpha: 100,
+        bgType: 0,
+        bgTypeNight: 0,
+        bgTypeEInk: 0,
+        textFont: '',
+        titleFont: '',
+        headerFont: '',
+        footerFont: '',
+        headerFontSize: 12,
+        footerFontSize: 12,
+        applyHeaderStyle: true,
+        textBold: 500,
+        textSize: 20,
+        textItalic: false,
+        textShadow: false,
+        shadowRadius: 16,
+        shadowDx: 1,
+        shadowDy: 1,
+        letterSpacing: 0.1,
+        lineSpacingExtra: 12,
+        paragraphSpacing: 2,
+        paragraphIndent: '\u3000\u3000',
+        titleMode: 0,
+        titleSize: 4,
+        titleSizeRelative: null,
+        titleTopSpacing: 0,
+        titleBottomSpacing: 0,
+        titleBold: 500,
+        titleLineSpacingExtra: 12,
+        titleLineSpacingSub: 12,
+        titleSegType: 0,
+        titleSegScaling: 1,
+        titleSegDistance: 4,
+        titleSegFlag: '',
+        underline: false,
+        underlinePadding: 10,
+        underlineHeight: 1,
+        underlineExtend: false,
+        underlineColor: '#3E3D3B',
+        underlineColorNight: '#ADADAD',
+        dottedLine: false,
+        dottedBase: 6,
+        dottedRatio: 6,
+        paddingBottom: 6,
+        paddingLeft: 16,
+        paddingRight: 16,
+        paddingTop: 6,
+        showHeaderLine: false,
+        showFooterLine: true,
+        pageAnim: 0,
+        pageAnimSpeed: 2,
+        textColor: '#3E3D3B',
+        textColorNight: '#ADADAD',
+        textColorEInk: '#000000',
+        textAccentColor: '#834E00',
+        textAccentColorNight: '#FE4D55',
+        textAccentColorEInk: '#000000'
+      });
+    };
+    global.java.getThemeConfig = function () {
+      return JSON.stringify({
+        themeName: 'MD3-Day',
+        isNightTheme: false,
+        primaryColor: '#795548',
+        accentColor: '#E53935',
+        backgroundColor: '#F5F5F5',
+        bottomBackground: '#EEEEEE',
+        backgroundImgPath: null,
+        backgroundImgBlur: 0
+      });
     };
     // ── 文件/归档族（legado JsExtensions）──
     // 同步沙箱没有真实磁盘：虚拟文件系统 = 文本表 __cacheFiles（path→text）

@@ -257,6 +257,7 @@ class _ContentDetailShellState extends State<ContentDetailShell> {
         image = SourceImage(
           url: widget.coverUrl,
           source: widget.source,
+          isCover: true,
           fit: BoxFit.cover,
           radius: 0,
           placeholder: fallback,

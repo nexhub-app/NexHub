@@ -39,6 +39,8 @@ void main() {
       String? js,
       int delayMs = 0,
       Map<String, String>? headers,
+      String? sourceRegex,
+      String? overrideUrlRegex,
     }) async {
       seen = headers;
       expect(url, 'https://web.test/page');
@@ -83,6 +85,8 @@ void main() {
       String? js,
       int delayMs = 0,
       Map<String, String>? headers,
+      String? sourceRegex,
+      String? overrideUrlRegex,
     }) async {
       seen = headers;
       return const ShuyuanWebviewResult(
@@ -125,6 +129,8 @@ void main() {
       String? js,
       int delayMs = 0,
       Map<String, String>? headers,
+      String? sourceRegex,
+      String? overrideUrlRegex,
     }) async {
       expect(delayMs, 800);
       return const ShuyuanWebviewResult(

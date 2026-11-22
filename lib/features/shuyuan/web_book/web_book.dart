@@ -527,6 +527,9 @@ class WebBook {
       for (var i = 0; i < ordered.length; i++) {
         ordered[i].index = i;
       }
+      // legado：formatJs 在整份目录合并/去重/倒序/重编号后单次执行，
+      // gInt 整轮初始化一次（不随章节重置）。
+      BookChapterList.applyFormatJs(ordered, source.getTocRule().formatJs);
       return ordered;
     }
 
@@ -535,17 +538,16 @@ class WebBook {
 
   /// 获取章节正文：抓取 `chapterUrl` 并通过 `ruleContent` 解析。
   ///
-  /// **正文分页跟随**（双模式）：许多站点把单章正文拆成多页
-  /// （`xxx.html`、`xxx_2.html`…）。若书源声明了 `ruleContent.nextContentUrl`：
-  /// - **串行模式**：规则每页命中单个"下一页"链接时，逐页跟随抓取并拼接，
-  /// 直到没有下一页为止；
-  /// - **并发模式**：规则一次命中多个"下一页"链接（分页条全量选择器）时，
-  /// 按声明顺序 ≤4 并发抓取并保序拼接。
+  /// **正文分页跟随**（legado BookContent 语义）：若书源声明了
+  /// `ruleContent.nextContentUrl`：
+  /// - **串行模式**：首页只命中一个"下一页"链接时逐页跟随并拼接，直到没有
+  ///   下一页、URL 已访问过，或与目录下一章地址相同（页内容为空也照常拼接
+  ///   并继续提取下页）；
+  /// - **并发模式**：首页命中多个链接时按声明顺序 ≤4 并发抓取并保序拼接，
+  ///   各页独立取回，不做"连续前缀"截断。
   ///
-  /// 为避免误把"下一章"链接当成"下一页"（二者在部分站点的最后一页共用同一
-  /// 元素），仅当下一页 URL 与当前页属于**同一章**（目录相同、去掉 `_N` 分页
-  /// 后缀后的文件名相同）时才继续跟随；并带访问去重与最大页数上限（30），
-  /// 杜绝死循环。此为通用引擎能力，对所有分页书源生效。
+  /// 去重只依赖已访问 URL 集合与 nextChapterUrl 停止点，不设页数上限——
+  /// 与 legado 一致。
   Future<BookContentResult> getContent({
     required XiaoshuoBookSource source,
     required String chapterUrl,
@@ -638,16 +640,13 @@ class WebBook {
 
     final nextRule = contentRule.nextContentUrl;
     if (nextRule != null && nextRule.isNotEmpty) {
-      // 章节根：起始 chapterUrl 即为本章第 1 页，同章后续页必为
-      // `<根>_<数字>` / `<根>-<数字>` / `<根>/<数字>` 形式（见 _isNextPageOfChapter）。
-      final chapterRoot = _chapterRootOf(firstBaseUrl);
-      final visited = <String>{chapterUrl, firstBaseUrl};
-      const maxPages = 30;
+      // legado：已访问集合以首页的响应最终地址为种子（不是请求时的
+      // chapterUrl），之后只按原始提取串比对。
+      final visited = <String>{firstBaseUrl};
 
       // 多页并发模式：规则一次命中多个"下一页"链接（如分页条全量
       // 选择器返回整组页码链接）时，按声明顺序并发抓取（≤4 并发）并保序
-      // 拼接。任一子页失败/为空即停止追加（只保留连续前缀，避免正文中段
-      // 缺页）；并发子页不再继续提取下页，与串行循环互斥。
+      // 拼接；各页独立取回解析，不因中间页为空/失败而截断后续页。
       final batchUrls = _extractNextContentUrls(
         firstBody,
         chapterUrl,
@@ -656,18 +655,10 @@ class WebBook {
         book: book,
         chapter: chapter,
         nextChapterUrl: nextChapterUrl,
-      )
-          .where((u) =>
-              !visited.contains(u) &&
-              _isNextPageOfChapter(chapterRoot, u, firstBaseUrl))
-          .take(maxPages - 1)
-          .toList(growable: false);
+      );
       if (batchUrls.length > 1) {
-        visited.addAll(batchUrls);
-        // 多页并发模式：在并发 worker 内「取回即解析」，让同步 HTML 解析
-        // 与同批其他页的网络请求重叠，缩短整章就绪的墙钟时间，并避免「先并发取回
-        // 全部、再主线程串行解析」造成的长时间连续阻塞（→ 翻页/切章卡顿）。
-        // 每页解析失败（task 抛错 → 池置 null）或正文为空则停止追加（保留连续前缀）。
+        // 并发 worker 内「取回即解析」，让同步 HTML 解析与同批其他页的
+        // 网络请求重叠，缩短整章就绪的墙钟时间。
         final pages = await mapOrderedPool<List<NovelBlock>>(
           batchUrls,
           4,
@@ -696,16 +687,17 @@ class WebBook {
           },
         );
         for (final pageContent in pages) {
-          if (pageContent == null) break;
-          if (pageContent.isEmpty) break;
+          if (pageContent == null) continue;
           blocks.addAll(pageContent);
         }
       } else {
-        // 串行跟随模式：逐页提取单个"下一页"并抓取，直到没有下一页为止。
+        // 串行跟随模式：逐页提取单个"下一页"并抓取，直到没有下一页 /
+        // URL 已访问 / 命中下一章地址。legado 无页数上限，空页也照常
+        // 拼接并继续提取下页。
         var currentBaseUrl = chapterUrl;
         var currentRedirectUrl = firstBaseUrl;
         var currentBody = firstBody;
-        for (var i = 0; i < maxPages; i++) {
+        while (true) {
           final nextUrl = _extractNextContentUrl(
             currentBody,
             currentBaseUrl,
@@ -716,16 +708,13 @@ class WebBook {
             nextChapterUrl: nextChapterUrl,
           );
           if (nextUrl.isEmpty || visited.contains(nextUrl)) break;
-          if (!_isNextPageOfChapter(chapterRoot, nextUrl, currentRedirectUrl)) {
-            break;
-          }
           // legado：下一页与目录中的"下一章"同一地址时停止（最后页的
-          // "下一页"元素常指向下一章）。
+          // "下一页"元素常指向下一章），基址固定为首页响应地址。
           if (nextChapterUrl != null && nextChapterUrl.isNotEmpty) {
             final absNext =
-                AnalyzeRule.absoluteUrl(currentRedirectUrl, nextUrl);
+                AnalyzeRule.absoluteUrl(firstBaseUrl, nextUrl);
             final absChapter =
-                AnalyzeRule.absoluteUrl(currentRedirectUrl, nextChapterUrl);
+                AnalyzeRule.absoluteUrl(firstBaseUrl, nextChapterUrl);
             if (absNext == absChapter) break;
           }
           visited.add(nextUrl);
@@ -738,7 +727,6 @@ class WebBook {
             chapter: chapter,
           );
           final pageBody = await pageAnalyze.getStrResponse();
-          if (pageBody.isEmpty) break;
 
           final pageContent = BookContent.analyzeContent(
             bookSource: source,
@@ -752,8 +740,6 @@ class WebBook {
             processTitle: false,
             deferChapterPostProcess: true,
           );
-          if (pageContent.isEmpty) break;
-
           blocks.addAll(pageContent);
           currentBaseUrl = nextUrl;
           currentRedirectUrl = pageAnalyze.url;
@@ -916,88 +902,6 @@ class WebBook {
     return results;
   }
 
-  /// 计算章节根：host + path（去扩展名）。作为「本章第 1 页」的唯一标识。
-  ///
-  /// 起始 chapterUrl 一定是本章第 1 页（来自目录），因此其去扩展名后的
-  /// host+path 即章节根 X；同章后续页的 URL 必然是 `X` 追加 `_N`/`-N`/`/N`。
-  String _chapterRootOf(String url) {
-    try {
-      final u = Uri.parse(url);
-      var path = u.path;
-      final dot = path.lastIndexOf('.');
-      final slash = path.lastIndexOf('/');
-      if (dot > slash) path = path.substring(0, dot); // 去扩展名
-      return '${u.host}$path';
-    } catch (_) {
-      return url;
-    }
-  }
-
-  /// 判断 [nextUrl] 是否为章节根 [chapterRoot] 的「后续分页」。
-  ///
-  /// 仅当 nextUrl 去扩展名后 == `chapterRoot` 追加 `[-_/]<数字>`（可叠加多级，
-  /// 如第 3 页 `X_2_3` 或 `X_3`）时为真。这样既能命中 `X.html→X_2.html`
-  /// 的真实分页，又能可靠拒绝「下一章」——即使下一章的 URL 尾号只差 1
-  /// （如 `..._3574.html`→`..._3573.html`），因为它不是 `X` 的前缀扩展。
-  /// 通用规则，不含任何站点/域名硬编码。
-  ///
-  /// 另有 **query 参数分页**（`?file=...&page=2` 形式，host+path 与本章第 1 页
-  /// 相同、页码在 query 中）：当 [nextUrl] 与当前页 URL [currentUrl] 同
-  /// host+path、URL 不同、且 nextUrl 的 query 含页码参数（page/p 等）时，
-  /// 视为同章分页放行。「下一章」的 path 必与本章不同，不会误入此分支。
-  bool _isNextPageOfChapter(String chapterRoot, String nextUrl,
-      [String? currentUrl]) {
-    try {
-      final u = Uri.parse(nextUrl);
-      var path = u.path;
-      final dot = path.lastIndexOf('.');
-      final slash = path.lastIndexOf('/');
-      if (dot > slash) path = path.substring(0, dot);
-      final next = '${u.host}$path';
-      if (next == chapterRoot) {
-        return _isQueryPagination(currentUrl, nextUrl);
-      }
-      final esc = RegExp.escape(chapterRoot);
-      return RegExp('^$esc([-_/]\\d+)+\$').hasMatch(next);
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// query 参数分页判定：仅当 [nextUrl] 与 [currentUrl] 同 host+path、URL 不同、
-  /// 且 nextUrl 的 query 含页码参数（page/p/pageIndex 等常见键）时视为同章
-  /// 分页。当前页无页码参数（第 1 页）或页码不同均放行；两页 URL 相同
-  /// （自循环）或 nextUrl 无页码参数则拒绝。
-  static bool _isQueryPagination(String? currentUrl, String nextUrl) {
-    if (currentUrl == null || currentUrl.isEmpty) return false;
-    final cur = Uri.tryParse(currentUrl);
-    final next = Uri.tryParse(nextUrl);
-    if (cur == null || next == null) return false;
-    if (cur.host != next.host || cur.path != next.path) return false;
-    if (cur.toString() == next.toString()) return false;
-    final nextPage = _pageParamOf(next.queryParameters);
-    if (nextPage == null) return false;
-    final curPage = _pageParamOf(cur.queryParameters);
-    return curPage == null || curPage != nextPage;
-  }
-
-  /// 从 query 参数中提取页码值（page / p / pageIndex / page_num 等常见键）。
-  static String? _pageParamOf(Map<String, String> params) {
-    const keys = [
-      'page',
-      'p',
-      'pageIndex',
-      'pageindex',
-      'page_num',
-      'pageno',
-      'pn'
-    ];
-    for (final k in keys) {
-      final v = params[k];
-      if (v != null && v.isNotEmpty) return v;
-    }
-    return null;
-  }
 
   /// 兼容旧调用：从详情页取封面 URL。
   Future<String?> fetchCoverFromDetail({

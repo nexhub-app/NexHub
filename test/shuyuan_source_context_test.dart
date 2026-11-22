@@ -388,6 +388,8 @@ void main() {
         String? js,
         int delayMs = 0,
         Map<String, String>? headers,
+        String? sourceRegex,
+        String? overrideUrlRegex,
       }) async =>
           ShuyuanWebviewResult(
             html: '<html></html>',

@@ -5,6 +5,7 @@
 library;
 
 import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 
 import '../network/model/source_network_config.dart';
@@ -1787,6 +1788,17 @@ class PluginConfig {
 class ShuyuanImageHeaderHooks {
   static Map<String, String>? Function(PluginConfig source, String url)?
       resolver;
+}
+
+/// 书源封面字节解码钩子（legado BookSource.coverDecodeJs /
+/// ImageUtils.decode 的封面分支）。core 图片缓存层不依赖 features 层，
+/// 启动期由 shuyuan 模块注入（`ShuyuanImageDecoder.register`）。
+///
+/// 契约：源未声明 coverDecodeJs 时返回**原字节**；解码失败返回 null
+/// （调用方按图片加载失败处理，与 legado decode 失败返回 null 一致）。
+class ShuyuanImageDecodeHooks {
+  static Uint8List? Function(PluginConfig source, String url, Uint8List bytes)?
+      coverResolver;
 }
 
 /// 源配置解析异常（校验/路由缺失）。

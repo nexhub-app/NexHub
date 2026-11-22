@@ -202,45 +202,57 @@ class AnalyzeRule {
     final jsPattern = RegExp(r'<js>([\w\W]*?)</js>|@js:([\w\W]*)', caseSensitive: false);
     final matches = jsPattern.allMatches(trimmed).toList();
 
-    if (matches.isEmpty) {
-      ruleList.add(SourceRule(trimmed, mMode, isJson));
-    } else {
-      var segStart = 0;
-      for (final match in matches) {
-        if (match.start > segStart) {
-          final tmp = trimmed.substring(segStart, match.start).trim();
-          if (tmp.isNotEmpty) {
-            ruleList.add(SourceRule(tmp, mMode, isJson));
-          }
-        }
-        final rawJs = match.group(2) ?? match.group(1) ?? '';
-        // `@js:代码##match##replace###`：`##` 起是 legado 的正则替换尾，
-        // 不能吞进脚本体。紧贴 `@js:`（空脚本）表示「对前段结果直接做正则
-        // 替换」；若整段交给 JS 求值会 SyntaxError → 规则恒为空（社区源
-        // 合成封面 URL 的高频写法）。
-        var jsContent = rawJs;
-        var tail = '';
-        if (match.group(2) != null) {
-          final idx = rawJs.indexOf('##');
-          if (idx >= 0) {
-            tail = rawJs.substring(idx);
-            jsContent = rawJs.substring(0, idx);
-          }
-        }
-        // 空脚本体不产出 JS 段（避免把上一段结果求值成空串），仅保留替换尾。
-        if (jsContent.trim().isNotEmpty || tail.isEmpty) {
-          ruleList.add(SourceRule(jsContent, Mode.js, isJson));
-        }
-        if (tail.isNotEmpty) {
-          ruleList.add(SourceRule(tail, mMode, isJson));
-        }
-        segStart = match.end;
-      }
-      if (trimmed.length > segStart) {
-        final tmp = trimmed.substring(segStart).trim();
+    var segStart = 0;
+    for (final match in matches) {
+      if (match.start > segStart) {
+        final tmp = trimmed.substring(segStart, match.start).trim();
         if (tmp.isNotEmpty) {
           ruleList.add(SourceRule(tmp, mMode, isJson));
         }
+      }
+      final rawJs = match.group(2) ?? match.group(1) ?? '';
+      // `@js:代码##match##replace###`：`##` 起是 legado 的正则替换尾，
+      // 不能吞进脚本体。紧贴 `@js:`（空脚本）表示「对前段结果直接做正则
+      // 替换」；若整段交给 JS 求值会 SyntaxError → 规则恒为空（社区源
+      // 合成封面 URL 的高频写法）。
+      var jsContent = rawJs;
+      var tail = '';
+      if (match.group(2) != null) {
+        final idx = rawJs.indexOf('##');
+        if (idx >= 0) {
+          tail = rawJs.substring(idx);
+          jsContent = rawJs.substring(0, idx);
+        }
+      }
+      // 空脚本体不产出 JS 段（避免把上一段结果求值成空串），仅保留替换尾。
+      if (jsContent.trim().isNotEmpty || tail.isEmpty) {
+        ruleList.add(SourceRule(jsContent, Mode.js, isJson));
+      }
+      if (tail.isNotEmpty) {
+        ruleList.add(SourceRule(tail, mMode, isJson));
+      }
+      segStart = match.end;
+    }
+
+    // 处理后台 WebView JS（`@webjs:`）：legado 在 JS 扫描后再扫一遍，
+    // 两轮共用同一个起点，末尾残余只补一次。
+    final webJsPattern = RegExp(r'@webjs:([\w\W]{5,})', caseSensitive: false);
+    for (final match in webJsPattern.allMatches(trimmed)) {
+      if (match.start < segStart) continue;
+      if (match.start > segStart) {
+        final tmp = trimmed.substring(segStart, match.start).trim();
+        if (tmp.isNotEmpty) {
+          ruleList.add(SourceRule(tmp, mMode, isJson));
+        }
+      }
+      ruleList.add(SourceRule(match.group(1)!, Mode.webJs, isJson));
+      segStart = match.end;
+    }
+
+    if (trimmed.length > segStart) {
+      final tmp = trimmed.substring(segStart).trim();
+      if (tmp.isNotEmpty) {
+        ruleList.add(SourceRule(tmp, mMode, isJson));
       }
     }
 
@@ -307,6 +319,11 @@ class AnalyzeRule {
             } else {
               result = js ?? '';
             }
+          } else if (sourceRule.mode == Mode.webJs && st.rule.trim().isNotEmpty) {
+            // legado getStringList：WebJs 结果先按 JSON 字符串数组解析，
+            // 解析失败按原串（后续再按换行切分）。
+            final raw = _evalWebJs(st.rule, result);
+            result = _parseWebJsStringList(raw) ?? raw;
           } else {
             result = _executeRule(result, sourceRule.mode, st.rule,
                 isUrl: isUrl, single: false);
@@ -364,6 +381,9 @@ class AnalyzeRule {
         // legado 空脚本（如 `规则@js:`）等价于不转换，直接透传上游结果。
         if (rule.trim().isEmpty) return result;
         return _evalJs(rule, result);
+      case Mode.webJs:
+        if (rule.trim().isEmpty) return result;
+        return _evalWebJs(rule, result);
       case Mode.regex:
         return rule;
       case Mode.json:
@@ -416,6 +436,13 @@ class AnalyzeRule {
         if (jsResult is List) return jsResult;
         if (jsResult is String) return jsResult;
         return [];
+      case Mode.webJs:
+        // legado getElement：结果按 JSON 对象解析；getElements：按 JSON
+        // 对象数组解析。解析失败分别得到 null / 空列表。
+        if (rule.trim().isEmpty) return result;
+        final raw = _evalWebJs(rule, result);
+        if (single) return _parseWebJsElement(raw);
+        return _parseWebJsElements(raw) ?? const [];
       case Mode.regex:
         if (result is String) {
           // legado AnalyzeByRegex.getElements：每次命中产出「整串+全部分组」
@@ -559,6 +586,90 @@ class AnalyzeRule {
       AppLog.instance.w('[书源JS] 调用异常: '
           '${brief.length > 120 ? '${brief.substring(0, 120)}…' : brief} → $e');
       return '';
+    }
+  }
+
+  /// `@webjs:` 规则求值：后台 WebView 加载当前内容页、注入 `window.result`
+  /// 后执行脚本，取脚本结果字符串。
+  ///
+  /// QuickJS 沙箱无法同步等待 WebView，沿用 java.webView 的确定性重放：
+  /// 首轮登记待抓取并返回空串，宿主 settleWebview 抓到结果后整段规则重跑
+  /// 即可命中 [ShuyuanSourceContext.webviewCache]。
+  String _evalWebJs(String jsStr, dynamic result) {
+    final ctx = ShuyuanSourceContext.current;
+    if (ctx == null) return '';
+    final html = content?.toString() ?? '';
+    final url = baseUrl ?? '';
+    final resultJson = _webJsResultJson(result);
+    final key = _webJsCacheKey(html, url, jsStr, resultJson);
+    final cached = ctx.webviewCache[key];
+    if (cached != null) return cached;
+    // 参数位与 settleWebview 对齐：
+    // [html, url, js, delayMs, window.result, sourceRegex, overrideUrlRegex]
+    ctx.webviewArgs[key] = <String>[html, url, jsStr, '0', resultJson, '', ''];
+    if (!ctx.webviewPending.contains(key)) {
+      ctx.webviewPending.add(key);
+    }
+    return '';
+  }
+
+  static String _webJsCacheKey(
+      String html, String url, String js, String resultJson) {
+    final sig = '$html\u0001$url\u0001$js\u0001$resultJson';
+    return 'webjs:${sig.hashCode}:${sig.length}';
+  }
+
+  /// 对齐 legado `GSON.toJson(result)`：JS 内 `window.result` 读取的是
+  /// 上一段规则的结果，字符串保持为 JSON 字符串（带引号）。
+  static String _webJsResultJson(dynamic result) {
+    if (result == null) return 'null';
+    try {
+      return jsonEncode(result);
+    } catch (_) {
+      try {
+        return jsonEncode(result.toString());
+      } catch (_) {
+        return 'null';
+      }
+    }
+  }
+
+  /// legado getStringList WebJs：先按 JSON 字符串数组解析，失败返回 null
+  /// 表示按原串继续处理。
+  static List<String>? _parseWebJsStringList(String raw) {
+    final t = raw.trim();
+    if (!t.startsWith('[')) return null;
+    try {
+      final decoded = jsonDecode(t);
+      if (decoded is! List) return null;
+      return decoded.map((e) => e == null ? '' : e.toString()).toList();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// legado getElement WebJs：JSON 对象 → Map，失败 null。
+  static Map<String, dynamic>? _parseWebJsElement(String raw) {
+    try {
+      final decoded = jsonDecode(raw.trim());
+      if (decoded is Map) return Map<String, dynamic>.from(decoded);
+    } catch (_) {}
+    return null;
+  }
+
+  /// legado getElements WebJs：JSON 对象数组 → 元素列表，失败 null。
+  static List<Map<String, dynamic>>? _parseWebJsElements(String raw) {
+    final t = raw.trim();
+    if (!t.startsWith('[')) return null;
+    try {
+      final decoded = jsonDecode(t);
+      if (decoded is! List) return null;
+      return decoded
+          .whereType<Map>()
+          .map(Map<String, dynamic>.from)
+          .toList(growable: false);
+    } catch (_) {
+      return null;
     }
   }
 

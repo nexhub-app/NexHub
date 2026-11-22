@@ -280,6 +280,9 @@ class ShuyuanSourceContext {
       final url = args.length > 1 ? args[1] : '';
       final js = args.length > 2 ? args[2] : '';
       final delayMs = args.length > 3 ? int.tryParse(args[3]) ?? 0 : 0;
+      final resultJson = args.length > 4 ? args[4] : '';
+      final sourceRegex = args.length > 5 ? args[5] : '';
+      final overrideUrlRegex = args.length > 6 ? args[6] : '';
       final headers = <String, String>{};
       final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
       if (host.isNotEmpty) {
@@ -295,13 +298,19 @@ class ShuyuanSourceContext {
       }
       // 与 settleAjax 一致：先计尝试再抓取，失败也必须算这一轮有进展。
       fetched++;
+      // legado BackstageWebView 在 onPageFinished 里先把上一段结果写进
+      // window.result，再执行规则 JS；重放宿主用同一次求值等效实现。
+      final jsCode =
+          resultJson.isEmpty ? js : 'window.result = $resultJson;\n$js';
       try {
         final result = await ShuyuanWebviewFetcher.fetch(
           html: html,
           url: url,
-          js: js,
+          js: jsCode,
           delayMs: delayMs,
           headers: headers,
+          sourceRegex: sourceRegex.isEmpty ? null : sourceRegex,
+          overrideUrlRegex: overrideUrlRegex.isEmpty ? null : overrideUrlRegex,
         ).timeout(const Duration(seconds: 45));
         ctx.webviewCache[key] = result?.html ?? '';
         if (result != null) {

@@ -61,6 +61,7 @@ import '../../core/theme/system_wallpaper_color.dart';
 import '../../core/update/update_manager.dart';
 import '../../core/update/update_settings.dart';
 import '../shuyuan/presentation/shuyuan_novel_resolver.dart';
+import '../shuyuan/analyze/image_decoder.dart';
 import '../shuyuan/analyze/image_request_headers.dart';
 import '../shuyuan/analyze/source_context.dart';
 import '../../core/theme/app_theme.dart';
@@ -216,6 +217,9 @@ class _SplashScreenState extends State<SplashScreen> {
     // 脚本式 header 与登录 Cookie 覆盖层只能在取图期求值。钩子同步调用，
     // 覆盖层需在启动期预读进内存。
     ShuyuanImageHeaders.register();
+    // 书源封面字节解码（coverDecodeJs）：封面下载完成后按源规则解码原始
+    // 字节再交给缓存层（legado ImageUtils.decode isCover 分支）。
+    ShuyuanImageDecoder.register();
     await ShuyuanSourceContext.warmCookieCache();
     final mediaService = MediaApiService(registry);
 

@@ -10,11 +10,6 @@ import '../model/xiaoshuo_book.dart';
 import '../model/xiaoshuo_book_chapter.dart';
 
 class BookChapterList {
-  // 对齐 legado AnalyzeRule：formatJs 与其余规则共用「按源池化」的 JS 运行时
-  // （jsLib 全局可用、同源跨阶段复用），无活动上下文时退化为独立实例。
-  static JsEngine get _jsEngine =>
-      JsEngine.forSource(ShuyuanSourceContext.current?.sourceId);
-
   /// [nextUrlsOut] 非空时回填本页 `ruleToc.nextTocUrl` 解析出的后续目录页
   /// 绝对 URL（对齐 legado：先取下一页列表，再解析章节；首页/串行跟随页
   /// 会继续提取，并发模式传 [getNextUrl]=false 不提取）。
@@ -262,48 +257,52 @@ class BookChapterList {
 
     // preUpdateJs 是「更新目录前」执行的脚本（legado WebBook.runPreUpdateJs），
     // 由目录抓取方在请求目录页之前调用；解析阶段不再二次执行。
-    // legado ruleToc.formatJs：逐章节执行，绑定 index/chapter/title/gInt 变量，
-    // 返回值为该章节格式化后的标题（沿用通用书源规范语义，非列表级操作）。
-    if (tocRule.formatJs != null && tocRule.formatJs!.isNotEmpty) {
-      final js = tocRule.formatJs!;
-      for (int i = 0; i < chapters.length; i++) {
-        final ch = chapters[i];
-        try {
-          final result = _jsEngine.eval(
-            js,
-            bindings: <String, dynamic>{
-              'gInt': 0,
-              'index': i + 1,
-              // legado 绑定的是 BookChapter 实体（字段名 title/url/tag/...）；
-              // name 是旧别名，两者都提供以兼容不同写法。
-              'chapter': <String, dynamic>{
-                'name': ch.title,
-                'title': ch.title,
-                'url': ch.url,
-                'tag': ch.tag,
-                'index': i,
-                'isVolume': ch.isVolume,
-                'isVip': ch.isVip,
-                'isPay': ch.isPay,
-                'bookUrl': ch.bookUrl,
-              },
-              'title': ch.title,
-            },
-          );
-          if (result.isNotEmpty) {
-            ch.title = result;
-          }
-        } catch (_) {
-          // formatJs 失败不影响目录列表（保留原标题）
-        }
-      }
-    }
-    // JS 可能增删/重排章节，重新连续编号（保持 index 与列表顺序一致）。
-    for (int i = 0; i < chapters.length; i++) {
-      chapters[i].index = i;
-    }
-
+    // formatJs 不在这里执行：legado 在合并/去重/倒序/重编号之后做一次
+    // 全局遍历（见 [applyFormatJs]），分页解析阶段不能提前消耗 gInt 状态。
     return chapters;
+  }
+
+  /// legado ruleToc.formatJs：整份目录合并、去重、倒序、重编号后单次执行。
+  ///
+  /// 绑定 `gInt`（整轮只初始化一次，脚本内自增跨章节延续）、`index`（1 起）、
+  /// `chapter`（章节实体字段快照）、`title`；脚本返回值非空时覆盖章节标题。
+  static void applyFormatJs(
+      List<XiaoshuoBookChapter> chapters, String? formatJs) {
+    if (formatJs == null || formatJs.trim().isEmpty || chapters.isEmpty) {
+      return;
+    }
+    // 与其余规则共用「按源池化」的 JS 运行时（jsLib 全局可用、同源跨阶段
+    // 复用），无活动上下文时退化为独立实例。
+    final engine = JsEngine.forSource(ShuyuanSourceContext.current?.sourceId);
+    final bindings = <String, dynamic>{'gInt': 0};
+    for (var i = 0; i < chapters.length; i++) {
+      final ch = chapters[i];
+      bindings['index'] = i + 1;
+      // legado 绑定的是 BookChapter 实体（字段名 title/url/tag/...）；
+      // name 是旧别名，两者都提供以兼容不同写法。
+      bindings['chapter'] = <String, dynamic>{
+        'name': ch.title,
+        'title': ch.title,
+        'url': ch.url,
+        'tag': ch.tag,
+        'index': i,
+        'isVolume': ch.isVolume,
+        'isVip': ch.isVip,
+        'isPay': ch.isPay,
+        'bookUrl': ch.bookUrl,
+      };
+      bindings['title'] = ch.title;
+      try {
+        final result = engine.eval(formatJs, bindings: bindings);
+        if (result.isNotEmpty) {
+          ch.title = result;
+        }
+      } catch (_) {
+        // formatJs 失败不影响目录列表（保留原标题）
+      }
+      // gInt 只在首轮注入：后续轮若重复注入会重置脚本内的自增状态。
+      bindings.remove('gInt');
+    }
   }
 
   /// 计算目录页 URL 所属书籍目录前缀（不含结尾斜杠）。

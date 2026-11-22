@@ -46,6 +46,7 @@ class AppCoverImage extends StatelessWidget {
       return SourceImage(
         url: coverUrl,
         source: source,
+        isCover: true,
         width: width,
         height: height,
         fit: fit,

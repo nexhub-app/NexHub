@@ -39,6 +39,8 @@ class ShuyuanWebviewFetcher {
     String? js,
     int delayMs,
     Map<String, String>? headers,
+    String? sourceRegex,
+    String? overrideUrlRegex,
   })? debugFetchOverride;
 
   static const Duration _renderSettle = Duration(milliseconds: 1200);
@@ -78,11 +80,20 @@ class ShuyuanWebviewFetcher {
     String? js,
     int delayMs = 0,
     Map<String, String>? headers,
+    String? sourceRegex,
+    String? overrideUrlRegex,
   }) async {
     final override = debugFetchOverride;
     if (override != null) {
       return override(
-          html: html, url: url, js: js, delayMs: delayMs, headers: headers);
+        html: html,
+        url: url,
+        js: js,
+        delayMs: delayMs,
+        headers: headers,
+        sourceRegex: sourceRegex,
+        overrideUrlRegex: overrideUrlRegex,
+      );
     }
     if (!PlatformService.instance.isAndroid &&
         !PlatformService.instance.isIOS &&
@@ -116,6 +127,10 @@ class ShuyuanWebviewFetcher {
 
     final cookiePairs = _parseCookieHeader(cookieHeader);
     final directNavigation = hasUrl && cookiePairs.isEmpty;
+    // 嗅探模式（legado SnifferWebClient）：任一正则命中即把命中的 URL
+    // 作为正文返回，不再执行 JS。
+    final sniffing = _nonEmpty(sourceRegex) || _nonEmpty(overrideUrlRegex);
+    String? matchedUrl;
 
     HeadlessInAppWebView? webview;
     final created = Completer<InAppWebViewController>();
@@ -131,9 +146,26 @@ class ShuyuanWebviewFetcher {
         initialSettings: InAppWebViewSettings(
           javaScriptEnabled: true,
           userAgent: ua.isEmpty ? (hasHtml ? _defaultUa : null) : ua,
+          useOnLoadResource: sniffing,
+          useShouldOverrideUrlLoading: sniffing,
         ),
         onWebViewCreated: (c) {
           if (!created.isCompleted) created.complete(c);
+        },
+        onLoadResource: (controller, request) {
+          final u = request.url.toString();
+          if (!_fullMatch(sourceRegex, u)) return;
+          matchedUrl ??= u;
+          if (!loaded.isCompleted) loaded.complete();
+        },
+        shouldOverrideUrlLoading: (controller, action) async {
+          final u = action.request.url.toString();
+          if (_fullMatch(overrideUrlRegex, u)) {
+            matchedUrl ??= u;
+            if (!loaded.isCompleted) loaded.complete();
+            return NavigationActionPolicy.CANCEL;
+          }
+          return NavigationActionPolicy.ALLOW;
         },
         onLoadStop: (_, uri) {
           // 带 Cookie 时必须先落 about:blank 再 setCookie，about: 的
@@ -180,7 +212,9 @@ class ShuyuanWebviewFetcher {
           encoding: 'utf8',
           baseUrl: WebUri(hasUrl ? startUrl : 'about:blank'),
         );
-        await Future<void>.delayed(_renderSettle);
+        if (matchedUrl == null) {
+          await Future<void>.delayed(_renderSettle);
+        }
       } else {
         if (!directNavigation) {
           await c.loadUrl(
@@ -191,29 +225,34 @@ class ShuyuanWebviewFetcher {
           );
         }
         await loaded.future.timeout(_loadTimeout, onTimeout: () {});
-        await Future<void>.delayed(_renderSettle);
-      }
-
-      if (delayMs > 0) {
-        await Future<void>.delayed(Duration(milliseconds: delayMs));
+        if (matchedUrl == null) {
+          await Future<void>.delayed(_renderSettle);
+        }
       }
 
       String? evaluated;
-      final jsCode = (js ?? '').trim();
-      if (jsCode.isNotEmpty) {
-        try {
-          final r = await c.evaluateJavascript(source: jsCode);
-          final normalized = _normalizeJsResult(r);
-          if (normalized.isNotEmpty) evaluated = normalized;
-        } on Object catch (e) {
-          debugPrint('[书源webView] js 执行失败(忽略): $e');
+      if (matchedUrl == null) {
+        if (delayMs > 0) {
+          await Future<void>.delayed(Duration(milliseconds: delayMs));
         }
-        await Future<void>.delayed(_jsSettle);
+        final jsCode = (js ?? '').trim();
+        if (jsCode.isNotEmpty) {
+          try {
+            final r = await c.evaluateJavascript(source: jsCode);
+            final normalized = _normalizeJsResult(r);
+            if (normalized.isNotEmpty) evaluated = normalized;
+          } on Object catch (e) {
+            debugPrint('[书源webView] js 执行失败(忽略): $e');
+          }
+          await Future<void>.delayed(_jsSettle);
+        }
       }
-      final finalUrl = (await c.getUrl())?.toString() ?? startUrl;
-      final out = (evaluated != null && evaluated.isNotEmpty)
-          ? evaluated
-          : await c.getHtml() ?? '';
+      final finalUrl =
+          matchedUrl ?? (await c.getUrl())?.toString() ?? startUrl;
+      final out = matchedUrl ??
+          ((evaluated != null && evaluated.isNotEmpty)
+              ? evaluated
+              : await c.getHtml() ?? '');
       final cookieHeaders = await readWebviewCookieHeaders(
         manager: CookieManager.instance(),
         controller: c,
@@ -237,6 +276,18 @@ class ShuyuanWebviewFetcher {
     }
   }
 
+  static bool _nonEmpty(String? s) => s != null && s.trim().isNotEmpty;
+
+  /// legado `url.matches(regex.toRegex())`：整串匹配（非子串查找）。
+  static bool _fullMatch(String? pattern, String input) {
+    if (!_nonEmpty(pattern)) return false;
+    try {
+      return RegExp('^(?:${pattern!.trim()})\$').hasMatch(input);
+    } catch (_) {
+      return false;
+    }
+  }
+
   static List<(String, String)> _parseCookieHeader(String header) {
     final out = <(String, String)>[];
     for (final part in header.split(';')) {
@@ -253,6 +304,13 @@ class ShuyuanWebviewFetcher {
   /// （`"<div>..."` 或 `\"` 转义），先解一层引号再反转义。
   static String _normalizeJsResult(Object? raw) {
     if (raw == null) return '';
+    // getElement/getElements 的 @webjs 结果在部分平台已解码为 Map/List，
+    // 统一还原成 JSON 文本供规则层按 legado GSON 语义解析。
+    if (raw is Map || raw is List) {
+      try {
+        return jsonEncode(raw);
+      } catch (_) {}
+    }
     var s = raw.toString();
     if (s.length >= 2 && s.startsWith('"') && s.endsWith('"')) {
       try {

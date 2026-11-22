@@ -51,6 +51,10 @@ class SourceImage extends StatelessWidget {
   /// 避免 ConstrainedBox(minHeight) 在真实图高偏小时残留空白带（割裂感）。
   final VoidCallback? onLoadComplete;
 
+  /// 是否封面图：封面走书源 `coverDecodeJs` 字节解码（legado
+  /// ImageUtils.decode isCover 分支），正文插图不受影响。
+  final bool isCover;
+
   /// 图片自然尺寸回调（一次）：解码完成后回传原始像素宽高。
   /// 条漫阅读器借此缓存「真实图片高度」，未加载项也能用真实高度估算占位
   /// （体验项：占位高 / 纵向平移夹取均基于真实高度，经验值仅兜底）。
@@ -82,6 +86,7 @@ class SourceImage extends StatelessWidget {
     this.onLoadComplete,
     this.onImageInfo,
     this.onImageDecoded,
+    this.isCover = false,
   });
 
   bool get _isHttp =>
@@ -213,6 +218,7 @@ class SourceImage extends StatelessWidget {
             url: u,
             headers: _buildHeaders(),
             source: source,
+            isCover: isCover,
             cookieVersion: version,
             width: width,
             height: height,
@@ -252,6 +258,7 @@ class _RetryableNetworkImage extends StatefulWidget {
   final String url;
   final Map<String, String>? headers;
   final PluginConfig? source;
+  final bool isCover;
   final double? width;
   final double? height;
   final BoxFit fit;
@@ -268,6 +275,7 @@ class _RetryableNetworkImage extends StatefulWidget {
     required this.url,
     this.headers,
     this.source,
+    this.isCover = false,
     this.width,
     this.height,
     this.fit = BoxFit.cover,
@@ -337,7 +345,7 @@ class _RetryableNetworkImageState extends State<_RetryableNetworkImage> {
     if (_evictedRetryKey == _retryKey) return;
     _evictedRetryKey = _retryKey;
     try {
-      NexImageCacheManager.forSource(widget.source)
+      NexImageCacheManager.forSource(widget.source, cover: widget.isCover)
           .removeFile(cacheKeyAtFailure)
           .ignore();
     } on Object {
@@ -424,7 +432,8 @@ class _RetryableNetworkImageState extends State<_RetryableNetworkImage> {
       // 统一走 Dio 网络层下载（NexImageCacheManager）：默认 HttpFileService 的
       // HttpClient 在启动早期创建后终身僵化（代理/DNS 档案加载前直连），代理
       // 环境下「文字正常、图片全挂」即源于此。
-      cacheManager: NexImageCacheManager.forSource(widget.source),
+      cacheManager: NexImageCacheManager.forSource(widget.source,
+          cover: widget.isCover),
       // 仅失败过的图把版本并入缓存键：版本自增 → 新缓存键 → 重取
       // （验证回灌 Cookie 自动刷新失败封面）。成功过的图缓存键恒定，
       // 任何 Cookie 轮换都不再触发已加载图片重下。

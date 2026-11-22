@@ -351,6 +351,7 @@ class _ContentDetailTabbedShellState extends State<ContentDetailTabbedShell>
           ? SourceImage(
               url: url,
               source: widget.source,
+              isCover: true,
               fit: BoxFit.cover,
               radius: 0,
               placeholder: fallback,
@@ -1087,6 +1088,7 @@ class _DetailPageBackdrop extends StatelessWidget {
         ? SourceImage(
             url: url,
             source: source,
+            isCover: true,
             fit: BoxFit.cover,
             radius: 0,
           )
