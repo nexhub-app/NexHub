@@ -118,6 +118,12 @@ class AnalyzeUrl {
     Map<String, String>? headerMapF,
   }) {
     _rawUrl = url;
+    // legado AnalyzeUrl init：baseUrl 命中 URL 选项串即截断，后续任何
+    // `getAbsoluteURL(baseUrl, …)` 都不会把 `,{...}` 卷进基准路径。
+    final baseOption = RegExp(r',\s*\{').firstMatch(baseUrl ?? '');
+    if (baseOption != null) {
+      baseUrl = baseUrl!.substring(0, baseOption.start);
+    }
     if (headerMapF != null) {
       _headerMapReplaced = true;
       headerMap.addAll(headerMapF);
@@ -726,10 +732,12 @@ class AnalyzeUrl {
             sourceHeader.forEach((k, v) => _putHeader(webHeaders, k, v));
           } catch (_) {}
         }
-      } else {
-        // 替换模式：WebView 只带 headerMap（legado BackstageWebView 拿到的
-        // 就是 headerMapF 替换后的那一份）。
-        headerMap.forEach((k, v) => _putHeader(webHeaders, k, v));
+      }
+      // legado BackstageWebView 的 headerMap = 源 header（或 headerMapF）
+      // + URL 选项 headers 的并集；显式 headers 参数与 HTTP 分支同序补上。
+      headerMap.forEach((k, v) => _putHeader(webHeaders, k, v));
+      if (headers != null) {
+        headers.forEach((k, v) => _putHeader(webHeaders, k, v));
       }
       if (activeCtx != null) {
         if (host.isNotEmpty) {

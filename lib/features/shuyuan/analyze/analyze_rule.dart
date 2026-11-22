@@ -162,9 +162,12 @@ class AnalyzeRule {
       for (final sourceRule in ruleList) {
         _putAll(sourceRule.putMap);
         if (result == null) continue;
+        // 对齐 legado getElement：每条规则只 makeUpRule 一次，并把展开后
+        // 的规则文本交给执行器（此前执行器内部会再 makeUp 一次）。
         final st = _makeUpRule(sourceRule, result);
         if (st.rule.isNotEmpty) {
-          result = _executeRuleElements(result, sourceRule, single: true);
+          result = _executeRuleElements(result, sourceRule,
+              single: true, prepared: st);
         }
         if (result != null && st.replaceRegex.isNotEmpty) {
           result = _replaceRegex(result.toString(), st);
@@ -341,7 +344,9 @@ class AnalyzeRule {
     if (result == null) return [];
     List<String> out;
     if (result is String) {
-      out = result.split('\n').where((s) => s.isNotEmpty).toList();
+      // legado getStringList：按换行拆分但保留空串项（调用方按索引对齐时
+      // 依赖占位空行；isUrl 分支另行过滤空项）。
+      out = result.split('\n');
     } else if (result is List) {
       out = result.map((e) => e.toString()).toList();
     } else {
@@ -365,7 +370,9 @@ class AnalyzeRule {
 
     for (final sourceRule in ruleList) {
       _putAll(sourceRule.putMap);
-      result = _executeRuleElements(result, sourceRule);
+      // legado getElements 不执行 makeUpRule：列表规则按原始文本进入各
+      // 模式解析（`$N`/`{{}}` 展开只在 getString/getElement 路径发生）。
+      result = _executeRuleElements(result, sourceRule, makeUp: false);
       if (result == null) continue;
     }
 
@@ -414,8 +421,19 @@ class AnalyzeRule {
     }
   }
 
-  dynamic _executeRuleElements(dynamic result, SourceRule sourceRule, {bool single = false}) {
-    final st = _makeUpRule(sourceRule, result);
+  dynamic _executeRuleElements(
+      dynamic result, SourceRule sourceRule,
+      {bool single = false, bool makeUp = true, _RuleState? prepared}) {
+    final st = prepared ??
+        (makeUp
+            ? _makeUpRule(sourceRule, result)
+            : _RuleState(
+                sourceRule.rule,
+                sourceRule.replaceRegex,
+                sourceRule.replacement,
+                sourceRule.replaceFirst,
+                sourceRule.templateMode,
+              ));
     final rule = st.rule;
 
     switch (sourceRule.mode) {
@@ -1008,10 +1026,12 @@ class AnalyzeRule {
   String _getAbsoluteUrl(String url) {
     final trimmed = url.trim();
     if (trimmed.isEmpty) return baseUrl ?? '';
-    // legado `NetworkUtils.getAbsoluteURL(redirectUrl, str)`：相对地址按
-    // 响应最终 URL 解析。请求被 302 到其他目录时，按请求 URL 解析会把
-    // 分页/子页链接拼到旧路径 → 404，目录只出首页。
-    return absoluteUrl(redirectUrl ?? baseUrl, trimmed);
+    // legado `NetworkUtils.getAbsoluteURL(redirectUrl, str)`：相对地址固定
+    // 按响应最终 URL 解析；redirectUrl 缺失时保持相对形态（不回落到
+    // baseUrl，否则会把本应判空的结果拼成看似合法的地址）。
+    // 请求被 302 到其他目录时，按请求 URL 解析会把分页/子页链接拼到旧
+    // 路径 → 404，目录只出首页。
+    return absoluteUrl(redirectUrl, trimmed);
   }
 
   /// 对照 legado `NetworkUtils.getAbsoluteURL(baseURL, relativePath)`：

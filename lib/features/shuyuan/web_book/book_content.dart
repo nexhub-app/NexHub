@@ -280,7 +280,7 @@ class BookContent {
 
   /// legado BookContent 外层标题规则：在页拼接后求值一次；命中
   /// `图片地址` 尾巴时剥离为章节名（图片部分 legado 存入 reviewImg，
-  /// NexHub 章节模型无该字段，丢弃）。
+  /// NexHub 写入章节 [XiaoshuoBookChapter.imgUrl]）。
   ///
   /// 返回实际生效的章节名（未声明规则 / 未命中 / 结果为空返回 null），
   /// 供 `BookContentResult.title` 透传到阅读器。
@@ -298,6 +298,10 @@ class BookContent {
       if (match != null) {
         final beforeImg = match.group(1) ?? '';
         title = beforeImg.isNotEmpty ? beforeImg : bookChapter.title;
+        // legado BookContent：图片尾巴写入章节 reviewImg（NexHub 章节模型
+        // 对应 imgUrl 字段），供后续展示段评图标。
+        final img = match.group(2) ?? '';
+        if (img.isNotEmpty) bookChapter.imgUrl = img;
       }
       if (title.isEmpty) return null;
       bookChapter.title = title;

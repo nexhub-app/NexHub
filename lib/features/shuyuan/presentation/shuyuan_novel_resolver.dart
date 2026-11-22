@@ -1461,6 +1461,11 @@ class ShuyuanNovelResolver
     XiaoshuoBookSource bookSource,
     Map<String, String> vars,
   ) async {
+    if (!bookSource.eventListener) {
+      // legado SourceCallBack.callBackBtn/callBackBook：未开启事件监听时
+      // 不执行 callBackJs，直接走默认动作。
+      return const SourceCallbackResult(runDefault: true);
+    }
     final jsStr = (bookSource.ruleContent?.callBackJs ?? '').trim();
     if (jsStr.isEmpty) {
       // 无回调脚本：等同未开启事件监听，默认动作照常执行。

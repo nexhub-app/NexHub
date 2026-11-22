@@ -819,8 +819,8 @@ class ShuyuanSourceContext {
   /// 返回**本次真正发起**的请求数（缓存命中不算）：调用方据此判断这一轮
   /// 是否有进展，避免「URL 带随机数」的脚本无限重放。
   ///
-  /// [deadline] 语义同 [settleWebview]：整轮预算耗尽后剩余请求按失败缓存
-  /// （占位符就地消解为 `''`），保证调用方等待有上界。
+  /// [deadline] 语义同 [settleWebview]：整轮预算耗尽后剩余请求按失败缓存，
+  /// 保证调用方等待有上界。
   static Future<int> settleAjax(
     ShuyuanSourceContext ctx,
     XiaoshuoBookSource source, {
@@ -847,7 +847,7 @@ class ShuyuanSourceContext {
       if (wantBytes && ctx.ajaxBytesCache.containsKey(key)) continue;
       fetched++;
       if (deadline != null && !DateTime.now().isBefore(deadline)) {
-        if (wantBody) ctx.ajaxCache[key] = '';
+        if (wantBody) ctx.ajaxCache[key] = _ajaxFailureText('请求超时');
         if (wantBytes) ctx.ajaxBytesCache[key] = '';
         ctx.ajaxMetaCache[key] = jsonEncode(<String, dynamic>{
           'code': 0,
@@ -902,8 +902,8 @@ class ShuyuanSourceContext {
           'url': analyzeUrl.lastFinalUrl ?? analyzeUrl.url,
           'headers': analyzeUrl.lastResponseHeaders ?? const <String, List<String>>{},
         });
-      } catch (_) {
-        if (wantBody) ctx.ajaxCache[key] = '';
+      } catch (e) {
+        if (wantBody) ctx.ajaxCache[key] = _ajaxFailureText(e);
         if (wantBytes) ctx.ajaxBytesCache[key] = '';
         ctx.ajaxMetaCache[key] = jsonEncode(<String, dynamic>{
           'code': 0,
@@ -918,6 +918,17 @@ class ShuyuanSourceContext {
     // 不占网络预算；计入 fetched 让调用方的重放循环继续一轮。
     fetched += _settleFileOps(ctx);
     return fetched;
+  }
+
+  /// legado `java.ajax` 失败口径：catch 后返回 `e.stackTraceStr`（异常类名 +
+  /// 消息 + 栈帧），源常以 `startsWith("java")` 判定失败；失败缓存写空串会
+  /// 让这类源把失败当成功继续解析。
+  static const String ajaxFailurePrefix = 'java.lang.Exception: ';
+
+  static String _ajaxFailureText(Object error) {
+    final msg = error.toString();
+    return '$ajaxFailurePrefix$msg\n'
+        '\tat io.legado.app.model.analyzeRule.AnalyzeUrl.getStrResponseAwait(AnalyzeUrl.kt)';
   }
 
   static int _settleFileOps(ShuyuanSourceContext ctx) {

@@ -16,6 +16,7 @@ class BookInfoRule {
   String? downloadUrls;
   String? bookStatus;
   String? recommendations;
+  String? relatedBooks;
 
   BookInfoRule({
     this.init,
@@ -32,6 +33,7 @@ class BookInfoRule {
     this.downloadUrls,
     this.bookStatus,
     this.recommendations,
+    this.relatedBooks,
   });
 
   factory BookInfoRule.fromJson(Map<String, dynamic> json) {
@@ -50,6 +52,7 @@ class BookInfoRule {
       downloadUrls: json['downloadUrls'] as String?,
       bookStatus: json['bookStatus'] as String?,
       recommendations: json['recommendations'] as String?,
+      relatedBooks: json['relatedBooks'] as String?,
     );
   }
 
@@ -68,5 +71,6 @@ class BookInfoRule {
         if (downloadUrls != null) 'downloadUrls': downloadUrls,
         if (bookStatus != null) 'bookStatus': bookStatus,
         if (recommendations != null) 'recommendations': recommendations,
+        if (relatedBooks != null) 'relatedBooks': relatedBooks,
       };
 }

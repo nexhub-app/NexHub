@@ -411,7 +411,10 @@ class JsEngine {
                 if (!activeCtx.ajaxPending.contains(u)) {
                   activeCtx.ajaxPending.add(u);
                 }
-              } else if (code.isEmpty) {
+              } else if (code.isEmpty ||
+                  code.startsWith(
+                      ShuyuanSourceContext.ajaxFailurePrefix)) {
+                // 失败缓存的 ajax 结果（legado stackTraceStr 文本）同样不是脚本。
                 allReady = false;
               }
             }

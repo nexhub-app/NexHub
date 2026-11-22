@@ -82,6 +82,19 @@ class BookInfo {
       } catch (_) {}
     }
 
+    // 求值顺序对齐 legado BookInfo：分类 → 字数 → 最新章节 → 简介 → 封面。
+    // 详情规则常以 @put/@get 串联字段，先后顺序决定谁能读到谁的中间变量。
+    if (bookInfoRule.wordCount != null && bookInfoRule.wordCount!.isNotEmpty) {
+      try {
+        // legado BookInfo：wordCountFormat 归一（12000 → 1.2万字）。
+        final wordCount =
+            StringUtils.wordCountFormat(analyzeRule.getString(bookInfoRule.wordCount!));
+        if (wordCount.isNotEmpty) {
+          book.wordCount = wordCount;
+        }
+      } catch (_) {}
+    }
+
     if (bookInfoRule.lastChapter != null && bookInfoRule.lastChapter!.isNotEmpty) {
       try {
         final lastChapter = analyzeRule.getString(bookInfoRule.lastChapter!);
@@ -109,6 +122,18 @@ class BookInfo {
       } catch (_) {}
     }
 
+    if (bookInfoRule.coverUrl != null && bookInfoRule.coverUrl!.isNotEmpty) {
+      try {
+        // 对照 legado BookInfo：封面规则**不带** isUrl（isUrl 对空结果会
+        // 回退成 baseUrl，凭空造出假封面）；只在命中非空时按 redirectUrl
+        // 拼绝对地址，保留源站返回的相对路径/协议相对地址。
+        final rawCover = analyzeRule.getString(bookInfoRule.coverUrl!).trim();
+        if (rawCover.isNotEmpty) {
+          book.coverUrl = AnalyzeRule.absoluteUrl(redirectUrl ?? baseUrl, rawCover);
+        }
+      } catch (_) {}
+    }
+
     if (bookInfoRule.bookStatus != null && bookInfoRule.bookStatus!.isNotEmpty) {
       try {
         final bookStatus = analyzeRule.getString(bookInfoRule.bookStatus!);
@@ -127,17 +152,6 @@ class BookInfo {
       } catch (_) {}
     }
 
-    if (bookInfoRule.wordCount != null && bookInfoRule.wordCount!.isNotEmpty) {
-      try {
-        // legado BookInfo：wordCountFormat 归一（12000 → 1.2万字）。
-        final wordCount =
-            StringUtils.wordCountFormat(analyzeRule.getString(bookInfoRule.wordCount!));
-        if (wordCount.isNotEmpty) {
-          book.wordCount = wordCount;
-        }
-      } catch (_) {}
-    }
-
     if (bookInfoRule.recommendations != null &&
         bookInfoRule.recommendations!.isNotEmpty) {
       try {
@@ -148,18 +162,6 @@ class BookInfo {
               .where((s) => s.trim().isNotEmpty)
               .map((s) => s.trim())
               .toList();
-        }
-      } catch (_) {}
-    }
-
-    if (bookInfoRule.coverUrl != null && bookInfoRule.coverUrl!.isNotEmpty) {
-      try {
-        // 对照 legado BookInfo：封面规则**不带** isUrl（isUrl 对空结果会
-        // 回退成 baseUrl，凭空造出假封面）；只在命中非空时按 redirectUrl
-        // 拼绝对地址，保留源站返回的相对路径/协议相对地址。
-        final rawCover = analyzeRule.getString(bookInfoRule.coverUrl!).trim();
-        if (rawCover.isNotEmpty) {
-          book.coverUrl = AnalyzeRule.absoluteUrl(redirectUrl ?? baseUrl, rawCover);
         }
       } catch (_) {}
     }
