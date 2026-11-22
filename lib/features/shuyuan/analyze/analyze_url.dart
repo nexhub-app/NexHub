@@ -691,6 +691,8 @@ class AnalyzeUrl {
     if (useWebView && !typeHex && activeCtx != null && webviewCacheKey != null) {
       final hit = activeCtx.pageCache[webviewCacheKey];
       if (hit != null) {
+        // 重放命中：恢复该响应当初的最终地址（legado 重放=重跑，res.url 不变）。
+        lastFinalUrl = activeCtx.pageCacheFinalUrl[webviewCacheKey];
         AppLog.instance.d('[书源HTTP] 阶段缓存命中 $url');
         return hit;
       }
@@ -818,7 +820,7 @@ class AnalyzeUrl {
         } catch (_) {}
       }
       if (activeCtx != null && webviewCacheKey != null) {
-        activeCtx.pageCachePut(webviewCacheKey, out);
+        activeCtx.pageCachePut(webviewCacheKey, out, finalUrl: lastFinalUrl);
       }
       lastResponseBytes = Uint8List.fromList(utf8.encode(out));
       return out;
@@ -922,6 +924,8 @@ class AnalyzeUrl {
     if (activeCtx != null && cacheKey != null) {
       final hit = activeCtx.pageCache[cacheKey];
       if (hit != null) {
+        // 重放命中：恢复该响应当初的最终地址（legado 重放=重跑，res.url 不变）。
+        lastFinalUrl = activeCtx.pageCacheFinalUrl[cacheKey];
         AppLog.instance.d('[书源HTTP] 阶段缓存命中 $url');
         return hit;
       }
@@ -1138,7 +1142,7 @@ class AnalyzeUrl {
 
     if (activeCtx != null && cacheKey != null) {
       _lastCacheKey = cacheKey;
-      activeCtx.pageCachePut(cacheKey, body);
+      activeCtx.pageCachePut(cacheKey, body, finalUrl: lastFinalUrl);
     }
     return body;
   }

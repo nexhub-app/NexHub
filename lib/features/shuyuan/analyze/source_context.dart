@@ -193,22 +193,33 @@ class ShuyuanSourceContext {
   /// key = method|url|body|js|regex；每个解析阶段开始时 [clearStageCaches]。
   final Map<String, String> pageCache = <String, String>{};
 
+  /// 页面缓存对应的最终 URL（重定向/WebView 渲染后地址）：settle 重放命中
+  /// 缓存时恢复 `AnalyzeUrl.lastFinalUrl`，legado 的 `res.url`（列表解析基址、
+  /// 相对链接解析、bookUrlPattern 匹配都依赖它）在重放中保持稳定。
+  final Map<String, String> pageCacheFinalUrl = <String, String>{};
+
   /// 缓存容量按字符数封顶（UTF-16 下约 8MB），超限按插入序淘汰最旧，
   /// 避免长目录（200 页 × 每页几十 KB）把内存顶穿。
   static const int _pageCacheMaxChars = 4 * 1024 * 1024;
   int _pageCacheChars = 0;
 
   /// 写入页面缓存（单页过大不缓存；超容量淘汰最旧）。
-  void pageCachePut(String key, String body) {
+  void pageCachePut(String key, String body, {String? finalUrl}) {
     if (body.length > _pageCacheMaxChars) return;
     final prev = pageCache.remove(key);
     if (prev != null) _pageCacheChars -= prev.length;
     pageCache[key] = body;
     _pageCacheChars += body.length;
+    if (finalUrl != null && finalUrl.isNotEmpty) {
+      pageCacheFinalUrl[key] = finalUrl;
+    } else {
+      pageCacheFinalUrl.remove(key);
+    }
     while (_pageCacheChars > _pageCacheMaxChars && pageCache.isNotEmpty) {
       final oldest = pageCache.keys.first;
       _pageCacheChars -= pageCache[oldest]!.length;
       pageCache.remove(oldest);
+      pageCacheFinalUrl.remove(oldest);
     }
   }
 
@@ -217,11 +228,13 @@ class ShuyuanSourceContext {
   void pageCacheRemove(String key) {
     final prev = pageCache.remove(key);
     if (prev != null) _pageCacheChars -= prev.length;
+    pageCacheFinalUrl.remove(key);
   }
 
   /// 阶段开始：清空重放相关的全部瞬态缓存（页面 / ajax / webview / 待抓取队列）。
   void clearStageCaches() {
     pageCache.clear();
+    pageCacheFinalUrl.clear();
     _pageCacheChars = 0;
     ajaxCache.clear();
     ajaxPending.clear();

@@ -90,7 +90,9 @@ class WebBook {
 
     return BookList.analyzeBookList(
       bookSource: source,
-      baseUrl: analyzeUrl.url,
+      // legado searchBookAwait 以 `res.url`（跟随重定向后的最终地址）作为
+      // 列表基址：相对链接解析与 bookUrlPattern 匹配都按最终地址进行。
+      baseUrl: analyzeUrl.lastFinalUrl ?? analyzeUrl.url,
       body: body,
       isSearch: true,
       searchKey: key,
@@ -211,7 +213,8 @@ class WebBook {
 
     final searchBooks = BookList.analyzeBookList(
       bookSource: source,
-      baseUrl: analyzeUrl.url,
+      // 同搜索：legado exploreBookAwait 的列表基址是 `res.url`（最终地址）。
+      baseUrl: analyzeUrl.lastFinalUrl ?? analyzeUrl.url,
       body: body,
       isSearch: false,
     );

@@ -7,6 +7,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:nexhub/features/shuyuan/analyze/analyze_url.dart';
 import 'package:nexhub/features/shuyuan/analyze/source_context.dart';
 import 'package:nexhub/features/shuyuan/model/book_source.dart';
 import 'package:nexhub/features/shuyuan/model/search_book.dart';
@@ -40,6 +41,14 @@ const _listHtml = '''
     <img class="cover" src="/img/b.jpg">
   </li>
 </ul>''';
+
+void _sendHtml(HttpRequest req, String body) {
+  req.response
+    ..statusCode = 200
+    ..headers.contentType = ContentType.html
+    ..write(body);
+  req.response.close();
+}
 
 Future<HttpServer> _startServer(Map<String, String> routes) async {
   final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -281,6 +290,157 @@ void main() {
       // 无简介的条目用分类名占位（NexHub 发现页展示来源分类）。
       expect(books[1].intro, '剧集');
       expect(books[1].coverUrl, 'http://cdn.test/v.jpg');
+    });
+  });
+
+  group('重定向后的列表基址（legado res.url）', () {
+    late HttpServer server;
+    late String base;
+    final hits = <String, int>{};
+
+    setUp(() async {
+      hits.clear();
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      base = 'http://${server.address.host}:${server.port}';
+      server.listen((req) {
+        final path = req.uri.path;
+        hits[path] = (hits[path] ?? 0) + 1;
+        void redirect(String location) {
+          req.response
+            ..statusCode = 302
+            ..headers.set(HttpHeaders.locationHeader, location);
+          req.response.close();
+        }
+
+        if (path == '/api/search') return redirect('/results/1.html');
+        if (path == '/results/1.html') {
+          return _sendHtml(req, '''
+<ul id="list">
+  <li class="item"><a class="name" href="book/Alpha.html">Alpha</a></li>
+  <li class="item"><a class="name" href="book/Beta.html">Beta</a></li>
+</ul>''');
+        }
+        if (path == '/explore/old') {
+          return redirect('/explore/new/list.html');
+        }
+        if (path == '/explore/new/list.html') {
+          return _sendHtml(req, '''
+<ul id="list">
+  <li class="item"><a class="name" href="book/1.html">剧集一</a></li>
+</ul>''');
+        }
+        if (path == '/api/direct') return redirect('/book/77');
+        if (path == '/book/77') {
+          return _sendHtml(req, '<h1 class="title">直达书</h1>');
+        }
+        if (path == '/cached/entry') {
+          return redirect('/cached/dir/final.html');
+        }
+        if (path == '/cached/dir/final.html') {
+          return _sendHtml(req, '<p>final-body</p>');
+        }
+        req.response.statusCode = 404;
+        req.response.close();
+      });
+    });
+
+    tearDown(() => server.close(force: true));
+
+    test('搜索重定向后相对链接按最终地址解析', () async {
+      final source = XiaoshuoBookSource.fromJson(<String, dynamic>{
+        'bookSourceUrl': '$base/',
+        'bookSourceName': 'redirect-search',
+        'bookSourceType': 0,
+        'searchUrl': '/api/search?q={{key}}',
+        'ruleSearch': <String, dynamic>{
+          'bookList': '#list li.item',
+          'name': 'a.name@text',
+          'bookUrl': 'a.name@href',
+        },
+      });
+      final ctx = ShuyuanSourceContext('redirect-search')..bindSource(source);
+      final books = await ShuyuanSourceContext.run(
+        ctx,
+        () => WebBook().searchBook(source: source, key: 'Alpha'),
+      );
+      // 旧实现以请求地址（/api/search）为基址 → /api/book/...；legado 用
+      // 最终地址（/results/1.html）→ /results/book/...。
+      expect(books.map((b) => b.bookUrl).toList(), [
+        '$base/results/book/Alpha.html',
+        '$base/results/book/Beta.html',
+      ]);
+    });
+
+    test('发现重定向后相对链接按最终地址解析', () async {
+      final source = XiaoshuoBookSource.fromJson(<String, dynamic>{
+        'bookSourceUrl': '$base/',
+        'bookSourceName': 'redirect-explore',
+        'bookSourceType': 0,
+        'exploreUrl': '[{"title":"列表","url":"/explore/old"}]',
+        'ruleExplore': <String, dynamic>{
+          'bookList': '#list li.item',
+          'name': 'a.name@text',
+          'bookUrl': 'a.name@href',
+        },
+      });
+      final ctx = ShuyuanSourceContext('redirect-explore')..bindSource(source);
+      final books = await ShuyuanSourceContext.run(
+        ctx,
+        () => WebBook().exploreBook(source: source, page: 1),
+      );
+      expect(books.single.bookUrl, '$base/explore/new/book/1.html');
+    });
+
+    test('bookUrlPattern 按最终地址整串匹配，命中走整页详情', () async {
+      final source = XiaoshuoBookSource.fromJson(<String, dynamic>{
+        'bookSourceUrl': '$base/',
+        'bookSourceName': 'redirect-direct',
+        'bookSourceType': 0,
+        'bookUrlPattern': '${RegExp.escape(base)}/book/\\d+',
+        'searchUrl': '/api/direct?q={{key}}',
+        'ruleSearch': <String, dynamic>{
+          'bookList': '#list li.item',
+          'name': 'a.name@text',
+        },
+        'ruleBookInfo': <String, dynamic>{
+          'name': 'h1.title@text',
+        },
+      });
+      final ctx = ShuyuanSourceContext('redirect-direct')..bindSource(source);
+      final books = await ShuyuanSourceContext.run(
+        ctx,
+        () => WebBook().searchBook(source: source, key: 'Book'),
+      );
+      // 请求地址 /api/direct 不匹配；最终地址 /book/77 命中 → 详情解析。
+      expect(books.single.name, '直达书');
+    });
+
+    test('阶段缓存命中恢复最终地址（settle 重放基址稳定）', () async {
+      final source = XiaoshuoBookSource.fromJson(<String, dynamic>{
+        'bookSourceUrl': '$base/',
+        'bookSourceName': 'cache-final',
+        'bookSourceType': 0,
+      });
+      final ctx = ShuyuanSourceContext('cache-final')..bindSource(source);
+      await ShuyuanSourceContext.run(ctx, () async {
+        final first = AnalyzeUrl(
+          url: '$base/cached/entry',
+          baseUrl: '$base/',
+          source: source,
+        );
+        expect(await first.getStrResponse(), contains('final-body'));
+        expect(first.lastFinalUrl, '$base/cached/dir/final.html');
+
+        // 重放：同一阶段缓存作用域内的第二次求值（命中缓存，不再发请求）。
+        final replay = AnalyzeUrl(
+          url: '$base/cached/entry',
+          baseUrl: '$base/',
+          source: source,
+        );
+        expect(await replay.getStrResponse(), contains('final-body'));
+        expect(replay.lastFinalUrl, '$base/cached/dir/final.html');
+        expect(hits['/cached/dir/final.html'], 1);
+      });
     });
   });
 }

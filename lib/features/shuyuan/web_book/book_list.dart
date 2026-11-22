@@ -112,11 +112,10 @@ class BookList {
 
     var books = <SearchBook>[];
     try {
-      final elements = analyzeRule.getElements(listRule);
-
       // legado 语义（isSearch）：baseUrl 命中 bookUrlPattern → 整页按详情
-      // 页解析（搜索直达详情页的源）。legado 用 `String.matches`（整串匹配），
-      // 部分匹配会把普通列表页误判成详情页，解析出「错误的书」。
+      // 页解析（搜索直达详情页的源），且先于 bookList 规则求值——命中时
+      // 不执行列表规则（规则可能带副作用或抛错）。legado 用
+      // `String.matches`（整串匹配），部分匹配会把普通列表页误判成详情页。
       if (isSearch) {
         final pattern = bookSource.bookUrlPattern;
         if (pattern != null && pattern.isNotEmpty) {
@@ -128,6 +127,8 @@ class BookList {
           } catch (_) {}
         }
       }
+
+      final elements = analyzeRule.getElements(listRule);
 
       if (elements.isEmpty) {
         // legado：列表为空且未声明 bookUrlPattern → 整页按详情解析
