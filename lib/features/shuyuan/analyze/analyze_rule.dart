@@ -5,8 +5,8 @@ library;
 import 'dart:convert';
 
 import 'package:html/dom.dart';
-import 'package:html/parser.dart' as html_parser;
 import '../../../core/utils/app_log.dart';
+import 'html4_entities.dart';
 import 'source_rule.dart';
 import 'analyze_jsoup.dart';
 import 'analyze_xpath.dart';
@@ -932,12 +932,13 @@ class AnalyzeRule {
     }
   }
 
-  /// HTML 实体还原，对齐 legado `StringEscapeUtils.unescapeHtml4`
-  /// （数字实体 + HTML4/HTML5 全命名表）。命名实体交给 package:html 解析
-  /// 并按实体缓存结果，未知实体原样保留。
+  /// HTML 实体还原，对齐 legado `StringEscapeUtils.unescapeHtml4`：
+  /// 命名实体仅还原 Apache HTML4 全集（252 项，区分大小写、不含 apos），
+  /// HTML5 专有实体 / 大小写变体原样保留；数字实体按 Apache 语义解析
+  /// （允许 0 与代理区码点，非法码点 > 0x10FFFF 抛 [ArgumentError]，
+  /// 超出 int32 的溢出值视为解析失败、原样保留）。
   static final RegExp _entityPattern =
       RegExp(r'&(?:#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);');
-  static final Map<String, String> _entityCache = {};
 
   static String unescapeHtml(String str) {
     if (!str.contains('&')) return str;
@@ -946,20 +947,16 @@ class AnalyzeRule {
       final body = entity.substring(1, entity.length - 1);
       if (body.startsWith('#')) {
         final hex = body.length > 1 && (body[1] == 'x' || body[1] == 'X');
-        final code =
-            int.tryParse(body.substring(hex ? 2 : 1), radix: hex ? 16 : 10);
-        if (code == null ||
-            code <= 0 ||
-            code > 0x10FFFF ||
-            (code >= 0xD800 && code <= 0xDFFF)) {
-          return entity;
+        final digits = body.substring(hex ? 2 : 1);
+        final code = int.tryParse(digits, radix: hex ? 16 : 10);
+        if (code == null || code > 0x7FFFFFFF) return entity;
+        if (code > 0x10FFFF) {
+          throw ArgumentError('Invalid Unicode code point: $code');
         }
         return String.fromCharCode(code);
       }
-      return _entityCache.putIfAbsent(body, () {
-        final text = html_parser.parseFragment(entity).text ?? '';
-        return text.isEmpty ? entity : text;
-      });
+      final codePoint = html4NamedEntities[body];
+      return codePoint == null ? entity : String.fromCharCode(codePoint);
     });
   }
 
