@@ -2480,6 +2480,24 @@ abstract class AppLocalizations {
   /// **'Downloading and importing…'**
   String get sourceWebFileImporting;
 
+  /// Chapter tab label for a file-type book source, with the file count
+  ///
+  /// In en, this message translates to:
+  /// **'Files ({count})'**
+  String sourceWebFilesTitleWithCount(int count);
+
+  /// Confirmation dialog before downloading a file-type book source file from the detail page
+  ///
+  /// In en, this message translates to:
+  /// **'{fileName} hasn\'t been downloaded yet. Download it now to read offline?'**
+  String sourceWebFileDownloadPrompt(String fileName);
+
+  /// SnackBar shown after a file-type book source file has been downloaded and imported
+  ///
+  /// In en, this message translates to:
+  /// **'Downloaded: {fileName}'**
+  String sourceWebFileDownloaded(String fileName);
+
   /// No description provided for @browserTitle.
   ///
   /// In en, this message translates to:
@@ -9187,6 +9205,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'episode'**
   String get unitWordEpisode;
+
+  /// No description provided for @unitWordFile.
+  ///
+  /// In en, this message translates to:
+  /// **'file'**
+  String get unitWordFile;
 
   /// No description provided for @prevPage.
   ///

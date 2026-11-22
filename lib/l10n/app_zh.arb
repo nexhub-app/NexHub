@@ -582,6 +582,33 @@
   "@sourceWebFileImporting": {
     "description": "Progress label while downloading and importing a file-type book source file"
   },
+  "sourceWebFilesTitleWithCount": "文件列表（{count}）",
+  "@sourceWebFilesTitleWithCount": {
+    "description": "Chapter tab label for a file-type book source, with the file count",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "sourceWebFileDownloadPrompt": "「{fileName}」尚未下载，下载后可离线阅读。是否立即下载？",
+  "@sourceWebFileDownloadPrompt": {
+    "description": "Confirmation dialog before downloading a file-type book source file from the detail page",
+    "placeholders": {
+      "fileName": {
+        "type": "String"
+      }
+    }
+  },
+  "sourceWebFileDownloaded": "已下载：{fileName}",
+  "@sourceWebFileDownloaded": {
+    "description": "SnackBar shown after a file-type book source file has been downloaded and imported",
+    "placeholders": {
+      "fileName": {
+        "type": "String"
+      }
+    }
+  },
   "browserTitle": "浏览器",
   "browserAddressHint": "输入网址或搜索",
   "browserBack": "后退",
@@ -2692,6 +2719,7 @@
   "unitWordChapter": "章",
   "unitWordComicChapter": "话",
   "unitWordEpisode": "集",
+  "unitWordFile": "文件",
   "readerSettingsTitle": "阅读器设置",
   "readerSettingsDesc": "阅读模式、背景、方向等",
   "prevPage": "上一页",

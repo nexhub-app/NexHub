@@ -41,11 +41,15 @@ import '../../../core/services/novel_export_upload_service.dart';
 import '../../../core/favorites/favorites_manager.dart';
 import '../../../core/history/history_manager.dart';
 import '../../../core/history/media_watched_manager.dart';
+import '../../../core/local/local_content_actions.dart' show openLocalEntry;
+import '../../../core/local/local_content_manager.dart'
+    show LocalContentEntry, LocalContentManager;
 import '../../../core/models/episode.dart';
 import '../../../core/models/media_item.dart';
 import '../../../core/models/plugin_config.dart';
 import '../../../core/models/web_file_item.dart';
 import '../../../core/navigation/app_page_route.dart';
+import '../../../core/novel/novel_progress_manager.dart';
 import '../../../core/novel/novel_toc_cache.dart';
 import '../../../core/novel/novel_toc_store.dart';
 import '../../../core/platform/ohos_public_storage.dart'
@@ -82,6 +86,7 @@ import '../../downloads/presentation/download_list_screen.dart';
 import '../../manga/presentation/comic_reader_screen.dart';
 import '../../novel/presentation/novel_reader_screen.dart';
 import '../../player/presentation/video_player_screen.dart';
+import '../../shuyuan/analyze/web_file_local_binding.dart';
 import '../../shuyuan/model/source_callback_result.dart';
 import '../../shuyuan/presentation/shuyuan_callback_host.dart';
 import '../../shuyuan/presentation/shuyuan_web_file_picker.dart';
@@ -150,6 +155,11 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
   /// 详情阶段直接取下载链接列表。
   bool _webFileSource = false;
   List<WebFileItem> _webFiles = const <WebFileItem>[];
+
+  /// 文件类书源：当前「开始阅读 / 继续阅读」所指本地书的阅读进度
+  /// （[_webProgressKey] 记录它属于哪条本地条目，防止串书）。
+  NovelReadingProgress? _webProgress;
+  String? _webProgressKey;
 
   /// detail 路由拉回的完整条目；初始为 [widget.item]。
   late MediaItem _fetchedDetail;
@@ -371,6 +381,8 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
           setState(() => _verificationError = error);
         }
       });
+      // 详情进度跟随本地书：定位「开始阅读」所指条目并读取其阅读进度。
+      unawaited(_refreshWebProgress());
     } else {
       // 目录 / 剧集抓取：小说额外接入渐进批次回调（超长目录首屏快显）。
       _episodesFuture = switch (_sourceType) {
@@ -584,15 +596,129 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
     }
   }
 
-  /// 文件类书源：打开下载列表，选中后下载并导入本地书。
-  Future<void> _openWebFiles(PluginConfig source) async {
-    await openShuyuanWebFilePicker(
+  /// 文件类书源：本书已下载的本地条目（按来源三元组回挂）。
+  List<LocalContentEntry> _boundWebLocals() {
+    final String sourceId = widget.item.sourceId ?? '';
+    if (!_webFileSource || sourceId.isEmpty) {
+      return const <LocalContentEntry>[];
+    }
+    return boundWebBookEntries(
+      context.read<LocalContentManager>().items,
+      sourceId: sourceId,
+      contentId: _callbackBookUrl,
+    );
+  }
+
+  /// 文件类书源：「开始阅读 / 继续阅读」所指的本地条目。
+  ///
+  /// 最近读过（浏览历史时间）优先，都没读过取最近下载；无下载返回 null。
+  LocalContentEntry? _activeWebLocal(List<LocalContentEntry> bound) {
+    final HistoryManager history = context.read<HistoryManager>();
+    return activeWebBookEntry(
+      bound,
+      viewedAt: (String id) {
+        final HistoryEntry? hit =
+            history.findById(id, sourceType: SourceType.novelSource) ??
+                history.findById(id);
+        return hit?.viewedAt ?? 0;
+      },
+    );
+  }
+
+  /// 读取当前所指本地书的阅读进度（详情页进度卡数据源）。
+  Future<void> _refreshWebProgress() async {
+    if (!_webFileSource || !mounted) return;
+    final LocalContentEntry? active = _activeWebLocal(_boundWebLocals());
+    if (active == null) {
+      if (_webProgress != null || _webProgressKey != null) {
+        setState(() {
+          _webProgress = null;
+          _webProgressKey = null;
+        });
+      }
+      return;
+    }
+    NovelReadingProgress? progress;
+    try {
+      // 每次新实例读取，避免读到旧实例缓存里的过时进度。
+      progress = await NovelProgressManager().get(active.id);
+    } on Object {
+      progress = null;
+    }
+    if (!mounted) return;
+    setState(() {
+      _webProgress = progress;
+      _webProgressKey = active.id;
+    });
+  }
+
+  /// 打开本地书，返回详情页后刷新进度卡。
+  Future<void> _openLocalWebBook(LocalContentEntry entry) async {
+    await openLocalEntry(context, entry);
+    if (!mounted) return;
+    await _refreshWebProgress();
+  }
+
+  /// 文件源「开始阅读」：已下载直接打开；否则先提示下载并停留本页。
+  ///
+  /// 单文件 → 确认弹窗；多文件 → 文件列表选择。下载完成后按钮再次点击
+  /// 才进入阅读（不自动打开）。
+  Future<void> _onWebReadPressed(PluginConfig? source) async {
+    final List<LocalContentEntry> bound = _boundWebLocals();
+    final LocalContentEntry? active = _activeWebLocal(bound);
+    if (active != null) {
+      await _openLocalWebBook(active);
+      return;
+    }
+    if (source == null || _webFiles.isEmpty) return;
+    if (_webFiles.length == 1) {
+      final WebFileItem file = _webFiles.first;
+      final bool ok = await confirmShuyuanWebFileDownload(context, file: file);
+      if (!ok || !mounted) return;
+      await _downloadWebFile(source, file);
+      return;
+    }
+    await pickAndDownloadShuyuanWebFile(
       context,
       source: source,
+      contentId: _callbackBookUrl,
       bookName: _fetchedDetail.title,
       bookAuthor: _fetchedDetail.author ?? '',
       files: _webFiles,
     );
+    if (!mounted) return;
+    await _refreshWebProgress();
+  }
+
+  /// 下载一个源文件并入库（停留在详情页，文件列表随通知重绘）。
+  Future<void> _downloadWebFile(PluginConfig source, WebFileItem file) async {
+    await downloadShuyuanWebFile(
+      context,
+      source: source,
+      contentId: _callbackBookUrl,
+      bookName: _fetchedDetail.title,
+      bookAuthor: _fetchedDetail.author ?? '',
+      file: file,
+    );
+    if (!mounted) return;
+    await _refreshWebProgress();
+  }
+
+  /// 文件列表行操作：已下载打开本地书，未下载先下载入库。
+  Future<void> _onWebFileAction(Episode ep, int index) async {
+    if (index < 0 || index >= _webFiles.length) return;
+    final WebFileItem file = _webFiles[index];
+    final LocalContentEntry? local =
+        localEntryForWebFile(_boundWebLocals(), file.url);
+    if (local != null) {
+      await _openLocalWebBook(local);
+      return;
+    }
+    final PluginConfig? source = context
+        .read<SourceRepository>()
+        .getById(widget.item.sourceId ?? '');
+    if (source == null) return;
+    await _downloadWebFile(source, file);
   }
 
   // ───────────────────── 书源事件回调（legado SourceCallBack） ─────────────────────
@@ -756,6 +882,7 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
               bookAuthor: widget.item.author,
               coverUrl: coverUrl,
               restoreProgress: remember,
+              isAudio: _sourceType == SourceType.audioSource,
             ),
           ),
         );
@@ -1247,6 +1374,64 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
     );
   }
 
+  /// 文件类书源的进度区：本地书阅读进度卡（无本地进度时不渲染）。
+  ///
+  /// 目录抓取失败的内联提示沿用普通分支；进度跟随「开始阅读」所指的
+  /// 本地文件（已读/总章 + 最近阅读时间），不读在线进度。
+  Widget? _buildWebFileProgressSection(
+    AppLocalizations l10n,
+    Object? inlineError,
+    bool showWarning,
+    LocalContentEntry? active,
+  ) {
+    final Widget? card = active != null &&
+            _webProgressKey == active.id &&
+            _webProgress != null
+        ? _buildWebFileProgressCard(l10n, active, _webProgress!)
+        : null;
+    final bool showError = inlineError != null && !showWarning;
+    if (!showError && card == null) return null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        if (showError) _buildInlineError(l10n, inlineError),
+        if (card != null) card,
+      ],
+    );
+  }
+
+  /// 本地书进度卡：章节数来自本地阅读进度，最近阅读来自浏览历史。
+  Widget _buildWebFileProgressCard(
+    AppLocalizations l10n,
+    LocalContentEntry active,
+    NovelReadingProgress progress,
+  ) {
+    final int total = progress.totalChapters ?? 0;
+    final int read =
+        total > 0 ? (progress.chapterIndex + 1).clamp(0, total).toInt() : 0;
+    final HistoryManager history = context.read<HistoryManager>();
+    final HistoryEntry? hit =
+        history.findById(active.id, sourceType: SourceType.novelSource) ??
+            history.findById(active.id);
+    ProgressLastRead? lastRead;
+    if (hit != null && hit.viewedAt > 0) {
+      final String chapterTitle = (hit.lastChapter ?? '').trim();
+      lastRead = ProgressLastRead(
+        timeText: formatRelativeTime(
+          l10n,
+          DateTime.fromMillisecondsSinceEpoch(hit.viewedAt),
+        ),
+        chapterTitle: chapterTitle.isEmpty ? active.title : chapterTitle,
+      );
+    }
+    return ProgressCard(
+      kind: ProgressKind.reading,
+      total: total,
+      read: read,
+      lastRead: lastRead,
+    );
+  }
+
   /// 目录解析失败时的内联错误条（不整页替换，头部照常显示）。
   Widget _buildInlineError(AppLocalizations l10n, Object error) {
     final ColorScheme scheme = Theme.of(context).colorScheme;
@@ -1498,6 +1683,11 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
     final DownloadManager downloadMgr = context.watch<DownloadManager>();
     // 订阅已看变更以驱动重建；实际读取统一走 _progressRepo（同一实例）。
     context.watch<MediaWatchedManager>();
+    // 文件类书源：订阅本地导入列表与浏览历史——下载入库 / 读完返回后
+    // 「已下载」标记与进度卡即时刷新。
+    final LocalContentManager localContentMgr =
+        context.watch<LocalContentManager>();
+    final HistoryManager historyMgr = context.watch<HistoryManager>();
 
     final bool isFav = favorites.isFavorite(item.id, _favType);
     // 逐章判断下载状态：只有「全部章节都已下载」才算整部下载完成。
@@ -1511,6 +1701,38 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
     final int total = computeTotalEpisodes(episodes);
     final bool hasContinue =
         _continueIndex >= 0 && _continueIndex < episodes.length;
+
+    // 文件类书源：目录替换为源文件列表；下载绑定与所指本地书由本地条目决定。
+    final List<LocalContentEntry> webBookLocals = _webFileSource
+        ? boundWebBookEntries(
+            localContentMgr.items,
+            sourceId: item.sourceId ?? '',
+            contentId: _callbackBookUrl,
+          )
+        : const <LocalContentEntry>[];
+    final LocalContentEntry? webActive = _webFileSource
+        ? activeWebBookEntry(
+            webBookLocals,
+            viewedAt: (String id) {
+              final HistoryEntry? hit =
+                  historyMgr.findById(id, sourceType: SourceType.novelSource) ??
+                      historyMgr.findById(id);
+              return hit?.viewedAt ?? 0;
+            },
+          )
+        : null;
+    // 本地进度只对当前所指条目有效（防止读完 A 再下载 B 时串显 A 的进度）。
+    final bool hasWebLocalProgress = webActive != null &&
+        _webProgressKey == webActive.id &&
+        _webProgress != null;
+    final List<Episode> webFileChapters = _webFileSource
+        ? <Episode>[
+            for (final WebFileItem f in _webFiles)
+              Episode(id: f.url, title: f.name, url: f.url),
+          ]
+        : const <Episode>[];
+    final List<Episode> listChapters =
+        _webFileSource ? webFileChapters : episodes;
 
     // 目录不完整：渐进中途失败 / 验证拦截 / 缓存兜底。
     final bool showWarning = episodes.isNotEmpty &&
@@ -1662,15 +1884,18 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
           ],
         ),
       ],
-      progressSection: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          // 有数据但目录抓取报错（且非警告条覆盖的情况）→ 内联提示。
-          if (inlineError != null && !showWarning)
-            _buildInlineError(l10n, inlineError),
-          _buildProgressCard(l10n, total, readCount),
-        ],
-      ),
+      progressSection: _webFileSource
+          ? _buildWebFileProgressSection(l10n, inlineError, showWarning,
+              webActive)
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                // 有数据但目录抓取报错（且非警告条覆盖的情况）→ 内联提示。
+                if (inlineError != null && !showWarning)
+                  _buildInlineError(l10n, inlineError),
+                _buildProgressCard(l10n, total, readCount),
+              ],
+            ),
       bangumiSection: BangumiFullTab(
         contentId: item.id,
         title: item.title,
@@ -1678,7 +1903,19 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
         subjectIdNotifier: _bangumiSubjectId,
       ),
       actions: <Widget>[
-        if (hasContinue)
+        if (_webFileSource)
+          // 文件源按钮语义不变（开始阅读）：未下载先提示下载并停留本页；
+          // 已有本地书则打开最近阅读 / 最近下载的一本，有本地进度显示续读。
+          FilledButton.icon(
+            onPressed:
+                (webActive != null || (_webFiles.isNotEmpty && source != null))
+                    ? () => _onWebReadPressed(source)
+                    : null,
+            icon: const Icon(Icons.auto_stories_rounded),
+            label: Text(
+                hasWebLocalProgress ? l10n.continueReading : l10n.readChapter),
+          )
+        else if (hasContinue)
           FilledButton.icon(
             onPressed: () => _openContent(
                 episodes[_continueIndex], _continueIndex,
@@ -1691,20 +1928,13 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
           )
         else
           FilledButton.icon(
-            onPressed: ((_webFileSource ? _webFiles.isEmpty : episodes.isEmpty) ||
-                    source == null)
+            onPressed: (episodes.isEmpty || source == null)
                 ? null
-                : () => _webFileSource
-                    ? _openWebFiles(source)
-                    : _openContent(episodes.first, 0),
-            icon: Icon(_webFileSource
-                ? Icons.folder_open_rounded
-                : (_isChapterBased
-                    ? Icons.auto_stories_rounded
-                    : Icons.play_arrow_rounded)),
-            label: Text(_webFileSource
-                ? l10n.sourceWebFilesTitle
-                : (_isChapterBased ? l10n.readChapter : l10n.play)),
+                : () => _openContent(episodes.first, 0),
+            icon: Icon(_isChapterBased
+                ? Icons.auto_stories_rounded
+                : Icons.play_arrow_rounded),
+            label: Text(_isChapterBased ? l10n.readChapter : l10n.play),
           ),
         // 系列入口：仅当 detail 路由返回了季列表时显示。
         if (_fetchedDetail.seasons != null &&
@@ -1719,11 +1949,31 @@ class _ContentDetailScreenState extends State<ContentDetailScreen> {
             label: Text(l10n.seriesTitle),
           ),
       ],
-      chaptersTabLabel: _isChapterBased ? l10n.chapterList : l10n.episodeList,
-      chaptersTitle: _isChapterBased
-          ? l10n.chapterListWithCount(episodes.length)
-          : l10n.episodeListWithCount(total),
-      chaptersList: ChapterListSection(
+      chaptersTabLabel: _webFileSource
+          ? l10n.sourceWebFilesTitleWithCount(listChapters.length)
+          : (_isChapterBased ? l10n.chapterList : l10n.episodeList),
+      chaptersTitle: _webFileSource
+          ? l10n.sourceWebFilesTitleWithCount(listChapters.length)
+          : (_isChapterBased
+              ? l10n.chapterListWithCount(episodes.length)
+              : l10n.episodeListWithCount(total)),
+      chaptersList: _webFileSource
+          // 文件源没有章节目录：源文件列表直接充当目录，行内标记已下载，
+          // 未下载点击先下载（停留本页），已下载点击打开本地书。
+          ? ChapterListSection(
+              chapters: webFileChapters,
+              onTapChapter: _onWebFileAction,
+              // 行尾按钮 / 滑动动作共用同一处理（未下载=下载，已下载=打开），
+              // 同时让「已下载」图标态可见。
+              onDownloadChapter: _onWebFileAction,
+              isChapterDownloaded: (int i) =>
+                  i >= 0 &&
+                  i < _webFiles.length &&
+                  localEntryForWebFile(webBookLocals, _webFiles[i].url) !=
+                      null,
+              unitWord: l10n.unitWordFile,
+            )
+          : ChapterListSection(
         chapters: episodes,
         // 影视：按线路分组 + 显示播放位置；网格模式全部内容类型可用
         // （影视 / 漫画 / 小说），长按菜单共用。

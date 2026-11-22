@@ -520,6 +520,15 @@ class LocalContentEntry {
   /// 常见命名），EPUB 元数据优先。解析不出为 null。
   final String? author;
 
+  /// 下载来源：文件类书源下载的条目回填源 ID / 详情页内容 ID（书籍 URL），
+  /// 详情页据此把本地书与在线书籍对上号（文件列表标记「已下载」）。
+  /// 手动导入的条目为 null。
+  final String? originSourceId;
+  final String? originContentId;
+
+  /// 下载来源：该书源文件列表里对应文件的 URL，用于区分同书多文件。
+  final String? originFileUrl;
+
   const LocalContentEntry({
     required this.id,
     required this.title,
@@ -529,6 +538,9 @@ class LocalContentEntry {
     this.coverUrl,
     this.filePaths,
     this.author,
+    this.originSourceId,
+    this.originContentId,
+    this.originFileUrl,
   });
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -540,6 +552,9 @@ class LocalContentEntry {
         'coverUrl': coverUrl,
         'filePaths': filePaths,
         'author': author,
+        'originSourceId': originSourceId,
+        'originContentId': originContentId,
+        'originFileUrl': originFileUrl,
       };
 
   factory LocalContentEntry.fromJson(Map<String, dynamic> json) => LocalContentEntry(
@@ -553,6 +568,9 @@ class LocalContentEntry {
             ?.map((e) => e as String)
             .toList(),
         author: json['author'] as String?,
+        originSourceId: json['originSourceId'] as String?,
+        originContentId: json['originContentId'] as String?,
+        originFileUrl: json['originFileUrl'] as String?,
       );
 
   /// 浅拷贝并覆盖部分字段（用于重命名等）。
@@ -565,6 +583,9 @@ class LocalContentEntry {
     String? coverUrl,
     List<String>? filePaths,
     String? author,
+    String? originSourceId,
+    String? originContentId,
+    String? originFileUrl,
   }) =>
       LocalContentEntry(
         id: id ?? this.id,
@@ -575,6 +596,9 @@ class LocalContentEntry {
         coverUrl: coverUrl ?? this.coverUrl,
         filePaths: filePaths ?? this.filePaths,
         author: author ?? this.author,
+        originSourceId: originSourceId ?? this.originSourceId,
+        originContentId: originContentId ?? this.originContentId,
+        originFileUrl: originFileUrl ?? this.originFileUrl,
       );
 }
 
@@ -641,16 +665,9 @@ class LocalContentManager extends ChangeNotifier {
       }
       final cover = await computeLocalCover(e.path, e.kind);
       if (cover == null) continue;
-      _items[i] = LocalContentEntry(
-        id: e.id,
-        title: e.title,
-        path: e.path,
-        kind: e.kind,
-        addedAt: e.addedAt,
-        coverUrl: cover,
-        // 补封面时保留聚合文件列表，避免把「一本书/一部漫画」降级成单文件。
-        filePaths: e.filePaths,
-      );
+      // 补封面时保留聚合文件列表，避免把「一本书/一部漫画」降级成单文件；
+      // copyWith 同时保留作者与下载来源绑定字段。
+      _items[i] = e.copyWith(coverUrl: cover);
       dirty = true;
     }
     if (dirty) {
@@ -676,17 +693,26 @@ class LocalContentManager extends ChangeNotifier {
       final bool needCover = existing.coverUrl == null &&
           (existing.kind == LocalMediaKind.images ||
               existing.kind == LocalMediaKind.video);
-      if (needFilePaths || needCover) {
+      // 旧版本下载的文件没有来源绑定：同一文件经文件列表重新下载时补绑，
+      // 详情页才能把它标记为「已下载」。
+      final bool needOrigin = entry.originFileUrl != null &&
+          (existing.originFileUrl != entry.originFileUrl ||
+              existing.originContentId != entry.originContentId ||
+              existing.originSourceId != entry.originSourceId);
+      if (needFilePaths || needCover || needOrigin) {
         final String? coverUrl = existing.coverUrl ??
             await computeLocalCover(existing.path, existing.kind);
-        _items[existingIndex] = LocalContentEntry(
-          id: existing.id,
+        _items[existingIndex] = existing.copyWith(
           title: entry.title.isEmpty ? existing.title : entry.title,
-          path: existing.path,
           kind: entry.kind,
-          addedAt: existing.addedAt,
           coverUrl: coverUrl,
           filePaths: needFilePaths ? entry.filePaths : existing.filePaths,
+          author: existing.author ?? entry.author,
+          originSourceId:
+              needOrigin ? entry.originSourceId : existing.originSourceId,
+          originContentId:
+              needOrigin ? entry.originContentId : existing.originContentId,
+          originFileUrl: needOrigin ? entry.originFileUrl : existing.originFileUrl,
         );
         await _persist();
         notifyListeners();
@@ -695,17 +721,10 @@ class LocalContentManager extends ChangeNotifier {
     }
     final String? coverUrl = entry.coverUrl ??
         await computeLocalCover(entry.path, entry.kind);
-    final covered = LocalContentEntry(
-      id: entry.id,
-      title: entry.title,
-      path: entry.path,
-      kind: entry.kind,
-      addedAt: entry.addedAt,
-      coverUrl: coverUrl,
-      // 聚合导入（文件夹=一本书/一部漫画）必须保留子文件列表，否则打开时
-      // 被当作单文件，SAF 目录 URI 会报「该路径是一个文件夹」。
-      filePaths: entry.filePaths,
-    );
+    // copyWith 保留作者与下载来源绑定字段：聚合导入（文件夹=一本书/一部
+    // 漫画）的 filePaths 也必须保留，否则打开时被当作单文件，SAF 目录 URI
+    // 会报「该路径是一个文件夹」。
+    final covered = entry.copyWith(coverUrl: coverUrl);
     _items.insert(0, covered);
     await _persist();
     notifyListeners();

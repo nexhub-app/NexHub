@@ -1,8 +1,9 @@
-/// 文件类书源（legado bookSourceType=3）的下载列表与本地书导入。
+/// 文件类书源（legado bookSourceType=3）的文件下载、本地书导入与选择弹层。
 ///
 /// 对照 md3 `BookInfoViewModel.loadWebFile` / `handleWebFileSelection`：
 /// 书籍文件直接落盘为「书名 作者：作者.后缀」并入库；归档下载后解压出
 /// 小说文件，单条直接导入、多条弹出选择；其余格式提示未识别。
+/// 下载完成只入库不打开，由调用方（详情页）刷新文件列表后自行决定阅读。
 library;
 
 import 'dart:io';
@@ -15,7 +16,6 @@ import 'package:provider/provider.dart';
 
 import '../../../core/local/archive_extractor.dart'
     show extractNovelFilesFromArchive;
-import '../../../core/local/local_content_actions.dart' show openLocalEntry;
 import '../../../core/local/local_content_manager.dart'
     show LocalContentEntry, LocalContentManager, LocalMediaKind;
 import '../../../core/local/local_novel_parser.dart' show LocalNovelParser;
@@ -46,19 +46,19 @@ class _WebFileImportStage {
   bool get isUnsupported => bookPath == null && archivePaths == null;
 }
 
-/// 弹出下载列表；选中后下载、落盘、导入本地书并打开。
-Future<void> openShuyuanWebFilePicker(
+/// 下载并入库源文件列表中的一项（不打开书籍，停留原页面）。
+///
+/// 返回入库的本地条目；取消归档内选择、格式未识别或下载失败返回 null
+/// （失败与未识别均已用 SnackBar 提示）。下载成功后回显「已下载」提示。
+Future<LocalContentEntry?> downloadShuyuanWebFile(
   BuildContext context, {
   required PluginConfig source,
+  required String contentId,
   required String bookName,
   required String bookAuthor,
-  required List<WebFileItem> files,
+  required WebFileItem file,
 }) async {
-  if (files.isEmpty) return;
   final AppLocalizations l10n = AppLocalizations.of(context);
-  final WebFileItem? picked = await _pickFile(context, files, l10n);
-  if (picked == null || !context.mounted) return;
-
   final MediaApiService service = context.read<MediaApiService>();
   final _WebFileImportStage stage;
   try {
@@ -68,25 +68,25 @@ Future<void> openShuyuanWebFilePicker(
       () => _downloadToLocal(
         service,
         source: source,
-        picked: picked,
+        picked: file,
         bookName: bookName,
         bookAuthor: bookAuthor,
       ),
     );
   } on Object catch (e) {
-    if (!context.mounted) return;
+    if (!context.mounted) return null;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(l10n.importFailed('$e'))),
     );
-    return;
+    return null;
   }
-  if (!context.mounted) return;
+  if (!context.mounted) return null;
 
   if (stage.isUnsupported) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(l10n.unrecognizedFile(picked.name))),
+      SnackBar(content: Text(l10n.unrecognizedFile(file.name))),
     );
-    return;
+    return null;
   }
 
   String? importPath = stage.bookPath;
@@ -101,9 +101,72 @@ Future<void> openShuyuanWebFilePicker(
       }
     }
   }
-  if (importPath == null || !context.mounted) return;
+  if (importPath == null || !context.mounted) return null;
 
-  await _registerAndOpen(context, importPath);
+  final LocalContentEntry entry = await _registerEntry(
+    context,
+    importPath,
+    originSourceId: source.id,
+    originContentId: contentId,
+    originFileUrl: file.url,
+  );
+  if (context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(l10n.sourceWebFileDownloaded(p.basename(importPath))),
+      ),
+    );
+  }
+  return entry;
+}
+
+/// 弹出文件列表并下载选中项；取消返回 null。
+Future<LocalContentEntry?> pickAndDownloadShuyuanWebFile(
+  BuildContext context, {
+  required PluginConfig source,
+  required String contentId,
+  required String bookName,
+  required String bookAuthor,
+  required List<WebFileItem> files,
+}) async {
+  if (files.isEmpty) return null;
+  final AppLocalizations l10n = AppLocalizations.of(context);
+  final WebFileItem? picked = await _pickFile(context, files, l10n);
+  if (picked == null || !context.mounted) return null;
+  return downloadShuyuanWebFile(
+    context,
+    source: source,
+    contentId: contentId,
+    bookName: bookName,
+    bookAuthor: bookAuthor,
+    file: picked,
+  );
+}
+
+/// 单文件尚未下载时的确认弹窗：确认返回 true。
+Future<bool> confirmShuyuanWebFileDownload(
+  BuildContext context, {
+  required WebFileItem file,
+}) async {
+  final AppLocalizations l10n = AppLocalizations.of(context);
+  final bool? ok = await showDialog<bool>(
+    context: context,
+    builder: (BuildContext ctx) => AlertDialog(
+      title: Text(l10n.download),
+      content: Text(l10n.sourceWebFileDownloadPrompt(file.name)),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(false),
+          child: Text(l10n.cancel),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(ctx).pop(true),
+          child: Text(l10n.download),
+        ),
+      ],
+    ),
+  );
+  return ok ?? false;
 }
 
 /// 下载并把文件落到应用支持目录。
@@ -158,10 +221,15 @@ Future<_WebFileImportStage> _downloadToLocal(
   return const _WebFileImportStage.unsupported();
 }
 
-/// 入库并打开本地书（书名/作者按导出文件名解析）。
-Future<void> _registerAndOpen(BuildContext context, String path) async {
-  final String displayBase =
-      webArchiveEntryDisplayName(p.basename(path));
+/// 入库本地书（书名/作者按导出文件名解析），并写入下载来源绑定。
+Future<LocalContentEntry> _registerEntry(
+  BuildContext context,
+  String path, {
+  required String originSourceId,
+  required String originContentId,
+  required String originFileUrl,
+}) async {
+  final String displayBase = webArchiveEntryDisplayName(p.basename(path));
   final ({String name, String? author}) parsed =
       LocalNovelParser.analyzeNameAuthor(displayBase);
   final LocalContentEntry entry = LocalContentEntry(
@@ -171,10 +239,12 @@ Future<void> _registerAndOpen(BuildContext context, String path) async {
     kind: LocalMediaKind.text,
     addedAt: DateTime.now().millisecondsSinceEpoch,
     author: parsed.author,
+    originSourceId: originSourceId,
+    originContentId: originContentId,
+    originFileUrl: originFileUrl,
   );
   await context.read<LocalContentManager>().add(entry);
-  if (!context.mounted) return;
-  await openLocalEntry(context, entry);
+  return entry;
 }
 
 Future<WebFileItem?> _pickFile(

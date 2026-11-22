@@ -1260,6 +1260,21 @@ class AppLocalizationsEn extends AppLocalizations {
   String get sourceWebFileImporting => 'Downloading and importing…';
 
   @override
+  String sourceWebFilesTitleWithCount(int count) {
+    return 'Files ($count)';
+  }
+
+  @override
+  String sourceWebFileDownloadPrompt(String fileName) {
+    return '$fileName hasn\'t been downloaded yet. Download it now to read offline?';
+  }
+
+  @override
+  String sourceWebFileDownloaded(String fileName) {
+    return 'Downloaded: $fileName';
+  }
+
+  @override
   String get browserTitle => 'Browser';
 
   @override
@@ -4843,6 +4858,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get unitWordEpisode => 'episode';
+
+  @override
+  String get unitWordFile => 'file';
 
   @override
   String get prevPage => 'Previous page';

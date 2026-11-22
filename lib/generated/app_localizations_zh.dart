@@ -1231,6 +1231,21 @@ class AppLocalizationsZh extends AppLocalizations {
   String get sourceWebFileImporting => '正在下载并导入…';
 
   @override
+  String sourceWebFilesTitleWithCount(int count) {
+    return '文件列表（$count）';
+  }
+
+  @override
+  String sourceWebFileDownloadPrompt(String fileName) {
+    return '「$fileName」尚未下载，下载后可离线阅读。是否立即下载？';
+  }
+
+  @override
+  String sourceWebFileDownloaded(String fileName) {
+    return '已下载：$fileName';
+  }
+
+  @override
   String get browserTitle => '浏览器';
 
   @override
@@ -4749,6 +4764,9 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get unitWordEpisode => '集';
+
+  @override
+  String get unitWordFile => '文件';
 
   @override
   String get prevPage => '上一页';

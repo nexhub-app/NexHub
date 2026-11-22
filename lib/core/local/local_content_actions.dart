@@ -101,7 +101,7 @@ Future<void> openLocalEntry(BuildContext context, LocalContentEntry e) async {
   if (e.filePaths != null && e.filePaths!.isNotEmpty) {
     final chapters = buildLocalChapterList(e.filePaths!);
     if (e.kind == LocalMediaKind.text) {
-      Navigator.of(context).push(
+      await Navigator.of(context).push(
         AppPageRoute<void>(
           builder: (_) => NovelReaderScreen(
             novelId: e.id,
@@ -172,7 +172,8 @@ Future<void> openLocalEntry(BuildContext context, LocalContentEntry e) async {
         lower.endsWith('.epub') || titleLower.endsWith('.epub');
     final bool isTxt = lower.endsWith('.txt') || titleLower.endsWith('.txt');
     if (isEpub) {
-      Navigator.of(context).push(
+      // await 到阅读器关闭：调用方（详情页）返回后刷新本地阅读进度。
+      await Navigator.of(context).push(
         AppPageRoute<void>(
           builder: (_) => NovelReaderScreen(
             novelId: e.id,
@@ -189,7 +190,7 @@ Future<void> openLocalEntry(BuildContext context, LocalContentEntry e) async {
     }
     // .txt 或扩展名缺失（content:// 无扩展名）：默认按 txt 处理，交给阅读器
     // resolveSafUri 后按内容解析（本地小说绝大多数为 txt）。
-    Navigator.of(context).push(
+    await Navigator.of(context).push(
       AppPageRoute<void>(
       builder: (_) => NovelReaderScreen(
         novelId: e.id,

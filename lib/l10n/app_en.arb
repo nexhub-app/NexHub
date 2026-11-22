@@ -595,6 +595,33 @@
   "@sourceWebFileImporting": {
     "description": "Progress label while downloading and importing a file-type book source file"
   },
+  "sourceWebFilesTitleWithCount": "Files ({count})",
+  "@sourceWebFilesTitleWithCount": {
+    "description": "Chapter tab label for a file-type book source, with the file count",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "sourceWebFileDownloadPrompt": "{fileName} hasn't been downloaded yet. Download it now to read offline?",
+  "@sourceWebFileDownloadPrompt": {
+    "description": "Confirmation dialog before downloading a file-type book source file from the detail page",
+    "placeholders": {
+      "fileName": {
+        "type": "String"
+      }
+    }
+  },
+  "sourceWebFileDownloaded": "Downloaded: {fileName}",
+  "@sourceWebFileDownloaded": {
+    "description": "SnackBar shown after a file-type book source file has been downloaded and imported",
+    "placeholders": {
+      "fileName": {
+        "type": "String"
+      }
+    }
+  },
   "browserTitle": "Browser",
   "browserAddressHint": "Enter URL or search",
   "browserBack": "Back",
@@ -2716,6 +2743,7 @@
   "unitWordChapter": "chapter",
   "unitWordComicChapter": "chapter",
   "unitWordEpisode": "episode",
+  "unitWordFile": "file",
   "prevPage": "Previous page",
   "nextPage": "Next page",
   "nightMode": "Night mode",
