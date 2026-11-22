@@ -5797,6 +5797,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
                             sourceId: widget.sourceId,
                             itemId: widget.novelId,
                             directUrl: _mediaUrl,
+                            isAudio: isAudio,
                           ),
                         ),
                       ),

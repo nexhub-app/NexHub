@@ -1187,6 +1187,20 @@ When a script endpoint has to follow N pages one by one (e.g. a gallery page onl
 
 > Co-creation presumes **compliance and copyright respect**: only parse public content you have the right to access and that permits scraping; don't use sources to infringe others' lawful rights.
 
+### 4.5.4 Source compatibility (Legado-style rules)
+
+The app ships a **generic** compatibility layer: rule dialects are detected per source, and no site is hardcoded into the engine. Import preserves `ruleData` / `jsLib` / source variables; rule syntax aligns with ElementsSingle (indexing / exclusion / ranges / `tag.` `class.` `id.` `text.` `children.` prefixes, CSS only via `@css:`), XPath (predicates / unions / compound rules), full JSONPath, `textNodes`, multi-form `replaceRegex`, inline `@js:`, parentheseless `@put` and `bookUrlPattern`; regex dialect items (inline flags, `\Q..\E`, possessive quantifiers, atomic groups) are translated in place.
+
+- **`java.*` bridge**: pure-JS `Packages` / `JavaImporter`; AES (ECB/CBC + PKCS5/7), DES/3DES, SHA/HMAC and common RSA paths (SPKI/PKCS#8, PKCS#1 v1.5); `queryTTF`/`replaceFont` restore font-obfuscated characters. Unsupported forms (OAEP/EC/CTR/GCM/CFB/OFB) **explicitly return empty** rather than fake results.
+- **Networking**: `java.ajax/get/post/head` accept custom headers and `followRedirects:false`, returning a response object with `body/code/statusCode/headers/cookies/url/isSuccessful/raw`; dynamic arguments use a deterministic replay protocol (record call → host evaluates → backfill → rerun, ≤4 rounds), settle capped at 16 rounds / 120s.
+- **WebView**: URL option `webView:true` and `webJs` are rendered by a headless WebView fetcher and fed back into rule parsing; login supports `loginCheckJs` + `loginUi` forms + WebView login, with cookies stored and replayed per source under tighter domain matching.
+- **Discovery and types**: `exploreUrl` is parsed into ExploreKind option bars (url/text/button/toggle/select, values persisted per source); dynamic categories support placeholder-fetch-replay; `bookSourceType` 0 text / 2 comic (`images`) / 1 audio / 4 video dispatches to the matching module or media shelf.
+- **Context**: rule context moves to a Zone (valid after `await`, no cross-source leakage); JS engines are pooled per source (max 8); deleting a source clears its cookies / variables.
+- **File sources**: download links and local import are supported; the detail page lists source files and can follow local reading progress (useful when a source has no chapter TOC).
+- **More evaluation**: RSA asymmetric crypto exports via the host with OAEP and strict padding semantics; AES-GCM added; `callBackJs` events and event bits; chapter purchase `payAction`; pure-JS `org.jsoup.Jsoup.parse` with a minimal DOM / CSS selector set; on HTTP 412 the session cookie is fetched from the site root and the request retried.
+- **Media shapes**: `bookSourceType` 1/4 audio / video sources render media chapter cards in the reader, and embedded lyrics from audio sources reach the player; downloaded file sources can be read offline.
+- **Limits**: a small set of Java APIs is uncovered (~2.6% of calls / 3% of sources); unsupported forms degrade explicitly; WebView paths still need on-device verification.
+
 ## 4.6 Testing
 
 ```bash

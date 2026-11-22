@@ -30,7 +30,7 @@
 
 </div>
 
-> 当前最新版 **v4.0.0-beta.1（预发布测试版）**。上一版本为 **v3.6.0**（正式版，小说连排朗读 + 播放器自动横竖屏）。当前 beta 来自尚未合并的书源兼容分支。项目持续迭代中，欢迎通过 Pull Request / issues 贡献代码和想法。完整更新历史见 [RELEASE_NOTES](./RELEASE_NOTES.md)。
+> 当前最新版 **v4.0.0-beta.2（预发布测试版）**。上一稳定版为 **v3.6.0**（小说连排朗读 + 播放器自动横竖屏）。当前 beta 来自尚未合并的书源兼容分支，新增音频播放与直播流自适应。项目持续迭代中，欢迎通过 Pull Request / issues 贡献代码和想法。完整更新历史见 [RELEASE_NOTES](./RELEASE_NOTES.md)。
 >
 > 📱 **鸿蒙（HarmonyOS / OpenHarmony）正式支持**：arm64 真机完整可用，另提供 iOS 未签名构建；详情见下方[「平台支持」](#二平台支持)。
 >
@@ -168,6 +168,7 @@ NexHub 的生命力来自社区共同维护的「源」。我们欢迎任何人�
 感谢以下项目与社区，NexHub 的建立离不开它们：
 
 - [Legado](https://github.com/gedoor/legado)（及其各类改版）的「书源」规则系统，为 NexHub「源即插件」的解析与共创理念提供了核心启发（尤其小说源的声明式 / 脚本式写法）。NexHub 小说分页器以独立 Dart 实现借鉴了 Legado `ChapterProvider` 的分页算法，未复制其源码；Legado 上游仓库未附带明确的开源许可证，本致谢仅作启发署名，不暗示任何许可授权。
+- [Legado with MD3](https://github.com/HapeLee/legado-with-MD3)：基于 Legado 的 Material Design 3 风格重构分支，其书源解析规则为 NexHub 的源解析提供了参考。以 GPL-3.0 发布（© HapeLee），NexHub 未复制其源码，仅借鉴规则思路独立实现；本致谢仅作启发署名，不构成许可授权或衍生关系。
 - [Mihon](https://github.com/mihonapp/mihon)（Tachiyomi 衍生版，及其各类改版）的扩展源架构与漫画阅读器交互，为 NexHub 的漫画解析与阅读体验提供了重要参考。Mihon 以 Apache License 2.0 发布（© Mihon contributors）。
 - [RSSHub](https://github.com/DIYgod/RSSHub) 的 RSS 聚合能力为 NexHub 的订阅功能提供了服务基础。RSSHub 以 AGPL-3.0 发布（© DIYgod），NexHub 仅作为客户端调用其实例，未修改或再分发其源码。
 - [wenyi](https://github.com/BigDawnGhost/wenyi) 的小说 AI 翻译管线设计（上下文增强、术语闭环、证据驱动审查与精译合成），为 NexHub 内置小说翻译的深度优化提供了重要参考。wenyi 以 MIT License 发布（© BigDawnGhost），NexHub 未复制其源码，仅借鉴设计思想独立实现。

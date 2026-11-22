@@ -319,6 +319,11 @@ class _AboutScreenState extends State<AboutScreen> {
         url: 'https://github.com/gedoor/legado',
       ),
       _AcknowledgementCredit(
+        name: 'Legado with MD3',
+        desc: l10n.acknowledgementsLegadoMd3,
+        url: 'https://github.com/HapeLee/legado-with-MD3',
+      ),
+      _AcknowledgementCredit(
         name: 'Mihon',
         desc: l10n.acknowledgementsMihon,
         url: 'https://github.com/mihonapp/mihon',

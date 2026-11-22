@@ -348,7 +348,8 @@ class ShuyuanNovelResolver
   /// 本轮是否还有等待宿主处理的请求（ajax 走 HTTP，webview 走无头渲染，
   /// 交互式 await/验证码走冻结缓存）。发现阶段不弹 startBrowser；
   /// [openBrowsers] 为 true（事件回调）时 startBrowser 也计入待办。
-  bool _hasPendingReplay(ShuyuanSourceContext ctx, {bool openBrowsers = false}) =>
+  bool _hasPendingReplay(ShuyuanSourceContext ctx,
+          {bool openBrowsers = false}) =>
       ctx.ajaxPending.isNotEmpty ||
       ctx.webviewPending.isNotEmpty ||
       hasPendingInteractive(ctx, includeOpenBrowsers: openBrowsers);
@@ -366,7 +367,8 @@ class ShuyuanNovelResolver
     bool openBrowsers = false,
   }) async {
     var fetched = await _fetchAjaxPending(ctx, bookSource, deadline: deadline);
-    fetched += await ShuyuanSourceContext.settleWebview(ctx, deadline: deadline);
+    fetched +=
+        await ShuyuanSourceContext.settleWebview(ctx, deadline: deadline);
     // 交互式等待（浏览器/验证码）不计预算：其耗时已通过 waited 反补给调用方，
     // 用户操作时长不可控，这里不能按 deadline 掐断。
     final interactive = await settleShuyuanInteractive(
@@ -413,163 +415,170 @@ class ShuyuanNovelResolver
     JsEngine.resetReplayCachesFor(source.id);
     return ShuyuanSourceContext.run(ctx, () async {
       switch (apiName) {
-      case 'search':
-      case 'explore':
-      case 'category':
-      case 'latest':
-        final isSearch = apiName == 'search';
-        final books = BookList.analyzeBookList(
-          bookSource: bookSource,
-          baseUrl: bookSource.bookSourceUrl,
-          body: html,
-          isSearch: isSearch,
-          searchKey: isSearch ? (vars['keyword'] ?? vars['key'] ?? '') : null,
-        );
-        return _mapAndSeedSearchBooks(books, source);
-      case 'detail':
-        // 详情页：用 [BookInfo] 解析渲染后 HTML（与 [WebBook.getBookInfo] 同口径）。
-        // 复用搜索/发现阶段的种子书，详情规则为空时保留列表阶段字段。
-        final id = vars['id'] ?? vars['detailUrl'] ?? '';
-        final book = _seedFor(id) ?? XiaoshuoBook(bookUrl: id, name: '');
-        BookInfo.analyzeBookInfo(
-          bookSource: bookSource,
-          book: book,
-          baseUrl: id,
-          redirectUrl: id,
-          body: html,
-        );
-        return _xiaoshuoBookToMediaItem(book, source);
-      case 'toc':
-      case 'chapters':
-      case 'episodes':
-        // 目录：用 [BookChapterList] 解析渲染后 HTML（与 [WebBook.getChapterList]
-        // 首页批次同口径，逐章连续编号以支持上下章导航）。
-        final id = vars['id'] ?? vars['detailUrl'] ?? '';
-        final book = XiaoshuoBook(bookUrl: id, name: '');
-        final chapters = BookChapterList.analyzeChapterList(
-          bookSource: bookSource,
-          book: book,
-          baseUrl: id,
-          redirectUrl: id,
-          body: html,
-        );
-        // 漫画阅读器以 chapterId=Episode.id 回传图片请求，id 须为章节 URL。
-        return episodesFromChapters(
-          chapters,
-          isComic: source.type == SourceType.mangaSource,
-        );
-      case 'images':
-        // 漫画图片：渲染后 HTML 直接按正文规则取图（含 WebView 过验证后
-        // 的回灌），不再回落 resolve 触发重抓/重复验证。
-        final imageChapterUrl = vars['chapterId'] ??
-            vars['url'] ??
-            vars['chapter'] ??
-            vars['cid'] ??
-            '';
-        if (imageChapterUrl.isEmpty) return <String>[];
-        final imageBlocks = BookContent.analyzeContent(
-          bookSource: bookSource,
-          book: XiaoshuoBook(bookUrl: '', name: ''),
-          bookChapter:
-              XiaoshuoBookChapter(bookUrl: '', url: imageChapterUrl),
-          baseUrl: imageChapterUrl,
-          redirectUrl: imageChapterUrl,
-          body: html,
-          processTitle: false,
-        );
-        return imageUrlsFromBlocks(imageBlocks, baseUrl: imageChapterUrl);
-      case 'content':
-        // 正文：用 [BookContent] 解析渲染后 HTML（与 [WebBook.getContent] 同口径，
-        // 声明式 ruleContent 而非脚本 override——书源渲染路径一致）。正文分页跟随
-        // 在渲染路径下不做（WebView 取回的已是单页渲染结果），绝大多数章节单页。
-        final chapterUrl = vars['url'] ?? vars['chapter'] ?? '';
-        final book = XiaoshuoBook(bookUrl: '', name: '');
-        final chapter = XiaoshuoBookChapter(
-          bookUrl: '',
-          url: chapterUrl,
-          title: vars['chapterTitle'] ?? '',
-        );
-        final blocks = BookContent.analyzeContent(
-          bookSource: bookSource,
-          book: book,
-          bookChapter: chapter,
-          baseUrl: chapterUrl,
-          redirectUrl: chapterUrl,
-          body: html,
-          mediaSource: bookSource.bookSourceType == 1 ||
-              bookSource.bookSourceType == 4,
-        );
-        if (blocks.isEmpty) {
-          throw SourceResolveException(
-            sourceId: source.id,
-            apiName: 'content',
-            message: '正文渲染后解析为空',
+        case 'search':
+        case 'explore':
+        case 'category':
+        case 'latest':
+          final isSearch = apiName == 'search';
+          final books = BookList.analyzeBookList(
+            bookSource: bookSource,
+            baseUrl: bookSource.bookSourceUrl,
+            body: html,
+            isSearch: isSearch,
+            searchKey: isSearch ? (vars['keyword'] ?? vars['key'] ?? '') : null,
           );
-        }
-        return NovelContentResult(
-          blocks,
-          title: chapter.title.isEmpty ? null : chapter.title,
-        );
-      case 'video':
-        // 视频/音频源播放直链：渲染后 HTML 取正文规则里的媒体 URL。
-        final videoChapterUrl = vars['url'] ?? vars['chapter'] ?? '';
-        final videoChapter =
-            XiaoshuoBookChapter(bookUrl: '', url: videoChapterUrl);
-        final videoBlocks = BookContent.analyzeContent(
-          bookSource: bookSource,
-          book: XiaoshuoBook(bookUrl: '', name: ''),
-          bookChapter: videoChapter,
-          baseUrl: videoChapterUrl,
-          redirectUrl: videoChapterUrl,
-          body: html,
-          mediaSource: true,
-        );
-        final renderedUrl = _normalizeMediaUrl(
-          _firstMediaLine(videoBlocks
-                  .whereType<NovelTextBlock>()
-                  .map((b) => b.text)
-                  .join('\n')) ??
-              _extractMediaUrl(videoBlocks),
-          videoChapterUrl,
-        );
-        if (renderedUrl == null || renderedUrl.isEmpty) {
-          throw SourceResolveException(
-            sourceId: source.id,
-            apiName: 'video',
-            message: '渲染后正文未解析到媒体直链',
+          return _mapAndSeedSearchBooks(books, source);
+        case 'detail':
+          // 详情页：用 [BookInfo] 解析渲染后 HTML（与 [WebBook.getBookInfo] 同口径）。
+          // 复用搜索/发现阶段的种子书，详情规则为空时保留列表阶段字段。
+          final id = vars['id'] ?? vars['detailUrl'] ?? '';
+          final book = _seedFor(id) ?? XiaoshuoBook(bookUrl: id, name: '');
+          BookInfo.analyzeBookInfo(
+            bookSource: bookSource,
+            book: book,
+            baseUrl: id,
+            redirectUrl: id,
+            body: html,
           );
-        }
-        final renderedAnalyze = AnalyzeUrl(
-          url: renderedUrl,
-          baseUrl: bookSource.bookSourceUrl,
-          source: bookSource,
-        );
-        // 音频源 `subContent` 在正文规则里产出 LRC，BookContent 已写入
-        // 章节变量 `lyric`（md3 AudioPlay 同源）；随直链一并回传给播放器。
-        final lyric = videoChapter.getVariable('lyric').trim();
-        return VideoResult(
-          url: renderedAnalyze.url,
-          headers: renderedAnalyze.resolveRequestHeaders(),
-          lyric: lyric.isEmpty ? null : lyric,
-        );
-      case 'webFiles':
-        // 文件类书源：用渲染后 HTML 解析详情与下载地址列表（WebView 验证后
-        // 回灌，不再回落 resolve 重抓）。
-        final webFileId = vars['id'] ?? vars['detailUrl'] ?? '';
-        if (webFileId.isEmpty) return const <WebFileItem>[];
-        final webFileBook = _seedFor(webFileId) ??
-            XiaoshuoBook(bookUrl: webFileId, name: '');
-        BookInfo.analyzeBookInfo(
-          bookSource: bookSource,
-          book: webFileBook,
-          baseUrl: webFileId,
-          redirectUrl: webFileId,
-          body: html,
-        );
-        _rememberBookInfo(webFileBook);
-        return _webFilesFromBook(source, bookSource, webFileBook);
-      default:
-        return resolve(source, apiName, vars: vars);
+          return _xiaoshuoBookToMediaItem(book, source);
+        case 'toc':
+        case 'chapters':
+        case 'episodes':
+          // 目录：用 [BookChapterList] 解析渲染后 HTML（与 [WebBook.getChapterList]
+          // 首页批次同口径，逐章连续编号以支持上下章导航）。
+          final id = vars['id'] ?? vars['detailUrl'] ?? '';
+          final book = XiaoshuoBook(bookUrl: id, name: '');
+          final chapters = BookChapterList.analyzeChapterList(
+            bookSource: bookSource,
+            book: book,
+            baseUrl: id,
+            redirectUrl: id,
+            body: html,
+          );
+          // 漫画阅读器以 chapterId=Episode.id 回传图片请求，id 须为章节 URL。
+          return episodesFromChapters(
+            chapters,
+            isComic: source.type == SourceType.mangaSource,
+          );
+        case 'images':
+          // 漫画图片：渲染后 HTML 直接按正文规则取图（含 WebView 过验证后
+          // 的回灌），不再回落 resolve 触发重抓/重复验证。
+          final imageChapterUrl = vars['chapterId'] ??
+              vars['url'] ??
+              vars['chapter'] ??
+              vars['cid'] ??
+              '';
+          if (imageChapterUrl.isEmpty) return <String>[];
+          final imageBlocks = BookContent.analyzeContent(
+            bookSource: bookSource,
+            book: XiaoshuoBook(bookUrl: '', name: ''),
+            bookChapter: XiaoshuoBookChapter(bookUrl: '', url: imageChapterUrl),
+            baseUrl: imageChapterUrl,
+            redirectUrl: imageChapterUrl,
+            body: html,
+            processTitle: false,
+          );
+          return imageUrlsFromBlocks(imageBlocks, baseUrl: imageChapterUrl);
+        case 'content':
+          // 正文：用 [BookContent] 解析渲染后 HTML（与 [WebBook.getContent] 同口径，
+          // 声明式 ruleContent 而非脚本 override——书源渲染路径一致）。正文分页跟随
+          // 在渲染路径下不做（WebView 取回的已是单页渲染结果），绝大多数章节单页。
+          final chapterUrl = vars['url'] ?? vars['chapter'] ?? '';
+          final book = XiaoshuoBook(bookUrl: '', name: '');
+          final chapter = XiaoshuoBookChapter(
+            bookUrl: '',
+            url: chapterUrl,
+            title: vars['chapterTitle'] ?? '',
+          );
+          final blocks = BookContent.analyzeContent(
+            bookSource: bookSource,
+            book: book,
+            bookChapter: chapter,
+            baseUrl: chapterUrl,
+            redirectUrl: chapterUrl,
+            body: html,
+            mediaSource: bookSource.bookSourceType == 1 ||
+                bookSource.bookSourceType == 4,
+          );
+          if (blocks.isEmpty) {
+            throw SourceResolveException(
+              sourceId: source.id,
+              apiName: 'content',
+              message: '正文渲染后解析为空',
+            );
+          }
+          return NovelContentResult(
+            blocks,
+            title: chapter.title.isEmpty ? null : chapter.title,
+          );
+        case 'video':
+          // 视频/音频源播放直链：渲染后 HTML 取正文规则里的媒体 URL。
+          final videoChapterUrl = vars['url'] ?? vars['chapter'] ?? '';
+          final videoChapter =
+              XiaoshuoBookChapter(bookUrl: '', url: videoChapterUrl);
+          final videoBlocks = BookContent.analyzeContent(
+            bookSource: bookSource,
+            book: XiaoshuoBook(bookUrl: '', name: ''),
+            bookChapter: videoChapter,
+            baseUrl: videoChapterUrl,
+            redirectUrl: videoChapterUrl,
+            body: html,
+            mediaSource: true,
+          );
+          final renderedUrl = _normalizeMediaUrl(
+            _firstMediaLine(videoBlocks
+                    .whereType<NovelTextBlock>()
+                    .map((b) => b.text)
+                    .join('\n')) ??
+                _extractMediaUrl(videoBlocks),
+            videoChapterUrl,
+          );
+          if (renderedUrl == null || renderedUrl.isEmpty) {
+            throw SourceResolveException(
+              sourceId: source.id,
+              apiName: 'video',
+              message: '渲染后正文未解析到媒体直链',
+            );
+          }
+          final renderedAnalyze = AnalyzeUrl(
+            url: renderedUrl,
+            baseUrl: bookSource.bookSourceUrl,
+            source: bookSource,
+          );
+          // 音频源（bookSourceType=1）`subContent` 在正文规则里产出 LRC
+          // （md3 AudioPlay 同源）；渲染回灌路径没有经过 WebBook.getContent，
+          // 需在此补求值一次。视频源（type=4）不产出歌词，保持原行为。
+          final String? lyric = bookSource.bookSourceType == 1
+              ? await _resolveRenderedLyric(
+                  bookSource: bookSource,
+                  chapter: videoChapter,
+                  body: html,
+                  baseUrl: videoChapterUrl,
+                )
+              : null;
+          return VideoResult(
+            url: renderedAnalyze.url,
+            headers: renderedAnalyze.resolveRequestHeaders(),
+            lyric: lyric,
+          );
+        case 'webFiles':
+          // 文件类书源：用渲染后 HTML 解析详情与下载地址列表（WebView 验证后
+          // 回灌，不再回落 resolve 重抓）。
+          final webFileId = vars['id'] ?? vars['detailUrl'] ?? '';
+          if (webFileId.isEmpty) return const <WebFileItem>[];
+          final webFileBook =
+              _seedFor(webFileId) ?? XiaoshuoBook(bookUrl: webFileId, name: '');
+          BookInfo.analyzeBookInfo(
+            bookSource: bookSource,
+            book: webFileBook,
+            baseUrl: webFileId,
+            redirectUrl: webFileId,
+            body: html,
+          );
+          _rememberBookInfo(webFileBook);
+          return _webFilesFromBook(source, bookSource, webFileBook);
+        default:
+          return resolve(source, apiName, vars: vars);
       }
     });
   }
@@ -689,8 +698,8 @@ class ShuyuanNovelResolver
               return built.result;
             }
             if (!_replayAllowed(pass, deadline)) return built.result;
-            final settled =
-                await _settleReplay(ctx, bookSource, source, deadline: deadline);
+            final settled = await _settleReplay(ctx, bookSource, source,
+                deadline: deadline);
             deadline = deadline.add(settled.waited);
             // 抓取失败/无进展：保留错误态，不写缓存（下次打开仍会重试）。
             if (settled.fetched == 0) return built.result;
@@ -758,8 +767,7 @@ class ShuyuanNovelResolver
       var displayName = kind.title;
       final viewName = kind.viewName?.trim() ?? '';
       if (viewName.isNotEmpty) {
-        final resolved = await _resolveKindViewName(
-            source, viewName, infoMap,
+        final resolved = await _resolveKindViewName(source, viewName, infoMap,
             baseUrl: bookSource.bookSourceUrl);
         if (resolved.isNotEmpty) displayName = resolved;
       }
@@ -919,8 +927,8 @@ class ShuyuanNovelResolver
             _syncInfoMapFromJs(engine, infoMap);
             if (!_hasPendingReplay(ctx)) break;
             if (!_replayAllowed(pass, deadline)) break;
-            final settled =
-                await _settleReplay(ctx, bookSource, source, deadline: deadline);
+            final settled = await _settleReplay(ctx, bookSource, source,
+                deadline: deadline);
             deadline = deadline.add(settled.waited);
             if (settled.fetched == 0) break;
           }
@@ -1058,8 +1066,8 @@ class ShuyuanNovelResolver
         finish != null ||
         size != null ||
         order != null) {
-      final buf = StringBuffer(
-          '${bookSource.bookSourceUrl}/index.php/book/category');
+      final buf =
+          StringBuffer('${bookSource.bookSourceUrl}/index.php/book/category');
       if (list.isNotEmpty) buf.write('/list/$list');
       if (tags.isNotEmpty) buf.write('/tags/$tags');
       if (finish != null) buf.write('/finish/$finish');
@@ -1306,8 +1314,7 @@ class ShuyuanNovelResolver
       )) {
         var token = rawToken.trim();
         if (token.isEmpty) continue;
-        final dataRef =
-            RegExp(r'^__DATA_URI_(\d+)__$').firstMatch(token);
+        final dataRef = RegExp(r'^__DATA_URI_(\d+)__$').firstMatch(token);
         if (dataRef != null) {
           add(dataUris[int.parse(dataRef.group(1)!)]);
           continue;
@@ -1321,8 +1328,7 @@ class ShuyuanNovelResolver
             token.startsWith('/') ||
             relativeImagePattern.hasMatch(token)) {
           if (!hasBase) continue;
-          if (token.startsWith('javascript:') ||
-              token.startsWith('about:')) {
+          if (token.startsWith('javascript:') || token.startsWith('about:')) {
             continue;
           }
           add(AnalyzeRule.absoluteUrl(baseUrl, token));
@@ -1362,9 +1368,8 @@ class ShuyuanNovelResolver
     // 音频/视频源（legado bookSourceType=1/4）：正文规则提取的媒体直链
     // 包装为媒体块（阅读器渲染播放卡片拉起播放器）；legado 对音/视频
     // 不做 htmlFormat，直链即正文。
-    final srcTypeRaw =
-        (source.selectors?['xiaoshuo'] as Map<String, dynamic>?)
-            ?['bookSourceType'];
+    final srcTypeRaw = (source.selectors?['xiaoshuo']
+        as Map<String, dynamic>?)?['bookSourceType'];
     final srcType =
         srcTypeRaw is int ? srcTypeRaw : int.tryParse('$srcTypeRaw') ?? 0;
     if (srcType == 1 || srcType == 4) {
@@ -1637,7 +1642,46 @@ class ShuyuanNovelResolver
     return VideoResult(
       url: analyzeUrl.url,
       headers: analyzeUrl.resolveRequestHeaders(),
+      // 歌词只属于音频源（bookSourceType=1）：视频源结果保持原样。
+      lyric: bookSource.bookSourceType == 1 ? result.lyric : null,
     );
+  }
+
+  /// 渲染回灌路径的音频歌词：在正文解析后求值 `ruleContent.subContent`
+  /// （md3 BookContent 外层同款：http 开头先抓取），写入章节变量后回传。
+  Future<String?> _resolveRenderedLyric({
+    required XiaoshuoBookSource bookSource,
+    required XiaoshuoBookChapter chapter,
+    required String body,
+    required String baseUrl,
+  }) async {
+    final rule = bookSource.getContentRule().subContent;
+    if (rule == null || rule.isEmpty) {
+      final existing = chapter.getVariable('lyric').trim();
+      return existing.isEmpty ? null : existing;
+    }
+    try {
+      final analyzeRule = AnalyzeRule(
+          book: XiaoshuoBook(bookUrl: '', name: ''), chapter: chapter)
+        ..setContent(body, baseUrl)
+        ..setBaseUrl(baseUrl)
+        ..setRedirectUrl(baseUrl);
+      var text = analyzeRule.getString(rule, unescape: false).trim();
+      if (text.toLowerCase().startsWith('http')) {
+        text = (await AnalyzeUrl(
+          url: text,
+          baseUrl: baseUrl,
+          source: bookSource,
+          chapter: chapter,
+        ).getStrResponse())
+            .trim();
+      }
+      if (text.isEmpty) return null;
+      chapter.putVariable('lyric', text);
+      return text;
+    } catch (_) {
+      return null;
+    }
   }
 
   // ── 文件类书源（legado bookSourceType=3）──
@@ -1816,7 +1860,8 @@ class ShuyuanNovelResolver
 
     // 尝试常见中文格式：YYYY-MM-DD HH:mm:ss / YYYY/MM/DD HH:mm:ss
     // 注意：不锚定开头/结尾，以容忍 "时间：2026-05-05 16:22" 这类带前缀的文本。
-    final isoLike = RegExp(r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?');
+    final isoLike = RegExp(
+        r'(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?');
     final m = isoLike.firstMatch(trimmed);
     if (m != null) {
       try {

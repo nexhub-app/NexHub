@@ -1,14 +1,14 @@
-# NexHub v4.0.0-beta.1
+# NexHub v4.0.0-beta.2
 
 > 四合一媒体聚合客户端（动漫 / 漫画 / 小说 / 影视）—— 源即插件 · 共创社区。
 
 这是 NexHub 的四合一媒体聚合客户端（动漫 / 漫画 / 小说 / 影视）。NexHub **不内置任何内容源**，所有内容都来自你自行导入的「源」。
 
-> ⚠️ **这是 4.0.0 的第一个公开测试版（来自 `feature/legado-booksource-compat` 分支，尚未合并主分支）**：相对 v3.6.0 共 42 个提交，集中打通 Legado 风格书源的兼容层——导入保真、`java.*` 规则桥（含加密 / 字体 / 网络族）、规则语法对齐、发现页选项栏与动态分类、书源类型分发、登录与 WebView 取数。现有源与用户数据不受影响；少数未覆盖的 Java API 明确降级。**基础功能完整、可安全升级**。
+> ⚠️ **这是 4.0.0 的第二个公开测试版（仍来自 `feature/legado-booksource-compat` 分支，尚未合并主分支）**：相对 v4.0.0-beta.1 共 46 个提交——新增音频播放三页界面与直播流自适应；书源兼容继续补齐（文件类书源、RSA/OAEP 与 AES-GCM、`callBackJs`/`payAction`、jsoup 纯 JS DOM、412 会话重取、鸿蒙 WebView 取源）；源列表搜索与导入稳定性；引导页免责声明与 Legado with MD3 致谢。现有源与用户数据不受影响。**基础功能完整、可安全升级**。
 >
 > - **数据兼容**：经代码核查，**无破坏性数据变更**——书架、收藏、进度、书签、历史、分组直接沿用；书源新增字段按宽松语义解析，旧源 JSON 无需修改；沿用同一签名密钥可直接覆盖安装。
 > - **平台产物**：Android / Windows / Linux / macOS / iOS / 鸿蒙 HAP 统一发布在同一个预发布 Release；鸿蒙 HAP 不带签名，需自行签名后侧载。
-> - **建议**：这是 beta，非常规源若解析失败请附应用内「运行日志」反馈。
+> - **建议**：这是 beta，非常规源若解析失败请附应用内「运行日志」反馈；音频 / 直播路径也请一并反馈机型与场景。
 
 ## ✨ 核心特性
 
@@ -36,6 +36,24 @@
 **签名密钥**：自 v0.3.0 起使用同一固定签名密钥（经 CI Secret 注入，不入库），可直接覆盖安装；更早的随机签名旧包需先卸载一次再装。v0.2.12 曾引入固定签名，v0.3.1 起改为 CI 注入（密钥本体一致）。
 
 ## 📝 更新日志（倒序 · 最新在前）
+
+### 📝 更新日志（v4.0.0-beta.1 → v4.0.0-beta.2）
+
+> 🧪 **预发布测试版**。46 个提交，仍是 `feature/legado-booksource-compat` 分支；新增音频播放与直播流，书源兼容继续补齐。无破坏性数据变更。
+
+- **音频播放**：新增三页音频界面（封面 / 章节列表 / 歌词）与单行空间感控制栏；列表与歌词按距中线距离缩放，停手约 3 秒自动回中（首尾项同样可居中）；底栏仅封面页常驻并支持封面取色；倍速弹层选中行改主题色；书源音频源的内嵌歌词接入播放器。
+- **直播流**：新增 `LiveStreamPolicy` 与协议判定（duration 恒 0 且位置推进约 3 秒 / rtsp、rtmp 前缀）；直播缓存配方（cache-secs=4 / 迟滞 1s / 16MiB / 禁用强制可拖动）；点播链路对直播的三处误伤修复（就绪判定、恢复 seek、重连 seek）；30s 连续缓冲看门狗 + 底层错误订阅 + 90s 稳定后重置重连预算；直播底栏红点徽标、键盘左右键守卫。
+- **文件类书源**：支持下载链接与本地导入；详情页目录改源文件列表（未下载先下载、已下载直接打开），进度卡读本地进度与浏览历史；`LocalContentManager` 插入 / 去重 / 补封面保留作者与绑定字段。
+- **书源求值**：RSA 改宿主导出并补齐 OAEP / 严格语义；AES-GCM；随机源按内容定种子（重放收敛）；重放占位符不落缓存、hex 严格解码；`java` 对象双语义与正文标题规则贯通阅读器；`data:` 章节地址与 `type` 选项字节 hex；JS 组合列表规则与数组分页修复。
+- **发现页**：纯 JS `org.jsoup.Jsoup.parse` + 最小 DOM / CSS 选择器；脚本异常可见错误态；分类列表按源持久缓存、exploreUrl 变更失效、刷新强制重抓；`viewName`/`action` 共享 infoMap 的 Java Map 方法面；补齐 source/cache/infoMap 语义与 AES-GCM。
+- **会话与鉴权**：HTTP 412 从站点根域取会话 Cookie 重试；Cookie 合并显式值优先；`callBackJs` 事件回调与事件位；章节购买 `payAction`；取图期求值脚本式 header 与登录 Cookie 覆盖层；`loginCheckJs` 的 AnalyzeUrl 门面与响应重取。
+- **书源身份与列表**：身份对齐 `bookSourceUrl` 主键，修复在线列表缺源；书源列表与在线源列表新增搜索、搜索框随列表滚动；移除在线列表发现页展开箭头。
+- **图片与漫画**：漫画取图头对齐 legado 并补齐重放等待上界；修复漫画源章节图片解析失败；图片下载加正文闸门并在失败时逐出坏缓存。
+- **鸿蒙**：书源 WebView 交互与取源在鸿蒙启用；桥错误文案补定位，修复 jsLib 兼容改写不触发。
+- **源管理**：放行文件类书源导入；修复网络导入卡态与多源列表崩溃；多源导入批量入库 + 后台解析，缓解卡顿卡退；移除「一键启用推荐源」，只保留逐源开关。
+- **引导页**：末尾新增免责声明页（5 条要点 + 必须勾选同意才能开始使用）。
+- **致谢与工程**：新增 Legado with MD3 致谢（README 中英 / 应用内致谢页 / 发布说明）；发布流水线拼接中英双语 Release 正文（中文在前、`## English` 分隔），发布文档同步增加英文版。
+- **测试**：书源兼容套件与新增单测（直播配方、桥 / 上下文 / 正则兼容层）通过；`dart analyze lib` 0 error。
 
 ### 📝 更新日志（v3.6.0 → v4.0.0-beta.1）
 
@@ -1300,7 +1318,7 @@ NexHub 是一款开源技术演示项目，本身**不提供、不存储、不�
 
 ## 🙏 致谢
 
-感谢 [Legado](https://github.com/gedoor/legado)（及各类改版）与 [Mihon](https://github.com/mihonapp/mihon)（Tachiyomi 衍生版，及各类改版）——前者「书源」规则系统启发了 NexHub「源即插件」的解析与共创理念，后者的扩展源与漫画阅读器交互为漫画解析与阅读体验提供了重要参考。也感谢 [Flutter](https://flutter.dev) / Dart 团队，以及 [flutter_js](https://pub.dev/packages/flutter_js)、[media_kit](https://pub.dev/packages/media_kit)、[canvas_danmaku](https://pub.dev/packages/canvas_danmaku) 等开源项目，和所有为「源即插件 · 共创社区」理念做出贡献的开发者与源作者。
+感谢 [Legado](https://github.com/gedoor/legado)（及各类改版）与 [Mihon](https://github.com/mihonapp/mihon)（Tachiyomi 衍生版，及各类改版）——前者「书源」规则系统启发了 NexHub「源即插件」的解析与共创理念，后者的扩展源与漫画阅读器交互为漫画解析与阅读体验提供了重要参考。也感谢 [Legado with MD3](https://github.com/HapeLee/legado-with-MD3)，其书源解析规则为 NexHub 的源解析提供了参考（GPL-3.0 © HapeLee，仅借鉴规则思路、未复制源码，本致谢仅作启发署名）。也感谢 [Flutter](https://flutter.dev) / Dart 团队，以及 [flutter_js](https://pub.dev/packages/flutter_js)、[media_kit](https://pub.dev/packages/media_kit)、[canvas_danmaku](https://pub.dev/packages/canvas_danmaku) 等开源项目，和所有为「源即插件 · 共创社区」理念做出贡献的开发者与源作者。
 
 ## 📝 已知限制
 

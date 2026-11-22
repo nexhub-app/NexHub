@@ -548,15 +548,25 @@ jobs:
           path: NexHub-ohos-arm64-unsigned.hap
           if-no-files-found: error
 
+      - name: 生成中英双语 Release 正文
+        # 与 build.yml 用相同的拼接逻辑，保证两条工作流写入同一条 Release 的正文一致。
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          if [ -f RELEASE_BODY.en.md ]; then
+            { cat RELEASE_BODY.md; printf '\n---\n\n## English\n\n'; cat RELEASE_BODY.en.md; } > RELEASE_BODY_BILINGUAL.md
+          else
+            echo "::warning::RELEASE_BODY.en.md missing, using Chinese body only"
+            cp RELEASE_BODY.md RELEASE_BODY_BILINGUAL.md
+          fi
       - name: 追加产物到 Release（与全平台同一条）
         # 与 build.yml 共用同一个标签、同一个 Release：谁先跑完谁先建，后到的用
-        # allowUpdates 追加自己的文件。两边写入同一份 RELEASE_BODY.md，正文一致；
+        # allowUpdates 追加自己的文件。两边写入同一份中英拼接正文，正文一致；
         # 文件清单互不重叠（本步只加 HAP），故并发安全。
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           name: NexHub ${{ github.ref_name }}
-          body_path: RELEASE_BODY.md
+          body_path: RELEASE_BODY_BILINGUAL.md
           allowUpdates: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |

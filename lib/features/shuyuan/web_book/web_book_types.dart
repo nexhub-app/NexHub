@@ -38,12 +38,16 @@ class BookContentResult {
   /// null 表示未声明标题规则 / 未命中，调用方沿用目录章节名。
   final String? title;
 
+  /// 音频源 `ruleContent.subContent` 产出的歌词（章节变量 `lyric`）。
+  final String? lyric;
+
   final String? error;
 
   BookContentResult({
     this.content = '',
     this.blocks = const [],
     this.title,
+    this.lyric,
     this.error,
   });
 }
@@ -367,8 +371,7 @@ bool _isFunctionBodyBrace(String src, int openPos) {
   return RegExp(r'function\b[^(){}]*\([^(){}]*\)\s*$').hasMatch(prefix);
 }
 
-bool _isJsSpace(String c) =>
-    c == ' ' || c == '\t' || c == '\r' || c == '\n';
+bool _isJsSpace(String c) => c == ' ' || c == '\t' || c == '\r' || c == '\n';
 
 /// 字符串 / 模板 / 注释 / 正则字面量的区间（左闭右开），供改写器跳过。
 List<(int, int)> _protectedJsRanges(String src) {
@@ -579,8 +582,8 @@ List<ExploreKind> _parseKindsJson(String raw) {
     // 注释均接受。语料中约 9% 的 JSON 发现页（含起点/晋江/刺猬猫）依赖
     // 该宽松度，严格解码会把整页分类变成错误项。
     try {
-      decoded = jsonDecode(
-          _repairJsonRawNewlines(AnalyzeUrl.repairJsonLenient(raw)));
+      decoded =
+          jsonDecode(_repairJsonRawNewlines(AnalyzeUrl.repairJsonLenient(raw)));
     } catch (e) {
       throw FormatException('exploreUrl JSON 解析失败: $e');
     }
@@ -618,9 +621,7 @@ List<ExploreKind> _parseKindsText(
       final segResult = outcome.value;
       if (segResult.isNotEmpty) {
         kinds.addAll(parseExploreKinds(segResult,
-            infoMap: infoMap,
-            baseUrl: baseUrl,
-            onScriptError: onScriptError));
+            infoMap: infoMap, baseUrl: baseUrl, onScriptError: onScriptError));
       }
       continue;
     }
@@ -718,7 +719,8 @@ String _parseExploreJsByRegex(String jsCode) {
     return entries.join('\n');
   }
 
-  final pairPattern = RegExp(r"""['\"]([^'\"]{2,})['\"]\s*,\s*['\"]([^'\"]+)['\"]""");
+  final pairPattern =
+      RegExp(r"""['\"]([^'\"]{2,})['\"]\s*,\s*['\"]([^'\"]+)['\"]""");
 
   for (final match in pairPattern.allMatches(jsCode)) {
     final first = match.group(1) ?? '';
@@ -746,7 +748,8 @@ String _parseExploreJsByRegex(String jsCode) {
     return entries.join('\n');
   }
 
-  final pushPattern = RegExp(r"""push\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]""");
+  final pushPattern =
+      RegExp(r"""push\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]""");
   for (final match in pushPattern.allMatches(jsCode)) {
     final title = match.group(1) ?? '';
     final url = match.group(2) ?? '';
@@ -780,7 +783,8 @@ String _parseExploreJsByRegex(String jsCode) {
     }
     if (endBracket > startBracket) {
       final arrayContent = jsCode.substring(startBracket + 1, endBracket);
-      final pairPattern = RegExp(r"""['\"]([^'\"]{2,})['\"]\s*,\s*['\"]([^'\"]+)['\"]""");
+      final pairPattern =
+          RegExp(r"""['\"]([^'\"]{2,})['\"]\s*,\s*['\"]([^'\"]+)['\"]""");
       for (final pairMatch in pairPattern.allMatches(arrayContent)) {
         final first = pairMatch.group(1) ?? '';
         final second = pairMatch.group(2) ?? '';
@@ -804,12 +808,41 @@ String _parseExploreJsByRegex(String jsCode) {
 
 bool _isCodeKeyword(String s) {
   const keywords = [
-    'function', 'var ', 'let ', 'const ', 'push', 'result',
-    'return', 'typeof', 'undefined', 'JSON', 'String',
-    'Number', 'Boolean', 'Array', 'Object', 'this', 'new',
-    'if', 'else', 'for', 'while', 'do', 'switch', 'case',
-    'try', 'catch', 'finally', 'throw', 'class', 'extends',
-    'import', 'export', 'default', 'async', 'await',
+    'function',
+    'var ',
+    'let ',
+    'const ',
+    'push',
+    'result',
+    'return',
+    'typeof',
+    'undefined',
+    'JSON',
+    'String',
+    'Number',
+    'Boolean',
+    'Array',
+    'Object',
+    'this',
+    'new',
+    'if',
+    'else',
+    'for',
+    'while',
+    'do',
+    'switch',
+    'case',
+    'try',
+    'catch',
+    'finally',
+    'throw',
+    'class',
+    'extends',
+    'import',
+    'export',
+    'default',
+    'async',
+    'await',
   ];
   final lower = s.toLowerCase();
   for (final keyword in keywords) {

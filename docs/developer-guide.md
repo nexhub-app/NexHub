@@ -1204,6 +1204,20 @@ function __processVideo(json, context){ return json.url; }
 
 > 共创的前提是**合规与尊重版权**：只解析你有权访问、且允许抓取的公开内容；不要将源用于侵犯他人合法权益的场景。
 
+### 4.5.4 书源兼容（Legado 风格规则）
+
+应用提供**通用的**书源兼容层：按源声明识别规则方言，不把任何站点写进引擎。导入时保留 `ruleData` / `jsLib` / 源变量等字段；规则语法对齐 ElementsSingle（下标 / 排除 / 区间 / `tag.` `class.` `id.` `text.` `children.` 前缀，CSS 仅 `@css:` 时使用）、XPath（谓词 / 并集 / 复合）、JSONPath 全集、`textNodes`、`replaceRegex` 多形态、`@js:` 内嵌脚本、`@put` 无括号写法与 `bookUrlPattern`；正则方言（内联标志、`\Q..\E`、占有量词、原子分组）就地翻译。
+
+- **`java.*` 桥**：纯 JS 实现 `Packages` / `JavaImporter`；AES（ECB/CBC + PKCS5/7）、DES/3DES、SHA/HMAC、RSA 常用路径（SPKI/PKCS#8、PKCS#1 v1.5），`queryTTF`/`replaceFont` 还原字体混淆字符。OAEP/EC/CTR/GCM/CFB/OFB 等未支持形态**明确返回空**，不伪造结果。
+- **网络族**：`java.ajax/get/post/head` 接受自定义头与 `followRedirects:false`，返回带 `body/code/statusCode/headers/cookies/url/isSuccessful/raw` 的响应对象；动态参数走确定性重放协议（记录调用 → 宿主求值 → 回填缓存 → 重跑，≤4 轮），settle 上限 16 轮 / 120s。
+- **WebView**：URL 选项 `webView:true` 与 `webJs` 由无头 WebView 取源器渲染后回灌规则解析；登录支持 `loginCheckJs` + `loginUi` 表单 + WebView 登录，cookie 按源落库回放、`domain-match` 收紧。
+- **发现页与类型**：`exploreUrl` 结构化解析 ExploreKind（url/text/button/toggle/select 选项栏，值按源持久化），动态分类支持占位符抓取后重放；`bookSourceType` 0 文本 / 2 漫画（`images`）/ 1 音频 / 4 视频（媒体栏）自动分发。
+- **上下文**：规则上下文改 Zone 传递（`await` 后仍有效、多源并发不串），JS 引擎按源池化（上限 8），删除源时清理该源 cookie / 变量。
+- **文件类书源**：支持下载链接与本地导入；详情页目录按源文件列表展示，可跟随本地阅读进度（书源不需要章节目录时也能用）。
+- **更多求值能力**：RSA 非对称加解密改宿主导出，支持 OAEP 与严格填充语义；新增 AES-GCM；`callBackJs` 事件回调与事件位；章节购买动作 `payAction`；纯 JS `org.jsoup.Jsoup.parse` 与最小 DOM / CSS 选择器；HTTP 412 时从站点根域取会话 Cookie 重试。
+- **媒体形态**：`bookSourceType` 1/4 的音频 / 视频源在阅读器里渲染媒体章节播放卡片，音频源内嵌歌词会交给播放器；文件类源下载后可离线阅读。
+- **局限**：少量 Java API 未覆盖（约 2.6% 调用 / 3% 源），未支持形态一律降级；WebView 相关路径需真机验证。
+
 ## 4.6 测试
 
 ```bash

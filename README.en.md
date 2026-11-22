@@ -30,7 +30,7 @@ All-in-one media aggregator (Anime / Manga / Novel / Video) — an open-source r
 
 </div>
 
-> Latest release: **v4.0.0-beta.1 (pre-release beta)**. The previous release is **v3.6.0** (stable — seamless novel reading and video-driven orientation). This beta is built from the not-yet-merged source-compatibility branch. The project is under continuous development. Contributions and ideas are welcome via Pull Requests / issues. See [RELEASE_NOTES](./RELEASE_NOTES.md) for the full changelog.
+> Latest release: **v4.0.0-beta.2 (pre-release beta)**. The previous stable release is **v3.6.0** (seamless novel reading and video-driven orientation). This beta is built from the not-yet-merged source-compatibility branch and adds audio playback plus adaptive live streams. The project is under continuous development. Contributions and ideas are welcome via Pull Requests / issues. See [RELEASE_NOTES](./RELEASE_NOTES.md) for the full changelog.
 >
 > 📱 **HarmonyOS / OpenHarmony is officially supported**: fully usable on arm64 devices; an unsigned iOS build is also provided. See [Platform Support](#2-platform-support) below.
 >
@@ -167,6 +167,7 @@ NexHub's vitality comes from community-maintained "sources." Everyone is welcome
 NexHub would not exist without the following projects and communities:
 
 - [Legado](https://github.com/gedoor/legado) (and its various forks): the "book source" rule system provided core inspiration for NexHub's "Source-as-Plugin" parsing and co-creation philosophy (especially the declarative / scripted approach for novel sources). NexHub's novel paginator independently implements a pagination algorithm inspired by Legado's `ChapterProvider` without copying its source code; the upstream Legado repository does not carry an explicit open-source license, so this acknowledgment is for inspiration only and implies no license grant.
+- [Legado with MD3](https://github.com/HapeLee/legado-with-MD3): a Material Design 3 restyle of Legado whose book-source parsing rules informed NexHub's source parsing. Released under GPL-3.0 (© HapeLee); NexHub copied no source code and implemented independently from the rule designs. This credit is inspiration attribution only and implies no license grant or derivative relationship.
 - [Mihon](https://github.com/mihonapp/mihon) (a Tachiyomi derivative, and its various forks): the extension-source architecture and manga-reader interactions provided important references for NexHub's manga parsing and reading experience. Mihon is released under the Apache License 2.0 (© Mihon contributors).
 - [RSSHub](https://github.com/DIYgod/RSSHub): its RSS aggregation capability provides the service foundation for NexHub's subscription feature. RSSHub is released under AGPL-3.0 (© DIYgod); NexHub only calls its instances as a client and does not modify or redistribute its source.
 - [wenyi](https://github.com/BigDawnGhost/wenyi): its novel AI-translation pipeline design (context enrichment, terminology loop, evidence-driven review and refined drafting) informed the deep optimization of NexHub's built-in novel translation. wenyi is released under the MIT License (© BigDawnGhost); NexHub copied no source code and implemented independently from its design ideas.

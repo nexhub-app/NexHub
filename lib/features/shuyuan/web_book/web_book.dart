@@ -137,6 +137,7 @@ class WebBook {
           ),
     ];
   }
+
   /// 当前源上下文中 bookUrl 对应的搜索条目（{{\$.field}} 模板求值根）。
   Object? _bookItemContext(String bookUrl) =>
       ShuyuanSourceContext.current?.bookItemContext[bookUrl];
@@ -580,10 +581,9 @@ class WebBook {
       firstBody = cachedTocHtml;
       firstBaseUrl = chapterUrl;
     } else {
-      final tocBase =
-          (book.tocUrl != null && book.tocUrl!.isNotEmpty)
-              ? book.tocUrl!
-              : source.bookSourceUrl;
+      final tocBase = (book.tocUrl != null && book.tocUrl!.isNotEmpty)
+          ? book.tocUrl!
+          : source.bookSourceUrl;
       final analyzeUrl = AnalyzeUrl(
         url: chapterUrl,
         baseUrl: tocBase,
@@ -714,7 +714,8 @@ class WebBook {
           // legado：下一页与目录中的"下一章"同一地址时停止（最后页的
           // "下一页"元素常指向下一章）。
           if (nextChapterUrl != null && nextChapterUrl.isNotEmpty) {
-            final absNext = AnalyzeRule.absoluteUrl(currentRedirectUrl, nextUrl);
+            final absNext =
+                AnalyzeRule.absoluteUrl(currentRedirectUrl, nextUrl);
             final absChapter =
                 AnalyzeRule.absoluteUrl(currentRedirectUrl, nextChapterUrl);
             if (absNext == absChapter) break;
@@ -795,9 +796,15 @@ class WebBook {
       return BookContentResult(content: '', title: appliedTitle, error: '解析失败');
     }
 
+    // 音频源歌词由 subContent 写入章节变量（md3 同源），随结果回传给播放器。
+    final lyricText = chapter.getVariable('lyric').trim();
     // 各子页已在 BookContent.analyzeContent 内完成清洗 / 缩进 / 去广告，
     // 拼接后即为最终正文；此处不再二次归一化（避免重复缩进叠加）。
-    return BookContentResult(blocks: blocks, title: appliedTitle);
+    return BookContentResult(
+      blocks: blocks,
+      title: appliedTitle,
+      lyric: lyricText.isEmpty ? null : lyricText,
+    );
   }
 
   /// 从当前页正文中提取"下一页"绝对 URL；无下一页时返回空串。
@@ -888,9 +895,8 @@ class WebBook {
       }
     }
 
-    final workerCount = limit < 1
-        ? 1
-        : (limit > urls.length ? urls.length : limit);
+    final workerCount =
+        limit < 1 ? 1 : (limit > urls.length ? urls.length : limit);
     await Future.wait(
       <Future<void>>[for (var w = 0; w < workerCount; w++) worker()],
     );
@@ -964,7 +970,15 @@ class WebBook {
 
   /// 从 query 参数中提取页码值（page / p / pageIndex / page_num 等常见键）。
   static String? _pageParamOf(Map<String, String> params) {
-    const keys = ['page', 'p', 'pageIndex', 'pageindex', 'page_num', 'pageno', 'pn'];
+    const keys = [
+      'page',
+      'p',
+      'pageIndex',
+      'pageindex',
+      'page_num',
+      'pageno',
+      'pn'
+    ];
     for (final k in keys) {
       final v = params[k];
       if (v != null && v.isNotEmpty) return v;

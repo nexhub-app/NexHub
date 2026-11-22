@@ -1,5 +1,16 @@
 [
   {
+    "id": "v4.0.0-beta.2-announce",
+    "date": "2026-11-22",
+    "title": "NexHub 4.0.0-beta.2 预发布测试版",
+    "titleEn": "NexHub 4.0.0-beta.2 (pre-release beta)",
+    "body": "4.0 第二个测试版来了！新增音频播放三页界面（封面 / 章节列表 / 歌词，空间感缩放与自动回中）与直播流自适应（自动识别、低延迟、断流自愈）。书源兼容继续补齐：文件类书源、RSA/OAEP 与 AES-GCM、callBackJs 事件回调、章节购买、纯 JS jsoup DOM、412 会话重取；源列表加了搜索、多源导入更稳；引导页新增免责声明。现有源与阅读数据不受影响。",
+    "bodyEn": "The second 4.0 beta is here! New three-page audio playback (cover / chapter list / lyrics with spatial scaling and auto re-centre) and adaptive live streams (auto detection, low latency, self-healing on drops). Book-source compatibility continues: file sources, RSA/OAEP and AES-GCM, callBackJs events, chapter purchase, pure-JS jsoup DOM, 412 session refetch; source lists gained search and multi-source imports are steadier; onboarding now includes a disclaimer. Existing sources and reading data are unaffected.",
+    "url": "",
+    "urlText": "",
+    "urlTextEn": ""
+  },
+  {
     "id": "v4.0.0-beta.1-announce",
     "date": "2026-11-18",
     "title": "NexHub 4.0.0 预发布测试版",

@@ -1001,11 +1001,20 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: 生成中英双语 Release 正文
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          if [ -f RELEASE_BODY.en.md ]; then
+            { cat RELEASE_BODY.md; printf '\n---\n\n## English\n\n'; cat RELEASE_BODY.en.md; } > RELEASE_BODY_BILINGUAL.md
+          else
+            echo "::warning::RELEASE_BODY.en.md missing, using Chinese body only"
+            cp RELEASE_BODY.md RELEASE_BODY_BILINGUAL.md
+          fi
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
         with:
           name: NexHub ${{ github.ref_name }}
-          body_path: RELEASE_BODY.md
+          body_path: RELEASE_BODY_BILINGUAL.md
           allowUpdates: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
