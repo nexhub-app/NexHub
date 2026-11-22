@@ -351,6 +351,7 @@ class ShuyuanNovelResolver
   bool _hasPendingReplay(ShuyuanSourceContext ctx,
           {bool openBrowsers = false}) =>
       ctx.ajaxPending.isNotEmpty ||
+      ctx.fileOpPending.isNotEmpty ||
       ctx.webviewPending.isNotEmpty ||
       hasPendingInteractive(ctx, includeOpenBrowsers: openBrowsers);
 

@@ -300,7 +300,7 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
   /// 首页和周期表，直接展示分类」）。
   bool get _isShuyuanSource {
     final xiaoshuo = _source?.selectors?['xiaoshuo'];
-    return xiaoshuo is Map;
+    return xiaoshuo is Map<String, dynamic>;
   }
 
   /// 根据当前源能力决定 Tab 总数。

@@ -13,9 +13,12 @@ class HtmlFormatter {
       RegExp(r'</?(?:div|p|br|hr|h\d|article|dd|dl)[^>]*>');
   static final RegExp _comment = RegExp(r'<!--[^>]*-->');
   static final RegExp _otherHtml = RegExp(r'</?[a-zA-Z]+(?=[ >])[^<>]*>');
-  static final RegExp _indent1 = RegExp(r'\s*\n+\s*');
-  static final RegExp _indent2 = RegExp(r'^[\n\s]+');
-  static final RegExp _last = RegExp(r'[\n\s]+$');
+  // 对齐 Java `\s`（仅 ASCII 空白）：Dart `\s` 含 U+3000，直接用会多删
+  // 全角缩进/全角空格。
+  static final RegExp _indent1 =
+      RegExp(r'[ \t\n\x0B\f\r]*\n+[ \t\n\x0B\f\r]*');
+  static final RegExp _indent2 = RegExp(r'^[\n \t\x0B\f\r]+');
+  static final RegExp _last = RegExp(r'[\n \t\x0B\f\r]+$');
 
   /// legado `HtmlFormatter.format(html)`：段首统一两个全角空格。
   static String format(String? html) {

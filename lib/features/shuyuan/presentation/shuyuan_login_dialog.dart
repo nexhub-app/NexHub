@@ -196,6 +196,7 @@ Future<void> _runFormLogin(
       ctx.webviewPending.clear();
       final out = engine.eval(js);
       if (ctx.ajaxPending.isEmpty &&
+          ctx.fileOpPending.isEmpty &&
           ctx.webviewPending.isEmpty &&
           !hasPendingInteractive(ctx)) {
         // 有输出，或本轮确实发过请求并重放过，才算执行成功。

@@ -54,7 +54,8 @@ class BookInfo {
 
     if (bookInfoRule.name != null && bookInfoRule.name!.isNotEmpty) {
       try {
-        final name = _formatBookName(analyzeRule.getString(bookInfoRule.name!));
+        final name =
+            StringUtils.formatBookName(analyzeRule.getString(bookInfoRule.name!));
         if (name.isNotEmpty && (canReNameFlag || book.name.isEmpty)) {
           book.name = name;
         }
@@ -63,7 +64,8 @@ class BookInfo {
 
     if (bookInfoRule.author != null && bookInfoRule.author!.isNotEmpty) {
       try {
-        final author = _formatBookAuthor(analyzeRule.getString(bookInfoRule.author!));
+        final author = StringUtils.formatBookAuthor(
+            analyzeRule.getString(bookInfoRule.author!));
         if (author.isNotEmpty && (canReNameFlag || book.author.isEmpty)) {
           book.author = author;
         }
@@ -222,37 +224,4 @@ class BookInfo {
         'toc=${(book.tocUrl ?? '').isEmpty ? '(空)' : book.tocUrl}');
   }
 
-  // legado AppPattern.nameRegex/authorRegex 的 Java `\s` 语义：只含
-  // 半角空白（Dart `\s` 额外含 U+3000，直接用会多删全角空格内容）。
-  static final RegExp _nameRegex = RegExp(
-      r'[ \t\n\x0B\f\r]+作[ \t\n\x0B\f\r]*者[\s\S]*|'
-      r'[ \t\n\x0B\f\r]+[^ \t\n\x0B\f\r]+[ \t\n\x0B\f\r]+著');
-  static final RegExp _authorRegex = RegExp(
-      r'^[ \t\n\x0B\f\r]*作[ \t\n\x0B\f\r]*者[:： \t\n\x0B\f\r]+|'
-      r'[ \t\n\x0B\f\r]+著');
-
-  /// legado `BookHelp.formatBookName`：仅剥离作者尾巴，再按
-  /// `trim { it <= ' ' }`（ASCII 空白）修剪，保留全角空格。
-  static String _formatBookName(String name) {
-    if (name.isEmpty) return name;
-    return _trimAscii(name.replaceAll(_nameRegex, ''));
-  }
-
-  /// legado `BookHelp.formatBookAuthor`。
-  static String _formatBookAuthor(String author) {
-    if (author.isEmpty) return author;
-    return _trimAscii(author.replaceAll(_authorRegex, ''));
-  }
-
-  static String _trimAscii(String s) {
-    var start = 0;
-    var end = s.length;
-    while (start < end && s.codeUnitAt(start) <= 0x20) {
-      start++;
-    }
-    while (end > start && s.codeUnitAt(end - 1) <= 0x20) {
-      end--;
-    }
-    return s.substring(start, end);
-  }
 }

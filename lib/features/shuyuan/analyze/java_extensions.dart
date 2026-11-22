@@ -842,7 +842,14 @@ const String sourceContextJsPrelude = r'''
     // 误判为无分类并持久缓存，网络抖动一次即永久失效。
     global.java.importScript = function (path) {
       var key = String(path == null ? '' : path);
-      var body = String(global.java.__ajaxReq(key));
+      // legado：http(s) 走 cacheFile（网络重放），其余按私有数据目录相对
+      // 路径读虚拟文本表。
+      var body;
+      if (/^https?:\/\//i.test(key)) {
+        body = String(global.java.readTxtFile(global.java.cacheFile(key)));
+      } else {
+        body = String(global.java.readTxtFile(key));
+      }
       if (!body || !body.trim()) {
         throw new Error(key + ' 内容获取失败或者为空');
       }
@@ -943,11 +950,17 @@ const String sourceContextJsPrelude = r'''
       global.__wvN = (global.__wvN || 0) + 1;
       return '__WEBVIEW_' + global.__wvN + '__';
     };
-    // cacheFile(url) + readTxtFile(path)：脚本注入的常用组合
-    // （`eval(java.cacheFile('https://x/sign.js'))`）。
-    // 内容走 __ajaxReq 的确定性重放；按「虚拟路径」存取——真实文件族
-    // （readFile/unzipFile）未实现，这里不给磁盘路径，避免误导调用方。
+    // ── 文件/归档族（legado JsExtensions）──
+    // 同步沙箱没有真实磁盘：虚拟文件系统 = 文本表 __cacheFiles（path→text）
+    // + 字节表 __fsBytes（path→base64）。网络字节沿用 __ajaxBytesCache 的
+    // 确定性重放；解压/包内取条目/文本解码经宿主 settle（__fileOpCache，
+    // 键=运算描述，结果下轮直接命中，纯本地不占网络预算）。
     global.__cacheFiles = global.__cacheFiles || Object.create(null);
+    global.__fsBytes = global.__fsBytes || Object.create(null);
+    global.__fileOpCache = global.__fileOpCache || Object.create(null);
+    // cacheFile(url) + readTxtFile(path)：脚本注入的常用组合
+    // （`eval(java.cacheFile('https://x/sign.js'))`）。内容走 __ajaxReq
+    // 的确定性重放，按「虚拟路径」存文本表。
     global.java.cacheFile = function (url, saveTime) {
       var u = String(url == null ? '' : url);
       if (!u) return '';
@@ -957,14 +970,213 @@ const String sourceContextJsPrelude = r'''
       global.__cacheFiles[path] = content;
       return path;
     };
+
+    function syMd5Hex16(s) {
+      // 实现挂在 javaExtensions 预置（另一 IIFE）的 global 工具上。
+      return global.__syMd5Hex16(String(s));
+    }
+    // legado downloadFile 路径后缀：AnalyzeUrl 选项里的 type，否则 URL 后缀。
+    function syUrlSuffix(url) {
+      var u = String(url == null ? '' : url);
+      var optIdx = u.indexOf(',{');
+      if (optIdx >= 0) {
+        try {
+          var o = JSON.parse(u.substring(optIdx + 1));
+          if (o && typeof o.type === 'string' && o.type) {
+            var t = String(o.type).replace(/[^A-Za-z0-9]/g, '');
+            if (t) return t;
+          }
+        } catch (e) {}
+        u = u.substring(0, optIdx);
+      }
+      u = u.split('#')[0].split('?')[0];
+      var slash = u.lastIndexOf('/');
+      var name = slash >= 0 ? u.substring(slash + 1) : u;
+      var dot = name.lastIndexOf('.');
+      if (dot < 0 || dot === name.length - 1) return 'bin';
+      return name.substring(dot + 1).replace(/[^A-Za-z0-9]/g, '') || 'bin';
+    }
+    // 字节文件按需解码：命中 __cacheFiles 直接返回；否则以内容哈希为键
+    // 登记宿主解码（严格 UTF-8 → GBK 回落），结果缓存进虚拟文本表。
+    function syFsText(path) {
+      var files = global.__cacheFiles;
+      if (files[path] != null) return files[path];
+      var b64 = global.__fsBytes[path];
+      if (b64 == null) return null;
+      var key = 'tx:' + syMd5Hex16(b64) + '|';
+      var cache = global.__fileOpCache;
+      var r = cache && cache[key];
+      if (r != null) {
+        try {
+          var o = JSON.parse(r);
+          if (o && typeof o.t === 'string') {
+            files[path] = o.t;
+            return o.t;
+          }
+        } catch (e) {}
+        return '';
+      }
+      syOp('fileOp', key, JSON.stringify([b64, '']));
+      return '';
+    }
+    function syUnarchive(zipPath) {
+      var p = String(zipPath == null ? '' : zipPath);
+      if (!p) return '';
+      var name = p.substring(p.lastIndexOf('/') + 1);
+      var folder = 'ArchiveTemp/' + syMd5Hex16(name);
+      var b64 = global.__fsBytes[p];
+      if (b64 == null) return folder;
+      var opKey = 'uz:' + folder + ':' + syMd5Hex16(b64);
+      var cache = global.__fileOpCache;
+      var r = cache && cache[opKey];
+      if (r != null) {
+        try {
+          var entries = JSON.parse(r);
+          for (var n in entries) {
+            var e = entries[n] || {};
+            var child = folder + '/' + n;
+            if (e.b != null) global.__fsBytes[child] = e.b;
+            if (e.t != null) global.__cacheFiles[child] = e.t;
+          }
+        } catch (err) {}
+        return folder;
+      }
+      syOp('fileOp', opKey, JSON.stringify([b64]));
+      return folder;
+    }
+    // legado DownloadFile：返回虚拟相对路径；字节未落表时先登记二进制重放
+    // （占位轮返回路径，下一轮重放命中后 downloadFile/unzipFile 再取到内容）。
+    global.java.downloadFile = function (a, b) {
+      if (b != null) {
+        // 已废弃的 downloadFile(hexContent, url)：内容即完整 hex 字节。
+        var url = String(b == null ? '' : b);
+        var path = 'shuyuan_cache/' + syMd5Hex16(url) + '.' + syUrlSuffix(url);
+        global.__fsBytes[path] = global.__syB64FromBytes(
+            global.__syHexToBytes(String(a == null ? '' : a))
+                .map(function (x) { return x & 0xff; }));
+        return path;
+      }
+      var u = String(a == null ? '' : a);
+      if (!u) return '';
+      var p = 'shuyuan_cache/' + syMd5Hex16(u) + '.' + syUrlSuffix(u);
+      var cached = global.__ajaxBytesCache && global.__ajaxBytesCache[u];
+      if (cached != null) {
+        global.__fsBytes[p] = cached;
+        return p;
+      }
+      syOp('ajaxBytes', u, '');
+      return p;
+    };
+    global.java.readFile = function (path) {
+      var b64 = global.__fsBytes[String(path == null ? '' : path)];
+      if (b64 == null) return null;
+      return syB64ToBytes(b64);
+    };
     global.java.readTxtFile = function (path, charsetName) {
       var p = String(path == null ? '' : path);
+      if (!p) return '';
+      // 传入 URL 而非路径时先缓存再读（legado 同样接受 URL）。
+      if (/^https?:\/\//i.test(p)) p = global.java.cacheFile(p);
+      var cs = charsetName == null ? '' : String(charsetName);
       var files = global.__cacheFiles;
-      if (files && files[p] != null) return files[p];
-      // 传入的是 URL 而非路径时按内容抓取处理（legado 同样接受 URL）。
-      if (/^https?:\/\//i.test(p)) {
-        return global.java.readTxtFile(global.java.cacheFile(p));
+      if (files[p] != null) return files[p];
+      var b64 = global.__fsBytes[p];
+      if (b64 == null) return '';
+      var key = 'tx:' + syMd5Hex16(b64 + '|' + cs) + '|' + cs;
+      var cache = global.__fileOpCache;
+      var r = cache && cache[key];
+      if (r != null) {
+        try {
+          var o = JSON.parse(r);
+          if (o && typeof o.t === 'string') {
+            if (!cs) files[p] = o.t;
+            return o.t;
+          }
+        } catch (e) {}
+        return '';
       }
+      syOp('fileOp', key, JSON.stringify([b64, cs]));
+      return '';
+    };
+    global.java.deleteFile = function (path) {
+      var p = String(path == null ? '' : path);
+      if (!p) return false;
+      var hit = false;
+      var maps = [global.__fsBytes, global.__cacheFiles];
+      for (var mi = 0; mi < maps.length; mi++) {
+        var m = maps[mi];
+        if (!m) continue;
+        var keys = Object.keys(m);
+        for (var i = 0; i < keys.length; i++) {
+          var k = keys[i];
+          if (k === p || k.indexOf(p + '/') === 0) {
+            delete m[k];
+            hit = true;
+          }
+        }
+      }
+      return hit;
+    };
+    global.java.unzipFile = function (p) { return syUnarchive(p); };
+    global.java.unrarFile = function (p) { return syUnarchive(p); };
+    global.java.un7zFile = function (p) { return syUnarchive(p); };
+    // legado getTxtInFolder：逐文件读文本、换行连接，随后删除整个目录。
+    global.java.getTxtInFolder = function (path) {
+      var p = String(path == null ? '' : path);
+      if (!p) return '';
+      var prefix = p.replace(/\/+$/, '') + '/';
+      var parts = [];
+      var seen = Object.create(null);
+      var maps = [global.__cacheFiles, global.__fsBytes];
+      for (var mi = 0; mi < maps.length; mi++) {
+        var m = maps[mi];
+        if (!m) continue;
+        var keys = Object.keys(m);
+        for (var i = 0; i < keys.length; i++) {
+          var k = keys[i];
+          if (seen[k] || k.indexOf(prefix) !== 0) continue;
+          seen[k] = true;
+          if (mi === 0) {
+            parts.push(m[k]);
+          } else {
+            var t = syFsText(k);
+            parts.push(t == null ? '' : t);
+          }
+        }
+      }
+      global.java.deleteFile(p);
+      return parts.join('\n');
+    };
+    // legado getZipStringContent：url 支持绝对 URL（二进制重放）或 hex 串，
+    // 返回包内指定路径文件的文本（未命中返回空串）。
+    global.java.getZipStringContent = function (url, entry, charsetName) {
+      var u = String(url == null ? '' : url);
+      var e = String(entry == null ? '' : entry);
+      if (!e) return '';
+      var cs = charsetName == null ? '' : String(charsetName);
+      var b64 = null;
+      if (/^https?:\/\//i.test(u)) {
+        b64 = global.__ajaxBytesCache && global.__ajaxBytesCache[u];
+        if (b64 == null) {
+          syOp('ajaxBytes', u, '');
+          return '';
+        }
+      } else {
+        var bytes = global.__syHexToBytes(u);
+        if (!bytes.length) return '';
+        b64 = global.__syB64FromBytes(bytes.map(function (x) { return x & 0xff; }));
+      }
+      var key = 'zc:' + syMd5Hex16(b64) + ':' + e + '|' + cs;
+      var cache = global.__fileOpCache;
+      var r = cache && cache[key];
+      if (r != null) {
+        try {
+          var o = JSON.parse(r);
+          if (o && typeof o.t === 'string') return o.t;
+        } catch (err) {}
+        return '';
+      }
+      syOp('fileOp', key, JSON.stringify([b64, e, cs]));
       return '';
     };
     // ── UI 操作族（发现页选项 action / 登录脚本） ──
@@ -4022,29 +4234,46 @@ const String javaExtensionsJsPrelude = r'''
     };
   };
 
-  function rsaSignSha256(key, data) {
+  // JCE `DigestInfo` DER 前缀（RFC 8017 §9.2 note 1）+ 对应摘要。
+  var rsaDigestInfos = {
+    MD5WITHRSA: {
+      prefix: [0x30, 0x20, 0x30, 0x0c, 0x06, 0x08, 0x2a, 0x86, 0x48,
+        0x86, 0xf7, 0x0d, 0x02, 0x05, 0x05, 0x00, 0x04, 0x10],
+      hash: md5Bytes,
+    },
+    SHA1WITHRSA: {
+      prefix: [0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03,
+        0x02, 0x1a, 0x05, 0x00, 0x04, 0x14],
+      hash: sha1Bytes,
+    },
+    SHA256WITHRSA: {
+      prefix: [0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48,
+        0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20],
+      hash: sha256Bytes,
+    },
+  };
+
+  function rsaSignPkcs1(key, data, info) {
     if (!key || !key.n || !key.d) throw new Error('RSA private key not set');
     var n = bnFromBytes(key.n);
     var ctx = montContext(n);
     var k = Math.ceil(bnBitLength(n) / 8);
-    var hash = sha256Bytes(juBytes(data));
-    var di = [0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01,
-      0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20].concat(hash);
+    var di = info.prefix.concat(info.hash(juBytes(data)));
     var em = rsaPkcs1Pad(di, k, 1);
     var s = bnModPow(bnFromBytes(em), bnFromBytes(key.d), ctx);
     return bnToBytes(s, k).map(signedByte);
   }
 
-  // SHA256withRSA 验签：公钥模幂还原 EM 后逐段比对 PKCS#1 v1.5 填充与
-  // DigestInfo（与 rsaSignSha256 共用 sha256Bytes，签名/验签口径一致）。
-  function rsaVerifySha256(pub, msgBytes, sigBytes) {
+  // PKCS#1 v1.5 验签：公钥模幂还原 EM 后逐段比对填充与 DigestInfo
+  // （与 rsaSignPkcs1 共用摘要函数，签名/验签口径一致）。
+  function rsaVerifyPkcs1(pub, msgBytes, sigBytes, info) {
     if (!pub || !pub.n || !pub.e) throw new Error('RSA public key not set');
     var n = bnFromBytes(pub.n);
     var e = bnFromBytes(pub.e);
     var k = Math.ceil(bnBitLength(n) / 8);
     var em = bnModPow(bnFromBytes(juBytes(sigBytes)), e, montContext(n));
     var emBytes = bnToBytes(em, k);
-    // EM = 0x00 0x01 FF..FF 0x00 || DigestInfo(SHA-256)
+    // EM = 0x00 0x01 FF..FF 0x00 || DigestInfo
     if (emBytes.length !== k || emBytes[0] !== 0 || emBytes[1] !== 1) {
       return false;
     }
@@ -4052,15 +4281,15 @@ const String javaExtensionsJsPrelude = r'''
     while (i < emBytes.length && emBytes[i] === 0xFF) i++;
     if (i < 10 || i >= emBytes.length || emBytes[i] !== 0) return false;
     var offset = i + 1;
-    var prefix = [0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48,
-      0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20];
-    if (emBytes.length - offset !== prefix.length + 32) return false;
-    for (var j = 0; j < prefix.length; j++) {
-      if (emBytes[offset + j] !== prefix[j]) return false;
+    if (emBytes.length - offset !== info.prefix.length + info.hash(juBytes([])).length) {
+      return false;
     }
-    var digest = sha256Bytes(juBytes(msgBytes));
-    for (var q = 0; q < 32; q++) {
-      if (emBytes[offset + prefix.length + q] !== digest[q]) return false;
+    for (var j = 0; j < info.prefix.length; j++) {
+      if (emBytes[offset + j] !== info.prefix[j]) return false;
+    }
+    var digest = info.hash(juBytes(msgBytes));
+    for (var q = 0; q < digest.length; q++) {
+      if (emBytes[offset + info.prefix.length + q] !== digest[q]) return false;
     }
     return true;
   }
@@ -4095,25 +4324,92 @@ const String javaExtensionsJsPrelude = r'''
         return null;
       },
       sign: function () {
-        if (name !== 'SHA256WITHRSA') {
+        var info = rsaDigestInfos[name];
+        if (info == null) {
           throw new Error('Signature: unsupported algorithm ' + algo);
         }
-        return rsaSignSha256(sig.__key.__rsaPriv, sig.__parts);
+        return rsaSignPkcs1(sig.__key.__rsaPriv, sig.__parts, info);
       },
       verify: function (sigBytes) {
-        if (name !== 'SHA256WITHRSA') {
+        var info = rsaDigestInfos[name];
+        if (info == null) {
           throw new Error('Signature: unsupported algorithm ' + algo);
         }
         if (!sig.__key || !sig.__key.n || !sig.__key.e) {
           throw new Error('Signature: public key required');
         }
-        var ok = rsaVerifySha256(sig.__key, sig.__parts, juBytes(sigBytes));
+        var ok = rsaVerifyPkcs1(sig.__key, sig.__parts, juBytes(sigBytes), info);
         sig.__parts = [];
         return ok;
       },
     };
     return sig;
   };
+
+  // legado `Sign`（help/crypto/Sign.kt）：KeyFactory/Signature 的 RSA 族子集。
+  // keyAlgorithm 推导与 Sign.kt 一致：algorithm 截 '/' 前、小写后找最后一个
+  // 'with' 取后缀，ECDSA 归 EC。EC/DSA 族签名运算未实现，调用时抛
+  // NoSuchAlgorithmException（构造与链式 setter 前段保持可用）。
+  function makeSign(algorithm) {
+    var name = String(algorithm == null ? '' : algorithm);
+    var base = name.split('/')[0];
+    var sep = base.toLowerCase().lastIndexOf('with');
+    var keyName = sep >= 0 ? base.substring(sep + 4) : base;
+    var keyAlg = keyName.toLowerCase() === 'ecdsa' ? 'EC' : keyName;
+    var info = keyAlg.toUpperCase() === 'RSA'
+        ? rsaDigestInfos[name.toUpperCase().replace(/-/g, '')] : null;
+    var privateKey = null;
+    var publicKey = null;
+    function unsupported() {
+      throw new Error('NoSuchAlgorithmException: '
+          + 'Cannot find any provider supporting ' + name);
+    }
+    function toBytes(v) {
+      return typeof v === 'string' ? utf8Encode(v) : juBytes(v);
+    }
+    var obj = {
+      setPrivateKey: function (key) {
+        if (info == null) unsupported();
+        privateKey = rsaParsePrivateKey(toBytes(key));
+        if (!privateKey) throw new Error('InvalidKeySpecException: RSA private key');
+        return obj;
+      },
+      setPublicKey: function (key) {
+        if (info == null) unsupported();
+        publicKey = rsaParsePublicKey(toBytes(key));
+        if (!publicKey) throw new Error('InvalidKeySpecException: RSA public key');
+        return obj;
+      },
+      sign: function (data) {
+        if (info == null) unsupported();
+        if (!privateKey) {
+          throw new Error('IllegalArgumentException: '
+              + 'Private key is required for signing');
+        }
+        return rsaSignPkcs1(privateKey, toBytes(data), info);
+      },
+      signHex: function (data) {
+        return bytesToHex(obj.sign(data));
+      },
+      verify: function (data, signature) {
+        if (info == null) unsupported();
+        if (!publicKey) {
+          throw new Error('IllegalArgumentException: '
+              + 'Public key is required for verification');
+        }
+        return rsaVerifyPkcs1(publicKey, toBytes(data), toBytes(signature), info);
+      },
+    };
+    return obj;
+  }
+
+  // 文件族虚拟路径工具：sourceContext 预置（另一个 IIFE）的文件族段经
+  // global 复用这里的 UTF-8/MD5/HEX/Base64 实现，避免两份漂移。
+  global.__syMd5Hex16 = function (s) {
+    return bytesToHex(md5Bytes(utf8Encode(String(s)))).substring(0, 16);
+  };
+  global.__syHexToBytes = hexToBytes;
+  global.__syB64FromBytes = b64FromBytes;
 
   var JavaMessageDigest = jmark(function JavaMessageDigest() {},
       'java.security.MessageDigest');
@@ -4674,6 +4970,8 @@ const String javaExtensionsJsPrelude = r'''
     // legado AsymmetricCrypto 对象形态（乐读小说用 setPublicKey + decryptStr）；
     // 运算经宿主排空协议（__asymDrain/__asymFill）完成，见 JsEngine。
     createAsymmetricCrypto: makeAsymmetricCrypto,
+    // legado Sign 对象形态（java.createSign(algorithm)，MD5/SHA1/SHA256withRSA）。
+    createSign: makeSign,
     // 字体反爬：解析 TTF（base64 / 字节数组），返回可查询字形轮廓的字体对象。
     queryTTF: function (data, useCache) {
       try {

@@ -46,6 +46,7 @@ class JsEngine {
   final Set<String> _syncedWebviewKeys = <String>{};
   final Set<String> _syncedBrowserAwaitKeys = <String>{};
   final Set<String> _syncedVerificationKeys = <String>{};
+  final Set<String> _syncedFileOpKeys = <String>{};
 
   // ── 按源复用 ──
   //
@@ -184,6 +185,11 @@ class JsEngine {
     _pushDeltas('__verificationCodeCache', cache, _syncedVerificationKeys);
   }
 
+  /// 文件/归档族本地运算结果（解压条目/包内文件/文本解码）增量推送。
+  void _pushFileOpDeltas(Map<String, String> cache) {
+    _pushDeltas('__fileOpCache', cache, _syncedFileOpKeys);
+  }
+
   void _pushDeltas(
     String globalName,
     Map<String, String> cache,
@@ -216,6 +222,7 @@ class JsEngine {
     _syncedWebviewKeys.clear();
     _syncedBrowserAwaitKeys.clear();
     _syncedVerificationKeys.clear();
+    _syncedFileOpKeys.clear();
     if (_runtime == null) return;
     try {
       _runtime!.evaluate(
@@ -225,6 +232,7 @@ class JsEngine {
           'globalThis.__webviewCache = Object.create(null);'
           'globalThis.__browserAwaitCache = Object.create(null);'
           'globalThis.__verificationCodeCache = Object.create(null);'
+          'globalThis.__fileOpCache = Object.create(null);'
           'globalThis.__asymReset && globalThis.__asymReset();');
     } catch (_) {}
   }
@@ -382,6 +390,7 @@ class JsEngine {
       _pushWebviewDeltas(activeCtx.webviewCache);
       _pushBrowserAwaitDeltas(activeCtx.browserAwaitCache);
       _pushVerificationDeltas(activeCtx.verificationCodeCache);
+      _pushFileOpDeltas(activeCtx.fileOpResults);
       // jsLib 预执行（按源，同引擎同内容只执行一次）：书源自定义函数/
       // 变量对所有后续脚本可见（legado SharedJsScope 等效）。
       // jsLib 为 JSON 对象时（`{"name":"https://.../lib.js"}`）按 legado
@@ -694,5 +703,6 @@ class JsEngine {
     _syncedWebviewKeys.clear();
     _syncedBrowserAwaitKeys.clear();
     _syncedVerificationKeys.clear();
+    _syncedFileOpKeys.clear();
   }
 }

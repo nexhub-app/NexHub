@@ -15,6 +15,7 @@ import 'package:html/parser.dart' as html_parser;
 import 'package:xpath_selector_html_parser/xpath_selector_html_parser.dart';
 
 import 'rule_analyzer.dart';
+import 'string_utils.dart';
 
 class AnalyzeByXPath {
   dynamic content;
@@ -151,14 +152,17 @@ class AnalyzeByXPath {
       var value = attr ?? (valueOnly ? null : result.nodes[i].text);
       if (value == null) continue;
       if (wrapper == 'normalize-space') {
-        value = value.replaceAll(RegExp(r'\s+'), ' ');
+        value =
+            value.replaceAll(RegExp(r'[ \t\n\x0B\f\r]+'), ' ');
       } else if (attrOnly) {
         // 属性值原样保留，仅去首尾空白。
       } else {
         // jsoup Element.text() 语义：空白折叠，避免源站格式化换行污染结果。
-        value = value.replaceAll(RegExp(r'\s+'), ' ');
+        // Java `\s`/XML normalize-space 都只含 ASCII 空白，不含 U+3000。
+        value =
+            value.replaceAll(RegExp(r'[ \t\n\x0B\f\r]+'), ' ');
       }
-      value = value.trim();
+      value = StringUtils.trimAscii(value);
       if (value.isEmpty) continue;
       values.add(value);
       if (wrapper == 'string') break;

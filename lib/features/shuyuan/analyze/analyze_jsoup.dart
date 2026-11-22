@@ -6,6 +6,7 @@ import 'package:html/dom.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'rule_analyzer.dart';
 import 'source_rule.dart';
+import 'string_utils.dart';
 
 class AnalyzeByJsoup {
   dynamic content;
@@ -600,8 +601,12 @@ class AnalyzeByJsoup {
     }
   }
 
-  static String _ownText(Element el) =>
-      el.nodes.whereType<Text>().map((n) => n.text).join().trim();
+  // jsoup `Element.ownText()`：ASCII 空白折叠并修剪，U+3000 原样保留。
+  static String _ownText(Element el) => StringUtils.trimAscii(el.nodes
+      .whereType<Text>()
+      .map((n) => n.text)
+      .join()
+      .replaceAll(RegExp(r'[ \t\n\x0B\f\r]+'), ' '));
 
   static bool _querySingleMatch(Element el, String selector) {
     final parent = el.parent;
@@ -1318,12 +1323,12 @@ class _ElementsSingle {
     return result;
   }
 
-  static String _ownText(Element el) => el.nodes
+  // Java `\s` 仅 ASCII 空白；jsoup `normaliseWhitespace` 同样不含 U+3000。
+  static String _ownText(Element el) => StringUtils.trimAscii(el.nodes
       .whereType<Text>()
       .map((n) => n.text)
       .join()
-      .replaceAll(RegExp(r'\s+'), ' ')
-      .trim();
+      .replaceAll(RegExp(r'[ \t\n\x0B\f\r]+'), ' '));
 
   static List<Element> _collectContainingOwnText(Element root, String text) {
     final needle = text.toLowerCase();

@@ -1005,8 +1005,16 @@ class AnalyzeUrl {
         throw Exception('请求失败：HTTP ${response.statusCode}，URL：$url');
       }
 
-      // legado bodyJs：响应体作为 `result` 再过一遍 JS（JSON 解包等）。
-      if (!typeHex && bodyJs != null && bodyJs!.trim().isNotEmpty) {
+      // legado AnalyzeUrl：XML 响应且正文未带声明时补 `<?xml version="1.0"?>`；
+      // 原实现该分支先于 bodyJs 命中（补声明时不执行 bodyJs）。
+      final isXmlResponse = contentType != null &&
+          RegExp(r'(application|text)/\w*\+?xml.*').hasMatch(contentType);
+      if (!typeHex &&
+          isXmlResponse &&
+          !body.trim().toLowerCase().startsWith('<?xml')) {
+        body = '<?xml version="1.0"?>$body';
+      } else if (!typeHex && bodyJs != null && bodyJs!.trim().isNotEmpty) {
+        // legado bodyJs：响应体作为 `result` 再过一遍 JS（JSON 解包等）。
         body = _evalJs(bodyJs!, body);
       }
 

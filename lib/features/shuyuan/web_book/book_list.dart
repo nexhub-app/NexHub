@@ -212,10 +212,10 @@ class BookList {
       var name = '';
       try {
         if (ruleName.isNotEmpty) {
-          // 规则路径书名只做轻量清洗（对齐通用书源引擎语义）：去「作者:xxx /
-          // xxx 著」尾缀 + 首尾分隔符。此前误用通用兜底的激进过滤（含
-          // 「推荐/新书/热门/连载…」等子串即整条丢弃），会把正常书名错误过滤。
-          name = formatBookNameLight(analyzeRule.getStringFromRules(ruleName));
+          // legado BookList.getInfoItem：BookHelp.formatBookName（仅剥离作者
+          // 尾巴 + ASCII 空白修剪），详情阶段同口径。
+          name = StringUtils.formatBookName(
+              analyzeRule.getStringFromRules(ruleName));
         }
       } catch (_) {}
 
@@ -227,7 +227,8 @@ class BookList {
       var author = '';
       try {
         if (ruleAuthor.isNotEmpty) {
-          author = formatBookAuthor(analyzeRule.getStringFromRules(ruleAuthor));
+          author = StringUtils.formatBookAuthor(
+              analyzeRule.getStringFromRules(ruleAuthor));
           itemBook.author = author;
         }
       } catch (_) {}
@@ -333,37 +334,6 @@ class BookList {
   static bool _fullMatch(String pattern, String input) {
     final match = RegExp(pattern).matchAsPrefix(input);
     return match != null && match.end == input.length;
-  }
-
-  /// 规则路径书名清洗（对齐 legado BookHelp.formatBookName）：
-  /// - 去「作者：xxx」/「xxx 著」尾缀（列表项书名常带）；
-  /// - 去首尾分隔符并 trim。
-  /// 不做关键词级丢弃——规则明确指向书名元素，信任源作者的规则。
-  static String formatBookNameLight(String name) {
-    if (name.isEmpty) return name;
-    var result = name
-        .replaceAll(RegExp(r'\s+作\s*者.*'), '')
-        .replaceAll(RegExp(r'\s+\S+\s+著'), '')
-        .replaceAll(RegExp(r'^\s*[-_—–|/\\]+\s*'), '')
-        .replaceAll(RegExp(r'\s*[-_—–|/\\]+\s*$'), '')
-        .trim();
-    // 超长防御：正常书名不会超过 50 字，超长多为解析到整段文本。
-    if (result.length > 80) result = result.substring(0, 80);
-    return result;
-  }
-
-  /// 作者名格式化：剥离"作者："前缀、首尾分隔符。
-  static String formatBookAuthor(String author) {
-    if (author.isEmpty) return author;
-    return author
-        // 去除 "作者:" / "作者：" 前缀
-        .replaceAll(RegExp(r'^\s*作\s*者\s*[:：]\s*'), '')
-        // 去除开头可能残留的单个冒号
-        .replaceAll(RegExp(r'^\s*[:：]\s*'), '')
-        // 去除开头/结尾的分隔符
-        .replaceAll(RegExp(r'^\s*[-_—–|/\\]+\s*'), '')
-        .replaceAll(RegExp(r'\s*[-_—–|/\\]+\s*$'), '')
-        .trim();
   }
 
   /// 判断页面是否为「登录墙」（服务端要求登录/验证码才能访问）。

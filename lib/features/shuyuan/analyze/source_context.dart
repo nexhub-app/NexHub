@@ -14,6 +14,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:archive/archive.dart';
+import 'package:fast_gbk/fast_gbk.dart';
 import 'package:meta/meta.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -144,6 +146,13 @@ class ShuyuanSourceContext {
   final List<String> verificationPending = <String>[];
   final Map<String, String> verificationCodeCache = <String, String>{};
 
+  /// 文件/归档族（unzipFile / getZipStringContent / readTxtFile 文本解码）
+  /// 的本地运算待办与结果：运算键 → JSON 载荷/结果。settle 时同步执行
+  /// （package:archive + fast_gbk），不占网络预算，结果供下一轮重放命中。
+  final Map<String, String> fileOpArgs = <String, String>{};
+  final List<String> fileOpPending = <String>[];
+  final Map<String, String> fileOpResults = <String, String>{};
+
   /// 本阶段已打开过的 startBrowser 动作（url\ttitle\thtml），跨重放轮去重。
   final Set<String> browserOpened = <String>{};
 
@@ -221,6 +230,9 @@ class ShuyuanSourceContext {
     verificationCodeCache.clear();
     verificationPending.clear();
     verificationArgs.clear();
+    fileOpResults.clear();
+    fileOpPending.clear();
+    fileOpArgs.clear();
     browserOpened.clear();
   }
 
@@ -446,6 +458,13 @@ class ShuyuanSourceContext {
           if (!verificationPending.contains(a)) {
             verificationPending.add(a);
             verificationArgs[a] = b;
+          }
+        case 'fileOp':
+          // 文件/归档族本地运算（unzipFile / getZipStringContent /
+          // readTxtFile 文本解码）：a=运算键，b=JSON 载荷，settle 同步执行。
+          if (!fileOpPending.contains(a)) {
+            fileOpPending.add(a);
+            fileOpArgs[a] = b;
           }
         case 'refreshKinds':
           kindRefreshRequested = true;
@@ -880,7 +899,112 @@ class ShuyuanSourceContext {
     }
     ctx.ajaxPending.clear();
     ctx.ajaxBytesPending.clear();
+    // 文件/归档族本地运算（解压/取包内条目/文本解码）：纯本地同步，
+    // 不占网络预算；计入 fetched 让调用方的重放循环继续一轮。
+    fetched += _settleFileOps(ctx);
     return fetched;
+  }
+
+  static int _settleFileOps(ShuyuanSourceContext ctx) {
+    if (ctx.fileOpPending.isEmpty) return 0;
+    final keys = List<String>.from(ctx.fileOpPending);
+    ctx.fileOpPending.clear();
+    for (final key in keys) {
+      final raw = ctx.fileOpArgs.remove(key) ?? '';
+      ctx.fileOpResults[key] = _runFileOp(key, raw);
+    }
+    return keys.length;
+  }
+
+  static const Set<String> _textExtensions = <String>{
+    'txt', 'text', 'html', 'htm', 'xml', 'json', 'js', 'css', 'csv', 'md',
+    'log', 'nfo',
+  };
+
+  static bool _looksLikeText(String name) {
+    final dot = name.lastIndexOf('.');
+    if (dot < 0) return true;
+    return _textExtensions.contains(name.substring(dot + 1).toLowerCase());
+  }
+
+  /// 文本解码（legado readTxtFile/EncodingDetect 的实用近似）：显式 GBK 系
+  /// → GBK；显式其他 → UTF-8 容错；未显式 → 严格 UTF-8 成功即用，失败回落
+  /// GBK，再失败按 UTF-8 容错（替换不可解码字节，不抛错）。
+  static String _decodeTextFile(List<int> bytes, String? charsetName) {
+    final lower = (charsetName ?? '').toLowerCase().replaceAll('_', '-');
+    if (lower == 'gbk' ||
+        lower == 'gb-2312' ||
+        lower == 'gb2312' ||
+        lower == 'gb18030') {
+      try {
+        return gbk.decode(bytes);
+      } catch (_) {}
+      return utf8.decode(bytes, allowMalformed: true);
+    }
+    if (lower.isNotEmpty && lower != 'utf-8' && lower != 'utf8') {
+      return utf8.decode(bytes, allowMalformed: true);
+    }
+    try {
+      return utf8.decode(bytes);
+    } on FormatException {
+      try {
+        return gbk.decode(bytes);
+      } catch (_) {
+        return utf8.decode(bytes, allowMalformed: true);
+      }
+    }
+  }
+
+  /// 执行一条文件族运算。键前缀约定：
+  /// - `uz:<folder>:<contentHash>`：载荷 `[zipBase64]` → `{条目名: {b,t}}`；
+  /// - `zc:<contentHash>:<entry>|<charset>`：载荷 `[zipBase64, entry, charset]`
+  ///   → `{b,t}`（未命中条目 → `{}`）；
+  /// - `tx:<contentHash>|<charset>`：载荷 `[bytesBase64, charset]` → `{t}`。
+  static String _runFileOp(String key, String raw) {
+    var payload = const <dynamic>[];
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is List) payload = decoded;
+    } catch (_) {}
+    String arg(int i) =>
+        i < payload.length ? '${payload[i] ?? ''}' : '';
+    try {
+      if (key.startsWith('uz:')) {
+        final bytes = base64Decode(arg(0));
+        final archive = ZipDecoder().decodeBytes(bytes, verify: false);
+        final entries = <String, Map<String, String>>{};
+        for (final f in archive) {
+          if (!f.isFile) continue;
+          final data = f.content as List<int>;
+          entries[f.name] = <String, String>{
+            'b': base64Encode(data),
+            if (_looksLikeText(f.name)) 't': _decodeTextFile(data, null),
+          };
+        }
+        return jsonEncode(entries);
+      }
+      if (key.startsWith('zc:')) {
+        final bytes = base64Decode(arg(0));
+        final entry = arg(1);
+        final archive = ZipDecoder().decodeBytes(bytes, verify: false);
+        for (final f in archive) {
+          if (!f.isFile || f.name != entry) continue;
+          final data = f.content as List<int>;
+          return jsonEncode(<String, String>{
+            'b': base64Encode(data),
+            't': _decodeTextFile(data, arg(2)),
+          });
+        }
+        return '{}';
+      }
+      if (key.startsWith('tx:')) {
+        final bytes = base64Decode(arg(0));
+        return jsonEncode(<String, String>{
+          't': _decodeTextFile(bytes, arg(1)),
+        });
+      }
+    } catch (_) {}
+    return '{}';
   }
 
   /// 测试隔离。

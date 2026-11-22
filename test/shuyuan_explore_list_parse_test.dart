@@ -115,7 +115,10 @@ void main() {
       // legado wordCountFormat：>10000 → 万字档；非数字原样。
       expect(a.wordCount, '1.2万字');
       // HtmlFormatter：换行标签成段 + 段首全角缩进 + 实体/标签清理。
-      expect(a.intro, '　　第一段 文字\n　　第二段强调');
+      // legado 的缩进正则用 Java `\s`（仅 ASCII 空白）：外层标签先变 `\n`，
+      // 段首补两个全角空格后 `^[\n\s]+` 只吃掉 `\n`、吃不掉刚补的全角空格，
+      // 故首段前是两轮缩进（4 个全角空格），末尾残留段末缩进（JDK 实测一致）。
+      expect(a.intro, '　　　　第一段 文字\n　　第二段强调\n　　');
       // 协议相对封面按页面协议解析（http 页保持 http，不硬编码 https）。
       expect(a.coverUrl, 'http://cdn.test/a.jpg');
       // bookUrl 模板读到当前条目书名（ruleData 全程绑定）。
@@ -216,7 +219,7 @@ void main() {
       expect(books.length, 1);
       final b = books.single;
       expect(b.name, '详情书');
-      expect(b.intro, '　　简介一\n　　简介二');
+      expect(b.intro, '　　　　简介一\n　　简介二\n　　');
       expect(b.wordCount, '2万字');
       expect(b.coverUrl, 'https://cdn.test/d.jpg');
       expect(b.tocUrl, 'https://list.test/book/1/');

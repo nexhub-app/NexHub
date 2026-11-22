@@ -11,6 +11,10 @@ class ExploreRule {
   String? bookLastChapter;
   String? bookIntro;
   String? bookWordCount;
+  /// legado `ExploreRule.pageParam`：发现页翻页参数名，留空按 page 处理。
+  /// 仅用于「详情标签/分类跳转发现页」自动追加页码，NexHub 暂无该入口，
+  /// 保留字段避免导入导出丢失。
+  String? pageParam;
 
   ExploreRule({
     this.bookList,
@@ -22,6 +26,7 @@ class ExploreRule {
     this.bookLastChapter,
     this.bookIntro,
     this.bookWordCount,
+    this.pageParam,
   });
 
   factory ExploreRule.fromJson(Map<String, dynamic> json) {
@@ -42,6 +47,7 @@ class ExploreRule {
       bookLastChapter: pick('lastChapter', 'bookLastChapter'),
       bookIntro: pick('intro', 'bookIntro'),
       bookWordCount: pick('wordCount', 'bookWordCount'),
+      pageParam: json['pageParam'] as String?,
     );
   }
 
@@ -55,5 +61,6 @@ class ExploreRule {
         if (bookLastChapter != null) 'bookLastChapter': bookLastChapter,
         if (bookIntro != null) 'bookIntro': bookIntro,
         if (bookWordCount != null) 'bookWordCount': bookWordCount,
+        if (pageParam != null) 'pageParam': pageParam,
       };
 }

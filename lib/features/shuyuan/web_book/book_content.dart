@@ -150,6 +150,15 @@ class BookContent {
     bool mediaSource = false,
     bool processTitle = true,
   }) {
+    // legado WebBook.getContent：一级目录（卷章，URL 为标题占位）不解析正文
+    // 规则，直接返回 `tag ?: ""`；阅读器调用方已过滤卷章，此处兜底避免误抓取。
+    if (bookChapter.isVolume && bookChapter.url.startsWith(bookChapter.title)) {
+      final tag = bookChapter.tag ?? '';
+      return tag.isEmpty
+          ? const <NovelBlock>[]
+          : <NovelBlock>[NovelTextBlock(tag)];
+    }
+
     final contentRule = bookSource.getContentRule();
     final analyzeRule = AnalyzeRule(book: book, chapter: bookChapter)
       ..setContent(body, baseUrl)
@@ -467,28 +476,27 @@ class BookContent {
     return blocks;
   }
 
-  /// 从一段 HTML 中提取插图绝对 URL（按顺序）。
-  ///
-  /// 懒加载图常见写法 `<img src="占位.gif" data-src="真图.jpg">`，故优先取
-  /// data-original / data-src / data-lazy-src，回退 src。相对路径用最终页 URL
-  /// （redirectUrl）解析，避免拼到错误域名。
+  /// legado `HtmlFormatter.formatImagePattern` 的逐字移植，三档按序：
+  /// 1. `src` 含 `{...}`（URL 选项 JSON 内部带引号，普通属性正则会被截断）；
+  /// 2. `data-src|src`（懒加载约定，贪婪前缀使后出现的属性优先）；
+  /// 3. 任意 `data-*`。
+  /// 用最终页 URL（redirectUrl）解析相对路径，避免拼到错误域名。
+  static final RegExp _formatImagePattern = RegExp(
+    '<img[^>]*\\ssrc\\s*=\\s*[\'"]([^\'"{}>]*\\{(?:[^{}]|\\{[^}>]+\\})+\\})[\'"][^>]*>'
+    '|<img[^>]*\\s(?:data-src|src)\\s*=\\s*[\'"]([^\'">]+)[\'"][^>]*>'
+    '|<img[^>]*\\sdata-[^=>]*=\\s*[\'"]([^\'">]*)[\'"][^>]*>',
+    caseSensitive: false,
+  );
+
   static List<String> _extractImageUrls(
     String block,
     String baseUrl,
     String redirectUrl,
   ) {
-    final imgTags =
-        RegExp(r'<img\b[^>]*>', caseSensitive: false).allMatches(block);
     final urls = <String>[];
-    for (final im in imgTags) {
-      final tag = im.group(0) ?? '';
-      // 与通用书源规范一致：优先查特定属性，再兜底任意 data-xxx。
-      final src = _attr(tag, 'data-original') ??
-          _attr(tag, 'data-src') ??
-          _attr(tag, 'data-lazy-src') ??
-          _attr(tag, 'src') ??
-          _attrFirstDataXxx(tag);
-      if (src == null || src.isEmpty) continue;
+    for (final m in _formatImagePattern.allMatches(block)) {
+      final src = m.group(1) ?? m.group(2) ?? m.group(3) ?? '';
+      if (src.isEmpty) continue;
       // legado formatKeepImg 之后整段执行 unescapeHtml4，图片地址中的
       // `&amp;` 等实体会还原；图块提前抽取，这里补同一次解码。
       final abs = _toAbsoluteUrl(
@@ -496,44 +504,6 @@ class BookContent {
       if (_looksLikeImage(abs)) urls.add(abs);
     }
     return urls;
-  }
-
-  /// 从 <img> 标签中提取第一个 `data-xxx` 属性值（沿用通用书源规范
-  /// `formatImagePattern` 第三分支：`<img[^>]*\sdata-[^=>]*=['"]([^'"]*)['"][^>]*>`）。
-  /// 按顺序扫描所有 data-* 属性，返回第一个非空、非占位符的值。
-  static String? _attrFirstDataXxx(String tag) {
-    // 三引号原始字符串避免单/双引号冲突
-    final matches = RegExp(
-      r"""\sdata-([a-zA-Z]\w*)\s*=\s*"([^"]*)"|\sdata-([a-zA-Z]\w*)\s*=\s*'([^']*)'|\sdata-([a-zA-Z]\w*)\s*=\s*([^\s>]+)""",
-      caseSensitive: false,
-    ).allMatches(tag);
-    for (final m in matches) {
-      final val = m.group(2) ?? m.group(4) ?? m.group(6) ?? '';
-      if (val.isNotEmpty && !_looksLikeImage(val)) continue;
-      if (val.isNotEmpty) return val;
-    }
-    return null;
-  }
-
-  /// 读取单个 HTML 标签属性值。
-  ///
-  /// 支持三种格式（沿用通用书源规范）：
-  /// 1. 双引号：`name="value"`
-  /// 2. 单引号：`name='value'`
-  /// 3. 无引号：`name=value`（值遇空格/`>` 结束）
-  static String? _attr(String tag, String name) {
-    // 优先匹配引号形式
-    final m = RegExp(
-      '$name=["\']([^"\']+)["\']',
-      caseSensitive: false,
-    ).firstMatch(tag);
-    if (m != null) return m.group(1);
-    // 无引号兜底：值到下一个空格或 `>` 为止
-    final m2 = RegExp(
-      '$name=([^\\s>]+)',
-      caseSensitive: false,
-    ).firstMatch(tag);
-    return m2?.group(1);
   }
 
   /// 相对路径转绝对 URL：优先用最终页地址（redirectUrl），回退 baseUrl。
