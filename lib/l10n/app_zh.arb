@@ -6089,6 +6089,8 @@
   "bookSourceVarSaved": "变量已保存",
   "bookSourceDeleteConfirm": "删除该书源？",
   "bookSourceNoExplore": "该源未提供分类/发现页，请使用搜索查找内容",
+  "exploreJumpPage": "跳转页码",
+  "exploreJumpPageHint": "页码",
   "bookSourceLogin": "书源登录",
   "bookSourceLoginNoForm": "该源登录脚本无需表单输入，直接提交执行",
   "bookSourceLoginSubmit": "登录",

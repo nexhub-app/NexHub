@@ -10520,6 +10520,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get bookSourceNoExplore => '该源未提供分类/发现页，请使用搜索查找内容';
 
   @override
+  String get exploreJumpPage => '跳转页码';
+
+  @override
+  String get exploreJumpPageHint => '页码';
+
+  @override
   String get bookSourceLogin => '书源登录';
 
   @override

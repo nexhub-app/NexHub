@@ -20085,6 +20085,18 @@ abstract class AppLocalizations {
   /// **'This source has no explore page or categories. Use search instead.'**
   String get bookSourceNoExplore;
 
+  /// No description provided for @exploreJumpPage.
+  ///
+  /// In en, this message translates to:
+  /// **'Jump to page'**
+  String get exploreJumpPage;
+
+  /// No description provided for @exploreJumpPageHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Page number'**
+  String get exploreJumpPageHint;
+
   /// No description provided for @bookSourceLogin.
   ///
   /// In en, this message translates to:

@@ -6133,6 +6133,8 @@
   "bookSourceVarSaved": "Variables saved",
   "bookSourceDeleteConfirm": "Delete this book source?",
   "bookSourceNoExplore": "This source has no explore page or categories. Use search instead.",
+  "exploreJumpPage": "Jump to page",
+  "exploreJumpPageHint": "Page number",
   "bookSourceLogin": "Source Login",
   "bookSourceLoginNoForm": "This login script takes no form fields. Submit to run it.",
   "bookSourceLoginSubmit": "Login",

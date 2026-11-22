@@ -1,4 +1,5 @@
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/services.dart';
 import 'package:nexhub/generated/app_localizations.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -984,6 +985,9 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
           if (added > 0) {
             state.autoPageCount = 0;
             state.hasMore = true;
+            // legado 只在拿到新增条目时更新当前页码（自动连翻时也停在
+            // 最后一个有内容的页）。
+            state.currentPage = state.page;
             state.page++;
             state.loaded = true;
             state.error = null;
@@ -1026,7 +1030,8 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
             vars: _categoryPageVars(_source!, state),
           );
           if (_isShuyuanSource) {
-            appendUniqueCategoryItems(state.items, list);
+            final added = appendUniqueCategoryItems(state.items, list);
+            if (added > 0) state.currentPage = state.page;
           } else {
             state.items.addAll(list);
           }
@@ -1060,6 +1065,74 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
     } finally {
       if (mounted) setState(() => state.loading = false);
     }
+  }
+
+  /// 当前分类 Tab 是否支持页码选择（legado `canJumpPage`）。
+  ///
+  /// 仅书源模式、且当前 Tab 落在分类区间、且分类 URL 规则自身能消费页码
+  /// （`{{page}}` / `<js>` / `@js:` 中的自由 `page` 名 / `<a,b,c>` 备选页）
+  /// 时才返回状态；其余情况顶栏不显示页码入口，避免跳到同一页。
+  _CategoryTabState? _pageSelectableCategoryState() {
+    if (!_isShuyuanSource) return null;
+    final idx = _tabController.index;
+    final start = _catStart;
+    if (idx < start || idx >= start + _categories.length) return null;
+    final categoryId = _categories[idx - start].id;
+    if (!supportsPageSelectionRuleUrl(categoryId)) return null;
+    return _ensureTabState(categoryId);
+  }
+
+  /// 页码直跳弹窗（legado ExploreShowScreen：纯数字、最多 4 位、≥1 才提交）。
+  Future<void> _showJumpPageDialog(_CategoryTabState state) async {
+    final l10n = AppLocalizations.of(context);
+    var input = '';
+    final target = await showDialog<int>(
+      context: context,
+      builder: (ctx) => AppAlertDialog(
+        title: Text(l10n.exploreJumpPage),
+        content: TextField(
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          inputFormatters: <TextInputFormatter>[
+            FilteringTextInputFormatter.digitsOnly,
+            LengthLimitingTextInputFormatter(4),
+          ],
+          decoration: InputDecoration(hintText: l10n.exploreJumpPageHint),
+          onChanged: (value) => input = value,
+          onSubmitted: (value) => Navigator.maybePop(ctx, int.tryParse(value)),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.maybePop(ctx),
+            child: Text(l10n.cancel),
+          ),
+          TextButton(
+            onPressed: () => Navigator.maybePop(ctx, int.tryParse(input)),
+            child: Text(l10n.confirm),
+          ),
+        ],
+      ),
+    );
+    if (target == null || target < 1) return;
+    await _jumpCategoryPage(state, target);
+  }
+
+  /// 跳到指定页码（legado `ExploreShowViewModel.jumpToPage`）：
+  /// 清空已加载列表后只请求目标页；目标页无内容时沿用空页自动连翻语义，
+  /// 当前页码仍停留在最后一个有内容的页。
+  Future<void> _jumpCategoryPage(_CategoryTabState state, int target) async {
+    if (_source == null || state.loading) return;
+    setState(() {
+      state.page = target;
+      state.items.clear();
+      state.hasMore = true;
+      state.autoPageCount = 0;
+      state.loaded = false;
+      state.error = null;
+      state.extractedUrl = null;
+      state.renderedHtml = null;
+    });
+    await _loadCategoryPage(state);
   }
 
   void _onSource(PluginConfig s) {
@@ -1310,6 +1383,22 @@ class _OnlineContentListScreenState extends State<OnlineContentListScreen>
                     _tabStates
                         .forEach((_, s) => _loadCategoryPage(s, reset: true));
                     if (_hasRank) _loadRank();
+                  },
+                ),
+                // 书源发现分类：当前分类 URL 规则含页码选择语法时，显示
+                // 当前页码入口（legado ExploreShowScreen 顶栏页码按钮）。
+                AnimatedBuilder(
+                  animation: _tabController,
+                  builder: (context, _) {
+                    final state = _pageSelectableCategoryState();
+                    if (state == null) return const SizedBox.shrink();
+                    return Tooltip(
+                      message: l10n.exploreJumpPage,
+                      child: TextButton(
+                        onPressed: () => _showJumpPageDialog(state),
+                        child: Text('${state.currentPage}'),
+                      ),
+                    );
                   },
                 ),
                 const LayoutPickerButton(),
@@ -2890,6 +2979,151 @@ int appendUniqueCategoryItems(List<MediaItem> target, List<MediaItem> incoming) 
   return added;
 }
 
+final RegExp _ruleJsPattern =
+    RegExp(r'<js>([\w\W]*?)</js>|@js:([\w\W]*)', caseSensitive: false);
+final RegExp _ruleExprPattern = RegExp(r'\{\{([\w\W]*?)\}\}');
+
+/// 分类 URL 规则是否支持页码选择（legado `AnalyzeUrl.supportsPageSelection`
+/// 的静态判定，不执行源脚本）：发现页据此决定是否显示页码直跳入口。
+///
+/// 识别三类语法：
+/// - `<js>` / `@js:` 脚本中存在自由 `page` 名（排除 `.page` 属性访问、
+///   `{page: ...}` 对象键与 `var/let/const page` 本地声明）；
+/// - `{{...}}` 表达式引用 `page`；
+/// - `<a,b,c>` 备选页写法（含逗号）；另兼容本应用的 `<page>` / `《page》`。
+@visibleForTesting
+bool supportsPageSelectionRuleUrl(String? rule) {
+  final text = rule?.trim() ?? '';
+  if (text.isEmpty) return false;
+  var usesPage = false;
+  final withoutScripts = text.replaceAllMapped(_ruleJsPattern, (m) {
+    if (_jsRuleReferencesPage(m.group(2) ?? m.group(1) ?? '')) usesPage = true;
+    return '';
+  });
+  final withoutExpressions =
+      withoutScripts.replaceAllMapped(_ruleExprPattern, (m) {
+    if (_jsRuleReferencesPage(m.group(1) ?? '')) usesPage = true;
+    return '';
+  });
+  if (usesPage) return true;
+  if (withoutExpressions.contains('<page>') ||
+      withoutExpressions.contains('《page》')) {
+    return true;
+  }
+  return RegExp(r'<[^<>\r\n]*,[^<>\r\n]*>').hasMatch(withoutExpressions);
+}
+
+/// 脚本是否引用宿主导入的页码变量（近似 Rhino AST 的「自由 Name」判定）。
+bool _jsRuleReferencesPage(String script) {
+  final code = _maskRuleJs(script);
+  // 本地声明会遮蔽宿主 page 变量（Rhino 中非自由名）。
+  if (RegExp(r'\b(?:var|let|const)\s+page\b').hasMatch(code)) return false;
+  for (final match in RegExp(r'\bpage\b').allMatches(code)) {
+    final before = _prevSignificant(code, match.start);
+    if (before == '.') continue;
+    final afterIndex = _nextSignificant(code, match.end);
+    final after = afterIndex == null ? '' : code[afterIndex];
+    // `{page: ...}` / `,page: ...` 是对象字面量的键，不是取值。
+    if (after == ':' && (before == '{' || before == ',')) continue;
+    return true;
+  }
+  return false;
+}
+
+String? _prevSignificant(String code, int index) {
+  for (var i = index - 1; i >= 0; i--) {
+    final ch = code[i];
+    if (ch.trim().isEmpty) continue;
+    return ch;
+  }
+  return null;
+}
+
+int? _nextSignificant(String code, int index) {
+  for (var i = index; i < code.length; i++) {
+    if (code[i].trim().isEmpty) continue;
+    return i;
+  }
+  return null;
+}
+
+/// 把 JS 字符串字面量与注释替换为空格（保留 `${...}` 模板表达式内容），
+/// 避免把字符串里的 "page"/注释当成变量读取。
+String _maskRuleJs(String script) {
+  final out = StringBuffer();
+  var i = 0;
+  while (i < script.length) {
+    final ch = script[i];
+    if (ch == '"' || ch == "'") {
+      i++;
+      while (i < script.length) {
+        if (script[i] == r'\') {
+          i += 2;
+          continue;
+        }
+        if (script[i] == ch) {
+          i++;
+          break;
+        }
+        i++;
+      }
+      out.write(' ');
+      continue;
+    }
+    if (ch == '`') {
+      i++;
+      while (i < script.length) {
+        if (script[i] == r'\') {
+          i += 2;
+          continue;
+        }
+        if (script[i] == '`') {
+          i++;
+          break;
+        }
+        if (script[i] == r'$' &&
+            i + 1 < script.length &&
+            script[i + 1] == '{') {
+          var depth = 1;
+          i += 2;
+          final start = i;
+          while (i < script.length && depth > 0) {
+            if (script[i] == '{') depth++;
+            if (script[i] == '}') depth--;
+            if (depth > 0) i++;
+          }
+          out.write(' ${script.substring(start, i)} ');
+          if (i < script.length) i++;
+          continue;
+        }
+        i++;
+      }
+      out.write(' ');
+      continue;
+    }
+    if (ch == '/' && i + 1 < script.length && script[i + 1] == '/') {
+      while (i < script.length && script[i] != '\n') {
+        i++;
+      }
+      out.write(' ');
+      continue;
+    }
+    if (ch == '/' && i + 1 < script.length && script[i + 1] == '*') {
+      i += 2;
+      while (i + 1 < script.length &&
+          !(script[i] == '*' && script[i + 1] == '/')) {
+        i++;
+      }
+      i = i + 2 <= script.length ? i + 2 : script.length;
+      out.write(' ');
+      continue;
+    }
+    out.write(ch);
+    i++;
+  }
+  return out.toString();
+}
+
 /// 每个动态分类 Tab 的独立状态。
 class _CategoryTabState {
   _CategoryTabState({required this.categoryId});
@@ -2901,6 +3135,10 @@ class _CategoryTabState {
   // ignore: prefer_function_declarations_over_variables
   late VoidCallback scrollListener = () {};
   int page = 1;
+
+  /// 最近一次拉到新增条目的页码（legado `ExplorePageState.currentPage`）：
+  /// 顶栏页码入口显示该值；空页自动连翻不更新。
+  int currentPage = 1;
 
   /// 连续「无新增条目」的页数（legado `autoPageCount`）：拿到新条目即清零，
   /// 达到上限后视为到底。

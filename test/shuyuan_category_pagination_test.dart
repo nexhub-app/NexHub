@@ -36,6 +36,7 @@ MediaItem _item(String id, {String? title}) =>
 Widget _app({
   required List<MediaItem> Function(int page) pageItems,
   required List<int> calls,
+  String categoryId = '/cat1',
 }) {
   final source = _source();
   return ChangeNotifierProvider<SourceRepository>.value(
@@ -62,7 +63,7 @@ Widget _app({
           return pageItems(page);
         },
         fetchCategories: (PluginConfig s) async => <CategoryEntry>[
-          const CategoryEntry(id: '/cat1', title: '分类一'),
+          CategoryEntry(id: categoryId, title: '分类一'),
         ],
         onItemTap: (MediaItem item, String? heroTag) {},
       ),
@@ -156,6 +157,76 @@ void main() {
       // 页 1（含一次冷启动重试）→ 页 2 → 页 3，之后视为到底。
       expect(calls, containsAllInOrder(<int>[1, 2, 3]));
       expect(calls, isNot(contains(4)));
+    });
+  });
+
+  group('supportsPageSelectionRuleUrl（legado canJumpPage 静态判定）', () {
+    test('表达式 / 脚本 / 备选页语法可跳页', () {
+      expect(supportsPageSelectionRuleUrl('/cat?page={{page}}'), isTrue);
+      expect(supportsPageSelectionRuleUrl('/cat?page={{ page + 1 }}'), isTrue);
+      expect(
+          supportsPageSelectionRuleUrl('/cat?p=<js>"/x?p="+page</js>'), isTrue);
+      expect(supportsPageSelectionRuleUrl('@js:"/cat?p="+page'), isTrue);
+      expect(supportsPageSelectionRuleUrl('@js:cond ? page : 1'), isTrue);
+      expect(supportsPageSelectionRuleUrl('/list<,_2,_3>.html'), isTrue);
+      expect(supportsPageSelectionRuleUrl('/cat?p=<page>'), isTrue);
+      expect(supportsPageSelectionRuleUrl('/cat?p=《page》'), isTrue);
+    });
+
+    test('非页码引用不触发（属性访问 / 对象键 / 本地声明 / 字符串）', () {
+      expect(supportsPageSelectionRuleUrl('/cat1'), isFalse);
+      expect(supportsPageSelectionRuleUrl('   '), isFalse);
+      expect(supportsPageSelectionRuleUrl('/cat?p={{key}}'), isFalse);
+      expect(supportsPageSelectionRuleUrl('/cat?p={{obj.page}}'), isFalse);
+      expect(supportsPageSelectionRuleUrl('@js:obj.page'), isFalse);
+      expect(supportsPageSelectionRuleUrl('@js:{page: 1}'), isFalse);
+      expect(supportsPageSelectionRuleUrl('@js:{"page": 1}'), isFalse);
+      expect(supportsPageSelectionRuleUrl('@js:"page".length'), isFalse);
+      expect(supportsPageSelectionRuleUrl('@js:var page = 3; "/cat?p=" + page'),
+          isFalse);
+    });
+  });
+
+  group('书源分类页码直跳', () {
+    testWidgets('分类 URL 不含页码语法时不显示页码入口', (tester) async {
+      final calls = <int>[];
+      await tester.pumpWidget(_app(
+        calls: calls,
+        pageItems: (page) => <MediaItem>[_item('/book/p$page')],
+      ));
+      await _pumpSteps(tester, 20);
+
+      expect(find.byTooltip('跳转页码'), findsNothing);
+    });
+
+    testWidgets('显示当前页码，跳页后请求目标页并更新页码', (tester) async {
+      final calls = <int>[];
+      await tester.pumpWidget(_app(
+        categoryId: '/cat1?page={{page}}',
+        calls: calls,
+        pageItems: (page) => <MediaItem>[_item('/book/p$page')],
+      ));
+      await _pumpSteps(tester, 20);
+
+      expect(calls, <int>[1]);
+      expect(find.byTooltip('跳转页码'), findsOneWidget);
+      expect(
+        find.descendant(of: find.byType(AppBar), matching: find.text('1')),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.byTooltip('跳转页码'));
+      await _pumpSteps(tester, 3);
+      await tester.enterText(find.byType(TextField), '3');
+      await tester.tap(find.text('确认'));
+      await _pumpSteps(tester, 20);
+
+      expect(calls, contains(3));
+      expect(find.text('书/book/p3'), findsOneWidget);
+      expect(
+        find.descendant(of: find.byType(AppBar), matching: find.text('3')),
+        findsOneWidget,
+      );
     });
   });
 }

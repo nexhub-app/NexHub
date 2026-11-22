@@ -10805,6 +10805,12 @@ class AppLocalizationsEn extends AppLocalizations {
       'This source has no explore page or categories. Use search instead.';
 
   @override
+  String get exploreJumpPage => 'Jump to page';
+
+  @override
+  String get exploreJumpPageHint => 'Page number';
+
+  @override
   String get bookSourceLogin => 'Source Login';
 
   @override
