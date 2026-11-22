@@ -41,9 +41,7 @@ import 'source_login_screen.dart';
 import 'source_edit_screen.dart';
 import 'package:nexhub/core/navigation/app_page_route.dart';
 import 'package:nexhub/features/shuyuan/presentation/shuyuan_variable_dialog.dart'
-    show
-        isShuyuanSourceConfig,
-        showShuyuanVariableEditor;
+    show isShuyuanSourceConfig, showShuyuanVariableEditor;
 import 'package:nexhub/features/shuyuan/presentation/shuyuan_login_dialog.dart'
     show shuyuanLoginUrl, showShuyuanLogin;
 import 'package:nexhub/core/widgets/app_alert_dialog.dart';
@@ -116,6 +114,11 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
   /// 写回全量排序，过滤状态下拖动会把未显示源的顺序冲掉。
   final TextEditingController _sourceSearchController = TextEditingController();
   String _sourceQuery = '';
+
+  /// 搜索框 GlobalKey：大库虚拟化路径（列表 header 滑块）与合并
+  /// 滚动路径随过滤行数跨阈值实时切换结构，用 GlobalKey 平移重挂搜索框，
+  /// 输入焦点不丢（状态随元素迁移，见 [_buildListTab]）。
+  final GlobalKey _sourceSearchFieldKey = GlobalKey();
 
   /// 源列表虚拟化阈值：超过该行数时列表改用 itemBuilder 懒建行并关掉
   /// shrinkWrap。shrinkWrap（低配整卡/合并滚动路径默认开启）要求首帧量出
@@ -191,21 +194,44 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
   }
 
   /// 源列表搜索框（仅「源列表」页签渲染）：设计规范沿用 [AppSearchField]
-  /// （与换源弹窗同款），左右留白与下方连体卡（spaceMd）对齐。
-  Widget _buildSourceSearchField(AppLocalizations l10n) {
+  /// （与换源弹窗同款），默认左右留白与连体卡（spaceMd）对齐。不吸顶：
+  /// 由调用方并入列表同一条滚动流，随内容一起滚走。[padding] 供 header
+  /// 落在低配连体卡内部时改用与行内容（spaceLg）对齐的内缩留白。
+  Widget _buildSourceSearchField(AppLocalizations l10n, {EdgeInsets? padding}) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        AppTokens.spaceMd,
-        AppTokens.spaceXs,
-        AppTokens.spaceMd,
-        AppTokens.spaceXs,
-      ),
+      padding: padding ??
+          const EdgeInsets.fromLTRB(
+            AppTokens.spaceMd,
+            AppTokens.spaceXs,
+            AppTokens.spaceMd,
+            AppTokens.spaceXs,
+          ),
       child: AppSearchField(
+        key: _sourceSearchFieldKey,
         controller: _sourceSearchController,
         hint: l10n.searchSourceHint,
         prefixIcon: const Icon(Icons.search_rounded, size: 20),
         onChanged: (String v) => setState(() => _sourceQuery = v),
       ),
+    );
+  }
+
+  /// header 场景的搜索框（ReorderableListView 原生 header 滑块内）。
+  /// 低配（默认）：header 落在连体卡 Material 内部，改用与行内容
+  /// （ListTile contentPadding spaceLg）对齐的内缩留白，上下收紧交给
+  /// 卡顶留白与列表内边距；高配：卡外是页面底，沿用默认留白即可与
+  /// 行段水平对齐。
+  Widget _buildHeaderSearchField(AppLocalizations l10n, bool lowSpec) {
+    return _buildSourceSearchField(
+      l10n,
+      padding: lowSpec
+          ? const EdgeInsets.fromLTRB(
+              AppTokens.spaceLg,
+              AppTokens.spaceXs,
+              AppTokens.spaceLg,
+              0,
+            )
+          : null,
     );
   }
 
@@ -280,7 +306,8 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
       final matched = widget.filterType == null
           ? configs
           : configs
-              .where((c) => c.type.mediaBucket == widget.filterType!.mediaBucket)
+              .where(
+                  (c) => c.type.mediaBucket == widget.filterType!.mediaBucket)
               .toList();
       final skippedByType = configs.length - matched.length;
 
@@ -596,8 +623,9 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
         .where((item) => item.config != null)
         .map((item) => item.config!)
         .toList();
-    final successCount =
-        configs.isEmpty ? 0 : context.read<SourceRepository>().addSources(configs);
+    final successCount = configs.isEmpty
+        ? 0
+        : context.read<SourceRepository>().addSources(configs);
 
     if (mounted) {
       final l10n = AppLocalizations.of(context);
@@ -779,8 +807,12 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
         );
       }
       // 大库列表必须脱离合并滚动：合并滚动要求列表 shrinkWrap 撑开全部行，
-      // 首帧全量构建+布局，上千源会冻结/OOM 崩溃。此时放弃「区块随列表
-      // 滚走」，改为区块固定在顶、列表自身滚动（虚拟化生效的前提）。
+      // 首帧全量构建+布局，上千源会冻结/OOM 崩溃；前置区块（媒体服务器
+      // 配置）维持固定在列表上方。搜索框不吸顶：挂在 ReorderableListView
+      // 原生 header 滑块里（同一滚动视图内的 SliverToBoxAdapter，无额外
+      // 视口层），随列表滚走，行下标/拖拽/虚拟化不受影响；合并滚动路径
+      // 直接把搜索框放进外层滚动流首子项。两条路径随过滤行数跨阈值实时
+      // 切换，搜索框经 GlobalKey 平移重挂，输入焦点不丢。
       Widget content;
       if (sources.length > _virtualListThreshold) {
         content = Column(
@@ -795,15 +827,26 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
                 ),
                 child: section,
               ),
-            Expanded(child: _buildSourceListView(l10n, sources)),
+            Expanded(
+              child: _buildSourceListView(
+                l10n,
+                sources,
+                header: _buildHeaderSearchField(
+                  l10n,
+                  !GeneralSettingsStore.instance.settings.sourceDragSplitEffect,
+                ),
+              ),
+            ),
           ],
         );
       } else {
         content = SingleChildScrollView(
           // 媒体服务器区块与源列表并入同一条滚动流：列表 shrinkWrap 撑开、
           // 滚动交给外层，区块不再固定在顶部，而是跟着列表一起滚走。
+          // 搜索框同样并入这条滚动流（首子项），随内容一起滚走。
           child: Column(
             children: <Widget>[
+              searchField,
               if (section != null)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(
@@ -819,17 +862,41 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
           ),
         );
       }
-      return Column(
-        children: <Widget>[
-          searchField,
-          Expanded(child: content),
-        ],
-      );
+      return content;
     }
 
     // filterType == null（设置页总入口）：3 分类胶囊分段（与页面模式行的
     // 下划线页签互换后的格式），内容按下标直接切换（不再走 TabBarView，
-    // 分类间不再支持横滑）。
+    // 分类间不再支持横滑）。搜索框不吸顶：非空分类挂在列表 header 滑块里
+    // 随内容滚走；分类无源（无可滚内容）时钉在空态上方供继续编辑关键词。
+    final List<PluginConfig> categorySources =
+        _getCategorySources(sources, _category);
+    final String categoryLabel = switch (_category) {
+      0 => l10n.sourceCategoryNovel,
+      1 => l10n.sourceCategoryMedia,
+      _ => l10n.sourceCategoryComic,
+    };
+    final Widget categoryView;
+    if (categorySources.isEmpty) {
+      categoryView = Column(
+        children: <Widget>[
+          _buildSourceSearchField(l10n),
+          Expanded(
+            child: _buildCategoryList(l10n, categorySources, categoryLabel),
+          ),
+        ],
+      );
+    } else {
+      categoryView = _buildCategoryList(
+        l10n,
+        categorySources,
+        categoryLabel,
+        header: _buildHeaderSearchField(
+          l10n,
+          !GeneralSettingsStore.instance.settings.sourceDragSplitEffect,
+        ),
+      );
+    }
     return Column(
       children: <Widget>[
         Padding(
@@ -863,27 +930,19 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
             ],
           ),
         ),
-        _buildSourceSearchField(l10n),
-        Expanded(
-          child: <Widget>[
-            _buildCategoryList(l10n, _getCategorySources(sources, 0),
-                l10n.sourceCategoryNovel),
-            _buildCategoryList(l10n, _getCategorySources(sources, 1),
-                l10n.sourceCategoryMedia),
-            _buildCategoryList(l10n, _getCategorySources(sources, 2),
-                l10n.sourceCategoryComic),
-          ][_category],
-        ),
+        Expanded(child: categoryView),
       ],
     );
   }
 
   /// 构建单个分类下的源列表（含空状态）。
+  /// [header] 非空时（仅非空分类）并入列表 header 滑块，不吸顶。
   Widget _buildCategoryList(
     AppLocalizations l10n,
     List<PluginConfig> sources,
-    String categoryLabel,
-  ) {
+    String categoryLabel, {
+    Widget? header,
+  }) {
     if (sources.isEmpty) {
       // 搜索进行中该分类无匹配 → 显示「暂无结果」而非分类空态。
       if (_sourceQuery.trim().isNotEmpty) {
@@ -899,7 +958,7 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
         onAction: () => _switchTab(_SourceTab.network),
       );
     }
-    return _buildSourceListView(l10n, sources);
+    return _buildSourceListView(l10n, sources, header: header);
   }
 
   /// 构建源列表 ListView（复用于单列表与分类 Tab）。
@@ -912,10 +971,13 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
   /// [scrollsWithParent] 为 true 时（媒体服务器区块并入滚动流的场景）：
   /// 列表 `shrinkWrap` 撑开全部行 + `NeverScrollableScrollPhysics` 把滚动
   /// 让给外层 [SingleChildScrollView]，自身不再截留手势。
+  /// [header] 为搜索框等非行元素头部：以 SDK 原生 header 滑块并入同一
+  /// 滚动视图（不吸顶、随内容滚走），不占行下标、不影响拖拽。
   Widget _buildSourceListView(
     AppLocalizations l10n,
     List<PluginConfig> sources, {
     bool scrollsWithParent = false,
+    Widget? header,
   }) {
     // 监听登录态：源登录/登出后列表实时刷新「未登录」徽章（项 2）。
     final SourceAuthManager auth = context.watch<SourceAuthManager>();
@@ -936,6 +998,7 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
         scrollsWithParent,
         lowSpec,
         drag,
+        header,
       ),
     );
     // 视口处理：高配=透明圆角裁剪（滚动中边缘圆滑，卡底由行段自绘）；
@@ -1014,6 +1077,7 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
     bool scrollsWithParent,
     bool lowSpec,
     ({int start, int gap})? drag,
+    Widget? header,
   ) {
     // 断口两侧行的下标（拖拽中由 [_updateLiveGap] 实时更新）。
     // SDK 平移规则：g<d 时 [g,d) 各行下移一格、g>d 时 (d,g) 各行上移一格，
@@ -1035,6 +1099,9 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
     // 一律走 .builder：itemBuilder 懒建行（小列表行为与 children 版一致）。
     return ReorderableListView.builder(
       itemCount: sources.length,
+      // 非行元素头部（源列表搜索框）：SDK 以同一滚动视图内的
+      // SliverToBoxAdapter 承载，跟列表一起滚动，不占行下标、不影响拖拽。
+      header: header,
       // 低配（默认）：整卡为一张静态强调色卡（首次对话版式），行内容平铺，
       // 卡自身左右 12px 与媒体服务器等前置区块对齐；底栏避让由外层卡片
       // Padding 承担（卡内只留设计留白，避免无源空白被涂成卡底色）。
@@ -1203,9 +1270,8 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
       deleteTooltip: l10n.sourceDelete,
       migrateTooltip: l10n.sourceMigrate,
       networkOverrideTooltip: l10n.sourceNetworkOverride,
-      loginTooltip: isShuyuanSourceConfig(s)
-          ? l10n.bookSourceLogin
-          : l10n.sourceLogin,
+      loginTooltip:
+          isShuyuanSourceConfig(s) ? l10n.bookSourceLogin : l10n.sourceLogin,
       // legado 书源同样复用全字段编辑页；其变量键值编辑独立为「源变量」项。
       editTooltip: l10n.sourceEdit,
       varsTooltip: l10n.bookSourceVarEdit,
@@ -1223,9 +1289,8 @@ class _SourceManagerScreenState extends State<SourceManagerScreen>
           // 状态难以确认是否生效。
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(value
-                  ? l10n.incognitoOnToast
-                  : l10n.incognitoOffToast),
+              content:
+                  Text(value ? l10n.incognitoOnToast : l10n.incognitoOffToast),
             ),
           );
         }

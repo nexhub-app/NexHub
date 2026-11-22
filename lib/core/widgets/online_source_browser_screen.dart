@@ -74,8 +74,8 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
   /// 加载期间被合并的刷新请求（见 [_loadKinds]）。
   final Set<String> _reloadQueued = <String>{};
 
-  /// 在线列表搜索（源列表正上方）：名称 / id / 站点地址过滤，大小写不敏感；
-  /// 媒体服务器入口行不参与过滤。大库下快速定位要进的源。
+  /// 在线列表搜索（并入源列表滚动流、随列表滚走）：名称 / id / 站点地址
+  /// 过滤，大小写不敏感；媒体服务器入口行不参与过滤。大库下快速定位要进的源。
   final TextEditingController _searchController = TextEditingController();
   String _query = '';
 
@@ -117,127 +117,155 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
         onAction: widget.onAddSource,
       );
     } else {
-      final Widget list = ListView.builder(
-        // 行首图标可点：移动端避让玻璃底栏。
-        padding:
-            const EdgeInsets.all(AppTokens.spaceMd) + context.glassBarInset,
-        itemCount: tiles.length + filtered.length + (noMatch ? 1 : 0),
-        itemBuilder: (context, i) {
-          // 媒体服务器入口行前置（每台服务器一个；未配置时不占位）。
-          if (i < tiles.length) {
-            return Padding(
-              padding: const EdgeInsets.only(bottom: AppTokens.spaceSm),
-              child: tiles[i],
-            );
-          }
-          final int idx = i - tiles.length;
-          if (idx >= filtered.length) {
-            return Padding(
-              padding: const EdgeInsets.only(top: AppTokens.spaceLg),
-              child: Center(
-                child: Text(
-                  l10n.noResults,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                ),
-              ),
-            );
-          }
-          final source = filtered[idx];
-          // 每行一段与面板同色的底色（常驻面板提供整体圆角，行段在此
-          // 之上无缝相融），行间发丝分隔线。
-          final bool first = idx == 0;
-          final bool last = idx == filtered.length - 1;
-          final bool expandable = _hasExplore(source);
-          final bool expanded = expandable && _expandedId == source.id;
-          final Widget? statusChip = _buildStatusChip(source, scheme, l10n);
-          return Material(
-            color: AppTheme.cardContainer(scheme),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.vertical(
-                top: first
-                    ? const Radius.circular(AppTokens.radiusLg)
-                    : Radius.zero,
-                bottom: last
-                    ? const Radius.circular(AppTokens.radiusLg)
-                    : Radius.zero,
+      final Widget list = CustomScrollView(
+        slivers: <Widget>[
+          // 搜索框并入同一条滚动流（不再吸顶）：跟源列表一起滚走。
+          // SliverToBoxAdapter 的子级常驻挂载、不随滚动销毁，输入状态不丢。
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(
+              AppTokens.spaceMd,
+              AppTokens.spaceXs,
+              AppTokens.spaceMd,
+              AppTokens.spaceXs,
+            ),
+            sliver: SliverToBoxAdapter(
+              child: AppSearchField(
+                controller: _searchController,
+                hint: l10n.searchSourceHint,
+                prefixIcon: const Icon(Icons.search_rounded, size: 20),
+                onChanged: (String v) => setState(() => _query = v),
               ),
             ),
-            clipBehavior: Clip.antiAlias,
-            child: Column(
-              children: <Widget>[
-                if (!first)
-                  const Divider(
-                    height: 1,
-                    thickness: 1,
-                    indent: AppTokens.spaceLg,
-                    endIndent: AppTokens.spaceLg,
-                  ),
-                ListTile(
-                  onTap: () => _openSource(context, source),
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: AppTokens.spaceLg,
-                    vertical: AppTokens.spaceXs,
-                  ),
-                  leading: Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: _sourceColor(source.type, scheme)
-                          .withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(AppTokens.radiusSm),
+          ),
+          SliverPadding(
+            // 行首图标可点：移动端避让玻璃底栏。
+            padding:
+                const EdgeInsets.all(AppTokens.spaceMd) + context.glassBarInset,
+            sliver: SliverList.builder(
+              itemCount: tiles.length + filtered.length + (noMatch ? 1 : 0),
+              itemBuilder: (context, i) {
+                // 媒体服务器入口行前置（每台服务器一个；未配置时不占位）。
+                if (i < tiles.length) {
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: AppTokens.spaceSm),
+                    child: tiles[i],
+                  );
+                }
+                final int idx = i - tiles.length;
+                if (idx >= filtered.length) {
+                  return Padding(
+                    padding: const EdgeInsets.only(top: AppTokens.spaceLg),
+                    child: Center(
+                      child: Text(
+                        l10n.noResults,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              color: scheme.onSurfaceVariant,
+                            ),
+                      ),
                     ),
-                    child: Icon(
-                      _sourceIcon(source.type),
-                      color: _sourceColor(source.type, scheme),
-                      size: 22,
+                  );
+                }
+                final source = filtered[idx];
+                // 每行一段与面板同色的底色（常驻面板提供整体圆角，行段在此
+                // 之上无缝相融），行间发丝分隔线。
+                final bool first = idx == 0;
+                final bool last = idx == filtered.length - 1;
+                final bool expandable = _hasExplore(source);
+                final bool expanded = expandable && _expandedId == source.id;
+                final Widget? statusChip =
+                    _buildStatusChip(source, scheme, l10n);
+                return Material(
+                  color: AppTheme.cardContainer(scheme),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.vertical(
+                      top: first
+                          ? const Radius.circular(AppTokens.radiusLg)
+                          : Radius.zero,
+                      bottom: last
+                          ? const Radius.circular(AppTokens.radiusLg)
+                          : Radius.zero,
                     ),
                   ),
-                  title: Row(
+                  clipBehavior: Clip.antiAlias,
+                  child: Column(
                     children: <Widget>[
-                      _buildAgeDot(source, scheme, l10n),
-                      const SizedBox(width: AppTokens.spaceSm),
-                      Expanded(
-                        child: Text(
-                          source.name,
-                          style:
-                              Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                    fontWeight: FontWeight.w500,
-                                  ),
+                      if (!first)
+                        const Divider(
+                          height: 1,
+                          thickness: 1,
+                          indent: AppTokens.spaceLg,
+                          endIndent: AppTokens.spaceLg,
+                        ),
+                      ListTile(
+                        onTap: () => _openSource(context, source),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: AppTokens.spaceLg,
+                          vertical: AppTokens.spaceXs,
+                        ),
+                        leading: Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            color: _sourceColor(source.type, scheme)
+                                .withValues(alpha: 0.15),
+                            borderRadius:
+                                BorderRadius.circular(AppTokens.radiusSm),
+                          ),
+                          child: Icon(
+                            _sourceIcon(source.type),
+                            color: _sourceColor(source.type, scheme),
+                            size: 22,
+                          ),
+                        ),
+                        title: Row(
+                          children: <Widget>[
+                            _buildAgeDot(source, scheme, l10n),
+                            const SizedBox(width: AppTokens.spaceSm),
+                            Expanded(
+                              child: Text(
+                                source.name,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodyMedium
+                                    ?.copyWith(
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        subtitle: statusChip == null
+                            ? null
+                            : Padding(
+                                padding: const EdgeInsets.only(
+                                    top: AppTokens.spaceXs),
+                                child: statusChip,
+                              ),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.open_in_new_rounded),
+                          tooltip: l10n.openSourceWebsite,
+                          onPressed: () => openInAppBrowser(
+                              context, source.site.baseUrl,
+                              source: source),
                         ),
                       ),
+                      if (expanded)
+                        ExploreKindsPanel(
+                          result: _kinds[source.id],
+                          loading: _loading.contains(source.id),
+                          onRefresh: () => _loadKinds(source, refresh: true),
+                          onOpenUrl: (kind) => _openKindUrl(source, kind),
+                          onValueChanged: (kind, value) =>
+                              _setKindValue(source, kind, value),
+                          onRunAction: (kind) => _runKindAction(source, kind),
+                        ),
                     ],
                   ),
-                  subtitle: statusChip == null
-                      ? null
-                      : Padding(
-                          padding:
-                              const EdgeInsets.only(top: AppTokens.spaceXs),
-                          child: statusChip,
-                        ),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.open_in_new_rounded),
-                    tooltip: l10n.openSourceWebsite,
-                    onPressed: () =>
-                        openInAppBrowser(context, source.site.baseUrl,
-                            source: source),
-                  ),
-                ),
-                if (expanded)
-                  ExploreKindsPanel(
-                    result: _kinds[source.id],
-                    loading: _loading.contains(source.id),
-                    onRefresh: () => _loadKinds(source, refresh: true),
-                    onOpenUrl: (kind) => _openKindUrl(source, kind),
-                    onValueChanged: (kind, value) =>
-                        _setKindValue(source, kind, value),
-                    onRunAction: (kind) => _runKindAction(source, kind),
-                  ),
-              ],
+                );
+              },
             ),
-          );
-        },
+          ),
+        ],
       );
       // 视口圆角裁剪：滚动中屏幕边缘始终圆滑；卡底只由源行分段自绘——
       // 有源的地方铺色、没有的地方不铺（短列表贴合内容高度）。
@@ -248,27 +276,9 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
       );
     }
 
-    // 源列表页签：搜索框常驻列表正上方（无源时无可搜，随空态省略）。
-    if (sources.isEmpty && tiles.isEmpty) return body;
-    return Column(
-      children: <Widget>[
-        Padding(
-          padding: const EdgeInsets.fromLTRB(
-            AppTokens.spaceMd,
-            AppTokens.spaceXs,
-            AppTokens.spaceMd,
-            AppTokens.spaceXs,
-          ),
-          child: AppSearchField(
-            controller: _searchController,
-            hint: l10n.searchSourceHint,
-            prefixIcon: const Icon(Icons.search_rounded, size: 20),
-            onChanged: (String v) => setState(() => _query = v),
-          ),
-        ),
-        Expanded(child: body),
-      ],
-    );
+    // 搜索框已并入列表滚动流（见上方 CustomScrollView 首个滑块，不再
+    // 吸顶）；无源也无媒体服务器入口时无可搜，随空态省略。
+    return body;
   }
 
   /// 书源是否声明了 exploreUrl（有发现页选项栏可展开）。
@@ -377,8 +387,7 @@ class _OnlineSourceBrowserScreenState extends State<OnlineSourceBrowserScreen> {
       if (!mounted) return;
     }
     if (result.copiedTexts.isNotEmpty) {
-      await Clipboard.setData(
-          ClipboardData(text: result.copiedTexts.last));
+      await Clipboard.setData(ClipboardData(text: result.copiedTexts.last));
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(AppLocalizations.of(context).shareCopied)),
