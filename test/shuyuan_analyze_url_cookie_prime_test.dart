@@ -97,25 +97,21 @@ void main() {
     expect(_listHits, 3);
   });
 
-  test('源声明不启用 cookieJar 时不做根域预处理', () async {
+  test('源声明不启用 cookieJar 时不做根域预处理（412 正文原样返回）', () async {
     final src = _source(cookieJar: false);
     final ctx = await ShuyuanSourceContext.forSource('cookie-prime-off');
-    await expectLater(
-      ShuyuanSourceContext.run(ctx, () => _fetch(src)),
-      throwsA(isA<Exception>()),
-    );
+    final body = await ShuyuanSourceContext.run(ctx, () => _fetch(src));
+    expect(body, contains('precondition failed'));
     expect(_homeHits, 0);
     expect(_listHits, 1);
   });
 
-  test('根域未下发 Cookie 时只重试一次即失败，不循环', () async {
+  test('根域未下发 Cookie 时只重试一次，终态 412 正文返回不循环', () async {
     _homeSetsCookie = false;
     final src = _source();
     final ctx = await ShuyuanSourceContext.forSource('cookie-prime-empty');
-    await expectLater(
-      ShuyuanSourceContext.run(ctx, () => _fetch(src)),
-      throwsA(isA<Exception>()),
-    );
+    final body = await ShuyuanSourceContext.run(ctx, () => _fetch(src));
+    expect(body, contains('precondition failed'));
     expect(_homeHits, 1);
     expect(_listHits, 1);
   });

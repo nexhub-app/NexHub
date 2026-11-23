@@ -87,14 +87,16 @@ const String sourceContextJsPrelude = r'''
   // 可靠）；__shuyuanOps 直挂 globalThis 的方案在排空求值里读不到
   // （排空视野无裸 global 别名、且 global.X 赋值属性不可见——实测）。 ──
   var __syopN = 0;
-  function syOp(op, a, b) {
+  function syOp(op, a, b, c) {
     var v = global.__javaVars;
     if (!v || typeof v !== 'object') {
       v = {};
       global.__javaVars = v;
     }
     __syopN++;
-    v['__syop_' + __syopN] = JSON.stringify({ op: op, a: a == null ? '' : a, b: b == null ? '' : b });
+    var rec = { op: op, a: a == null ? '' : a, b: b == null ? '' : b };
+    if (c != null) rec.c = c;
+    v['__syop_' + __syopN] = JSON.stringify(rec);
   }
 
   var cookie = {
@@ -330,7 +332,9 @@ const String sourceContextJsPrelude = r'''
       syOp('refreshKinds', '', '');
       return true;
     },
-    refreshJSLib: function () { return true; },
+    // legado BaseSource.refreshJSLib：清除 jsLib 作用域，下次求值重新执行
+    // （SharedJsScope.remove）。
+    refreshJSLib: function () { syOp('refreshJSLib', '', ''); return true; },
     refreshBookUrl: function () { return true; },
     // legado BaseSource.putConcurrent：运行期调整本源并发率
     // （ConcurrentRateLimiter.updateConcurrentRate(getKey(), value)）。
@@ -415,7 +419,8 @@ const String sourceContextJsPrelude = r'''
       syCtx().cache[String(k)] = s;
       // 传字符串快照：宿主 cache 是 Map<String,String>，对象直传会在排空
       // 时类型失配；同时保证占位符守卫看到的就是最终缓存值。
-      syOp('cachePut', k, s);
+      // saveTime 单位秒（legado CacheManager：0/缺省 = 永久）。
+      syOp('cachePut', k, s, saveTime);
       return null;
     },
     get: function (k) {
@@ -433,7 +438,7 @@ const String sourceContextJsPrelude = r'''
     putMemory: function (k, v) { return cache.put(k, v); },
     getMemory: function (k) { return cache.get(k); },
     deleteMemory: function (k) { return cache.delete(k); },
-    putFile: function (k, v) { return cache.put(k, v); },
+    putFile: function (k, v, saveTime) { return cache.put(k, v, saveTime); },
     getFile: function (k) { return cache.get(k); },
   };
 

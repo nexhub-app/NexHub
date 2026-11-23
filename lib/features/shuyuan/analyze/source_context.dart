@@ -46,6 +46,7 @@ class ShuyuanSourceContext {
   void bindSource(XiaoshuoBookSource bs) {
     bookSourceUrl = bs.bookSourceUrl;
     jsLib = bs.jsLib ?? '';
+    cookieJarEnabled = bs.enabledCookieJar;
     sourceMeta
       ..clear()
       ..addAll(<String, dynamic>{
@@ -94,9 +95,24 @@ class ShuyuanSourceContext {
   /// cache.get/put/delete（会话级内存）。
   final Map<String, String> cache = {};
 
+  /// cache 条目到期时间（毫秒时间戳；无条目 = 永久）。legado `saveTime`
+  /// 语义：0 → 永久，N 秒 → now + N*1000。
+  final Map<String, int> cacheDeadlines = {};
+
+  /// 排空时标记：cache 有写（需持久化）。
+  bool cacheDirty = false;
+
   /// jsLib 预执行内容（书源 source.jsLib）——每引擎实例首次 eval 前执行，
   /// 定义的函数/变量对该源所有后续脚本可见（legado SharedJsScope 等效）。
   String jsLib = '';
+
+  /// `source.refreshJSLib()` 请求（legado `SharedJsScope.remove(jsLib)`）：
+  /// 下一轮 eval 前清除已应用标记、重新执行 jsLib。
+  bool jsLibRefreshRequested = false;
+
+  /// legado `BookSource.enabledCookieJar`：Cookie 罐总闸。关闭时覆盖层
+  /// 不随请求发送，响应/WebView 回写的 Cookie 不落覆盖层。
+  bool cookieJarEnabled = true;
 
   /// java.ajax 确定性重放缓存：完整 ajax URL（含 AnalyzeUrl 选项串）→
   /// 响应体。settle 循环抓取后写入，重放时脚本内 ajax 直出真数据。
@@ -309,8 +325,8 @@ class ShuyuanSourceContext {
           headers['User-Agent'] =
               HttpFetcher.instance.userAgentForUrl(url);
         } catch (_) {}
-        final overlay = ctx.cookiesForHost(host);
-        if (overlay.isNotEmpty) {
+        final overlay = ctx.cookieJarEnabled ? ctx.cookiesForHost(host) : null;
+        if (overlay != null && overlay.isNotEmpty) {
           headers['Cookie'] =
               overlay.entries.map((e) => '${e.key}=${e.value}').join('; ');
         }
@@ -332,7 +348,7 @@ class ShuyuanSourceContext {
           overrideUrlRegex: overrideUrlRegex.isEmpty ? null : overrideUrlRegex,
         ).timeout(const Duration(seconds: 45));
         ctx.webviewCache[key] = result?.html ?? '';
-        if (result != null) {
+        if (result != null && ctx.cookieJarEnabled) {
           for (final e in result.cookieHeaders.entries) {
             ctx.syncCookies(e.key, e.value);
           }
@@ -388,7 +404,10 @@ class ShuyuanSourceContext {
         'loginInfo': Map<String, String>.from(loginInfo),
         'loginHeader': Map<String, String>.from(loginHeader),
         'loginHeaderRaw': loginHeaderRaw,
-        'cache': Map<String, String>.from(cache),
+        'cache': <String, String>{
+          for (final e in cache.entries)
+            if (!_cacheExpired(e.key)) e.key: e.value,
+        },
         // ajaxCache 不进种子：它随 settle 轮次单调增长，若每轮都序列化整个
         // 缓存进 JS 源码，长目录会退化成 O(n²)（几十页正文 = 每次 eval
         // 重建数 MB 字符串）。改由 JsEngine 增量推送进 JS 全局 __ajaxCache。
@@ -450,9 +469,23 @@ class ShuyuanSourceContext {
           // 脚本常把取数结果拼进 headers 再 cache.put，一旦把带
           // `__WEBVIEW_n__` 的脏值存下来，后续重放轮会命中它而不再重建
           // （legado 的桥是同步的，缓存里只会出现真实响应）。
-          if (!_hasReplayPlaceholderValue(b)) cache[a] = b;
+          if (!_hasReplayPlaceholderValue(b)) {
+            cache[a] = b;
+            final saveTime = int.tryParse(op['c']?.toString() ?? '') ?? 0;
+            if (saveTime > 0) {
+              cacheDeadlines[a] =
+                  DateTime.now().millisecondsSinceEpoch + saveTime * 1000;
+            } else {
+              cacheDeadlines.remove(a);
+            }
+            cacheDirty = true;
+          }
         case 'cacheDel':
           cache.remove(a);
+          cacheDeadlines.remove(a);
+          cacheDirty = true;
+        case 'refreshJSLib':
+          jsLibRefreshRequested = true;
         case 'ajax':
           // 脚本发起的网络请求记录（settle 循环抓取）。按 URL 去重。
           if (!ajaxPending.contains(a)) ajaxPending.add(a);
@@ -578,6 +611,12 @@ class ShuyuanSourceContext {
           loginHeader.clear();
       }
     }
+  }
+
+  /// cache 条目是否已过期（legado CacheManager：deadline 0/缺省 = 永久）。
+  bool _cacheExpired(String key) {
+    final d = cacheDeadlines[key];
+    return d != null && d <= DateTime.now().millisecondsSinceEpoch;
   }
 
   /// URL/标签 → host（与 JS 侧 syHost 同口径）。
@@ -724,6 +763,11 @@ class ShuyuanSourceContext {
   static const String _cookieStoreKey = 'shuyuan_source_cookies_v1';
   static Map<String, Map<String, Map<String, String>>>? _cookieCache;
 
+  // ── cache 持久化（per sourceId，legado CacheManager 对等） ──
+  // 形如 {sourceId: {key: {v: value, d: deadlineMs}}}；d=0 表示永久。
+  static const String _cacheStoreKey = 'shuyuan_source_cache_v1';
+  static Map<String, Map<String, Map<String, dynamic>>>? _cacheStore;
+
   /// 创建上下文并装载持久化状态（cookie 覆盖层 + 源变量）。
   ///
   /// 旧实现在 `_loadedSources` 命中时直接返回**空上下文**（无 cookie、
@@ -744,6 +788,24 @@ class ShuyuanSourceContext {
     try {
       final vars = await ShuyuanVariableStore.load(sourceId);
       if (vars.isNotEmpty) ctx.sourceVars.addAll(vars);
+    } catch (_) {}
+    // cache.put 持久化条目（legado CacheManager：带 deadline 落库）。
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_cacheStoreKey);
+      if (raw != null && raw.isNotEmpty) {
+        _cacheStore ??= _decodeCacheStore(raw);
+        final mine = _cacheStore![sourceId];
+        if (mine != null) {
+          final now = DateTime.now().millisecondsSinceEpoch;
+          mine.forEach((k, meta) {
+            final d = int.tryParse('${meta['d'] ?? 0}') ?? 0;
+            if (d > 0 && d <= now) return;
+            ctx.cache[k] = meta['v']?.toString() ?? '';
+            if (d > 0) ctx.cacheDeadlines[k] = d;
+          });
+        }
+      }
     } catch (_) {}
     return ctx;
   }
@@ -781,16 +843,33 @@ class ShuyuanSourceContext {
             sourceId, Map<String, String>.from(sourceVars));
       } catch (_) {}
     }
-    if (!cookiesDirty) return;
-    cookiesDirty = false;
+    if (!cookiesDirty && !cacheDirty) return;
+    if (cookiesDirty) {
+      cookiesDirty = false;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        _cookieCache ??= {};
+        _cookieCache![sourceId] = {
+          for (final e in cookies.entries)
+            e.key: {'value': e.value['value'] ?? '', 'host': e.value['host'] ?? ''}
+        };
+        await prefs.setString(_cookieStoreKey, jsonEncode(_cookieCache));
+      } catch (_) {}
+    }
+    if (!cacheDirty) return;
+    cacheDirty = false;
     try {
       final prefs = await SharedPreferences.getInstance();
-      _cookieCache ??= {};
-      _cookieCache![sourceId] = {
-        for (final e in cookies.entries)
-          e.key: {'value': e.value['value'] ?? '', 'host': e.value['host'] ?? ''}
+      _cacheStore ??= {};
+      _cacheStore![sourceId] = {
+        for (final e in cache.entries)
+          if (!_cacheExpired(e.key))
+            e.key: <String, dynamic>{
+              'v': e.value,
+              'd': cacheDeadlines[e.key] ?? 0,
+            }
       };
-      await prefs.setString(_cookieStoreKey, jsonEncode(_cookieCache));
+      await prefs.setString(_cacheStoreKey, jsonEncode(_cacheStore));
     } catch (_) {}
   }
 
@@ -808,6 +887,14 @@ class ShuyuanSourceContext {
     try {
       await ShuyuanVariableStore.save(sourceId, const <String, String>{});
     } catch (_) {}
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_cacheStoreKey);
+      if (raw != null && raw.isNotEmpty) {
+        _cacheStore = _decodeCacheStore(raw)..remove(sourceId);
+        await prefs.setString(_cacheStoreKey, jsonEncode(_cacheStore));
+      }
+    } catch (_) {}
   }
 
   static Map<String, Map<String, Map<String, String>>> _decodeCookieStore(
@@ -824,6 +911,30 @@ class ShuyuanSourceContext {
               m[name.toString()] = {
                 'value': meta['value']?.toString() ?? '',
                 'host': meta['host']?.toString() ?? '',
+              };
+            }
+          });
+          out[src.toString()] = m;
+        });
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  static Map<String, Map<String, Map<String, dynamic>>> _decodeCacheStore(
+      String raw) {
+    final out = <String, Map<String, Map<String, dynamic>>>{};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        decoded.forEach((src, entries) {
+          if (entries is! Map) return;
+          final m = <String, Map<String, dynamic>>{};
+          entries.forEach((k, meta) {
+            if (meta is Map) {
+              m[k.toString()] = <String, dynamic>{
+                'v': meta['v']?.toString() ?? '',
+                'd': int.tryParse('${meta['d'] ?? 0}') ?? 0,
               };
             }
           });
@@ -1071,6 +1182,7 @@ class ShuyuanSourceContext {
   /// 测试隔离。
   static void resetForTest() {
     _cookieCache = null;
+    _cacheStore = null;
   }
 }
 

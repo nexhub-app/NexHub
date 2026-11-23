@@ -126,7 +126,7 @@ void main() {
         baseUrl: 'http://h.test/',
       );
       expect(au.body, '{"q":"中文"}');
-      expect(au.headerMap['Content-Type'], 'application/json');
+      expect(au.headerMap['Content-Type'], 'application/json; charset=UTF-8');
     });
   });
 
@@ -279,7 +279,8 @@ void main() {
           url: '$origin/p,{"method":"POST","body":${jsonEncode(raw)}}',
           baseUrl: origin,
         );
-        expect(normal.headerMap['Content-Type'], 'application/json');
+        expect(
+            normal.headerMap['Content-Type'], 'application/json; charset=UTF-8');
       } finally {
         await server.close(force: true);
       }

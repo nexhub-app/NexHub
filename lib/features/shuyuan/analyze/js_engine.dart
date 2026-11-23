@@ -457,6 +457,12 @@ class JsEngine {
       _pushBrowserAwaitDeltas(activeCtx.browserAwaitCache);
       _pushVerificationDeltas(activeCtx.verificationCodeCache);
       _pushFileOpDeltas(activeCtx.fileOpResults);
+      // source.refreshJSLib()：清除已应用标记，本轮重新执行 jsLib
+      //（legado SharedJsScope.remove → 下次 evalJS 重建作用域）。
+      if (activeCtx.jsLibRefreshRequested) {
+        activeCtx.jsLibRefreshRequested = false;
+        _jsLibApplied = null;
+      }
       // jsLib 预执行（按源，同引擎同内容只执行一次）：书源自定义函数/
       // 变量对所有后续脚本可见（legado SharedJsScope 等效）。
       // jsLib 为 JSON 对象时（`{"name":"https://.../lib.js"}`）按 legado

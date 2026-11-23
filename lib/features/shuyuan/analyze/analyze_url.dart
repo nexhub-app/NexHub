@@ -359,9 +359,12 @@ class AnalyzeUrl {
       final b = body;
       if (b == null || b.isEmpty) return;
       if (_looksLikeStructuredBody(b)) {
-        // JSON/XML 请求体：按原文发送，仅补 JSON 的 Content-Type。
-        if (b.trimLeft().startsWith('{')) {
-          headerMap.putIfAbsent('Content-Type', () => 'application/json');
+        // JSON/XML 请求体：按原文发送；`{`/`[` 补 legado postJson 的
+        // Content-Type（含 charset），XML 不声明类型。
+        final t = b.trimLeft();
+        if (t.startsWith('{') || t.startsWith('[')) {
+          headerMap.putIfAbsent(
+              'Content-Type', () => 'application/json; charset=UTF-8');
         }
         return;
       }
@@ -638,14 +641,17 @@ class AnalyzeUrl {
             .forEach((k, v) => _putHeader(out, k, v));
       } catch (_) {}
     }
-    headerMap.forEach((k, v) => _putHeader(out, k, v));
     final activeCtx = ShuyuanSourceContext.current;
-    if (activeCtx != null) {
-      if (!_headerMapReplaced) {
-        activeCtx.loginHeader.forEach((k, v) {
-          if (k.isNotEmpty && v.isNotEmpty) _putHeader(out, k, v);
-        });
-      }
+    // 登录头先于 URL 选项头合并（legado BaseSource.getHeaderMap 把
+    // loginHeader 并进源 header，选项 headers 最后写入覆盖）——选项头优先。
+    if (activeCtx != null && !_headerMapReplaced) {
+      activeCtx.loginHeader.forEach((k, v) {
+        if (k.isNotEmpty && v.isNotEmpty) _putHeader(out, k, v);
+      });
+    }
+    headerMap.forEach((k, v) => _putHeader(out, k, v));
+    final cookieJar = activeCtx?.cookieJarEnabled ?? true;
+    if (activeCtx != null && cookieJar) {
       final reqHost = Uri.tryParse(url)?.host ?? '';
       final overlay = activeCtx.cookiesForHost(reqHost);
       if (overlay.isNotEmpty) {
@@ -655,7 +661,8 @@ class AnalyzeUrl {
             _mergeCookieStrings(_headerValue(out, 'Cookie'), overlayStr));
       }
     }
-    final sharedCookie = HttpFetcher.instance.cookieHeaderForUrl(url);
+    final sharedCookie =
+        cookieJar ? HttpFetcher.instance.cookieHeaderForUrl(url) : null;
     if (sharedCookie != null && sharedCookie.isNotEmpty) {
       _putHeader(out, 'Cookie',
           _mergeCookieStrings(_headerValue(out, 'Cookie'), sharedCookie));
@@ -726,6 +733,11 @@ class AnalyzeUrl {
       // 源 header 与 per-source Cookie 覆盖层透传给 WebView，页面写下的
       // Cookie 回写覆盖层（不写全局 jar）。
       final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+      // legado getStrResponseAwait 的 withLimit 同时覆盖 WebView 与直连取数。
+      final rateKey = source?.bookSourceUrl ?? url;
+      await ConcurrentRateLimiter.gate(
+          ConcurrentRateLimiter.effectiveRate(source?.concurrentRate, rateKey),
+          rateKey);
       final webHeaders = <String, String>{};
       if (!_headerMapReplaced) {
         try {
@@ -754,25 +766,24 @@ class AnalyzeUrl {
         }
       }
       // legado BackstageWebView 的 headerMap = 源 header（或 headerMapF）
-      // + URL 选项 headers 的并集；显式 headers 参数与 HTTP 分支同序补上。
+      // + 登录头 + URL 选项 headers 的并集（选项头最后写入、优先级最高）；
+      // 显式 headers 参数与 HTTP 分支同序补上。
+      if (activeCtx != null && !_headerMapReplaced) {
+        activeCtx.loginHeader
+            .forEach((k, v) => _putHeader(webHeaders, k, v));
+      }
       headerMap.forEach((k, v) => _putHeader(webHeaders, k, v));
       if (headers != null) {
         headers.forEach((k, v) => _putHeader(webHeaders, k, v));
       }
-      if (activeCtx != null) {
-        if (host.isNotEmpty) {
-          final overlay = activeCtx.cookiesForHost(host);
-          if (overlay.isNotEmpty) {
-            _putHeader(
-                webHeaders,
-                'Cookie',
-                _mergeCookieStrings(_headerValue(webHeaders, 'Cookie'),
-                    overlay.entries.map((e) => '${e.key}=${e.value}').join('; ')));
-          }
-        }
-        if (!_headerMapReplaced && activeCtx.loginHeader.isNotEmpty) {
-          activeCtx.loginHeader
-              .forEach((k, v) => _putHeader(webHeaders, k, v));
+      if (activeCtx != null && activeCtx.cookieJarEnabled && host.isNotEmpty) {
+        final overlay = activeCtx.cookiesForHost(host);
+        if (overlay.isNotEmpty) {
+          _putHeader(
+              webHeaders,
+              'Cookie',
+              _mergeCookieStrings(_headerValue(webHeaders, 'Cookie'),
+                  overlay.entries.map((e) => '${e.key}=${e.value}').join('; ')));
         }
       }
       // 与下方 HTTP 分支同款护栏：源 header 的 @js 可能调用 java.ajax，首轮
@@ -802,7 +813,7 @@ class AnalyzeUrl {
           webJs: webJs,
         );
       }
-      if (activeCtx != null && result != null) {
+      if (activeCtx != null && activeCtx.cookieJarEnabled && result != null) {
         for (final e in result.cookieHeaders.entries) {
           activeCtx.syncCookies(e.key, e.value);
         }
@@ -887,6 +898,15 @@ class AnalyzeUrl {
       }
     }
 
+    // 登录头在 URL 选项头之前合并（legado：loginHeader 属于源 header，
+    // 选项 headers 最后写入覆盖）——选项头优先级高于登录头。
+    // 替换模式跳过（legado headerMapF 已完全替换登录头来源）。
+    if (activeCtx != null && !_headerMapReplaced) {
+      activeCtx.loginHeader.forEach((k, v) {
+        if (k.isNotEmpty && v.isNotEmpty) _putHeader(requestHeaders, k, v);
+      });
+    }
+
     // URL 选项 headers（书源 searchUrl 的 `,{"headers":{...}}` 声明 + POST
     // Content-Type 补全）此前从未并入实际请求，源声明的请求头全部丢失；
     // 此处统一并入（选项头在源 header 之后、显式 headers 参数之前生效）。
@@ -899,17 +919,11 @@ class AnalyzeUrl {
       headers.forEach((k, v) => _putHeader(requestHeaders, k, v));
     }
 
-    // 注入对象上下文（P1-2）：登录头合并（source.putLoginHeader 语义）+
     // per-source cookie 覆盖层按 host 合并（书源命名空间隔离——三通道设计，
     // 只读合并进本次请求，不写全局罐）。activeCtx 已在函数入口取过。
     // 覆盖层先于共享罐合并：显式 Cookie > per-source 覆盖层 > 共享罐。
-    // 替换模式跳过登录头（legado headerMapF 已完全替换登录头来源）。
-    if (activeCtx != null) {
-      if (!_headerMapReplaced) {
-        activeCtx.loginHeader.forEach((k, v) {
-          if (k.isNotEmpty && v.isNotEmpty) _putHeader(requestHeaders, k, v);
-        });
-      }
+    // legado `enabledCookieJar` 是 Cookie 总闸：关罐源不读写覆盖层与共享罐。
+    if (activeCtx != null && activeCtx.cookieJarEnabled) {
       _mergeCtxCookieOverlay(requestHeaders, url, activeCtx);
     }
 
@@ -918,7 +932,9 @@ class AnalyzeUrl {
     // 用独立 Dio，不读那个 jar，若不回带，验证重试仍会被反爬系统拦截（之前
     // 幻梦ACG「系统安全验证」即因此反复返空列表 / 「该分类暂无内容」）。
     // 首次请求时 jar 为空 → 此步为空操作，无副作用。
-    final sharedCookie = HttpFetcher.instance.cookieHeaderForUrl(url);
+    final sharedCookie = (activeCtx == null || activeCtx.cookieJarEnabled)
+        ? HttpFetcher.instance.cookieHeaderForUrl(url)
+        : null;
     if (sharedCookie != null && sharedCookie.isNotEmpty) {
       _putHeader(
           requestHeaders,
@@ -1026,6 +1042,30 @@ class AnalyzeUrl {
             cookiePrimed = true;
             continue;
           }
+          // legado OkHttpUtils 不按状态码抛错：非 2xx 的响应体原样交给
+          // 解析（404 正文页、500 提示页都可能被规则读取）。401/403 是
+          // 验证/鉴权例外，空体无解析价值——两者仍走下方异常路径。
+          final errStatus = e.response?.statusCode;
+          final errData = e.response?.data;
+          if (errStatus != null &&
+              errStatus >= 400 &&
+              errStatus != 401 &&
+              errStatus != 403 &&
+              errData is List<int> &&
+              errData.isNotEmpty) {
+            final errResponse = e.response!;
+            response = Response<List<int>>(
+              requestOptions: errResponse.requestOptions,
+              data: errData,
+              statusCode: errStatus,
+              statusMessage: errResponse.statusMessage,
+              headers: errResponse.headers,
+              redirects: errResponse.redirects,
+              isRedirect: errResponse.isRedirect,
+              extra: errResponse.extra,
+            );
+            break;
+          }
           // retry：书源 URL 选项声明的重试次数（网络异常/连接失败重试；
           // 验证挑战异常不在此层——由下方挑战检测分支处理）。
           attempt += 1;
@@ -1076,10 +1116,6 @@ class AnalyzeUrl {
           preferWebView: useWebView,
           webJs: webJs,
         );
-      }
-
-      if (response.statusCode != null && response.statusCode! >= 400) {
-        throw Exception('请求失败：HTTP ${response.statusCode}，URL：$url');
       }
 
       // legado AnalyzeUrl：XML 响应且正文未带声明时补 `<?xml version="1.0"?>`；
@@ -1217,7 +1253,8 @@ class AnalyzeUrl {
   /// 覆盖层，绝不写全局 HttpFetcher 罐（三通道隔离红线）。
   static void _storeResponseCookies(ShuyuanSourceContext? ctx, String url,
       Map<String, List<String>>? headers) {
-    if (ctx == null) return;
+    // legado `enabledCookieJar` 总闸：关罐源不吸收响应 Set-Cookie。
+    if (ctx == null || !ctx.cookieJarEnabled) return;
     final setCookies = _setCookieHeaders(headers);
     if (setCookies == null || setCookies.isEmpty) return;
     ctx.applyResponseCookies(url, setCookies);
