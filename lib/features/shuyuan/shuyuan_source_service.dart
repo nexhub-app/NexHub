@@ -43,6 +43,12 @@ class ShuyuanSource {
   final Map<String, dynamic>? ruleContent;
   final Map<String, dynamic>? ruleExplore;
 
+  /// 段评规则（legado `BookSource.ruleReview`）：整图保留、原样透传。
+  final Map<String, dynamic>? ruleReview;
+
+  /// 首页模块 JSON 数组文本（legado `BookSource.homepageModules`）。
+  final String? homepageModules;
+
   // ── legado 扩展字段（P0 导入保真）：此前导入链路只透传 15 个字段，jsLib/
   // 登录三件套/并发限速/权重等在入库时全部丢失。类型容错见 [_asInt]/[_asJsString]。
   final String? bookUrlPattern;
@@ -99,6 +105,8 @@ class ShuyuanSource {
     this.ruleToc,
     this.ruleContent,
     this.ruleExplore,
+    this.ruleReview,
+    this.homepageModules,
     this.bookUrlPattern,
     this.customOrder = 0,
     this.enabledExplore,
@@ -155,6 +163,10 @@ class ShuyuanSource {
           ruleContent != null ? ContentRule.fromJson(ruleContent!) : null,
       ruleExplore:
           ruleExplore != null ? ExploreRule.fromJson(ruleExplore!) : null,
+      ruleReview: ruleReview != null
+          ? Map<String, dynamic>.from(ruleReview!)
+          : null,
+      homepageModules: homepageModules,
       // legado 扩展字段（P0 导入保真）：运行期引擎可用的前提。
       bookUrlPattern: bookUrlPattern,
       customOrder: customOrder,
@@ -212,6 +224,8 @@ class ShuyuanSource {
       ruleToc: _parseRuleDynamic(json['ruleToc']),
       ruleContent: _parseRuleDynamic(json['ruleContent']),
       ruleExplore: _parseRuleDynamic(json['ruleExplore']),
+      ruleReview: _parseRuleDynamic(json['ruleReview']),
+      homepageModules: _asJsString(json['homepageModules']),
       bookUrlPattern: json['bookUrlPattern'] as String?,
       customOrder: _asInt(json['customOrder']) ?? 0,
       enabledExplore: json['enabledExplore'] as bool?,
@@ -252,6 +266,8 @@ class ShuyuanSource {
         if (ruleToc != null) 'ruleToc': ruleToc,
         if (ruleContent != null) 'ruleContent': ruleContent,
         if (ruleExplore != null) 'ruleExplore': ruleExplore,
+        if (ruleReview != null) 'ruleReview': ruleReview,
+        if (homepageModules != null) 'homepageModules': homepageModules,
         if (bookUrlPattern != null) 'bookUrlPattern': bookUrlPattern,
         if (customOrder != 0) 'customOrder': customOrder,
         if (enabledExplore != null) 'enabledExplore': enabledExplore,

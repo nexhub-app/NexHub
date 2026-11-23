@@ -15,6 +15,7 @@ import 'package:fast_gbk/fast_gbk.dart';
 import '../../../core/utils/app_log.dart';
 import 'analyze_rule.dart';
 import 'js_engine.dart';
+import 'legado_bool.dart';
 import 'webview_fetcher.dart';
 import '../../../core/scraper/browser_faithful_adapter.dart';
 import '../../../core/scraper/verification_detector.dart';
@@ -98,6 +99,10 @@ class AnalyzeUrl {
   /// 一次，不能命中阶段缓存被去重。
   bool skipPageCache;
 
+  /// legado `getStrResponseAwait(skipRateLimit = true)`：跳过 concurrentRate
+  /// 限流（`java.ajaxAll(urls, skipRateLimit)` 批请求专用）。
+  bool skipRateLimit;
+
   /// URL 内 JS 的求值器（同一 AnalyzeUrl 内复用，连同其 JS 引擎）。
   /// 一个 URL 模板常有多个 `{{...}}`，旧实现每个都 new AnalyzeRule →
   /// new QuickJS 运行时且从不释放。
@@ -126,6 +131,7 @@ class AnalyzeUrl {
     this.speakText,
     this.speakSpeed,
     this.skipPageCache = false,
+    this.skipRateLimit = false,
     Map<String, String>? headerMapF,
   }) {
     _rawUrl = url;
@@ -282,10 +288,11 @@ class AnalyzeUrl {
           body = jsonEncode(rawBody);
         }
         charset = option['charset']?.toString();
-        retry = option['retry'] ?? 0;
+        // legado `UrlOption.setRetry`：`toIntOrNull` 宽容，非数字回落 0。
+        retry = int.tryParse('${option['retry'] ?? ''}'.trim()) ?? 0;
         // legado URL 选项键是 `webView`；`useWebView` 是历史兼容写法。
         final wvRaw = option['webView'] ?? option['useWebView'];
-        useWebView = wvRaw == true || '$wvRaw' == 'true';
+        useWebView = legadoUseWebView(wvRaw);
         webJs = option['webJs']?.toString();
         bodyJs = option['bodyJs']?.toString();
         dnsIp = option['dnsIp']?.toString();
@@ -733,11 +740,14 @@ class AnalyzeUrl {
       // 源 header 与 per-source Cookie 覆盖层透传给 WebView，页面写下的
       // Cookie 回写覆盖层（不写全局 jar）。
       final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
-      // legado getStrResponseAwait 的 withLimit 同时覆盖 WebView 与直连取数。
+      // legado getStrResponseAwait 的 withLimit 同时覆盖 WebView 与直连取数；
+      // skipRateLimit（java.ajaxAll 批请求）整批放行。
       final rateKey = source?.bookSourceUrl ?? url;
-      await ConcurrentRateLimiter.gate(
-          ConcurrentRateLimiter.effectiveRate(source?.concurrentRate, rateKey),
-          rateKey);
+      if (!skipRateLimit) {
+        await ConcurrentRateLimiter.gate(
+            ConcurrentRateLimiter.effectiveRate(source?.concurrentRate, rateKey),
+            rateKey);
+      }
       final webHeaders = <String, String>{};
       if (!_headerMapReplaced) {
         try {
@@ -990,6 +1000,14 @@ class AnalyzeUrl {
             headers: requestHeaders,
             responseType: ResponseType.bytes,
             followRedirects: followRedirects ?? true,
+            // legado UrlOption.dnsIp：自定义建连 IP 经 Options.extra 交给
+            // BrowserFaithfulHttpClientAdapter（Host/SNI 仍用原域名）。
+            extra: dnsIp != null && dnsIp!.trim().isNotEmpty
+                ? <String, dynamic>{
+                    BrowserFaithfulHttpClientAdapter.dnsIpExtraKey:
+                        dnsIp!.trim(),
+                  }
+                : null,
             // 不跟随重定向时 3xx 是正常结果（Location 头即脚本要的答案），
             // 不能按错误抛出。
             validateStatus: (status) => status != null &&
@@ -998,11 +1016,14 @@ class AnalyzeUrl {
           );
 
       // concurrentRate 限速（legado ConcurrentRateLimiter 等效，书源侧
-      // 包装——按源计数，媒体源链路零影响）。运行期 putConcurrent 覆盖优先。
+      // 包装——按源计数，媒体源链路零影响）。运行期 putConcurrent 覆盖优先；
+      // skipRateLimit（java.ajaxAll 批请求）整批放行。
       final rateKey = source?.bookSourceUrl ?? url;
-      await ConcurrentRateLimiter.gate(
-          ConcurrentRateLimiter.effectiveRate(source?.concurrentRate, rateKey),
-          rateKey);
+      if (!skipRateLimit) {
+        await ConcurrentRateLimiter.gate(
+            ConcurrentRateLimiter.effectiveRate(source?.concurrentRate, rateKey),
+            rateKey);
+      }
 
       Response<List<int>>? response;
       var attempt = 0;
@@ -1671,6 +1692,15 @@ class AnalyzeUrl {
   /// 全部按 UTF-8 容错解码 → 中文乱码）
   /// 4. UTF-8 容错解码
   String _decodeBody(Uint8List bytes, String? optionCharset, String? contentType) {
+    // legado `Utf8BomUtils.removeUTF8BOM`：解码前统一剥 UTF-8 BOM。
+    // Dart 的 UTF-8 解码器会自行忽略 BOM，但 GBK 等显式字符集路径会把
+    // `EF BB BF` 当正文解出乱码前缀，故必须在选择字符集前剥离。
+    if (bytes.length >= 3 &&
+        bytes[0] == 0xEF &&
+        bytes[1] == 0xBB &&
+        bytes[2] == 0xBF) {
+      bytes = Uint8List.sublistView(bytes, 3);
+    }
     final effectiveCharset = _normalizeCharset(optionCharset) ??
         _extractCharsetFromContentType(contentType) ??
         _extractCharsetFromMeta(bytes);
@@ -1681,7 +1711,9 @@ class AnalyzeUrl {
         return gbk.decode(bytes);
       }
       if (lower == 'big5') {
-        // Dart 内置不支持 Big5，先按 UTF-8 容错解码，避免直接崩溃
+        // Dart 内置不支持 Big5（无解码表可引），明确降级为 UTF-8 容错解码。
+        AppLog.instance.w(
+            '[书源HTTP] Big5 字符集无内置解码表，按 UTF-8 容错降级（可能乱码）');
         return utf8.decode(bytes, allowMalformed: true);
       }
     }

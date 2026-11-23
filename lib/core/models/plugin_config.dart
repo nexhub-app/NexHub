@@ -1799,6 +1799,15 @@ class ShuyuanImageHeaderHooks {
 class ShuyuanImageDecodeHooks {
   static Uint8List? Function(PluginConfig source, String url, Uint8List bytes)?
       coverResolver;
+
+  /// 正文插图字节解码钩子（legado `ContentRule.imageDecode` /
+  /// ImageUtils.decode 非封面分支）。契约同 [coverResolver]。
+  static Uint8List? Function(PluginConfig source, String url, Uint8List bytes)?
+      contentResolver;
+
+  /// 源是否声明正文插图解码规则：core 图片层据此决定「缓冲全量字节后解码」
+  /// 还是保持流式下载（未声明的源零额外开销）。
+  static bool Function(PluginConfig source)? contentApplies;
 }
 
 /// 源配置解析异常（校验/路由缺失）。

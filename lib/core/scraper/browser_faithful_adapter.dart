@@ -32,6 +32,11 @@ class BrowserFaithfulHttpClientAdapter implements HttpClientAdapter {
   BrowserFaithfulHttpClientAdapter({HttpClientAdapter? fallback})
       : _fallback = fallback ?? IOHttpClientAdapter();
 
+  /// 请求级自定义建连 IP（legado `UrlOption.dnsIp` 语义）：书源链路把
+  /// `Options.extra` 里的本键传给适配器后，socket 直连该 IP（TLS SNI 与
+  /// Host 头仍用原域名）；原生源不带此键，行为不变。
+  static const String dnsIpExtraKey = 'syDnsIp';
+
   final HttpClientAdapter _fallback;
 
   /// 状态码属于「需要跟随的重定向」。
@@ -82,6 +87,7 @@ class BrowserFaithfulHttpClientAdapter implements HttpClientAdapter {
     final connectTimeout = options.connectTimeout ?? const Duration(seconds: 15);
     final receiveTimeout = options.receiveTimeout ?? const Duration(seconds: 30);
     final maxRedirects = options.followRedirects ? options.maxRedirects : 0;
+    final dnsIp = options.extra?[dnsIpExtraKey] as String?;
 
     try {
       var currentUri = uri;
@@ -98,6 +104,7 @@ class BrowserFaithfulHttpClientAdapter implements HttpClientAdapter {
           curBody,
           connectTimeout,
           receiveTimeout,
+          dnsIp,
         );
 
         final isRedirect = _redirectCodes.contains(resp.status);
@@ -134,6 +141,50 @@ class BrowserFaithfulHttpClientAdapter implements HttpClientAdapter {
     }
   }
 
+  /// 建连：默认按 URI host 走系统 DNS；携带 dnsIp 时（legado 自定义 DNS）
+  /// socket 直连指定 IP，HTTPS 再以原域名做 SNI/证书握手。
+  Future<Socket> _connect(
+    Uri uri,
+    String host,
+    int port,
+    Duration connectTimeout,
+    String? dnsIp,
+  ) async {
+    final ip = _firstIp(dnsIp);
+    if (ip == null) {
+      return uri.scheme == 'https'
+          ? SecureSocket.connect(
+              host,
+              port,
+              timeout: connectTimeout,
+              onBadCertificate: (_) => true,
+              supportedProtocols: const ['http/1.1'],
+            )
+          : Socket.connect(host, port, timeout: connectTimeout);
+    }
+    final raw = await Socket.connect(ip, port, timeout: connectTimeout);
+    if (uri.scheme != 'https') return raw;
+    return SecureSocket.secure(
+      raw,
+      host: host,
+      onBadCertificate: (_) => true,
+      supportedProtocols: const ['http/1.1'],
+    );
+  }
+
+  /// 从逗号分隔的 dnsIp 串中取第一个可解析 IP（legado `parseIpsFromString`）；
+  /// 全部不可解析时返回 null，回落系统 DNS。
+  static String? _firstIp(String? dnsIp) {
+    if (dnsIp == null || dnsIp.trim().isEmpty) return null;
+    for (final part in dnsIp.split(',')) {
+      final text = part.trim();
+      if (text.isEmpty) continue;
+      final addr = InternetAddress.tryParse(text);
+      if (addr != null) return addr.address;
+    }
+    return null;
+  }
+
   Future<_RawResponse> _perform(
     Uri uri,
     String method,
@@ -141,18 +192,11 @@ class BrowserFaithfulHttpClientAdapter implements HttpClientAdapter {
     List<int>? body,
     Duration connectTimeout,
     Duration receiveTimeout,
+    String? dnsIp,
   ) async {
     final host = uri.host;
     final port = uri.hasPort ? uri.port : (uri.scheme == 'https' ? 443 : 80);
-    final Socket socket = uri.scheme == 'https'
-        ? await SecureSocket.connect(
-            host,
-            port,
-            timeout: connectTimeout,
-            onBadCertificate: (_) => true,
-            supportedProtocols: const ['http/1.1'],
-          )
-        : await Socket.connect(host, port, timeout: connectTimeout);
+    final Socket socket = await _connect(uri, host, port, connectTimeout, dnsIp);
 
     try {
       socket.add(_buildRequest(uri, method, headers, body));

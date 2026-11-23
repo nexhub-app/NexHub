@@ -1,11 +1,12 @@
-/// 书源封面字节解码（legado BookSource.coverDecodeJs / ImageUtils.decode）。
+/// 书源图片字节解码（legado ImageUtils.decode）：封面走
+/// `BookSource.coverDecodeJs`，正文插图走 `ContentRule.imageDecode`。
 ///
 /// core 图片缓存层不依赖 features 层：启动期由 splash 注入
-/// [ShuyuanImageDecodeHooks.coverResolver]（[register]），封面下载完成后
-/// 在此按源规则解码原始字节。脚本绑定对齐 legado：
+/// [ShuyuanImageDecodeHooks]（[register]），图片下载完成后在此按源规则
+/// 解码原始字节。脚本绑定对齐 legado：
 /// - `result`：原始字节的 JS 数字数组（可下标读写、可 `.length`）；
 /// - `src`：图片地址；
-/// - `book`：书目对象（封面路径无书目上下文，legado 同样传 null）。
+/// - `book`：书目对象（图片缓存层无书目上下文，legado 封面分支同样传 null）。
 ///
 /// 返回值按 legado「脚本结果即 ByteArray」还原：JS 数组完成值的字符串
 /// 形态（`[1, 2, 255]` 或裸逗号串）逐项 `& 0xFF` 后转字节；非数字数组
@@ -26,6 +27,17 @@ class ShuyuanImageDecoder {
   /// 注册到 core 层钩子（启动期调用一次）。
   static void register() {
     ShuyuanImageDecodeHooks.coverResolver = decodeCover;
+    ShuyuanImageDecodeHooks.contentResolver = decodeContent;
+    ShuyuanImageDecodeHooks.contentApplies = contentApplies;
+  }
+
+  /// 源是否声明 `ruleContent.imageDecode`（core 层缓冲/流式门控）。
+  /// 直接读模型字段而不调 `getContentRule()`——后者会懒建规则对象，
+  /// 把「未声明任何正文规则」的源误变成有规则。
+  static bool contentApplies(PluginConfig config) {
+    if (!config.isShuyuanSource) return false;
+    final rule = _bookSourceFor(config)?.ruleContent?.imageDecode;
+    return rule != null && rule.trim().isNotEmpty;
   }
 
   static final Map<String, (Object, XiaoshuoBookSource)> _cache = {};
@@ -79,6 +91,45 @@ class ShuyuanImageDecoder {
       return decoded;
     } catch (e) {
       AppLog.instance.w('[书源封面] coverDecodeJs 执行异常: '
+          '源=${source.bookSourceName} url=$url → $e');
+      return null;
+    }
+  }
+
+  /// 正文插图字节解码（legado `ContentRule.imageDecode`）：绑定
+  /// `result`（原始字节的 JS 数字数组）/`src`/`book`（图片缓存层拿不到
+  /// 书目上下文，与封面分支一样传 null）；返回字节数组为解码结果，
+  /// 未声明规则原样返回，其余/异常按解码失败返回 null。
+  static Uint8List? decodeContent(
+    PluginConfig config,
+    String url,
+    Uint8List bytes,
+  ) {
+    if (!config.isShuyuanSource) return bytes;
+    final source = _bookSourceFor(config);
+    final rule = source?.ruleContent?.imageDecode;
+    if (source == null || rule == null || rule.trim().isEmpty) return bytes;
+    try {
+      final engine = JsEngine.forSource(config.id);
+      final ctx = ShuyuanSourceContext(config.id)..bindSource(source);
+      ShuyuanSourceContext.persistedCookiesFor(config.id).forEach((k, v) {
+        ctx.cookies[k] = Map<String, String>.from(v);
+      });
+      final out = ShuyuanSourceContext.run(ctx, () {
+        return engine.eval(rule, bindings: <String, dynamic>{
+          'result': <int>[for (final b in bytes) b],
+          'src': url,
+          'book': null,
+        });
+      });
+      final decoded = parseByteResult(out);
+      if (decoded == null) {
+        AppLog.instance.w('[书源图片] imageDecode 未返回字节数组: '
+            '源=${source.bookSourceName} url=$url');
+      }
+      return decoded;
+    } catch (e) {
+      AppLog.instance.w('[书源图片] imageDecode 执行异常: '
           '源=${source.bookSourceName} url=$url → $e');
       return null;
     }

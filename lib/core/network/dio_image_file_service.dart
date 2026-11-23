@@ -288,28 +288,39 @@ class DioImageFileService extends FileService {
       final Uri? uri = Uri.tryParse(url);
       final bool encrypted =
           uri != null && ImageBytesDecryptRegistry.matchFor(uri) != null;
-      // 书源封面解码（legado coverDecodeJs）：密文封面可能以任意字节开头
+      // 书源字节解码（legado ImageUtils.decode）：封面走 coverDecodeJs，
+      // 正文插图走 ruleContent.imageDecode。密文图片可能以任意字节开头
       // （含 '<'/'{'），不能走 isLikelyImagePayload 的明文闸门；改为缓冲
       // 全量字节交给 shuyuan 层解码，解码结果再交给缓存层（磁盘缓存明文）。
-      final Uint8List? Function(PluginConfig, String, Uint8List)?
-          coverDecode = (!encrypted &&
-              decodeCover &&
-              decodeSource != null &&
-              ShuyuanImageDecodeHooks.coverResolver != null)
-          ? ShuyuanImageDecodeHooks.coverResolver
-          : null;
+      // 正文分支仅在源确实声明 imageDecode 时启用，其余源保持流式下载。
+      final Uint8List? Function(PluginConfig, String, Uint8List)? sourceDecode;
+      if (!encrypted && decodeSource != null) {
+        if (decodeCover) {
+          sourceDecode = ShuyuanImageDecodeHooks.coverResolver;
+        } else if (ShuyuanImageDecodeHooks.contentResolver != null &&
+            (ShuyuanImageDecodeHooks.contentApplies?.call(decodeSource!) ??
+                false)) {
+          sourceDecode = ShuyuanImageDecodeHooks.contentResolver;
+        } else {
+          sourceDecode = null;
+        }
+      } else {
+        sourceDecode = null;
+      }
       // 非图片正文（拦截页/错误 JSON）直接判失败：与 legado「解码不通过绝不
       // 写入图片文件」对齐。否则坏文件会被缓存 30 天，之后每次重试都命中它，
       // 表现为封面/图片永久无法加载。
-      if (!encrypted && coverDecode == null && !isLikelyImagePayload(headProbe)) {
+      if (!encrypted && sourceDecode == null && !isLikelyImagePayload(headProbe)) {
         throw HttpException('非图片响应（拦截页/错误页）', uri: uri);
       }
-      if (coverDecode != null) {
+      if (sourceDecode != null) {
         final Uint8List fetched = await _collect(body.stream);
         stallTimer?.cancel();
-        final Uint8List? plain = coverDecode(decodeSource!, url, fetched);
+        final Uint8List? plain = sourceDecode(decodeSource!, url, fetched);
         if (plain == null) {
-          throw HttpException('封面解码失败（coverDecodeJs）', uri: uri);
+          throw HttpException(
+              decodeCover ? '封面解码失败（coverDecodeJs）' : '图片解码失败（imageDecode）',
+              uri: uri);
         }
         return HttpGetResponse(http.StreamedResponse(
           Stream<Uint8List>.value(plain),

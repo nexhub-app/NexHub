@@ -807,7 +807,7 @@ const String sourceContextJsPrelude = r'''
     // 多次 java.ajax 是多次真实请求。这里按「每次顶层求值内的同键调用
     // 序号」拆键：第 1 次用原始键、第 n 次追加 `||DUP||n`，宿主 settle
     // 对每个键各抓一次；重放轮计数器复位 → 同脚本仍生成同一组键命中缓存。
-    global.java.__ajaxReq = function (url, timeoutMs) {
+    global.java.__ajaxReq = function (url, timeoutMs, skipRateLimit) {
       var raw = String(url == null ? '' : url);
       var seq = global.__ajaxCallSeq;
       if (!seq) seq = global.__ajaxCallSeq = Object.create(null);
@@ -822,7 +822,10 @@ const String sourceContextJsPrelude = r'''
       // settle 时按该键的超时发起真实请求（缺省用宿主默认）。
       var to = (timeoutMs === undefined || timeoutMs === null)
         ? '' : String(timeoutMs);
-      syOp('ajax', key, to);
+      // legado ajaxAll 的批请求标记随 op 透传给宿主 settle：
+      // `b`=批（并发抓取，保序），`b1`=批且 skipRateLimit（跳过 concurrentRate
+      // 门，legado getStrResponseAwait(skipRateLimit = true)）。
+      syOp('ajax', key, to, skipRateLimit ? 'b1' : 'b');
       global.__ajaxN = (global.__ajaxN || 0) + 1;
       return '__AJAX_' + global.__ajaxN + '__';
     };
@@ -834,7 +837,8 @@ const String sourceContextJsPrelude = r'''
       if (typeof urlList === 'string') arr = [urlList];
       var out = [];
       for (var i = 0; arr && i < arr.length; i++) {
-        out.push(syResp(arr[i], global.java.__ajaxReq(arr[i])));
+        out.push(syResp(arr[i],
+            global.java.__ajaxReq(arr[i], undefined, skipRateLimit)));
       }
       return out;
     };

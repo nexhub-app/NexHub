@@ -9,7 +9,6 @@ import 'package:meta/meta.dart';
 import '../../../core/models/novel_block.dart';
 import '../../../core/utils/app_log.dart';
 import '../analyze/analyze_rule.dart';
-import '../analyze/js_engine.dart';
 import '../analyze/regex_compat.dart';
 import '../model/book_source.dart';
 import '../model/rule_content.dart';
@@ -17,13 +16,6 @@ import '../model/xiaoshuo_book.dart';
 import '../model/xiaoshuo_book_chapter.dart';
 
 class BookContent {
-  // 复用同一 QuickJS 运行时（按需创建），避免每次解析正文都重建运行时。
-  static JsEngine? _jsEngineHolder;
-  static JsEngine get _jsEngine {
-    _jsEngineHolder ??= JsEngine();
-    return _jsEngineHolder!;
-  }
-
   // 预编译正则
   // legado HtmlFormatter.wrapHtmlRegex：这些块级标签一律视为段落边界。
   static final _wrapHtmlRegex =
@@ -247,12 +239,9 @@ class BookContent {
     var blocks = _formatToBlocks(content, baseUrl, redirectUrl ?? baseUrl);
     blocks = _cleanContentAdsBlocks(blocks);
 
-    // legado ruleContent.imageDecode：对正文插图 URL 做 JS 解码（部分站点用 JS
-    // 混淆图片地址，需还原真实 URL 才能加载）。仅源声明 imageDecode 时生效，
-    // 解码失败则保留原 URL（不丢图）。
-    if (contentRule.imageDecode != null && contentRule.imageDecode!.isNotEmpty) {
-      blocks = _decodeImageUrls(blocks, contentRule.imageDecode!);
-    }
+    // legado ruleContent.imageDecode 是「图片 bytes 二次解密 js」（见
+    // ImageUtils.decode 非封面分支），在图片下载层执行（ShuyuanImageDecoder），
+    // 解析阶段不得把它当 URL 改写器使用。
     // legado ruleContent.imageStyle：把图片 CSS 样式（如 max-width:100%）绑到
     // 插图块，供渲染层按样式约束显示。仅源声明时生效，缺省不影响任何源。
     if (contentRule.imageStyle != null && contentRule.imageStyle!.isNotEmpty) {
@@ -604,29 +593,6 @@ class BookContent {
     // 只要不是明显占位图就可以通过。不再要求 URL 含图片扩展名，
     // 兼容 CDN 图床的无扩展名 URL（如 https://cdn.example.com/image?id=123）。
     return true;
-  }
-
-  /// 对正文插图块逐个应用 [decodeJs] 解码 URL（legado `result` 绑定单图 URL，
-  /// 脚本返回真实地址）。解码结果非空才替换，异常/空结果保留原 URL。
-  static List<NovelBlock> _decodeImageUrls(
-    List<NovelBlock> blocks,
-    String decodeJs,
-  ) {
-    final out = <NovelBlock>[];
-    for (final b in blocks) {
-      if (b is! NovelImageBlock) {
-        out.add(b);
-        continue;
-      }
-      var url = b.url;
-      try {
-        final decoded =
-            _jsEngine.eval(decodeJs, bindings: <String, dynamic>{'result': url});
-        if (decoded.isNotEmpty) url = decoded;
-      } catch (_) {}
-      out.add(NovelImageBlock(url, source: b.source, style: b.style));
-    }
-    return out;
   }
 
   /// 解码 HTML 实体并对齐 legado `HtmlFormatter` 的空白归一：

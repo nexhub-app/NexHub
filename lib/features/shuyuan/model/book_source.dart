@@ -42,6 +42,14 @@ class XiaoshuoBookSource {
   TocRule? ruleToc;
   ContentRule? ruleContent;
 
+  /// 段评规则（legado `BookSource.ruleReview: ReviewRule?`）：引擎暂不消费，
+  /// 但必须原样透传，避免导入/导出往返丢字段。
+  Map<String, dynamic>? ruleReview;
+
+  /// 首页模块定义（legado `BookSource.homepageModules: String?`，JSON 数组
+  /// 文本）：原样保留，避免源数据往返损坏。
+  String? homepageModules;
+
   /// 解析器配置（保留字段）。
   Map<String, dynamic>? parserConfig;
 
@@ -86,6 +94,8 @@ class XiaoshuoBookSource {
     this.ruleBookInfo,
     this.ruleToc,
     this.ruleContent,
+    this.ruleReview,
+    this.homepageModules,
     this.parserConfig,
     this.subCategoryDetection = true,
     this.filterKeywords = const [],
@@ -158,6 +168,8 @@ class XiaoshuoBookSource {
       ruleBookInfo: _parseBookInfoRule(json['ruleBookInfo']),
       ruleToc: _parseTocRule(json['ruleToc']),
       ruleContent: _parseContentRule(json['ruleContent']),
+      ruleReview: _parseRuleDynamic(json['ruleReview']),
+      homepageModules: _parseModulesString(json['homepageModules']),
       parserConfig: json['parser'] is Map<String, dynamic>
           ? Map<String, dynamic>.from(json['parser'] as Map)
           : null,
@@ -199,6 +211,8 @@ class XiaoshuoBookSource {
         if (ruleBookInfo != null) 'ruleBookInfo': ruleBookInfo!.toJson(),
         if (ruleToc != null) 'ruleToc': ruleToc!.toJson(),
         if (ruleContent != null) 'ruleContent': ruleContent!.toJson(),
+        if (ruleReview != null) 'ruleReview': ruleReview,
+        if (homepageModules != null) 'homepageModules': homepageModules,
         if (parserConfig != null) 'parser': parserConfig,
         'subCategoryDetection': subCategoryDetection,
         if (filterKeywords.isNotEmpty) 'filterKeywords': filterKeywords,
@@ -267,4 +281,19 @@ dynamic _parseRuleDynamic(dynamic val) {
     }
   }
   return null;
+}
+
+/// legado `homepageModules` 是 JSON 数组字符串；容错接受对象/数组形态，
+/// 统一转为字符串承载（结构体原样序列化，避免 as String 抛 TypeError）。
+String? _parseModulesString(dynamic val) {
+  if (val == null) return null;
+  if (val is String) return val.isEmpty ? null : val;
+  if (val is Map || val is List) {
+    try {
+      return jsonEncode(val);
+    } catch (_) {
+      return val.toString();
+    }
+  }
+  return val.toString();
 }

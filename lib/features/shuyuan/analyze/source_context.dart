@@ -19,6 +19,7 @@ import 'package:fast_gbk/fast_gbk.dart';
 import 'package:meta/meta.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../../../core/download/download_settings.dart';
 import '../../../core/scraper/http_fetcher.dart';
 import '../../../core/utils/app_log.dart';
 import 'analyze_url.dart';
@@ -136,6 +137,14 @@ class ShuyuanSourceContext {
   /// settle 对该键发起真实请求时优先用脚本传入的 callTimeout/timeout；
   /// 未指定（ajax/connect 的 null）时用宿主默认。
   final Map<String, int> ajaxTimeouts = <String, int>{};
+
+  /// `java.ajaxAll` 批请求的限流豁免集合：settle 发请求时跳过
+  /// concurrentRate 门（legado 逐键透传 getStrResponseAwait(skipRateLimit)）。
+  final Set<String> ajaxSkipRateLimit = <String>{};
+
+  /// `java.ajaxAll` 批请求集合：settle 对这些键做有界并发（保序），
+  /// 其余 `java.ajax` 保持注册顺序串行（同步桥语义）。
+  final Set<String> ajaxBatch = <String>{};
 
   /// `org.jsoup.Jsoup.connect(...).execute().bodyAsBytes()` 的重放缓存：
   /// 完整请求键 → 原始响应的 base64（不按文本解码，保留二进制密文）。
@@ -260,6 +269,8 @@ class ShuyuanSourceContext {
     ajaxCache.clear();
     ajaxPending.clear();
     ajaxTimeouts.clear();
+    ajaxSkipRateLimit.clear();
+    ajaxBatch.clear();
     ajaxBytesCache.clear();
     ajaxBytesPending.clear();
     ajaxMetaCache.clear();
@@ -493,6 +504,9 @@ class ShuyuanSourceContext {
           if (timeoutMs != null && timeoutMs > 0) {
             ajaxTimeouts[a] = timeoutMs;
           }
+          final flags = op['c']?.toString() ?? '';
+          if (flags.startsWith('b')) ajaxBatch.add(a);
+          if (flags == 'b1') ajaxSkipRateLimit.add(a);
         case 'ajaxBytes':
           // bodyAsBytes 的二进制重放请求（同一 URL 可能同时被记录为
           // 'ajax'，settle 按并集抓取一次、双缓存填充）。
@@ -974,11 +988,19 @@ class ShuyuanSourceContext {
     keys.removeWhere(_hasReplayPlaceholderValue);
     ctx.ajaxPending.removeWhere(_hasReplayPlaceholderValue);
     ctx.ajaxBytesPending.removeWhere(_hasReplayPlaceholderValue);
-    for (final key in keys) {
+
+    // java.ajaxAll 批请求按下载线程数并发抓取（legado `mapAsync(threadCount)`）；
+    // 普通 java.ajax 保持串行（同步桥的 cookie/会话顺序依赖逐条完成）。
+    final skipRateLimit = Set<String>.from(ctx.ajaxSkipRateLimit);
+    final batch = Set<String>.from(ctx.ajaxBatch);
+    ctx.ajaxSkipRateLimit.clear();
+    ctx.ajaxBatch.clear();
+
+    Future<void> fetch(String key) async {
       final wantBody = ctx.ajaxPending.contains(key);
       final wantBytes = ctx.ajaxBytesPending.contains(key);
-      if (wantBody && ctx.ajaxCache.containsKey(key)) continue;
-      if (wantBytes && ctx.ajaxBytesCache.containsKey(key)) continue;
+      if (wantBody && ctx.ajaxCache.containsKey(key)) return;
+      if (wantBytes && ctx.ajaxBytesCache.containsKey(key)) return;
       fetched++;
       if (deadline != null && !DateTime.now().isBefore(deadline)) {
         if (wantBody) ctx.ajaxCache[key] = _ajaxFailureText('请求超时');
@@ -988,7 +1010,7 @@ class ShuyuanSourceContext {
           'url': key,
           'headers': const <String, List<String>>{},
         });
-        continue;
+        return;
       }
       var url = _stripAjaxDupSuffix(key);
       final isDup = url != key;
@@ -1026,6 +1048,9 @@ class ShuyuanSourceContext {
           // java.ajax 都是真实请求，不能让第二次命中第一次的页面缓存。
           // 首次调用仍复用既有页面缓存（重放架构的跨轮去重）。
           skipPageCache: isDup,
+          // java.ajaxAll(urls, true)：legado 把 skipRateLimit 透传给
+          // getStrResponseAwait，跳过 concurrentRate 限流。
+          skipRateLimit: skipRateLimit.contains(key),
         );
         final timeoutMs = ctx.ajaxTimeouts[key];
         final resp = await analyzeUrl.getStrResponse().timeout(
@@ -1053,6 +1078,27 @@ class ShuyuanSourceContext {
         });
       }
     }
+
+    for (final key in keys) {
+      if (!batch.contains(key)) await fetch(key);
+    }
+    final parallel = <String>[
+      for (final key in keys)
+        if (batch.contains(key)) key,
+    ];
+    if (parallel.isNotEmpty) {
+      final threadCount = await _ajaxThreadCount();
+      var next = 0;
+      Future<void> worker() async {
+        while (next < parallel.length) {
+          await fetch(parallel[next++]);
+        }
+      }
+
+      await Future.wait(<Future<void>>[
+        for (var i = 0; i < threadCount && i < parallel.length; i++) worker(),
+      ]);
+    }
     ctx.ajaxPending.clear();
     ctx.ajaxBytesPending.clear();
     // 文件/归档族本地运算（解压/取包内条目/文本解码）：纯本地同步，
@@ -1065,6 +1111,15 @@ class ShuyuanSourceContext {
   /// 去掉尾缀的原始键；缓存仍按带尾缀的完整键存，脚本重放时逐键命中。
   static String _stripAjaxDupSuffix(String key) =>
       key.replaceFirst(RegExp(r'\|\|DUP\|\|\d+$'), '');
+
+  /// java.ajaxAll 并发数：复用下载设置的线程数（legado 同一 threadCount）。
+  static Future<int> _ajaxThreadCount() async {
+    try {
+      final settings = await DownloadSettingsStore().load();
+      if (settings.threadCount > 0) return settings.threadCount;
+    } catch (_) {}
+    return const DownloadSettings().threadCount;
+  }
 
   /// legado `java.ajax` 失败口径：catch 后返回 `e.stackTraceStr`（异常类名 +
   /// 消息 + 栈帧），源常以 `startsWith("java")` 判定失败；失败缓存写空串会

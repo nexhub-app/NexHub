@@ -4,6 +4,7 @@ library;
 import '../../../core/utils/app_log.dart';
 import '../analyze/js_engine.dart';
 import '../analyze/analyze_rule.dart';
+import '../analyze/legado_bool.dart';
 import '../analyze/source_context.dart';
 import '../model/book_source.dart';
 import '../model/xiaoshuo_book.dart';
@@ -170,7 +171,7 @@ class BookChapterList {
           try {
             if (ruleIsVolume.isNotEmpty) {
               final isVolume = analyzeRule.getStringFromRules(ruleIsVolume);
-              if (isVolume.toLowerCase() == 'true' || isVolume == '1') {
+              if (legadoIsTrue(isVolume)) {
                 bookChapter.isVolume = true;
               }
             }
@@ -216,7 +217,7 @@ class BookChapterList {
             try {
               if (ruleIsVip.isNotEmpty) {
                 final isVip = analyzeRule.getStringFromRules(ruleIsVip);
-                if (isVip.toLowerCase() == 'true' || isVip == '1') {
+                if (legadoIsTrue(isVip)) {
                   bookChapter.isVip = true;
                 }
               }
@@ -225,7 +226,7 @@ class BookChapterList {
             try {
               if (ruleIsPay.isNotEmpty) {
                 final isPay = analyzeRule.getStringFromRules(ruleIsPay);
-                if (isPay.toLowerCase() == 'true' || isPay == '1') {
+                if (legadoIsTrue(isPay)) {
                   bookChapter.isPay = true;
                 }
               }
@@ -278,9 +279,9 @@ class BookChapterList {
   /// legado ruleToc.formatJs：整份目录合并、去重、倒序、重编号后单次执行。
   ///
   /// 绑定 `gInt`（整轮只初始化一次，脚本内自增跨章节延续）、`index`（1 起）、
-  /// `chapter`（章节实体字段快照，含 baseUrl/variableMap）、`title`；脚本
-  /// 返回值非 null（含空串）时覆盖章节标题；脚本对 `chapter.variableMap`
-  /// 或 `chapter.putVariable` 的写入回写本章。
+  /// `chapter`（章节实体字段快照，含 baseUrl/variableMap）、`title`；legado
+  /// 绑定的是 BookChapter 实体，脚本对 url/tag/isVip/index 等字段的直改都要
+  /// 落回宿主；脚本返回值非 null（含空串）时最后覆盖章节标题。
   static void applyFormatJs(
       List<XiaoshuoBookChapter> chapters, String? formatJs) {
     if (formatJs == null || formatJs.trim().isEmpty || chapters.isEmpty) {
@@ -295,7 +296,7 @@ class BookChapterList {
       bindings['index'] = i + 1;
       // legado 绑定的是 BookChapter 实体（字段名 title/url/tag/...）；
       // name 是旧别名，两者都提供以兼容不同写法。
-      bindings['chapter'] = <String, dynamic>{
+      final snapshot = <String, dynamic>{
         'name': ch.title,
         'title': ch.title,
         'url': ch.url,
@@ -308,21 +309,79 @@ class BookChapterList {
         'bookUrl': ch.bookUrl,
         'variableMap': Map<String, String>.from(ch.variableMap),
       };
+      bindings['chapter'] = snapshot;
       bindings['title'] = ch.title;
       // 三态求值：异常保留原标题；null/undefined 不覆盖；空串也覆盖
       //（legado `eval(...)?.toString()?.let { title = it }`）。
       final outcome = engine.evalNullable(formatJs, bindings: bindings);
-      if (!outcome.failed && outcome.value != null) {
-        ch.title = outcome.value!;
-      }
-      // 章节变量写入回写（chapter.putVariable / 直改 variableMap）。
+      // 章节变量写入回写（chapter.putVariable / 直改 variableMap）；
+      // 须先于回读（回读触发的排空会重填快照通道）。
       final chapterVars = engine.takeJavaChapterVars();
       chapterVars.forEach((k, v) {
         if (ch.variableMap[k] != v) ch.putVariable(k, v);
       });
+      // 绑定快照在 JS 侧被原地修改（函数型助手不参与 JSON 序列化），
+      // 回读整图后只落回脚本实际改动过的字段。
+      final mutated = engine.evalStructured('chapter');
+      if (mutated is Map) {
+        _applyChapterMutations(ch, snapshot, mutated);
+      }
+      // 返回值最后覆盖标题（脚本内直改 chapter.title 先生效，再被返回值覆盖）。
+      if (!outcome.failed && outcome.value != null) {
+        ch.title = outcome.value!;
+      }
       // gInt 只在首轮注入：后续轮若重复注入会重置脚本内的自增状态。
       bindings.remove('gInt');
     }
+    // 回读的排空会留下本章变量快照，丢弃避免串到下一次规则求值。
+    engine.takeJavaChapterVars();
+  }
+
+  /// 按差异把脚本对 chapter 快照的直改写回章节实体：未改字段不触碰
+  ///（快照的 `baseUrl ?? ''` 等占位值不能写回成脏数据）。
+  static void _applyChapterMutations(
+      XiaoshuoBookChapter ch, Map<String, dynamic> before, Map mutated) {
+    bool changed(String key) =>
+        mutated.containsKey(key) && mutated[key] != before[key];
+
+    if (changed('url') && mutated['url'] is String) {
+      ch.url = mutated['url'] as String;
+    }
+    if (changed('baseUrl') && mutated['baseUrl'] is String) {
+      ch.baseUrl = mutated['baseUrl'] as String;
+    }
+    if (changed('tag') && (mutated['tag'] == null || mutated['tag'] is String)) {
+      ch.tag = mutated['tag'] as String?;
+    }
+    if (changed('title')) {
+      final title = mutated['title'];
+      if (title is String) {
+        ch.title = title;
+      } else if (title is num || title is bool) {
+        ch.title = title.toString();
+      }
+    }
+    if (changed('index')) {
+      final raw = mutated['index'];
+      final parsed = raw is num
+          ? raw.toInt()
+          : (raw is String ? int.tryParse(raw.trim()) : null);
+      if (parsed != null) ch.index = parsed;
+    }
+    void applyFlag(String key, void Function(bool value) setter) {
+      if (!changed(key)) return;
+      final raw = mutated[key];
+      // Rhino 对 primitive boolean 的 null 写入取 false。
+      if (raw is bool) {
+        setter(raw);
+      } else if (raw == null) {
+        setter(false);
+      }
+    }
+
+    applyFlag('isVolume', (v) => ch.isVolume = v);
+    applyFlag('isVip', (v) => ch.isVip = v);
+    applyFlag('isPay', (v) => ch.isPay = v);
   }
 
   /// 计算目录页 URL 所属书籍目录前缀（不含结尾斜杠）。
