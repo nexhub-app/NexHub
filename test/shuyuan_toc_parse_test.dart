@@ -99,6 +99,49 @@ void main() {
       expect(chapters.length, 1);
       expect(chapters.single.url, 'https://toc.test/book/');
     });
+
+    test('章节 baseUrl 取 redirectUrl，相对 URL 按最终地址绝对化', () {
+      final chapters = BookChapterList.analyzeChapterList(
+        bookSource: source,
+        book: _book('https://toc.test/book/'),
+        baseUrl: 'https://toc.test/dir/',
+        redirectUrl: 'https://cdn.test/final/page.html',
+        body: '<div id="list"><a href="/c/1.html">第一章</a></div>',
+      );
+      expect(chapters.single.url, 'https://cdn.test/c/1.html');
+      // legado `BookChapter(bookUrl, baseUrl = redirectUrl)`。
+      expect(chapters.single.baseUrl, 'https://cdn.test/final/page.html');
+    });
+  });
+
+  group('章节实体 getAbsoluteURL', () {
+    test('相对地址按章节 baseUrl 解析，`,{...}` 选项串原样接回', () {
+      final ch = XiaoshuoBookChapter(
+        bookUrl: 'https://a.test/book/1',
+        url: 'c/2.html,{"headers":{"A":"1"}}',
+        title: '第二章',
+        baseUrl: 'https://a.test/dir/page.html',
+      );
+      expect(ch.getAbsoluteURL(),
+          'https://a.test/dir/c/2.html,{"headers":{"A":"1"}}');
+    });
+
+    test('卷占位（url 以标题开头）返回目录页 baseUrl', () {
+      final vol = XiaoshuoBookChapter(
+        bookUrl: 'https://a.test/book/1',
+        url: '第一卷0',
+        title: '第一卷',
+        isVolume: true,
+        baseUrl: 'https://a.test/dir/',
+      );
+      expect(vol.getAbsoluteURL(), 'https://a.test/dir/');
+    });
+
+    test('无 baseUrl 时回落调用方 redirectUrl', () {
+      final ch = XiaoshuoBookChapter(bookUrl: '', url: '/x', title: 'x');
+      expect(ch.getAbsoluteURL(redirectUrl: 'https://b.test/p/'),
+          'https://b.test/x');
+    });
   });
 
   group('`-` 前缀翻转', () {
@@ -166,6 +209,47 @@ void main() {
     ];
     BookChapterList.applyFormatJs(chapters, "gInt++ + ':' + title");
     expect(chapters.map((c) => c.title), ['0:甲', '1:乙', '2:丙']);
+  });
+
+  test('formatJs 三态：null/异常保留原标题，空串照常覆盖', () {
+    final chapters = [
+      XiaoshuoBookChapter(bookUrl: '', url: '/1', title: '甲'),
+      XiaoshuoBookChapter(bookUrl: '', url: '/2', title: '乙'),
+      XiaoshuoBookChapter(bookUrl: '', url: '/3', title: '丙'),
+    ];
+    // legado `eval(...)?.toString()?.let { title = it }`：null 跳过、
+    // 异常跳过、空串是有效覆盖值。
+    BookChapterList.applyFormatJs(chapters,
+        "title === '甲' ? null : (title === '乙' ? '' : missingFn())");
+    expect(chapters.map((c) => c.title), ['甲', '', '丙']);
+  });
+
+  test('formatJs 章节脚本方法：变量读写 / big 变量 / getFileName', () {
+    final chapter = XiaoshuoBookChapter(
+        bookUrl: 'https://a.test/b/1',
+        url: 'https://a.test/c/1.html',
+        title: '第一章');
+    BookChapterList.applyFormatJs([chapter],
+        "chapter.putVariable('k', 'v1'); "
+        "chapter.putBigVariable('big', 'x'.repeat(10000)); "
+        "chapter.getVariable('k') + '|' + "
+        "chapter.getBigVariable('big').length + '|' + "
+        "chapter.getFileName('txt')");
+    // getFileName：`%05d-<md5[8:24]>.<suffix>`，index 0 起。
+    expect(chapter.title, startsWith('v1|10000|00000-'));
+    expect(chapter.title, endsWith('.txt'));
+    // 小变量随章节快照回写宿主。
+    expect(chapter.variableMap['k'], 'v1');
+  });
+
+  test('formatJs 内 chapter.getAbsoluteURL 可用（,{...} 接回）', () {
+    final chapter = XiaoshuoBookChapter(
+        bookUrl: 'https://a.test/b/1',
+        url: 'c/1.html,{"a":1}',
+        title: 'x',
+        baseUrl: 'https://a.test/dir/');
+    BookChapterList.applyFormatJs([chapter], 'chapter.getAbsoluteURL()');
+    expect(chapter.title, 'https://a.test/dir/c/1.html,{"a":1}');
   });
 
   group('WebBook.getChapterList 网络链路', () {
@@ -273,6 +357,63 @@ void main() {
       );
       expect(chapters.map((c) => c.title),
           ['0:B2', '1:B1', '2:A2', '3:A1']);
+    });
+
+    test('跨页重复 URL 仅按 url 去重，保留工作顺序中的首个条目', () async {
+      server = await _startServer(<String, String>{
+        '/toc1.html': '<div id="list">'
+            '<a class="c" href="/c1">A1</a><a class="c" href="/c2">A2</a>'
+            '<a class="next" href="/toc2.html">下一页</a></div>',
+        '/toc2.html': '<div id="list">'
+            '<a class="c" href="/c2">B-dup</a><a class="c" href="/c3">B2</a>'
+            '</div>',
+      });
+      base = 'http://${server.address.host}:${server.port}';
+      final source = _source(<String, dynamic>{
+        'chapterList': '#list a.c',
+        'chapterName': 'text',
+        'chapterUrl': '@href',
+        'nextTocUrl': '#list a.next@href',
+      });
+      final chapters = await fetch(
+        source,
+        _book('$base/detail.html')..tocUrl = '$base/toc1.html',
+      );
+      // legado：无 `-` 先整列反转（B2,B-dup,A2,A1）→ 按 url 去重留首个
+      //（晚页的 B-dup 胜出）→ reverseToc=false 再反转 → A1,B-dup,B2。
+      expect(chapters.map((c) => c.title), ['A1', 'B-dup', 'B2']);
+      expect(chapters.map((c) => c.url),
+          ['$base/c1', '$base/c2', '$base/c3']);
+    });
+
+    test('reverseToc 与 `-` 前缀异或决定最终顺序', () async {
+      server = await _startServer(<String, String>{
+        '/toc1.html': '<div id="list">'
+            '<a class="c" href="/c1">A1</a><a class="c" href="/c2">A2</a>'
+            '<a class="next" href="/toc2.html">下一页</a></div>',
+        '/toc2.html': '<div id="list">'
+            '<a class="c" href="/c3">B1</a><a class="c" href="/c4">B2</a>'
+            '</div>',
+      });
+      base = 'http://${server.address.host}:${server.port}';
+      Future<List<String>> titles(String listRule, bool reverseToc) async {
+        final source = _source(<String, dynamic>{
+          'chapterList': listRule,
+          'chapterName': 'text',
+          'chapterUrl': '@href',
+          'nextTocUrl': '#list a.next@href',
+        });
+        final book = _book('$base/detail.html')
+          ..tocUrl = '$base/toc1.html'
+          ..reverseToc = reverseToc;
+        final chapters = await fetch(source, book);
+        return chapters.map((c) => c.title).toList();
+      }
+
+      // 无 `-` + reverseToc：工作顺序本就是倒序，不再翻转。
+      expect(await titles('#list a.c', true), ['B2', 'B1', 'A2', 'A1']);
+      // `-` + reverseToc：两次反转对消，回到页面原序。
+      expect(await titles('-#list a.c', true), ['A1', 'A2', 'B1', 'B2']);
     });
 
     test('目录分页并发跟随下载线程设置（threadCount=1 严格串行）', () async {

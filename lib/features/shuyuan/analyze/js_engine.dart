@@ -28,6 +28,23 @@ class JsEvalOutcome {
   const JsEvalOutcome(this.value, {this.error});
 }
 
+/// 「有无覆盖值」三态求值结果（legado `eval(...)?.toString()` 语义）：
+/// - [failed] 为 true：脚本异常（调用方保留原值）；
+/// - [value] 为 null：脚本返回 `null`/`undefined`（不覆盖）；
+/// - [value] 非 null：覆盖值（**含空串**，legado 对任何非 null 值都覆盖）。
+class JsNullableOutcome {
+  final String? value;
+  final bool failed;
+  final String? error;
+
+  const JsNullableOutcome({this.value, this.failed = false, this.error});
+
+  static const JsNullableOutcome absent = JsNullableOutcome();
+
+  static JsNullableOutcome failure([String? error]) =>
+      JsNullableOutcome(failed: true, error: error);
+}
+
 class JsEngine {
   NexJsRuntime? _runtime;
   /// 是否已注入全局预置脚本（繁简转换 t2s()/s2t() + java.* 第一梯队）。
@@ -386,6 +403,43 @@ class JsEngine {
     }
   }
 
+  /// 三态求值：区分「脚本失败 / 无返回值 / 有返回值（含空串）」。
+  ///
+  /// 对齐 legado `RhinoScriptEngine.eval` 的 `unwrapReturnValue`
+  /// （Undefined→null）：`formatJs` 用 `eval(...)?.toString()?.let {...}`
+  /// 决定是否覆盖章节标题——空串也是覆盖值，`null`/`undefined` 才跳过。
+  JsNullableOutcome evalNullable(
+    String jsStr, {
+    Map<String, dynamic>? bindings,
+  }) {
+    try {
+      // String(v) 在 JS 内完成：数字/布尔/数组按 JS 的 toString 口径
+      // 转文本（与 md3 对返回值调 toString 一致），Dart 侧只解析外壳。
+      final wrapped = 'JSON.stringify({v:(function(){'
+          'var __r=eval("${_escapeJs(jsStr)}");'
+          'return (typeof __r==="undefined"||__r===null)?null:String(__r);'
+          '})()})';
+      final result = _evaluatePrepared(wrapped, bindings);
+      if (result.isError) {
+        final msg = result.stringResult;
+        AppLog.instance.w('[书源JS] 执行失败: ${_brief(jsStr)} → $msg');
+        return JsNullableOutcome.failure(msg.isEmpty ? '脚本执行失败' : msg);
+      }
+      final s = result.stringResult;
+      if (s.isEmpty || s == 'null' || s == 'undefined') {
+        return JsNullableOutcome.absent;
+      }
+      final decoded = jsonDecode(s);
+      if (decoded is! Map) return JsNullableOutcome.absent;
+      final v = decoded['v'];
+      if (v == null) return JsNullableOutcome.absent;
+      return JsNullableOutcome(value: v.toString());
+    } catch (e) {
+      AppLog.instance.w('[书源JS] 执行异常: ${_brief(jsStr)} → $e');
+      return JsNullableOutcome.failure('$e');
+    }
+  }
+
   /// 注入上下文/绑定后执行脚本并排空 java 桥（[eval]/[evalStructured] 共用）。
   NexJsEvalResult _evaluatePrepared(
       String jsStr, Map<String, dynamic>? bindings) {
@@ -462,6 +516,15 @@ class JsEngine {
         // 宿主传入的字符串占位绑定一律跳过，避免覆盖。
         if (entry.key == 'java') continue;
         runtime.evaluate('var ${entry.key} = ${_toJsValue(entry.value)};');
+      }
+      // legado 绑定的是 BookChapter 实体，脚本可调 chapter.getVariable /
+      // putVariable / getAbsoluteURL / getFileName。绑定的字段快照对象由
+      // 预置脚本补齐同名方法（每次绑定是新对象，需重新安装）。
+      if (bindings['chapter'] != null) {
+        try {
+          runtime.evaluate('globalThis.__syInstallChapterHelpers && '
+              'globalThis.__syInstallChapterHelpers();');
+        } catch (_) {}
       }
     }
     // 经直接 eval 求值：每次调用获得独立词法环境，顶层 `let/const/class`

@@ -80,6 +80,9 @@ void main() {
       expect(StringUtils.formatBookName('书名\u3000'), '书名\u3000');
       expect(StringUtils.formatBookName('书名\u3000作者：张三'),
           '书名\u3000作者：张三');
+      // Java `.` 不跨行：作者尾巴只删到行尾，后续行原样保留。
+      expect(StringUtils.formatBookName('书名 作者：张三\n第二行'),
+          '书名\n第二行');
     });
 
     test('formatBookAuthor：去「作者：」前缀与「 著」尾巴', () {

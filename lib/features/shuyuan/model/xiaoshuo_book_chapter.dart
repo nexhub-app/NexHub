@@ -11,7 +11,12 @@ class XiaoshuoBookChapter {
   bool isPay;
   String? tag;
   String? wordCount;
-  String? imgUrl;
+
+  /// 段评图标地址（legado `reviewImg`）。
+  String? reviewImg;
+
+  /// 目录页最终地址，用于拼接相对章节地址（legado `BookChapter.baseUrl`）。
+  String? baseUrl;
   String? variable;
   Map<String, String> variableMap = {};
 
@@ -25,7 +30,8 @@ class XiaoshuoBookChapter {
     this.isPay = false,
     this.tag,
     this.wordCount,
-    this.imgUrl,
+    this.reviewImg,
+    this.baseUrl,
     this.variable,
   });
 
@@ -40,7 +46,8 @@ class XiaoshuoBookChapter {
       isPay: json['isPay'] as bool? ?? false,
       tag: json['tag'] as String?,
       wordCount: json['wordCount'] as String?,
-      imgUrl: json['imgUrl'] as String?,
+      reviewImg: json['reviewImg'] as String?,
+      baseUrl: json['baseUrl'] as String?,
       variable: json['variable'] as String?,
     );
   }
@@ -55,19 +62,24 @@ class XiaoshuoBookChapter {
         'isPay': isPay,
         if (tag != null) 'tag': tag,
         if (wordCount != null) 'wordCount': wordCount,
-        if (imgUrl != null) 'imgUrl': imgUrl,
+        if (reviewImg != null) 'reviewImg': reviewImg,
+        if (baseUrl != null) 'baseUrl': baseUrl,
         if (variable != null) 'variable': variable,
       };
 
+  /// 对齐 legado `BookChapter.getAbsoluteURL()`：
+  /// `,{...}` 选项段不参与地址拼接，拼接后原样接回。
   String getAbsoluteURL({String? redirectUrl}) {
-    if (url.startsWith('http')) return url;
-    if (redirectUrl == null || redirectUrl.isEmpty) return url;
-    try {
-      final base = Uri.parse(redirectUrl);
-      return base.resolve(url).toString();
-    } catch (_) {
-      return url;
-    }
+    final base = (baseUrl != null && baseUrl!.isNotEmpty)
+        ? baseUrl!
+        : (redirectUrl ?? '');
+    // 二级目录解析的卷链接为空 返回目录页的链接
+    if (isVolume && title.isNotEmpty && url.startsWith(title)) return base;
+    final match = _paramPattern.firstMatch(url);
+    final urlBefore = match == null ? url : url.substring(0, match.start);
+    final absolute = resolveAgainst(base, urlBefore);
+    if (match == null) return absolute;
+    return '$absolute,${url.substring(match.end)}';
   }
 
   void putVariable(String key, String value) {
@@ -80,5 +92,28 @@ class XiaoshuoBookChapter {
 
   String getDisplayTitle() {
     return title;
+  }
+
+  static final RegExp _paramPattern = RegExp(r'\s*,\s*(?=\{)');
+
+  static final RegExp _dataUriPattern = RegExp(r'^data:.*?;base64,');
+
+  /// 对齐 legado `NetworkUtils.getAbsoluteURL(baseURL, relativePath)`。
+  static String resolveAgainst(String base, String relative) {
+    final rel = relative.trim();
+    if (base.isEmpty) return rel;
+    final comma = base.indexOf(',');
+    final baseForParse = comma >= 0 ? base.substring(0, comma) : base;
+    final baseUri = Uri.tryParse(baseForParse);
+    if (baseUri == null || !baseUri.hasScheme) return rel;
+    final lower = rel.toLowerCase();
+    if (lower.startsWith('http://') || lower.startsWith('https://')) return rel;
+    if (_dataUriPattern.hasMatch(rel)) return rel;
+    if (rel.startsWith('javascript')) return '';
+    try {
+      return baseUri.resolve(rel).toString();
+    } catch (_) {
+      return rel;
+    }
   }
 }

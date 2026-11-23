@@ -130,11 +130,13 @@ class BookChapterList {
         // 不吞掉后续章节——否则一条坏数据会让整页目录解析为 0 章。
         try {
           analyzeRule.setContent(elements[i]);
-          analyzeRule.setBaseUrl(redirectUrl ?? baseUrl);
 
           final bookChapter = XiaoshuoBookChapter(
             bookUrl: book.bookUrl,
             url: '',
+            // legado `BookChapter(bookUrl, baseUrl = redirectUrl)`：章节自带
+            // 目录页最终地址，供 getAbsoluteURL 拼接相对链接。
+            baseUrl: redirectUrl ?? baseUrl,
           );
           // 对照 legado BookChapterList：逐条元素先绑定当前 chapter 再求值，
           // 章节规则的 JS（@js / {{...}}）才能读到 chapter.title/url 等；
@@ -276,7 +278,9 @@ class BookChapterList {
   /// legado ruleToc.formatJs：整份目录合并、去重、倒序、重编号后单次执行。
   ///
   /// 绑定 `gInt`（整轮只初始化一次，脚本内自增跨章节延续）、`index`（1 起）、
-  /// `chapter`（章节实体字段快照）、`title`；脚本返回值非空时覆盖章节标题。
+  /// `chapter`（章节实体字段快照，含 baseUrl/variableMap）、`title`；脚本
+  /// 返回值非 null（含空串）时覆盖章节标题；脚本对 `chapter.variableMap`
+  /// 或 `chapter.putVariable` 的写入回写本章。
   static void applyFormatJs(
       List<XiaoshuoBookChapter> chapters, String? formatJs) {
     if (formatJs == null || formatJs.trim().isEmpty || chapters.isEmpty) {
@@ -295,22 +299,27 @@ class BookChapterList {
         'name': ch.title,
         'title': ch.title,
         'url': ch.url,
+        'baseUrl': ch.baseUrl ?? '',
         'tag': ch.tag,
         'index': i,
         'isVolume': ch.isVolume,
         'isVip': ch.isVip,
         'isPay': ch.isPay,
         'bookUrl': ch.bookUrl,
+        'variableMap': Map<String, String>.from(ch.variableMap),
       };
       bindings['title'] = ch.title;
-      try {
-        final result = engine.eval(formatJs, bindings: bindings);
-        if (result.isNotEmpty) {
-          ch.title = result;
-        }
-      } catch (_) {
-        // formatJs 失败不影响目录列表（保留原标题）
+      // 三态求值：异常保留原标题；null/undefined 不覆盖；空串也覆盖
+      //（legado `eval(...)?.toString()?.let { title = it }`）。
+      final outcome = engine.evalNullable(formatJs, bindings: bindings);
+      if (!outcome.failed && outcome.value != null) {
+        ch.title = outcome.value!;
       }
+      // 章节变量写入回写（chapter.putVariable / 直改 variableMap）。
+      final chapterVars = engine.takeJavaChapterVars();
+      chapterVars.forEach((k, v) {
+        if (ch.variableMap[k] != v) ch.putVariable(k, v);
+      });
       // gInt 只在首轮注入：后续轮若重复注入会重置脚本内的自增状态。
       bindings.remove('gInt');
     }

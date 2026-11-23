@@ -8,8 +8,10 @@ class StringUtils {
 
   // legado AppPattern.nameRegex/authorRegex 的 Java `\s` 语义：仅 ASCII 空白
   // （Dart `\s` 额外含 U+3000，直接用会多删全角空格内容）。
+  // Java `.` 默认不跨行（行终止符 \n \r \u0085 \u2028 \u2029），
+  // 不能用 Dart `[\s\S]*`，否则作者尾巴会吞掉后续行。
   static final RegExp _bookNameRegex = RegExp(
-      r'[ \t\n\x0B\f\r]+作[ \t\n\x0B\f\r]*者[\s\S]*|'
+      r'[ \t\n\x0B\f\r]+作[ \t\n\x0B\f\r]*者[^\n\r\u0085\u2028\u2029]*|'
       r'[ \t\n\x0B\f\r]+[^ \t\n\x0B\f\r]+[ \t\n\x0B\f\r]+著');
   static final RegExp _bookAuthorRegex = RegExp(
       r'^[ \t\n\x0B\f\r]*作[ \t\n\x0B\f\r]*者[:： \t\n\x0B\f\r]+|'

@@ -164,6 +164,12 @@ const String sourceContextJsPrelude = r'''
 
   var source = {
     getKey: function () { return syCtx().sourceKey || syCtx().sourceId; },
+    // legado `BaseSource.getTag()`：小说源返回 bookSourceName。
+    getTag: function () {
+      var meta = syCtx().sourceMeta;
+      return meta && meta.bookSourceName != null
+        ? String(meta.bookSourceName) : '';
+    },
     // legado BaseSource.get/put：CacheManager 持久化的键值对
     // （`v_<getKey()>_<key>`）。get 缺省返回空串；put 返回写入值。
     // 键加 `__v:` 前缀与 putVariable 的源变量命名空间隔离。
@@ -464,6 +470,8 @@ const String sourceContextJsPrelude = r'''
   global.source = source;
   global.book = book;
   global.cache = cache;
+  // java 预置脚本（另一 IIFE）读取书源名的通道（toast 前缀/java.getTag）。
+  global.__sySourceTag = function () { return source.getTag(); };
 
   // ── 家族式书源的顶层助手函数 ──
   // 这批书源的 jsLib 历史上在共享作用域里声明 put/login/name/n/k/l 等全局
@@ -778,10 +786,11 @@ const String sourceContextJsPrelude = r'''
     // 语义），登录/初始化脚本里是 BaseSource 本身（getKey/getVariable/
     // getLoginHeader…）。沙箱共用一套 java 对象：把 BaseSource 面挂上来，
     // 两类脚本都能跑。同名方法保留 AnalyzeRule 版（get/put 见分派）。
-    ['getKey', 'getVariable', 'putVariable', 'setVariable', 'getLoginInfo',
-     'getLoginInfoMap', 'putLoginInfo', 'removeLoginInfo', 'getLoginHeader',
-     'getLoginHeaderMap', 'putLoginHeader', 'removeLoginHeader',
-     'refreshJSLib', 'refreshBookUrl', 'putConcurrent'].forEach(function (n) {
+    ['getKey', 'getTag', 'getVariable', 'putVariable', 'setVariable',
+     'getLoginInfo', 'getLoginInfoMap', 'putLoginInfo', 'removeLoginInfo',
+     'getLoginHeader', 'getLoginHeaderMap', 'putLoginHeader',
+     'removeLoginHeader', 'refreshJSLib', 'refreshBookUrl',
+     'putConcurrent'].forEach(function (n) {
       if (typeof global.java[n] !== 'function') {
         global.java[n] = function () {
           return global.source[n].apply(global.source, arguments);
@@ -793,7 +802,7 @@ const String sourceContextJsPrelude = r'''
     // 多次 java.ajax 是多次真实请求。这里按「每次顶层求值内的同键调用
     // 序号」拆键：第 1 次用原始键、第 n 次追加 `||DUP||n`，宿主 settle
     // 对每个键各抓一次；重放轮计数器复位 → 同脚本仍生成同一组键命中缓存。
-    global.java.__ajaxReq = function (url) {
+    global.java.__ajaxReq = function (url, timeoutMs) {
       var raw = String(url == null ? '' : url);
       var seq = global.__ajaxCallSeq;
       if (!seq) seq = global.__ajaxCallSeq = Object.create(null);
@@ -804,12 +813,16 @@ const String sourceContextJsPrelude = r'''
       if (c && c[key] != null) {
         return c[key];
       }
-      syOp('ajax', key, '');
+      // legado ajax/connect 的 callTimeout（毫秒）：随请求键记入 op，宿主
+      // settle 时按该键的超时发起真实请求（缺省用宿主默认）。
+      var to = (timeoutMs === undefined || timeoutMs === null)
+        ? '' : String(timeoutMs);
+      syOp('ajax', key, to);
       global.__ajaxN = (global.__ajaxN || 0) + 1;
       return '__AJAX_' + global.__ajaxN + '__';
     };
     global.java.ajax = function (url, callTimeout) {
-      return global.java.__ajaxReq(url);
+      return global.java.__ajaxReq(url, callTimeout);
     };
     global.java.ajaxAll = function (urlList, skipRateLimit) {
       var arr = urlList;
@@ -826,11 +839,11 @@ const String sourceContextJsPrelude = r'''
       var h = syParseHeaders(header);
       var key = syWithHeaders(urlStr, header,
           h ? { _syHeaderMode: 'replace' } : null);
-      return syResp(key, global.java.__ajaxReq(key));
+      return syResp(key, global.java.__ajaxReq(key, callTimeout));
     };
     // get 分派（legado 两个重载）：
     // - 2 参及以上 → HTTP GET（JsExtensions.get(url, headers)，Jsoup 口径：
-    //   不跟随重定向、headers 是 Map）；
+    //   不跟随重定向、headers 是 Map，timeout 缺省 30000ms）；
     // - 1 参 → **AnalyzeRule 变量链优先**（bookName/title 特殊键 +
     //   chapter → book → ruleData → source.put 命名空间），链路全空且
     //   形如 URL 才发请求。变量优先很关键：`java.get('bookUrl')` 的值
@@ -839,7 +852,8 @@ const String sourceContextJsPrelude = r'''
       if (arguments.length >= 2) {
         var key = syWithHeaders(a, b,
             { followRedirects: false, _syHeaderMode: 'replace' });
-        return syResp(key, global.java.__ajaxReq(key));
+        var to = (c === undefined || c === null) ? 30000 : c;
+        return syResp(key, global.java.__ajaxReq(key, to));
       }
       var s = String(a == null ? '' : a);
       var v = syRuleGet(s);
@@ -860,12 +874,14 @@ const String sourceContextJsPrelude = r'''
           { followRedirects: false, _syHeaderMode: 'replace', _syRawBody: true });
       var b = bodyStr == null ? '' : String(bodyStr);
       var key = keyUrl + '||POST||' + b;
-      return syResp(key, global.java.__ajaxReq(key));
+      var to = (timeout === undefined || timeout === null) ? 30000 : timeout;
+      return syResp(key, global.java.__ajaxReq(key, to));
     };
     global.java.head = function (urlStr, headers, timeout) {
       var key = syWithHeaders(urlStr, headers,
           { followRedirects: false, method: 'HEAD', _syHeaderMode: 'replace' });
-      return syResp(key, global.java.__ajaxReq(key));
+      var to = (timeout === undefined || timeout === null) ? 30000 : timeout;
+      return syResp(key, global.java.__ajaxReq(key, to));
     };
     // legado JsExtensions.importScript：取远端/本地脚本文本（远程 jsLib 里的
     // Reload 等助手靠它加载发现页规则）。沿用 ajax 确定性重放：首轮返回
@@ -1585,7 +1601,11 @@ const String javaExtensionsJsPrelude = r'''
   }
 
   function bytesFromB64(s) {
-    var clean = String(s == null ? '' : s).replace(/[^A-Za-z0-9+/]/g, '');
+    // 宽容口径同 Hutool Base64.decode：忽略空白/非法字符、接受 url-safe 字母表、
+    // 缺失填充。legado base64ToByteArray 即走 Hutool。
+    var clean = String(s == null ? '' : s)
+        .replace(/-/g, '+').replace(/_/g, '/')
+        .replace(/[^A-Za-z0-9+/]/g, '');
     var out = [];
     var buf = 0, bits = 0;
     for (var i = 0; i < clean.length; i++) {
@@ -1595,6 +1615,24 @@ const String javaExtensionsJsPrelude = r'''
         bits -= 8;
         out.push(signedByte((buf >> bits) & 0xff));
       }
+    }
+    return out;
+  }
+
+  // android.util.Base64 标志位：NO_PADDING=1、NO_WRAP=2、CRLF=4、
+  // URL_SAFE=8。DEFAULT(0) 按 76 字符换行且末尾带行分隔符。
+  function b64EncodeFlags(bytes, flags) {
+    var f = flags == null ? 2 : (flags | 0);
+    var out = b64FromBytes(bytes.map(function (b) { return b & 0xff; }));
+    if (f & 8) out = out.replace(/\+/g, '-').replace(/\//g, '_');
+    if (f & 1) out = out.replace(/=+$/, '');
+    if (!(f & 2) && out.length > 0) {
+      var sep = (f & 4) ? '\r\n' : '\n';
+      var wrapped = '';
+      for (var i = 0; i < out.length; i += 76) {
+        wrapped += out.substring(i, i + 76) + sep;
+      }
+      out = wrapped;
     }
     return out;
   }
@@ -1743,9 +1781,10 @@ const String javaExtensionsJsPrelude = r'''
         ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
   }
 
-  // legado 语义：UTC 时间 + sh（时区偏移秒）后按 format 取 UTC 分量。
+  // legado 语义：SimpleTimeZone(sh, "UTC") + Date(time)——`sh` 是**毫秒**
+  // 原始偏移（SimpleTimeZone 构造参数单位），按 UTC 分量输出 format。
   function timeFormatUTC(t, format, sh) {
-    var d = new Date(Number(t) + (Number(sh) || 0) * 1000);
+    var d = new Date(Number(t) + (Number(sh) || 0));
     if (isNaN(d.getTime())) return '';
     var f = String(format || 'yyyy-MM-dd HH:mm:ss');
     return f
@@ -1895,7 +1934,11 @@ const String javaExtensionsJsPrelude = r'''
   // ── 排空队列 ──
   function pushToast(msg, long) {
     if (!global.__javaToasts) global.__javaToasts = [];
-    global.__javaToasts.push({ msg: String(msg == null ? '' : msg), long: !!long });
+    // legado JsExtensions.toast：`"${getSource()?.getTag()}: $msg"`。
+    var tag = typeof global.__sySourceTag === 'function'
+      ? String(global.__sySourceTag() || '') : '';
+    var text = (tag ? tag + ': ' : '') + String(msg == null ? '' : msg);
+    global.__javaToasts.push({ msg: text, long: !!long });
   }
   function pushLog(msg) {
     if (!global.__javaLogs) global.__javaLogs = [];
@@ -2735,6 +2778,69 @@ const String javaExtensionsJsPrelude = r'''
     return out.map(signedByte);
   }
 
+  /// CTR/OFB/CFB 流模式通用实现（JCE 口径）；encBlock 为分组加密函数
+  /// （无填充，输入输出等长）。CFB 段长取 mode 尾随位数（'CFB' 缺省按
+  /// 整块）；pad=true 时按分组填充/去填充。
+  function streamCipherRun(encrypt, data, mode, pad, iv, blockSize, encBlock) {
+    if (!iv || iv.length !== blockSize) return null;
+    var seg = blockSize;
+    if (mode.indexOf('CFB') === 0 && mode.length > 3) {
+      var bits = parseInt(mode.substring(3), 10);
+      if (!(bits > 0) || bits % 8 !== 0 || bits > blockSize * 8) return null;
+      seg = bits / 8;
+    }
+    var buf = data.slice();
+    var i, j;
+    if (encrypt && pad) {
+      var n = blockSize - (buf.length % blockSize);
+      for (i = 0; i < n; i++) buf.push(n);
+    }
+    if (!encrypt && pad && buf.length % blockSize !== 0) return null;
+    var out = [];
+    if (mode === 'CTR') {
+      var ctr = iv.map(function (b) { return b & 0xff; });
+      for (i = 0; i < buf.length; i += blockSize) {
+        var ksBlock = encBlock(ctr.slice());
+        for (j = blockSize - 1; j >= 0; j--) {
+          ctr[j] = (ctr[j] + 1) & 0xff;
+          if (ctr[j] !== 0) break;
+        }
+        var blk = buf.slice(i, i + blockSize);
+        for (j = 0; j < blk.length; j++) out.push(blk[j] ^ ksBlock[j]);
+      }
+    } else if (mode === 'OFB') {
+      var reg = iv.map(function (b) { return b & 0xff; });
+      for (i = 0; i < buf.length; i += blockSize) {
+        reg = encBlock(reg.slice());
+        var blk2 = buf.slice(i, i + blockSize);
+        for (j = 0; j < blk2.length; j++) out.push(blk2[j] ^ reg[j]);
+      }
+    } else {
+      var reg2 = iv.map(function (b) { return b & 0xff; });
+      for (i = 0; i < buf.length; i += seg) {
+        var chunk = buf.slice(i, i + seg);
+        var eb = encBlock(reg2.slice());
+        var produced = [];
+        for (j = 0; j < chunk.length; j++) {
+          produced.push(chunk[j] ^ eb[j]);
+          out.push(produced[j]);
+        }
+        var feed = encrypt ? produced : chunk;
+        reg2 = reg2.slice(feed.length).concat(feed);
+      }
+    }
+    if (pad && !encrypt) {
+      if (out.length === 0) return null;
+      var padLen = out[out.length - 1];
+      if (padLen < 1 || padLen > blockSize) return null;
+      for (i = 0; i < padLen; i++) {
+        if (out[out.length - 1 - i] !== padLen) return null;
+      }
+      out = out.slice(0, out.length - padLen);
+    }
+    return out.map(signedByte);
+  }
+
   /// AES 主流程：返回字节数组（有符号口径），参数非法返回 null。
   function aesRun(encrypt, data, key, mode, pad, iv) {
     if (mode === 'GCM') return gcmRun(encrypt, data, key, iv, 128);
@@ -2742,6 +2848,10 @@ const String javaExtensionsJsPrelude = r'''
     if (!ks) return null;
     var out = [];
     var i;
+    if (mode === 'CTR' || mode === 'OFB' || mode.indexOf('CFB') === 0) {
+      return streamCipherRun(encrypt, data, mode, pad, iv, 16,
+          function (b) { return aesCryptBlock(b, ks.w, ks.nr, true); });
+    }
     if (encrypt) {
       var buf = data.slice();
       if (pad) {
@@ -2782,7 +2892,8 @@ const String javaExtensionsJsPrelude = r'''
     return plain.map(signedByte);
   }
 
-  /// transformation 解析：GCM 走独立分支；CTR/CFB/OFB 不支持返回 null。
+  /// transformation 解析：支持 ECB/CBC/CTR/CFB/OFB/GCM（CFB 缺省段长按
+  /// 分组整块，mode 为 'CFB'；显式 'CFB8'/'CFB128' 等保留位数）。
   /// 与 legado SymmetricCryptoAndroid 一致：无 `/` 的算法名补
   /// ECB/PKCS5Padding（`"DES"` 即 `"DES/ECB/PKCS5Padding"`）。
   function aesParseTf(transformation, hasIv) {
@@ -2792,19 +2903,21 @@ const String javaExtensionsJsPrelude = r'''
       // Java GCM 无填充，tag 长度由 GCMParameterSpec 决定（缺省 128）。
       return { mode: 'GCM', pad: false };
     }
-    if (t.indexOf('/CTR') >= 0 || t.indexOf('/CFB') >= 0 ||
-        t.indexOf('/OFB') >= 0) {
-      return null;
+    var pad = t.indexOf('NOPADDING') < 0;
+    if (t.indexOf('/CTR') >= 0) return { mode: 'CTR', pad: pad };
+    if (t.indexOf('/OFB') >= 0) return { mode: 'OFB', pad: pad };
+    var mCfb = /\/CFB(\d*)/.exec(t);
+    if (mCfb) {
+      return { mode: mCfb[1] ? ('CFB' + mCfb[1]) : 'CFB', pad: pad };
     }
     var mode = t.indexOf('/ECB') >= 0 ? 'ECB'
         : (t.indexOf('/CBC') >= 0 ? 'CBC'
         : (raw.indexOf('/') < 0 ? 'ECB' : (hasIv ? 'CBC' : 'ECB')));
-    var pad = t.indexOf('NOPADDING') < 0;
     return { mode: mode, pad: pad };
   }
 
-  function aesDecodeInput(str) {
-    return cipherDecodeInput(str, 16);
+  function aesDecodeInput(str, blockSize) {
+    return cipherDecodeInput(str, blockSize || 16);
   }
 
   /// 密文输入解析（legado SymmetricCryptoAndroid.decrypt：hex 优先，其余
@@ -2828,12 +2941,15 @@ const String javaExtensionsJsPrelude = r'''
         ? null : utf8Encode(String(ivStr));
     var tf = aesParseTf(transformation, ivBytes != null);
     if (!tf) return null;
-    if (tf.mode === 'CBC' && (ivBytes == null || ivBytes.length !== 16)) {
+    if (tf.mode !== 'ECB' && tf.mode !== 'GCM' &&
+        (ivBytes == null || ivBytes.length !== 16)) {
       return null;
     }
+    var stream = tf.mode === 'CTR' || tf.mode === 'OFB' ||
+        tf.mode.indexOf('CFB') === 0;
     var data = encrypt
         ? utf8Encode(String(str == null ? '' : str))
-        : aesDecodeInput(str);
+        : aesDecodeInput(str, stream ? 1 : 16);
     if (!encrypt && data.length === 0) return null;
     return aesRun(encrypt, data, keyBytes, tf.mode, tf.pad, ivBytes);
   }
@@ -2845,14 +2961,17 @@ const String javaExtensionsJsPrelude = r'''
         .map(function (b) { return b & 0xff; });
     var iv = bytesFromB64(String(ivB64 == null ? '' : ivB64))
         .map(function (b) { return b & 0xff; });
-    var m = String(mode == null ? '' : mode).toUpperCase() === 'ECB'
-        ? 'ECB' : 'CBC';
-    var pad = String(padding == null ? '' : padding).toUpperCase()
-        .indexOf('NOPADDING') < 0;
-    if (m === 'CBC' && iv.length !== 16) return '';
+    // legado 拼 "AES/${mode}/${padding}" 后走 createSymmetricCrypto，
+    // 模式可为 ECB/CBC/CTR/CFB/OFB。
+    var tf = aesParseTf('AES/' + String(mode == null ? 'CBC' : mode) + '/' +
+        String(padding == null ? 'PKCS5Padding' : padding), iv.length > 0);
+    if (!tf) return '';
+    if (tf.mode !== 'ECB' && tf.mode !== 'GCM' && iv.length !== 16) return '';
+    var stream = tf.mode === 'CTR' || tf.mode === 'OFB' ||
+        tf.mode.indexOf('CFB') === 0;
     var input = encrypt ? utf8Encode(String(data == null ? '' : data))
-        : aesDecodeInput(data);
-    var out = aesRun(encrypt, input, key, m, pad, m === 'CBC' ? iv : null);
+        : aesDecodeInput(data, stream ? 1 : 16);
+    var out = aesRun(encrypt, input, key, tf.mode, tf.pad, iv);
     if (out == null) return '';
     return encrypt ? b64FromBytes(out.map(function (b) { return b & 0xff; }))
         : utf8Decode(out);
@@ -2876,6 +2995,24 @@ const String javaExtensionsJsPrelude = r'''
     return out == null ? '' : bytesToHex(out);
   };
 
+  // 测试用：CTR/OFB/CFB 流模式十六进制入出（mode 形如 'CTR'/'OFB'/'CFB128'）。
+  global.__aesModeHexTest = function (keyHex, ivHex, dataHex, mode, encrypt) {
+    var key = hexToBytes(keyHex).map(function (b) { return b & 0xff; });
+    var iv = hexToBytes(ivHex).map(function (b) { return b & 0xff; });
+    var data = hexToBytes(dataHex).map(function (b) { return b & 0xff; });
+    var out = aesRun(!!encrypt, data, key, String(mode), false, iv);
+    return out == null ? '' : bytesToHex(out);
+  };
+
+  global.__desModeHexTest = function (keyHex, ivHex, dataHex, mode, encrypt,
+      triple) {
+    var key = hexToBytes(keyHex).map(function (b) { return b & 0xff; });
+    var iv = hexToBytes(ivHex).map(function (b) { return b & 0xff; });
+    var data = hexToBytes(dataHex).map(function (b) { return b & 0xff; });
+    var out = desRun(!!encrypt, data, key, String(mode), false, iv, !!triple);
+    return out == null ? '' : bytesToHex(out);
+  };
+
   global.__desHexTest = function (keyHex, ivHex, dataHex, encrypt, triple) {
     var key = hexToBytes(keyHex).map(function (b) { return b & 0xff; });
     var data = hexToBytes(dataHex).map(function (b) { return b & 0xff; });
@@ -2887,8 +3024,23 @@ const String javaExtensionsJsPrelude = r'''
   // ── TTF（字体反爬：queryTTF / replaceFont） ──
   // 纯 JS 解析 sfnt 表（head/maxp/cmap[format 4|12]/loca/glyf），按「字形轮廓
   // 字节」做字符映射——与 legado QueryTTF 的 glyf 比较口径一致。
-  // 输入仅支持 base64 / 字节数组；URL 需要二进制抓取（重放协议），暂不支持
-  // （返回 null → replaceFont 原样返回，不产出乱码）。
+  // 输入支持 base64 / 字节数组 / http(s) URL；URL 走二进制重放
+  // （__ajaxBytesCache）：未命中登记后返回 null（本轮 replaceFont 原样返回），
+  // 下一轮重放命中再解析。
+  //
+  // 本 IIFE 先于注入对象预置脚本执行，syOp 尚不存在；按同一排空协议
+  // （__javaVars 的 __syop_* 键）自行登记。
+  var __syopJN = 0;
+  function syJavaOp(op, a, b) {
+    var v = global.__javaVars;
+    if (!v || typeof v !== 'object') {
+      v = {};
+      global.__javaVars = v;
+    }
+    __syopJN++;
+    v['__syop_j' + __syopJN] = JSON.stringify(
+        { op: op, a: a == null ? '' : a, b: b == null ? '' : b });
+  }
   var __ttfCache = {};
 
   function b64ToU8(s) {
@@ -3233,6 +3385,10 @@ const String javaExtensionsJsPrelude = r'''
       return desBitsToBytes(
           decrypt ? desCryptBits(b3, ks1, true) : desCryptBits(b3, ks3, false));
     }
+    if (mode === 'CTR' || mode === 'OFB' || mode.indexOf('CFB') === 0) {
+      return streamCipherRun(encrypt, data, mode, pad, iv, 8,
+          function (b) { return cryptBlock(b, false); });
+    }
     var out = [];
     var i;
     if (encrypt) {
@@ -3277,9 +3433,8 @@ const String javaExtensionsJsPrelude = r'''
 
   // ── SymmetricCrypto（legado java.createSymmetricCrypto） ──
   // transformation 形如 "AES/CBC/PKCS5Padding" / "DES/ECB/PKCS5Padding" /
-  // "DESede/CBC/PKCS5Padding"；key/iv/data 支持字符串或字节数组（legado
-  // ByteArray 有符号口径）。不支持的算法/模式（AES/CTR 等）返回空结果，
-  // 避免给出错误明文。
+  // "DESede/CBC/PKCS5Padding"；支持 ECB/CBC/CTR/CFB/OFB（GCM 仅 AES）。
+  // key/iv/data 支持字符串或字节数组（legado ByteArray 有符号口径）。
   function makeSymmetricCrypto(transformation, key, iv) {
     var empty = {
       decrypt: function (data) { return []; },
@@ -3296,20 +3451,26 @@ const String javaExtensionsJsPrelude = r'''
         .split('/')[0].toUpperCase();
     var blockSize = 16;
     var run;
+    var stream = tf.mode === 'CTR' || tf.mode === 'OFB' ||
+        tf.mode.indexOf('CFB') === 0;
+    var hexUnit = stream ? 1 : blockSize;
     if (algo === 'DES' || algo === 'DESEDE' || algo === 'TRIPLEDES') {
       var triple = algo !== 'DES';
       blockSize = 8;
+      hexUnit = stream ? 1 : blockSize;
       // legado SymmetricCryptoAndroid.normalizedKey：DES 取前 8 字节，
       // DESede 取前 24 字节；DESede 另接受 16 字节双密钥形态。
       if (triple ? (keyBytes.length < 16) : (keyBytes.length < 8)) return empty;
-      if (tf.mode === 'CBC' && (ivBytes == null || ivBytes.length !== 8)) {
+      if (tf.mode !== 'ECB' && tf.mode !== 'GCM' &&
+          (ivBytes == null || ivBytes.length !== 8)) {
         return empty;
       }
       run = function (encrypt, bytes) {
         return desRun(encrypt, bytes, keyBytes, tf.mode, tf.pad, ivBytes, triple);
       };
     } else {
-      if (tf.mode === 'CBC' && (ivBytes == null || ivBytes.length !== 16)) {
+      if (tf.mode !== 'ECB' && tf.mode !== 'GCM' &&
+          (ivBytes == null || ivBytes.length !== 16)) {
         return empty;
       }
       run = function (encrypt, bytes) {
@@ -3321,7 +3482,7 @@ const String javaExtensionsJsPrelude = r'''
         var bytes = (data && typeof data === 'object' &&
             typeof data.length === 'number')
             ? anyToBytes(data)
-            : cipherDecodeInput(data, blockSize);
+            : cipherDecodeInput(data, hexUnit);
         var out = run(false, bytes);
         return out == null ? [] : out;
       },
@@ -3329,7 +3490,7 @@ const String javaExtensionsJsPrelude = r'''
         var bytes = (data && typeof data === 'object' &&
             typeof data.length === 'number')
             ? anyToBytes(data)
-            : cipherDecodeInput(data, blockSize);
+            : cipherDecodeInput(data, hexUnit);
         var out = run(false, bytes);
         return out == null ? '' : utf8Decode(out);
       },
@@ -3882,7 +4043,8 @@ const String javaExtensionsJsPrelude = r'''
     for (var k in m) c[k] = m[k];
   };
 
-  // ── SHA-1 / SHA-256 / HMAC（digestHex / HMacHex / HMacBase64）──
+  // ── SHA-1 / SHA-256 / SHA-384 / SHA-512 / HMAC ──
+  // （digestHex / digestBase64Str / HMacHex / HMacBase64）
   // QuickJS 无 WebCrypto，按 FIPS 180-4 纯 JS 实现（字节数组输入输出）。
   function sha1Bytes(bytes) {
     var ml = bytes.length * 8;
@@ -3989,11 +4151,157 @@ const String javaExtensionsJsPrelude = r'''
     return out;
   }
 
+  // SHA-384/512：64 位字用 [高32, 低32] 对表示（FIPS 180-4）。
+  var SHA512_K = [
+    0x428a2f98, 0xd728ae22, 0x71374491, 0x23ef65cd, 0xb5c0fbcf, 0xec4d3b2f,
+    0xe9b5dba5, 0x8189dbbc, 0x3956c25b, 0xf348b538, 0x59f111f1, 0xb605d019,
+    0x923f82a4, 0xaf194f9b, 0xab1c5ed5, 0xda6d8118, 0xd807aa98, 0xa3030242,
+    0x12835b01, 0x45706fbe, 0x243185be, 0x4ee4b28c, 0x550c7dc3, 0xd5ffb4e2,
+    0x72be5d74, 0xf27b896f, 0x80deb1fe, 0x3b1696b1, 0x9bdc06a7, 0x25c71235,
+    0xc19bf174, 0xcf692694, 0xe49b69c1, 0x9ef14ad2, 0xefbe4786, 0x384f25e3,
+    0x0fc19dc6, 0x8b8cd5b5, 0x240ca1cc, 0x77ac9c65, 0x2de92c6f, 0x592b0275,
+    0x4a7484aa, 0x6ea6e483, 0x5cb0a9dc, 0xbd41fbd4, 0x76f988da, 0x831153b5,
+    0x983e5152, 0xee66dfab, 0xa831c66d, 0x2db43210, 0xb00327c8, 0x98fb213f,
+    0xbf597fc7, 0xbeef0ee4, 0xc6e00bf3, 0x3da88fc2, 0xd5a79147, 0x930aa725,
+    0x06ca6351, 0xe003826f, 0x14292967, 0x0a0e6e70, 0x27b70a85, 0x46d22ffc,
+    0x2e1b2138, 0x5c26c926, 0x4d2c6dfc, 0x5ac42aed, 0x53380d13, 0x9d95b3df,
+    0x650a7354, 0x8baf63de, 0x766a0abb, 0x3c77b2a8, 0x81c2c92e, 0x47edaee6,
+    0x92722c85, 0x1482353b, 0xa2bfe8a1, 0x4cf10364, 0xa81a664b, 0xbc423001,
+    0xc24b8b70, 0xd0f89791, 0xc76c51a3, 0x0654be30, 0xd192e819, 0xd6ef5218,
+    0xd6990624, 0x5565a910, 0xf40e3585, 0x5771202a, 0x106aa070, 0x32bbd1b8,
+    0x19a4c116, 0xb8d2d0c8, 0x1e376c08, 0x5141ab53, 0x2748774c, 0xdf8eeb99,
+    0x34b0bcb5, 0xe19b48a8, 0x391c0cb3, 0xc5c95a63, 0x4ed8aa4a, 0xe3418acb,
+    0x5b9cca4f, 0x7763e373, 0x682e6ff3, 0xd6b2b8a3, 0x748f82ee, 0x5defb2fc,
+    0x78a5636f, 0x43172f60, 0x84c87814, 0xa1f0ab72, 0x8cc70208, 0x1a6439ec,
+    0x90befffa, 0x23631e28, 0xa4506ceb, 0xde82bde9, 0xbef9a3f7, 0xb2c67915,
+    0xc67178f2, 0xe372532b, 0xca273ece, 0xea26619c, 0xd186b8c7, 0x21c0c207,
+    0xeada7dd6, 0xcde0eb1e, 0xf57d4f7f, 0xee6ed178, 0x06f067aa, 0x72176fba,
+    0x0a637dc5, 0xa2c898a6, 0x113f9804, 0xbef90dae, 0x1b710b35, 0x131c471b,
+    0x28db77f5, 0x23047d84, 0x32caab7b, 0x40c72493, 0x3c9ebe0a, 0x15c9bebc,
+    0x431d67c4, 0x9c100d4c, 0x4cc5d4be, 0xcb3e42b6, 0x597f299c, 0xfc657e2a,
+    0x5fcb6fab, 0x3ad6faec, 0x6c44198c, 0x4a475817
+  ];
+
+  function sha64Ror(a, n) {
+    if (n < 32) {
+      return [((a[0] >>> n) | (a[1] << (32 - n))) >>> 0,
+              ((a[1] >>> n) | (a[0] << (32 - n))) >>> 0];
+    }
+    if (n === 32) return [a[1], a[0]];
+    var m = n - 32;
+    return [((a[1] >>> m) | (a[0] << (32 - m))) >>> 0,
+            ((a[0] >>> m) | (a[1] << (32 - m))) >>> 0];
+  }
+
+  function sha64Shr(a, n) {
+    if (n < 32) {
+      return [a[0] >>> n, ((a[1] >>> n) | (a[0] << (32 - n))) >>> 0];
+    }
+    return [0, a[0] >>> (n - 32)];
+  }
+
+  function sha64Xor(a, b) {
+    return [(a[0] ^ b[0]) >>> 0, (a[1] ^ b[1]) >>> 0];
+  }
+
+  function sha64Add(a, b) {
+    var lo = (a[1] >>> 0) + (b[1] >>> 0);
+    var hi = (a[0] >>> 0) + (b[0] >>> 0) + (lo > 0xffffffff ? 1 : 0);
+    return [hi >>> 0, lo >>> 0];
+  }
+
+  function sha512Core(bytes, is384) {
+    var ml = bytes.length * 8;
+    var msg = bytes.slice();
+    msg.push(0x80);
+    while (msg.length % 128 !== 112) msg.push(0);
+    var hi = Math.floor(ml / 0x100000000);
+    msg.push(0, 0, 0, 0, 0, 0, 0, 0,
+        (hi >>> 24) & 0xff, (hi >>> 16) & 0xff, (hi >>> 8) & 0xff, hi & 0xff,
+        (ml >>> 24) & 0xff, (ml >>> 16) & 0xff, (ml >>> 8) & 0xff, ml & 0xff);
+    var H = is384
+        ? [0xcbbb9d5d, 0xc1059ed8, 0x629a292a, 0x367cd507,
+           0x9159015a, 0x3070dd17, 0x152fecd8, 0xf70e5939,
+           0x67332667, 0xffc00b31, 0x8eb44a87, 0x68581511,
+           0xdb0c2e0d, 0x64f98fa7, 0x47b5481d, 0xbefa4fa4]
+        : [0x6a09e667, 0xf3bcc908, 0xbb67ae85, 0x84caa73b,
+           0x3c6ef372, 0xfe94f82b, 0xa54ff53a, 0x5f1d36f1,
+           0x510e527f, 0xade682d1, 0x9b05688c, 0x2b3e6c1f,
+           0x1f83d9ab, 0xfb41bd6b, 0x5be0cd19, 0x137e2179];
+    var w = new Array(160);
+    for (var i = 0; i < msg.length; i += 128) {
+      var t;
+      for (t = 0; t < 16; t++) {
+        w[2 * t] = ((msg[i + 8 * t] << 24) | (msg[i + 8 * t + 1] << 16) |
+            (msg[i + 8 * t + 2] << 8) | msg[i + 8 * t + 3]) >>> 0;
+        w[2 * t + 1] = ((msg[i + 8 * t + 4] << 24) |
+            (msg[i + 8 * t + 5] << 16) | (msg[i + 8 * t + 6] << 8) |
+            msg[i + 8 * t + 7]) >>> 0;
+      }
+      for (t = 16; t < 80; t++) {
+        var w15 = [w[2 * (t - 15)], w[2 * (t - 15) + 1]];
+        var w2 = [w[2 * (t - 2)], w[2 * (t - 2) + 1]];
+        var s0 = sha64Xor(sha64Xor(sha64Ror(w15, 1), sha64Ror(w15, 8)),
+            sha64Shr(w15, 7));
+        var s1 = sha64Xor(sha64Xor(sha64Ror(w2, 19), sha64Ror(w2, 61)),
+            sha64Shr(w2, 6));
+        var acc = sha64Add(
+            sha64Add([w[2 * (t - 16)], w[2 * (t - 16) + 1]], s0),
+            sha64Add([w[2 * (t - 7)], w[2 * (t - 7) + 1]], s1));
+        w[2 * t] = acc[0];
+        w[2 * t + 1] = acc[1];
+      }
+      var a = [H[0], H[1]], b = [H[2], H[3]], c = [H[4], H[5]],
+          d = [H[6], H[7]], e = [H[8], H[9]], f = [H[10], H[11]],
+          g = [H[12], H[13]], h = [H[14], H[15]];
+      for (t = 0; t < 80; t++) {
+        var S1 = sha64Xor(sha64Xor(sha64Ror(e, 14), sha64Ror(e, 18)),
+            sha64Ror(e, 41));
+        var ch = sha64Xor(
+            [(e[0] & f[0]) >>> 0, (e[1] & f[1]) >>> 0],
+            [(~e[0] & g[0]) >>> 0, (~e[1] & g[1]) >>> 0]);
+        var t1 = sha64Add(
+            sha64Add(sha64Add(h, S1),
+                sha64Add(ch, [SHA512_K[2 * t], SHA512_K[2 * t + 1]])),
+            [w[2 * t], w[2 * t + 1]]);
+        var S0 = sha64Xor(sha64Xor(sha64Ror(a, 28), sha64Ror(a, 34)),
+            sha64Ror(a, 39));
+        var maj = sha64Xor(sha64Xor(
+            [(a[0] & b[0]) >>> 0, (a[1] & b[1]) >>> 0],
+            [(a[0] & c[0]) >>> 0, (a[1] & c[1]) >>> 0]),
+            [(b[0] & c[0]) >>> 0, (b[1] & c[1]) >>> 0]);
+        var t2 = sha64Add(S0, maj);
+        h = g; g = f; f = e; e = sha64Add(d, t1);
+        d = c; c = b; b = a; a = sha64Add(t1, t2);
+      }
+      var vars = [a, b, c, d, e, f, g, h];
+      for (var v = 0; v < 8; v++) {
+        var sum = sha64Add([H[2 * v], H[2 * v + 1]], vars[v]);
+        H[2 * v] = sum[0];
+        H[2 * v + 1] = sum[1];
+      }
+    }
+    var out = [];
+    var words = is384 ? 6 : 8;
+    for (var j = 0; j < words; j++) {
+      out.push((H[2 * j] >>> 24) & 0xff, (H[2 * j] >>> 16) & 0xff,
+          (H[2 * j] >>> 8) & 0xff, H[2 * j] & 0xff);
+      out.push((H[2 * j + 1] >>> 24) & 0xff, (H[2 * j + 1] >>> 16) & 0xff,
+          (H[2 * j + 1] >>> 8) & 0xff, H[2 * j + 1] & 0xff);
+    }
+    return out;
+  }
+
+  function sha512Bytes(bytes) { return sha512Core(bytes, false); }
+  function sha384Bytes(bytes) { return sha512Core(bytes, true); }
+
   function digestBytes(algo, bytes) {
     var a = String(algo == null ? '' : algo).toUpperCase().replace(/-/g, '');
     if (a === 'MD5') return md5Bytes(bytes);
     if (a === 'SHA1') return sha1Bytes(bytes);
     if (a === 'SHA256') return sha256Bytes(bytes);
+    if (a === 'SHA384') return sha384Bytes(bytes);
+    if (a === 'SHA512') return sha512Bytes(bytes);
     return null;
   }
 
@@ -4004,8 +4312,10 @@ const String javaExtensionsJsPrelude = r'''
     if (a === 'MD5') hash = md5Bytes;
     else if (a === 'SHA1') hash = sha1Bytes;
     else if (a === 'SHA256') hash = sha256Bytes;
+    else if (a === 'SHA384') hash = sha384Bytes;
+    else if (a === 'SHA512') hash = sha512Bytes;
     else return null;
-    var block = 64;
+    var block = (a === 'SHA384' || a === 'SHA512') ? 128 : 64;
     var key = keyBytes.slice();
     if (key.length > block) key = hash(key);
     while (key.length < block) key.push(0);
@@ -4178,6 +4488,7 @@ const String javaExtensionsJsPrelude = r'''
   AndroidBase64.DEFAULT = 0;
   AndroidBase64.NO_PADDING = 1;
   AndroidBase64.NO_WRAP = 2;
+  AndroidBase64.CRLF = 4;
   AndroidBase64.URL_SAFE = 8;
   AndroidBase64.NO_CLOSE = 16;
   AndroidBase64.decode = function (s, flags) {
@@ -4186,12 +4497,7 @@ const String javaExtensionsJsPrelude = r'''
     return bytesFromB64(str);
   };
   AndroidBase64.encodeToString = function (b, flags) {
-    var out = b64FromBytes(juBytes(b));
-    if ((flags || 0) & 8) {
-      out = out.replace(/\+/g, '-').replace(/\//g, '_');
-    }
-    if ((flags || 0) & 1) out = out.replace(/=+$/, '');
-    return out;
+    return b64EncodeFlags(juBytes(b), flags == null ? 2 : flags);
   };
   AndroidBase64.encode = function (b, flags) {
     return jsBytes(AndroidBase64.encodeToString(b, flags));
@@ -6129,9 +6435,21 @@ const String javaExtensionsJsPrelude = r'''
       return out == null ? ''
           : b64FromBytes(out.map(function (b) { return b & 0xff; }));
     },
-    base64Encode: function (s) { return b64FromBytes(utf8Encode(String(s == null ? '' : s))); },
-    base64Decode: function (s) { return utf8Decode(bytesFromB64(s)); },
-    base64DecodeToByteArray: function (s) { return bytesFromB64(s); },
+    // JsExtensions.base64Encode 默认 flags=2（NO_WRAP）；显式传入时按
+    // android.util.Base64 标志位处理（NO_PADDING/NO_WRAP/CRLF/URL_SAFE）。
+    base64Encode: function (s, flags) {
+      return b64EncodeFlags(utf8Encode(String(s == null ? '' : s)), flags);
+    },
+    // base64Decode(str[, charset|flags])：解码宽容（同 Hutool）；charset
+    // 重载保留签名，非 UTF-8 按 UTF-8 处理；flags 不影响解码。
+    base64Decode: function (s, charsetOrFlags) {
+      return utf8Decode(bytesFromB64(s));
+    },
+    // 空白输入返回 null（legado base64DecodeToByteArray 口径）。
+    base64DecodeToByteArray: function (s, flags) {
+      if (s == null || String(s).trim() === '') return null;
+      return bytesFromB64(s);
+    },
     // legado JsExtensions.strToBytes/bytesToStr：默认 UTF-8，字节按 Java
     // byte[]（有符号）口径。charset 重载保留签名；沙箱无多字符集编解码，
     // 非 UTF-8 名称按 UTF-8 处理（与 StrResponse.charset / encodeURI 同口径）。
@@ -6146,7 +6464,7 @@ const String javaExtensionsJsPrelude = r'''
     hexDecodeToByteArray: function (s) { return hexStrictBytes(s); },
     // AES：encode 输出 base64；decode 系列接受 base64 或 hex，输出字符串/字节数组。
     // transformation 形如 "AES/CBC/PKCS5Padding"、"AES/ECB/NoPadding"；
-    // CTR/GCM/CFB/OFB 未实现（返回空，避免给出错误结果）。
+    // 支持 ECB/CBC/CTR/CFB/OFB/GCM（CFB 缺省 128 位段）。
     aesEncode: function (str, key, transformation, iv) {
       var out = aesCall(true, str, key, transformation, iv);
       return out == null ? ''
@@ -6243,9 +6561,21 @@ const String javaExtensionsJsPrelude = r'''
     createAsymmetricCrypto: makeAsymmetricCrypto,
     // legado Sign 对象形态（java.createSign(algorithm)，MD5/SHA1/SHA256withRSA）。
     createSign: makeSign,
-    // 字体反爬：解析 TTF（base64 / 字节数组），返回可查询字形轮廓的字体对象。
+    // 字体反爬：解析 TTF（base64 / 字节数组 / http(s) URL），返回可查询
+    // 字形轮廓的字体对象。
     queryTTF: function (data, useCache) {
       try {
+        if (typeof data === 'string' && /^https?:\/\//i.test(data)) {
+          var url = String(data);
+          var cached = global.__ajaxBytesCache &&
+              global.__ajaxBytesCache[url];
+          if (cached == null) {
+            syJavaOp('ajaxBytes', url, '');
+            return null;
+          }
+          if (cached === '') return null;
+          data = cached;
+        }
         var bytes = ttfBytes(data);
         if (!bytes || bytes.length < 12) return null;
         var key = ttfHash(bytes);
@@ -6400,6 +6730,113 @@ const String javaExtensionsJsPrelude = r'''
       searchParams: searchParams
     };
   }
+
+  // ── 章节实体方法（legado BookChapter / RuleDataInterface） ──
+  // legado 把 BookChapter 实体直接绑成脚本里的 `chapter`，脚本可调用
+  // getVariable/putVariable/getBigVariable/putBigVariable/getAbsoluteURL/
+  // getFileName。NexHub 绑定的是字段快照对象，这里按同名方法补齐语义；
+  // 由 JsEngine 在注入 chapter 绑定后调用安装（每次绑定都是新对象）。
+  // Kotlin String.trim() 的空白口径（JS trim 覆盖 Unicode 空白）。
+  function syTrimUrl(s) {
+    return String(s == null ? '' : s).trim();
+  }
+
+  // legado NetworkUtils.getAbsoluteURL(baseURL, relativePath)。
+  function __syChapterAbsUrl(raw, base) {
+    var rel = syTrimUrl(raw);
+    var b0 = String(base == null ? '' : base);
+    if (!b0) return rel;
+    var b = b0.split(',')[0];
+    if (!/^[a-zA-Z][a-zA-Z0-9+.\-]*:\/\//.test(b)) return rel;
+    if (/^https?:\/\//i.test(rel)) return rel;
+    if (/^data:.*?;base64,/.test(rel)) return rel;
+    if (rel.indexOf('javascript') === 0) return '';
+    // Java URL(base, rel)：带 scheme 的 spec 直接成绝对地址。
+    if (/^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(rel)) return rel;
+    if (rel.charAt(0) === '?') return b.replace(/[?#].*$/, '') + rel;
+    if (rel.charAt(0) === '#') return b.replace(/#.*$/, '') + rel;
+    return syAbsUrl(rel, b);
+  }
+
+  function __syInstallChapterHelpers() {
+    var ch = global.chapter;
+    if (!ch || typeof ch !== 'object') return;
+    if (ch.__syChapterHelpers) return;
+    try {
+      Object.defineProperty(ch, '__syChapterHelpers', {
+        value: true, enumerable: false, configurable: true
+      });
+    } catch (e) {
+      ch.__syChapterHelpers = true;
+    }
+    if (!ch.variableMap || typeof ch.variableMap !== 'object') {
+      ch.variableMap = {};
+    }
+    var big = {};
+    function has(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
+    // BookChapter.putVariable：null 删键；>=10000 转 big；恒返回 true（覆写基类）。
+    ch.putVariable = function (key, value) {
+      var k = String(key == null ? '' : key);
+      if (value == null) {
+        delete ch.variableMap[k];
+        delete big[k];
+        return true;
+      }
+      var s = String(value);
+      if (s.length < 10000) {
+        delete big[k];
+        ch.variableMap[k] = s;
+        return true;
+      }
+      delete ch.variableMap[k];
+      big[k] = s;
+      return true;
+    };
+    // RuleDataInterface.getVariable：表 → big → ''。
+    ch.getVariable = function (key) {
+      var k = String(key == null ? '' : key);
+      if (has(ch.variableMap, k)) return ch.variableMap[k];
+      if (has(big, k)) return big[k];
+      return '';
+    };
+    ch.putBigVariable = function (key, value) {
+      var k = String(key == null ? '' : key);
+      if (value == null) delete big[k];
+      else big[k] = String(value);
+    };
+    ch.getBigVariable = function (key) {
+      var k = String(key == null ? '' : key);
+      return has(big, k) ? big[k] : null;
+    };
+    // BookChapter.getAbsoluteURL：`,{...}` 选项段不参与拼接，原样接回。
+    ch.getAbsoluteURL = function () {
+      var u = String(ch.url == null ? '' : ch.url);
+      var b = String(ch.baseUrl == null ? '' : ch.baseUrl);
+      var title = String(ch.title == null ? '' : ch.title);
+      if (ch.isVolume && u.indexOf(title) === 0) return b;
+      var m = /\s*,\s*(?=\{)/.exec(u);
+      var before = m ? u.substring(0, m.index) : u;
+      var abs = __syChapterAbsUrl(before, b);
+      if (!m) return abs;
+      return abs + ',' + u.substring(m.index + m[0].length);
+    };
+    // BookChapter.getFileName：`%05d-<md5前16>.<suffix>`，默认 nb。
+    ch.getFileName = function (suffix) {
+      var idx = Number(ch.index);
+      if (!isFinite(idx)) idx = 0;
+      var num = String(Math.trunc(idx));
+      while (num.length < 5) num = '0' + num;
+      var title = String(ch.title == null ? '' : ch.title);
+      var md5 = java.md5Encode(title);
+      var short = md5.length >= 24 ? md5.substring(8, 24) : md5;
+      var sfx = (suffix === undefined || suffix === null)
+        ? 'nb' : String(suffix);
+      return num + '-' + short + '.' + sfx;
+    };
+  }
+
+  global.__syInstallChapterHelpers = __syInstallChapterHelpers;
+  global.__syChapterAbsUrl = __syChapterAbsUrl;
 
   global.java = java;
 })(globalThis);

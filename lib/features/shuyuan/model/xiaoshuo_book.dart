@@ -24,6 +24,9 @@ class XiaoshuoBook {
   /// `ruleBookInfo.downloadUrls` 按 isUrl 求值的结果（多个链接返回多条）。
   List<String>? downloadUrls;
 
+  /// 目录反转标记（legado `Book.reverseToc`）：由书源 `reverseToc` 字段控制。
+  bool reverseToc;
+
   XiaoshuoBook({
     required this.bookUrl,
     required this.name,
@@ -42,6 +45,7 @@ class XiaoshuoBook {
     this.updateTime,
     this.recommendations,
     this.downloadUrls,
+    this.reverseToc = false,
   });
 
   factory XiaoshuoBook.fromJson(Map<String, dynamic> json) {
@@ -67,6 +71,7 @@ class XiaoshuoBook {
       downloadUrls: (json['downloadUrls'] as List<dynamic>?)
           ?.map((e) => e.toString())
           .toList(),
+      reverseToc: json['reverseToc'] as bool? ?? false,
     );
   }
 
@@ -87,6 +92,7 @@ class XiaoshuoBook {
         if (updateTime != null) 'updateTime': updateTime,
         if (recommendations != null) 'recommendations': recommendations,
         if (downloadUrls != null) 'downloadUrls': downloadUrls,
+        if (reverseToc) 'reverseToc': reverseToc,
       };
 
   void putVariable(String key, String value) {

@@ -549,6 +549,10 @@ class AnalyzeRule {
         // nextChapterUrl（目录规则按章求值、正文规则拼下一章地址均依赖）。
         'chapter': _chapterSeed(chapter),
         'nextChapterUrl': nextChapterUrl ?? '',
+        // 对照 legado AnalyzeRule bindings：小说源无 RSS 文章对象（md3 为
+        // rssArticle=null），fromBookInfo 标记详情页求值（NexHub 不区分）。
+        'rssArticle': null,
+        'fromBookInfo': false,
         // 每轮都重置变量快照（不能因为当前为空就跳过）：引擎已按源池化，
         // 会跨书/跨章存活；若沿用上一轮的 __javaVars，`java.get` 会读到
         // 别的书的变量。
@@ -869,11 +873,16 @@ class AnalyzeRule {
   /// `chapter.title/url/isVip…` 读取当前章节；这里按同名字段镜像）。
   Map<String, dynamic>? _chapterSeed(XiaoshuoBookChapter? ch) {
     if (ch == null) return null;
+    final chBaseUrl = ch.baseUrl;
     return <String, dynamic>{
       'title': ch.title,
       'url': ch.url,
       'bookUrl': ch.bookUrl,
-      'baseUrl': redirectUrl ?? baseUrl ?? '',
+      // legado 绑定的是 BookChapter 实体，baseUrl 是章节自带字段；
+      // 老数据缺失时退回当前解析页地址。
+      'baseUrl': (chBaseUrl != null && chBaseUrl.isNotEmpty)
+          ? chBaseUrl
+          : (redirectUrl ?? baseUrl ?? ''),
       'index': ch.index,
       'tag': ch.tag ?? '',
       'isVolume': ch.isVolume,

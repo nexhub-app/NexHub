@@ -4,7 +4,7 @@
 /// - B4 `getStringList` 按换行拆分保留空串项；B5 `isUrl` 基准为 redirectUrl；
 /// - C1 详情求值顺序（kind 的 `@put` 对后续 lastChapter/intro 可见）；
 /// - C3 `BookInfoRule.relatedBooks` JSON 往返；
-/// - C15 标题规则图片尾巴写入章节 `imgUrl`（legado reviewImg）；
+/// - C15 标题规则图片尾巴写入章节 `reviewImg`（legado 字段名）；
 /// - E8 ajax 失败缓存 legado stackTraceStr 文本（`java` 前缀），供
 ///   `startsWith("java")` 类源判定失败。
 library;
@@ -162,7 +162,7 @@ void main() {
   });
 
   group('C15 标题图片尾巴', () {
-    test('imgRegex 命中的图片写入章节 imgUrl', () {
+    test('imgRegex 命中的图片写入章节 reviewImg', () {
       final chapter = XiaoshuoBookChapter(
         bookUrl: 'https://src.test/book/1.html',
         url: 'https://src.test/c/1.html',
@@ -183,7 +183,7 @@ void main() {
             '<div id="c">正文</div>',
       );
       expect(chapter.title, '第十章 云涌');
-      expect(chapter.imgUrl, 'https://img.example.com/a.jpg');
+      expect(chapter.reviewImg, 'https://img.example.com/a.jpg');
     });
   });
 

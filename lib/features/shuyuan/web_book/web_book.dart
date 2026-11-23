@@ -343,9 +343,9 @@ class WebBook {
         }
       }
     }
-    // legado：`-` 前缀表示整张目录需反转（多页时页序一并反转），
-    // 由本方法在合并去重后统一处理，分页解析本身不再翻转。
-    final reverseToc = (tocRule.chapterList ?? '').startsWith('-');
+    // legado：`-` 前缀表示 `reverse` 标记，控制"去重前是否反转"与
+    // "去重后是否再反转"，由本方法在合并后统一处理，分页解析本身不再翻转。
+    final listReversed = (tocRule.chapterList ?? '').startsWith('-');
     var tocUrl = (book.tocUrl != null && book.tocUrl!.isNotEmpty)
         ? book.tocUrl!
         : book.bookUrl;
@@ -539,16 +539,20 @@ class WebBook {
     }
 
     if (allChapters.isNotEmpty) {
-      // 对齐 legado：多页合并后按「URL + 标题」整体去重，再全局重编号。
+      // 对齐 legado：去重前先按 `-` 前缀决定工作顺序（无前缀则整列反转），
+      // 再去重（LinkedHashSet 保留工作顺序中的首个同名 URL），最后按
+      // `book.reverseToc` 决定是否再反转。两者异或决定最终顺序。
+      final working = listReversed ? allChapters : allChapters.reversed;
       final seen = <String>{};
       final deduped = <XiaoshuoBookChapter>[];
-      for (final chapter in allChapters) {
-        if (seen.add('${chapter.url}\u0000${chapter.title}')) {
+      for (final chapter in working) {
+        // legado BookChapter equals/hashCode 仅以 url 判等。
+        if (seen.add(chapter.url)) {
           deduped.add(chapter);
         }
       }
-      // legado `-` 前缀：合并、去重后整列表反转（页序与页内顺序一并反转）。
-      final ordered = reverseToc ? deduped.reversed.toList() : deduped;
+      final ordered =
+          book.reverseToc ? deduped : deduped.reversed.toList();
       for (var i = 0; i < ordered.length; i++) {
         ordered[i].index = i;
       }

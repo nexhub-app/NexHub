@@ -116,6 +116,11 @@ class ShuyuanSourceContext {
   /// 本轮 eval 中脚本发起、尚未满足的 ajax 请求（settle 循环抓取队列）。
   final List<String> ajaxPending = <String>[];
 
+  /// `java.ajax/connect/get/post/head` 的显式超时（毫秒）：请求键 → ms。
+  /// settle 对该键发起真实请求时优先用脚本传入的 callTimeout/timeout；
+  /// 未指定（ajax/connect 的 null）时用宿主默认。
+  final Map<String, int> ajaxTimeouts = <String, int>{};
+
   /// `org.jsoup.Jsoup.connect(...).execute().bodyAsBytes()` 的重放缓存：
   /// 完整请求键 → 原始响应的 base64（不按文本解码，保留二进制密文）。
   /// 与 [ajaxCache] 同款增量推送（不进种子，防长目录 O(n²)）。
@@ -238,6 +243,7 @@ class ShuyuanSourceContext {
     _pageCacheChars = 0;
     ajaxCache.clear();
     ajaxPending.clear();
+    ajaxTimeouts.clear();
     ajaxBytesCache.clear();
     ajaxBytesPending.clear();
     ajaxMetaCache.clear();
@@ -450,6 +456,10 @@ class ShuyuanSourceContext {
         case 'ajax':
           // 脚本发起的网络请求记录（settle 循环抓取）。按 URL 去重。
           if (!ajaxPending.contains(a)) ajaxPending.add(a);
+          final timeoutMs = int.tryParse(b);
+          if (timeoutMs != null && timeoutMs > 0) {
+            ajaxTimeouts[a] = timeoutMs;
+          }
         case 'ajaxBytes':
           // bodyAsBytes 的二进制重放请求（同一 URL 可能同时被记录为
           // 'ajax'，settle 按并集抓取一次、双缓存填充）。
@@ -906,9 +916,11 @@ class ShuyuanSourceContext {
           // 首次调用仍复用既有页面缓存（重放架构的跨轮去重）。
           skipPageCache: isDup,
         );
-        final resp = await analyzeUrl
-            .getStrResponse()
-            .timeout(const Duration(seconds: 45));
+        final timeoutMs = ctx.ajaxTimeouts[key];
+        final resp = await analyzeUrl.getStrResponse().timeout(
+            timeoutMs != null && timeoutMs > 0
+                ? Duration(milliseconds: timeoutMs)
+                : const Duration(seconds: 45));
         if (wantBody) ctx.ajaxCache[key] = resp;
         if (wantBytes) {
           final bytes = analyzeUrl.lastResponseBytes ??

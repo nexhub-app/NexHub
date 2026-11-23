@@ -3,6 +3,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:crypto/crypto.dart' as crypto;
@@ -177,11 +178,12 @@ void main() {
       expect(e.eval("java.timeFormat('不是时间')"), '不是时间');
     });
 
-    test('timeFormatUTC 按时区偏移秒换算', () {
+    test('timeFormatUTC 时区偏移按毫秒换算（legado sh:Int 即毫秒）', () {
       final e = engine();
       expect(e.eval("java.timeFormatUTC(1700000000000, 'yyyy-MM-dd HH:mm:ss', 0)"),
           '2023-11-14 22:13:20');
-      expect(e.eval("java.timeFormatUTC(1700000000000, 'yyyy-MM-dd HH:mm:ss', 28800)"),
+      // SimpleTimeZone(sh) 的 sh 为毫秒：28800000 = +8 小时。
+      expect(e.eval("java.timeFormatUTC(1700000000000, 'yyyy-MM-dd HH:mm:ss', 28800000)"),
           '2023-11-15 06:13:20');
     });
 
@@ -231,6 +233,38 @@ void main() {
         JavaFeedback.onToast = null;
         JavaFeedback.onLog = null;
       }
+    });
+
+    test('toast 前缀为书源名（legado 源标签 + 冒号 + 消息）', () {
+      final toasts = <String>[];
+      JavaFeedback.onToast = (msg, {bool long = false}) => toasts.add(msg);
+      try {
+        final ctx = ShuyuanSourceContext('src-toast')
+          ..bindSource(XiaoshuoBookSource(
+            bookSourceUrl: 'https://toast.test',
+            bookSourceName: '测试源',
+          ));
+        final e = engine();
+        ShuyuanSourceContext.run(
+            ctx, () => e.eval("java.toast('提示'); java.longToast('长提示')"));
+        expect(toasts, ['测试源: 提示', '测试源: 长提示']);
+      } finally {
+        JavaFeedback.onToast = null;
+      }
+    });
+
+    test('java.ajax callTimeout 记入 ajaxTimeouts 供宿主 settle 使用', () {
+      final ctx = ShuyuanSourceContext('src-timeout');
+      final e = engine();
+      final out = ShuyuanSourceContext.run(
+          ctx, () => e.eval("java.ajax('https://slow.test/a', 3000)"));
+      expect(out, contains('__AJAX_'));
+      expect(ctx.ajaxPending, contains('https://slow.test/a'));
+      expect(ctx.ajaxTimeouts['https://slow.test/a'], 3000);
+      // 未传 callTimeout 不落表（宿主用默认超时）。
+      ShuyuanSourceContext.run(
+          ctx, () => e.eval("java.ajax('https://slow.test/b')"));
+      expect(ctx.ajaxTimeouts.containsKey('https://slow.test/b'), isFalse);
     });
 
     test('put 写入经 takeJavaVars 排空，get 动态读取', () {
@@ -305,6 +339,19 @@ void main() {
           'OK');
       expect(e.eval("cache.put('k', 'v'); cache.get('k')"), 'v');
     });
+
+    test('source.getTag / java.getTag 返回书源名（legado BaseSource）', () {
+      final ctx = ShuyuanSourceContext('src-tag')
+        ..bindSource(XiaoshuoBookSource(
+          bookSourceUrl: 'https://tag.test',
+          bookSourceName: '测试源',
+        ));
+      final e = engine();
+      expect(ShuyuanSourceContext.run(ctx, () => e.eval('source.getTag()')),
+          '测试源');
+      expect(ShuyuanSourceContext.run(ctx, () => e.eval('java.getTag()')),
+          '测试源');
+    });
   });
 
   group('java.* AES', () {
@@ -342,13 +389,59 @@ void main() {
           '中文abc123');
     });
 
-    test('不支持的 transformation（CTR）与非法 GCM 输入返回空', () {
+    test('NIST SP 800-38A AES-128 CTR / OFB / CFB128 向量', () {
       final e = engine();
+      const key = '2b7e151628aed2a6abf7158809cf4f3c';
+      // F.3.13 CTR 用 f0f1…feff；F.5.1 OFB / F.4.1 CFB 用 0001…0e0f。
+      const ctrIv = 'f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff';
+      const blockIv = '000102030405060708090a0b0c0d0e0f';
+      const plain = '6bc1bee22e409f96e93d7e117393172a'
+          'ae2d8a571e03ac9c9eb76fac45af8e51'
+          '30c81c46a35ce411e5fbc1191a0a52ef'
+          'f69f2445df4f9b17ad2b417be66c3710';
+      // F.3.13 CTR-AES128.Encrypt
       expect(
-          e.eval("java.aesDecodeToString('AAAA', '0123456789abcdef', "
-              "'AES/CTR/NoPadding', 'abcdef0123456789')"),
-          '');
-      // GCM 密文须含 16 字节 tag；'AAAA' 解出 3 字节，按坏输入返回空。
+          e.eval("__aesModeHexTest('$key', '$ctrIv', '$plain', 'CTR', true)"),
+          '874d6191b620e3261bef6864990db6ce'
+          '9806f66b7970fdff8617187bb9fffdff'
+          '5ae4df3edbd5d35e5b4f09020db03eab'
+          '1e031dda2fbe03d1792170a0f3009cee');
+      // F.5.1 OFB-AES128.Encrypt
+      expect(
+          e.eval("__aesModeHexTest('$key', '$blockIv', '$plain', 'OFB', true)"),
+          '3b3fd92eb72dad20333449f8e83cfb4a'
+          '7789508d16918f03f53c52dac54ed825'
+          '9740051e9c5fecf64344f7a82260edcc'
+          '304c6528f659c77866a510d9c1d6ae5e');
+      // F.4.1 CFB128-AES128.Encrypt
+      expect(
+          e.eval("__aesModeHexTest('$key', '$blockIv', '$plain', 'CFB128', true)"),
+          '3b3fd92eb72dad20333449f8e83cfb4a'
+          'c8a64537a0b3a93fcde3cdad9f1ce58b'
+          '26751f67a3cbb140b1808cf187a4f4df'
+          'c04b05357c5d1c0eeac4c66f9ff7f2e6');
+      // 解密回到明文。
+      expect(
+          e.eval("__aesModeHexTest('$key', '$ctrIv', "
+              "'874d6191b620e3261bef6864990db6ce', 'CTR', false)"),
+          '6bc1bee22e409f96e93d7e117393172a');
+    });
+
+    test('java.aesEncode/aesDecode 支持 CTR/CFB/OFB 流模式', () {
+      final e = engine();
+      const key = '0123456789abcdef';
+      const iv = 'abcdef0123456789';
+      for (final mode in ['CTR', 'CFB', 'OFB']) {
+        final cipher = e.eval("java.aesEncode('中文abc123', '$key', "
+            "'AES/$mode/PKCS5Padding', '$iv')");
+        expect(cipher, isNotEmpty, reason: mode);
+        expect(
+            e.eval("java.aesDecodeToString('$cipher', '$key', "
+                "'AES/$mode/PKCS5Padding', '$iv')"),
+            '中文abc123',
+            reason: mode);
+      }
+      // 非法 GCM 输入仍返回空（密文须含 16 字节 tag）。
       expect(
           e.eval("java.aesDecodeToString('AAAA', '0123456789abcdef', "
               "'AES/GCM/NoPadding', 'abcdef0123456789')"),
@@ -432,6 +525,26 @@ void main() {
       expect(e.eval('typeof java.replaceFont'), 'function');
       expect(e.eval("java.replaceFont('abc', null, null, false)"), 'abc');
     });
+
+    test('URL 输入走二进制重放：未命中登记 ajaxBytes，命中后解析', () {
+      const url = 'https://cdn.example/font.ttf';
+      final ctx = ShuyuanSourceContext('src-ttf-url');
+      final e = engine();
+      final first = ShuyuanSourceContext.run(
+          ctx,
+          () => e.eval(
+              "java.queryTTF('$url') === null ? 'NULL' : 'FONT'"));
+      expect(first, 'NULL');
+      expect(ctx.ajaxBytesPending, contains(url));
+      // 模拟宿主 settle 命中：二进制进缓存后同源下一轮可解析。
+      ctx.ajaxBytesCache[url] = base64Encode(
+          File('assets/fonts/SmileySans-Oblique.ttf').readAsBytesSync());
+      final second = ShuyuanSourceContext.run(
+          ctx,
+          () => e.eval("var f = java.queryTTF('$url'); "
+              "f === null ? 'NULL' : String(f.numGlyphs)"));
+      expect(int.tryParse(second) ?? 0, greaterThan(100));
+    });
   });
 
   group('java.* 摘要与 HMAC（JsEncodeUtils）', () {
@@ -483,10 +596,66 @@ void main() {
       expect(b64, expected);
     });
 
+    test('SHA-384 / SHA-512 标准向量与 HMAC 交叉验证', () {
+      final e = engine();
+      expect(e.eval("java.digestHex('abc', 'SHA-384')"),
+          'cb00753f45a35e8bb5a03d699ac65007272c32ab0eded163'
+          '1a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7');
+      expect(e.eval("java.digestHex('abc', 'SHA-512')"),
+          'ddaf35a193617abacc417349ae20413112e6fa4e89a97ea2'
+          '0a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd'
+          '454d4423643ce80e2a9ac94fa54ca49f');
+      const msg = 'The quick brown fox jumps over the lazy dog';
+      expect(
+          e.eval("java.HMacHex('$msg', 'HmacSHA512', 'key')"),
+          crypto.Hmac(crypto.sha512, utf8.encode('key'))
+              .convert(utf8.encode(msg))
+              .toString());
+      expect(
+          e.eval("java.HMacHex('$msg', 'HmacSHA384', 'key')"),
+          crypto.Hmac(crypto.sha384, utf8.encode('key'))
+              .convert(utf8.encode(msg))
+              .toString());
+    });
+
     test('不支持的算法返回空串', () {
       final e = engine();
-      expect(e.eval("java.digestHex('abc', 'SHA-512')"), '');
-      expect(e.eval("java.HMacHex('abc', 'HmacSHA512', 'k')"), '');
+      expect(e.eval("java.digestHex('abc', 'SM3')"), '');
+      expect(e.eval("java.HMacHex('abc', 'HmacSM3', 'k')"), '');
+    });
+
+    test('base64 flags（android.util.Base64 口径）', () {
+      final e = engine();
+      // 默认 NO_WRAP；DEFAULT(0) 按 76 字符换行、末尾带行分隔符。
+      const sixty = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      final noWrap = e.eval("java.base64Encode('$sixty')");
+      expect(noWrap.length, 80);
+      expect(noWrap.contains('\n'), false);
+      final wrapped = e.eval("java.base64Encode('$sixty', 0)");
+      expect(wrapped, '${noWrap.substring(0, 76)}\n${noWrap.substring(76)}\n');
+      expect(e.eval("java.base64Encode('$sixty', 4)"),
+          '${noWrap.substring(0, 76)}\r\n${noWrap.substring(76)}\r\n');
+      // NO_PADDING 去掉尾部 '='；未加 NO_WRAP 时仍带行尾分隔符（AOSP 口径）。
+      expect(e.eval("java.base64Encode('ab')"), 'YWI=');
+      expect(e.eval("java.base64Encode('ab', 1)"), 'YWI\n');
+      expect(e.eval("java.base64Encode('ab', 3)"), 'YWI');
+      // URL_SAFE 用 -/_；与 NO_PADDING 组合无填充。
+      expect(
+          e.eval("Packages.android.util.Base64.encodeToString("
+              "java.hexDecodeToByteArray('fbff'), 11)"),
+          '-_8');
+      expect(
+          e.eval("Packages.android.util.Base64.encodeToString("
+              "java.hexDecodeToByteArray('fbff'), 2)"),
+          '+/8=');
+      // 解码宽容：url-safe 字母表、缺填充、空白。
+      expect(e.eval("JSON.stringify(java.base64DecodeToByteArray('-_8'))"),
+          '[-5,-1]');
+      expect(e.eval("JSON.stringify(java.base64DecodeToByteArray(' YWJj '))"),
+          '[97,98,99]');
+      expect(
+          e.eval("java.base64DecodeToByteArray('   ') === null ? 'NULL' : 'X'"),
+          'NULL');
     });
   });
 
@@ -578,6 +747,41 @@ void main() {
           e.eval("java.createSymmetricCrypto("
               "'DES/ECB/PKCS5Padding', 'short').encryptBase64('x')"),
           '');
+    });
+
+    test('DES/3DES CTR/CFB/OFB 往返（含非整块 NoPadding）', () {
+      final e = engine();
+      // 分组模式（PKCS5）往返。
+      for (final algo in ['DES', 'DESede']) {
+        for (final mode in ['CTR', 'CFB', 'OFB']) {
+          final key = algo == 'DESede'
+              ? '123456789012345678901234'
+              : '12345678';
+          final cipher = e.eval("java.createSymmetricCrypto("
+              "'$algo/$mode/PKCS5Padding', '$key', 'abcdefgh')"
+              ".encryptBase64('中文abc123')");
+          expect(cipher, isNotEmpty, reason: '$algo/$mode');
+          expect(
+              e.eval("java.createSymmetricCrypto("
+                  "'$algo/$mode/PKCS5Padding', '$key', 'abcdefgh')"
+                  ".decryptStr('$cipher')"),
+              '中文abc123',
+              reason: '$algo/$mode');
+        }
+      }
+      // CFB/OFB/CTR NoPadding 允许非整块长度（流模式）。
+      for (final mode in ['CTR', 'CFB', 'OFB']) {
+        final hex = e.eval("java.createSymmetricCrypto("
+            "'DES/$mode/NoPadding', '12345678', 'abcdefgh')"
+            ".encryptHex('abcdefghijklm')");
+        expect(hex.length, 26, reason: mode); // 13 字节 → 26 hex
+        expect(
+            e.eval("java.createSymmetricCrypto("
+                "'DES/$mode/NoPadding', '12345678', 'abcdefgh')"
+                ".decryptStr(java.hexDecodeToByteArray('$hex'))"),
+            'abcdefghijklm',
+            reason: mode);
+      }
     });
   });
 
