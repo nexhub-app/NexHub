@@ -9,6 +9,17 @@ import '../model/book_source.dart';
 import '../model/xiaoshuo_book.dart';
 import '../model/xiaoshuo_book_chapter.dart';
 
+/// 目录为空（对齐 legado `TocEmptyException`）：规则未命中、页面无章节或
+/// 抓取失败都归为此异常，供上层区分「空目录」与「正常空结果」。
+class TocEmptyException implements Exception {
+  TocEmptyException([this.message = '目录为空']);
+
+  final String message;
+
+  @override
+  String toString() => 'TocEmptyException: $message';
+}
+
 class BookChapterList {
   /// [nextUrlsOut] 非空时回填本页 `ruleToc.nextTocUrl` 解析出的后续目录页
   /// 绝对 URL（对齐 legado：先取下一页列表，再解析章节；首页/串行跟随页

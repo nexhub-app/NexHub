@@ -122,7 +122,11 @@ class BookList {
           try {
             if (_fullMatch(pattern, baseUrl)) {
               final detail = _detailPageAsSearchBook(bookSource, body, baseUrl);
-              return detail == null ? const <SearchBook>[] : [detail];
+              if (detail == null) return const <SearchBook>[];
+              // legado BookList：整页即书 → 响应体存入 infoHtml，
+              // 详情阶段免抓取复用。
+              detail.infoHtml = body;
+              return [detail];
             }
           } catch (_) {}
         }
@@ -135,7 +139,9 @@ class BookList {
         //（getInfoItem 以 name 非空为产出前提，解析不出书名则无结果）。
         if ((bookSource.bookUrlPattern ?? '').isEmpty) {
           final detail = _detailPageAsSearchBook(bookSource, body, baseUrl);
-          return detail == null ? const <SearchBook>[] : [detail];
+          if (detail == null) return const <SearchBook>[];
+          detail.infoHtml = body;
+          return [detail];
         }
         return const <SearchBook>[];
       }
@@ -165,6 +171,11 @@ class BookList {
           ruleWordCount,
         );
         if (book != null && book.name.isNotEmpty) {
+          // legado BookList：列表基址就是这本书的地址时，整页响应即详情
+          // 响应，存入 infoHtml 供详情阶段复用（不再请求一次）。
+          if (baseUrl == book.bookUrl) {
+            book.infoHtml = body;
+          }
           books.add(book);
           // 暂存条目上下文：API 返回的 URL 字段含 {{\$.field}} 模板时，
           // 详情/目录阶段 AnalyzeUrl 以此为求值根（ruleData 贯通）。

@@ -36,6 +36,10 @@ class JsEngine {
   /// 上一轮 eval 中 `java.put` 写入的变量（takeJavaVars 取走并清空）。
   Map<String, String> _lastJavaVars = const {};
 
+  /// 上一轮 eval 结束时 JS `chapter.variableMap` 的快照（脚本直改变量或
+  /// java.put 都会体现；takeJavaChapterVars 取走并清空）。
+  Map<String, String> _lastJavaChapterVars = const {};
+
   /// 已预执行的 jsLib 内容（同引擎同内容去重）。
   String? _jsLibApplied;
 
@@ -149,6 +153,14 @@ class JsEngine {
   Map<String, String> takeJavaVars() {
     final taken = _lastJavaVars;
     _lastJavaVars = const {};
+    return taken;
+  }
+
+  /// 取走上一轮 eval 结束时 JS `chapter.variableMap` 的变量快照（取后清空）。
+  /// 当前未绑定章节时返回空表。
+  Map<String, String> takeJavaChapterVars() {
+    final taken = _lastJavaChapterVars;
+    _lastJavaChapterVars = const {};
     return taken;
   }
 
@@ -476,7 +488,12 @@ class JsEngine {
     // 排空必须先于一切早退（isError 也一样）：脚本中途抛错（ajax 占位符
     // 下游解析失败）同样产生 ajax 记录，settle 循环依赖它暖缓存重试；
     // 完成值 undefined/null 的纯写脚本同样产生写操作（2026-11-14 实测）。
-    if (jsStr.contains('java.') || ShuyuanSourceContext.current != null) {
+    // chapter 绑定存在时必须排空：脚本可能只直改 chapter.variableMap
+    //（无 java. 调用、离线单测也无活动上下文），快照通道同样要落回宿主。
+    final needDrain = jsStr.contains('java.') ||
+        ShuyuanSourceContext.current != null ||
+        (bindings?.containsKey('chapter') ?? false);
+    if (needDrain) {
       _drainJavaBridge();
     }
     // createAsymmetricCrypto：脚本首轮登记的操作在宿主用 Dart BigInt 计算
@@ -494,7 +511,7 @@ class JsEngine {
       _fillAsymCache(fills);
       _seedDeterministicRandom(jsStr);
       result = runtime.evaluate('eval(${jsonEncode(jsStr)})');
-      if (jsStr.contains('java.') || ShuyuanSourceContext.current != null) {
+      if (needDrain) {
         _drainJavaBridge();
       }
     }
@@ -631,6 +648,17 @@ class JsEngine {
         // 持久化（fire-and-forget：下一轮种子取内存镜像）。
         ctx.persistIfNeeded();
       }
+    }
+    // 本轮 JS chapter 绑定快照（未绑定章节时 drain 表达式给 null）。
+    final chapterVars = payload['c'];
+    if (chapterVars is Map) {
+      final clean = <String, String>{};
+      chapterVars.forEach((k, v) {
+        if (v != null) clean[k.toString()] = v.toString();
+      });
+      _lastJavaChapterVars = clean;
+    } else {
+      _lastJavaChapterVars = const {};
     }
   }
 

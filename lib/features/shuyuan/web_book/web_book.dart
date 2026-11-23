@@ -230,6 +230,7 @@ class WebBook {
               lastChapter: sb.lastChapter,
               tocUrl: sb.tocUrl,
               wordCount: sb.wordCount,
+              bookInfoHtml: sb.infoHtml,
               type: sb.type,
             ))
         .toList();
@@ -245,6 +246,22 @@ class WebBook {
     required String bookUrl,
     XiaoshuoBook? seedBook,
   }) async {
+    final seed = (seedBook != null && seedBook.bookUrl == bookUrl)
+        ? seedBook
+        : null;
+    // legado WebBook.getBookInfoAwait：搜索/发现阶段已把列表响应体存进
+    // book.infoHtml 时直接解析，不再请求同一页面（redirectUrl 取 bookUrl）。
+    if (seed != null && (seed.bookInfoHtml ?? '').isNotEmpty) {
+      BookInfo.analyzeBookInfo(
+        bookSource: source,
+        book: seed,
+        baseUrl: bookUrl,
+        redirectUrl: bookUrl,
+        body: seed.bookInfoHtml!,
+      );
+      return seed;
+    }
+
     final analyzeUrl = AnalyzeUrl(
       url: bookUrl,
       baseUrl: source.bookSourceUrl,
@@ -257,9 +274,7 @@ class WebBook {
     var body = await analyzeUrl.getStrResponse();
     body = await analyzeUrl.applyLoginCheck(body);
 
-    final book = (seedBook != null && seedBook.bookUrl == bookUrl)
-        ? seedBook
-        : XiaoshuoBook(bookUrl: bookUrl, name: '');
+    final book = seed ?? XiaoshuoBook(bookUrl: bookUrl, name: '');
     BookInfo.analyzeBookInfo(
       bookSource: source,
       book: book,
@@ -401,7 +416,9 @@ class WebBook {
           await analyzeUrl.getStrResponse());
       tocBaseUrl = analyzeUrl.lastFinalUrl ?? analyzeUrl.url;
     }
-    if (body.isEmpty) return <XiaoshuoBookChapter>[];
+    // legado getChapterListAwait：响应体缺失（抓取失败/空页）直接抛错，
+    // 不能伪装成「0 章」的正常目录。
+    if (body.isEmpty) throw TocEmptyException();
 
     // 对齐 legado WebBook.getChapterListAwait：整页解析的 baseUrl 是请求
     // 时的 tocUrl（未跟随重定向），redirectUrl 才是最终 URL。
@@ -537,7 +554,9 @@ class WebBook {
       return ordered;
     }
 
-    return allChapters;
+    // legado BookChapterList：合并所有分页后仍为空 → TocEmptyException，
+    // 上层据此提示/回退缓存，而不是当作正常空目录。
+    throw TocEmptyException();
   }
 
   /// 获取章节正文：抓取 `chapterUrl` 并通过 `ruleContent` 解析。
@@ -556,19 +575,23 @@ class WebBook {
     required XiaoshuoBookSource source,
     required String chapterUrl,
     XiaoshuoBook? originalBook,
+    XiaoshuoBookChapter? bookChapter,
     String? nextChapterUrl,
     String? chapterTitle,
   }) async {
     final contentRule = source.getContentRule();
     final book = originalBook ?? XiaoshuoBook(bookUrl: '', name: '');
     // 本章对象贯穿 URL 求值与正文规则：JS 里可读 `chapter.*`（legado
-    // AnalyzeUrl/AnalyzeRule 都绑定同一 BookChapter）。标题用目录章节名
-    // 预置：legado 的标题规则在图片尾巴剥离为空时回落到 `bookChapter.title`。
-    final chapter = XiaoshuoBookChapter(
-      bookUrl: book.bookUrl,
-      url: chapterUrl,
-      title: chapterTitle ?? '',
-    );
+    // AnalyzeUrl/AnalyzeRule 都绑定同一 BookChapter）。目录阶段解析出的
+    // 章节对象（含 index/variableMap）由上层透传；缺失时才用裸壳，避免
+    // 正文阶段看不到目录期 @put 的变量。
+    final chapter = (bookChapter != null && bookChapter.url == chapterUrl)
+        ? bookChapter
+        : XiaoshuoBookChapter(
+            bookUrl: book.bookUrl,
+            url: chapterUrl,
+            title: chapterTitle ?? '',
+          );
 
     // 对照 legado WebBook.getContentAwait：正文规则为空时直接以章节链接
     // 作为正文（音频/视频源播放页章节即靠此返回直链；旧实现直接报

@@ -91,10 +91,18 @@ class AnalyzeRule {
   }
 
   void put(String key, String value) {
-    _variables[key] = value;
     if (key == 'title' && chapter != null) {
       chapter!.title = value;
     }
+    // legado AnalyzeRule.put：chapter → book → ruleData → source。目录逐条
+    // 复用同一个规则实例时，若写入实例级变量表，本章 @put 会污染后续章节
+    //（跨章串扰）。有章节绑定就必须落到本章 variableMap。
+    final ch = chapter;
+    if (ch != null) {
+      ch.putVariable(key, value);
+      return;
+    }
+    _variables[key] = value;
   }
 
   String get(String key) {
@@ -520,12 +528,13 @@ class AnalyzeRule {
           ..clear()
           ..addAll(target.variableMap);
       }
-      // 种子顺序对齐 legado get 链：源变量 < 书变量 < 章节变量 < 本轮 put。
+      // 种子顺序对齐 legado get 链：源变量 < 书变量 < 规则层变量 < 章节变量
+      //（chapter 优先命中；规则层变量表里可能残留书种子，不能压过本章）。
       final seedJavaVars = <String, String>{
         ...?activeCtx?.sourceVars,
         ...?book?.variableMap,
-        ...?chapter?.variableMap,
         ..._variables,
+        ...?chapter?.variableMap,
       };
       final bindings = <String, dynamic>{
         // `java` 对象由 java_extensions 预置脚本提供（引擎侧跳过同名绑定）；
@@ -568,6 +577,18 @@ class AnalyzeRule {
       javaVars.forEach((k, v) {
         if (seedJavaVars[k] != v) put(k, v);
       });
+      // JS 里直接改 `chapter.variableMap[...]`（legado 绑定的是 BookChapter
+      // 实体）同样回写本章；java.put 已随 __javaVars 差量落盘，这里只补齐
+      // 快照上的直改，避免脚本改完变量下一段规则读不到。
+      final chapterVars = _jsEngine!.takeJavaChapterVars();
+      final boundChapter = chapter;
+      if (boundChapter != null) {
+        chapterVars.forEach((k, v) {
+          if (boundChapter.variableMap[k] != v) {
+            boundChapter.putVariable(k, v);
+          }
+        });
+      }
       // JS 里 `book.name = '…'` 等字段写入回写当前书（空值不覆盖——
       // 正文解析阶段 book 是空壳，避免把详情阶段已解析的字段抹掉）。
       if (activeCtx != null && target != null) {

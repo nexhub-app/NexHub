@@ -123,14 +123,33 @@ void main() {
   });
 
   group('java.* 字符串/时间/杂项', () {
-    test('toNumChapter 阿拉伯与中文数字', () {
+    test('toNumChapter 对齐 legado：String? 语义与 (第)(.+?)(章) 重写', () {
       final e = engine();
-      expect(e.eval("java.toNumChapter('第123章')"), '123');
-      expect(e.eval("java.toNumChapter('第一百二十三章')"), '123');
-      expect(e.eval("java.toNumChapter('第两千零五章')"), '2005');
-      expect(e.eval("java.toNumChapter('十二章')"), '12');
-      expect(e.eval("java.toNumChapter('12.5话')"), '12.5');
-      expect(e.eval("java.toNumChapter('番外')"), '-1');
+      // legado 只替换命中段并原样返回未命中串；null 入参返回 null。
+      expect(e.eval("String(java.toNumChapter('第123章'))"), '第123章');
+      expect(e.eval("String(java.toNumChapter('第一百二十三章'))"), '第123章');
+      expect(e.eval("String(java.toNumChapter('第两千零五章'))"), '第2005章');
+      expect(e.eval("String(java.toNumChapter('第壹佰贰拾叁章'))"), '第123章');
+      // 命中段前后的文本不保留（legado 只拼接三个分组）。
+      expect(e.eval("String(java.toNumChapter('正文 第12章 风起'))"), '第12章');
+      expect(e.eval("String(java.toNumChapter('十二章'))"), '十二章');
+      expect(e.eval("String(java.toNumChapter('12.5话'))"), '12.5话');
+      expect(e.eval("String(java.toNumChapter('番外'))"), '番外');
+      expect(e.eval('java.toNumChapter(null) === null'), 'true');
+      expect(e.eval('java.toNumChapter(undefined) === null'), 'true');
+    });
+
+    test('strToBytes / bytesToStr 默认 UTF-8（含 charset 重载）', () {
+      final e = engine();
+      // Java byte[] 为有符号字节（UTF-8「中」= E4 B8 AD → -28,-72,-83）。
+      expect(e.eval("JSON.stringify(java.strToBytes('中'))"), '[-28,-72,-83]');
+      expect(e.eval("java.bytesToStr(java.strToBytes('中文ab'))"), '中文ab');
+      expect(e.eval("java.bytesToStr([-28,-72,-83])"), '中');
+      expect(
+        e.eval("java.bytesToStr(java.strToBytes('x', 'UTF-8'), 'UTF-8')"),
+        'x',
+      );
+      expect(e.eval("java.bytesToStr(java.strToBytes(''), 'GBK')"), '');
     });
 
     test('timeFormat 与 Dart Date 一致（本地或 UTC 时区均可）', () {

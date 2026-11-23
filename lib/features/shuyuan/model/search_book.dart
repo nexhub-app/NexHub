@@ -17,6 +17,11 @@ class SearchBook {
   String? bookSourceName;
   int type;
 
+  /// 列表响应体（legado BookList 在「列表基址即书籍地址」时存入）：
+  /// 详情阶段可直接复用，无需重复请求同一页面。legado 中为瞬态字段，
+  /// 不参与序列化。
+  String? infoHtml;
+
   SearchBook({
     required this.bookUrl,
     required this.name,
@@ -30,6 +35,7 @@ class SearchBook {
     this.bookSourceUrl,
     this.bookSourceName,
     this.type = 0,
+    this.infoHtml,
   });
 
   factory SearchBook.fromJson(Map<String, dynamic> json) {
@@ -85,6 +91,7 @@ class SearchBook {
       tocUrl: tocUrl,
       wordCount: wordCount,
       type: type,
+      bookInfoHtml: infoHtml,
     );
   }
 }

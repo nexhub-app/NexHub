@@ -33,7 +33,7 @@ abstract final class JavaFeedback {
 /// source/book/cache 的写回）。须用 globalThis——本表达式在顶层求值，
 /// IIFE 内的 `global` 参数不可见。
 const String javaDrainExpr = r'''
-JSON.stringify({t:(globalThis.__javaToasts||[]).splice(0),l:(globalThis.__javaLogs||[]).splice(0),v:globalThis.__javaVars||{}})
+JSON.stringify({t:(globalThis.__javaToasts||[]).splice(0),l:(globalThis.__javaLogs||[]).splice(0),v:globalThis.__javaVars||{},c:(globalThis.chapter&&globalThis.chapter.variableMap)||null})
 ''';
 
 /// 注入对象预置脚本（P1-2）：cookie / source / book / cache 四对象，
@@ -1749,46 +1749,88 @@ const String javaExtensionsJsPrelude = r'''
     return out;
   }
 
-  // ── 章节号解析（阿拉伯优先，中文数字兜底，含两/拾佰仟萬） ──
-  var CN_NUM = { '零': 0, '〇': 0, '一': 1, '壹': 1, '二': 2, '两': 2, '貳': 2, '贰': 2,
-    '三': 3, '叁': 3, '四': 4, '肆': 4, '五': 5, '伍': 5, '六': 6, '陆': 6,
-    '七': 7, '柒': 7, '八': 8, '捌': 8, '九': 9, '玖': 9 };
-  var CN_UNIT = { '十': 10, '拾': 10, '百': 100, '佰': 100, '千': 1000, '仟': 1000 };
+  // ── 章节号解析（legado StringUtils.stringToInt / chineseNumToInt 口径） ──
+  var CN_MAP = (function () {
+    var m = {};
+    var digits = '零一二三四五六七八九十';
+    for (var i = 0; i < digits.length; i++) m[digits.charAt(i)] = i;
+    var upper = '〇壹贰叁肆伍陆柒捌玖拾';
+    for (var j = 0; j < upper.length; j++) m[upper.charAt(j)] = j;
+    m['两'] = 2;
+    m['百'] = 100;
+    m['佰'] = 100;
+    m['千'] = 1000;
+    m['仟'] = 1000;
+    m['万'] = 10000;
+    m['亿'] = 100000000;
+    return m;
+  })();
 
-  function cnToArabic(s) {
-    var total = 0, section = 0, digit = 0;
-    for (var i = 0; i < s.length; i++) {
-      var ch = s.charAt(i);
-      if (CN_NUM[ch] !== undefined) {
-        digit = CN_NUM[ch];
-      } else if (CN_UNIT[ch] !== undefined) {
-        section += (digit === 0 ? 1 : digit) * CN_UNIT[ch];
-        digit = 0;
-      } else if (ch === '万' || ch === '萬') {
-        section = (section + digit) * 10000;
-        total += section;
-        section = 0;
-        digit = 0;
-      } else {
-        return null;
-      }
+  // legado StringUtils.fullToHalf：全角空格→半角，全角 ASCII 区回退 65248。
+  function fullToHalf(input) {
+    var out = '';
+    for (var i = 0; i < input.length; i++) {
+      var code = input.charCodeAt(i);
+      if (code === 12288) out += ' ';
+      else if (code >= 65281 && code <= 65374) {
+        out += String.fromCharCode(code - 65248);
+      } else out += input.charAt(i);
     }
-    return total + section + digit;
+    return out;
   }
 
+  // legado StringUtils.chineseNumToInt（含 亿/万 进位与「一千二」尾数规则）。
+  function chineseNumToInt(chNum) {
+    var result = 0, tmp = 0, billion = 0;
+    for (var i = 0; i < chNum.length; i++) {
+      var num = CN_MAP[chNum.charAt(i)];
+      if (num === undefined) return -1;
+      var prev = i > 0 ? CN_MAP[chNum.charAt(i - 1)] : undefined;
+      if (num === 100000000) {
+        result += tmp;
+        result *= num;
+        billion = billion * 100000000 + result;
+        result = 0;
+        tmp = 0;
+      } else if (num === 10000) {
+        result += tmp;
+        result *= num;
+        tmp = 0;
+      } else if (num >= 10) {
+        if (tmp === 0) tmp = 1;
+        result += num * tmp;
+        tmp = 0;
+      } else {
+        tmp = (i >= 2 && i === chNum.length - 1 &&
+            prev !== undefined && prev > 10)
+            ? num * prev / 10
+            : tmp * 10 + num;
+      }
+    }
+    return result + tmp + billion;
+  }
+
+  // legado StringUtils.stringToInt：全半角归一 + ASCII 空白剔除后按整数
+  // 解析，失败再按中文数字解析（失败 -1）。Java 的 \s 只含 ASCII 空白，
+  // 不能直接用 JS 的 \s（会吞掉全角空格之外的其他 Unicode 空白）。
+  function stringToInt(str) {
+    if (str == null) return -1;
+    var num = fullToHalf(String(str)).replace(/[\t\n\x0b\f\r ]+/g, '');
+    if (/^[+-]?\d+$/.test(num)) {
+      var n = parseInt(num, 10);
+      if (!isNaN(n) && n >= -2147483648 && n <= 2147483647) return n;
+    }
+    return chineseNumToInt(num);
+  }
+
+  // legado JsExtensions.toNumChapter：返回 String?（null 入参 → null；
+  // 命中 `(第)(.+?)(章)` 时把中段转数字，未命中原样返回）。
   function toNumChapter(v) {
-    var str = String(v == null ? '' : v);
-    var m = str.match(/\d+(\.\d+)?/);
-    if (m) {
-      var n = parseFloat(m[0]);
-      if (!isNaN(n)) return n;
-    }
-    var m2 = str.match(/[零〇一二三四五六七八九十百千万兩两壹贰叁肆伍陆柒捌玖拾佰仟萬]+/);
-    if (m2) {
-      var v2 = cnToArabic(m2[0]);
-      if (v2 !== null && !isNaN(v2)) return v2;
-    }
-    return -1;
+    if (v === null || v === undefined) return null;
+    var str = String(v);
+    var m = str.match(/(第)(.+?)(章)/);
+    if (!m) return str;
+    return m[1] + stringToInt(m[2]) + m[3];
   }
 
   // ── HTML 净化（formatKeepImg 近似：保留 <img>，块级标签转换行） ──
@@ -5516,6 +5558,15 @@ const String javaExtensionsJsPrelude = r'''
     base64Encode: function (s) { return b64FromBytes(utf8Encode(String(s == null ? '' : s))); },
     base64Decode: function (s) { return utf8Decode(bytesFromB64(s)); },
     base64DecodeToByteArray: function (s) { return bytesFromB64(s); },
+    // legado JsExtensions.strToBytes/bytesToStr：默认 UTF-8，字节按 Java
+    // byte[]（有符号）口径。charset 重载保留签名；沙箱无多字符集编解码，
+    // 非 UTF-8 名称按 UTF-8 处理（与 StrResponse.charset / encodeURI 同口径）。
+    strToBytes: function (s, charset) {
+      return utf8Encode(String(s == null ? '' : s)).map(signedByte);
+    },
+    bytesToStr: function (bytes, charset) {
+      return utf8Decode(juBytes(bytes));
+    },
     hexEncodeToString: function (v) { return bytesToHex(anyToBytes(v)); },
     hexDecodeToString: function (s) { return utf8Decode(hexStrictBytes(s)); },
     hexDecodeToByteArray: function (s) { return hexStrictBytes(s); },

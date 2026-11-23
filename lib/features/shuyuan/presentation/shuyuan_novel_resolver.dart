@@ -107,6 +107,33 @@ class ShuyuanNovelResolver
 
   XiaoshuoBook? _seedFor(String bookUrl) => _searchSeedCache[bookUrl];
 
+  /// 目录阶段解析出的章节对象（含 index / 目录期 @put 的 variableMap），
+  /// 供随后的正文请求复用——legado 的 BookChapter 实体跨阶段携带这些字段，
+  /// NexHub 各阶段只回传 URL，不暂存则正文的 `chapter.index/variableMap`
+  /// 恒为空壳。按「书 id + 章节 URL」索引，只在最近浏览的书章间滚动。
+  final Map<String, XiaoshuoBookChapter> _chapterCache = {};
+  static const int _chapterCacheLimit = 4096;
+
+  String _chapterKey(String bookId, String url) => '$bookId\u0000$url';
+
+  void _rememberChapters(String bookId, Iterable<XiaoshuoBookChapter> chapters) {
+    if (bookId.isEmpty) return;
+    for (final chapter in chapters) {
+      if (chapter.url.isEmpty) continue;
+      final key = _chapterKey(bookId, chapter.url);
+      _chapterCache.remove(key);
+      _chapterCache[key] = chapter;
+      if (_chapterCache.length > _chapterCacheLimit) {
+        _chapterCache.remove(_chapterCache.keys.first);
+      }
+    }
+  }
+
+  XiaoshuoBookChapter? _chapterFor(String bookId, String url) {
+    if (bookId.isEmpty || url.isEmpty) return null;
+    return _chapterCache[_chapterKey(bookId, url)];
+  }
+
   XiaoshuoBook _seedFromSearchBook(SearchBook sb) {
     return XiaoshuoBook(
       bookUrl: sb.bookUrl,
@@ -118,6 +145,9 @@ class ShuyuanNovelResolver
       lastChapter: sb.lastChapter,
       tocUrl: sb.tocUrl,
       wordCount: sb.wordCount,
+      // legado BookList：搜索/发现响应体在 baseUrl 即书籍地址时存入
+      // infoHtml，详情阶段据此免抓取复用（见 WebBook.getBookInfo）。
+      bookInfoHtml: sb.infoHtml,
       type: sb.type,
     );
   }
@@ -448,7 +478,9 @@ class ShuyuanNovelResolver
           // 目录：用 [BookChapterList] 解析渲染后 HTML（与 [WebBook.getChapterList]
           // 首页批次同口径，逐章连续编号以支持上下章导航）。
           final id = vars['id'] ?? vars['detailUrl'] ?? '';
-          final book = XiaoshuoBook(bookUrl: id, name: '');
+          final book = _seedFor(id) ??
+              _bookInfoCache[id] ??
+              XiaoshuoBook(bookUrl: id, name: '');
           final chapters = BookChapterList.analyzeChapterList(
             bookSource: bookSource,
             book: book,
@@ -456,9 +488,11 @@ class ShuyuanNovelResolver
             redirectUrl: id,
             body: html,
           );
+          if (chapters.isEmpty) throw TocEmptyException();
           // 与 WebBook.getChapterList 同口径：formatJs 单次全局执行。
           BookChapterList.applyFormatJs(
               chapters, bookSource.getTocRule().formatJs);
+          _rememberChapters(id, chapters);
           // 漫画阅读器以 chapterId=Episode.id 回传图片请求，id 须为章节 URL。
           return episodesFromChapters(
             chapters,
@@ -488,12 +522,17 @@ class ShuyuanNovelResolver
           // 声明式 ruleContent 而非脚本 override——书源渲染路径一致）。正文分页跟随
           // 在渲染路径下不做（WebView 取回的已是单页渲染结果），绝大多数章节单页。
           final chapterUrl = vars['url'] ?? vars['chapter'] ?? '';
-          final book = XiaoshuoBook(bookUrl: '', name: '');
-          final chapter = XiaoshuoBookChapter(
-            bookUrl: '',
-            url: chapterUrl,
-            title: vars['chapterTitle'] ?? '',
-          );
+          final contentBookId = vars['id'] ?? '';
+          final cachedBook = contentBookId.isEmpty
+              ? null
+              : (_bookInfoCache[contentBookId] ?? _seedFor(contentBookId));
+          final book = cachedBook ?? XiaoshuoBook(bookUrl: '', name: '');
+          final chapter = _chapterFor(contentBookId, chapterUrl) ??
+              XiaoshuoBookChapter(
+                bookUrl: book.bookUrl,
+                url: chapterUrl,
+                title: vars['chapterTitle'] ?? '',
+              );
           final blocks = BookContent.analyzeContent(
             bookSource: bookSource,
             book: book,
@@ -1211,6 +1250,8 @@ class ShuyuanNovelResolver
         ));
       },
     );
+    // 正文阶段按章节 URL 复用目录对象（index / variableMap 跨阶段贯通）。
+    _rememberChapters(id, chapters);
     return episodesFromChapters(
       chapters.where((c) => !c.isVolume).toList(),
       isComic: source.type == SourceType.mangaSource,
@@ -1255,9 +1296,14 @@ class ShuyuanNovelResolver
     AppLog.instance.i('[漫画取图] 开始 源=${bookSource.bookSourceName} '
         '主机=$host');
     try {
+      final bookId = vars['id'] ?? '';
       final result = await _webBook.getContent(
         source: bookSource,
         chapterUrl: chapterUrl,
+        originalBook: bookId.isEmpty
+            ? null
+            : (_bookInfoCache[bookId] ?? _seedFor(bookId)),
+        bookChapter: _chapterFor(bookId, chapterUrl),
         nextChapterUrl: nextChapterUrl.isEmpty ? null : nextChapterUrl,
       );
       final urls = imageUrlsFromBlocks(result.blocks, baseUrl: chapterUrl);
@@ -1356,9 +1402,19 @@ class ShuyuanNovelResolver
     // 目录章节名：标题规则的图片尾巴剥离为空时回落到它（legado 用书对象里
     // 的 BookChapter.title，NexHub 由调用方经 vars 传入）。
     final chapterTitle = vars['chapterTitle'] ?? '';
+    // legado 的 Book/BookChapter 实体跨阶段存在：正文规则里的 book.* 与
+    // chapter.index/variableMap 应延续目录/详情阶段的值。这里按 id 取回
+    // 缓存的书籍与章节对象；未命中（如进程重启后的本地目录）退回裸壳。
+    final bookId = vars['id'] ?? '';
+    final cachedBook = bookId.isEmpty
+        ? null
+        : (_bookInfoCache[bookId] ?? _seedFor(bookId));
+    final cachedChapter = _chapterFor(bookId, chapterUrl);
     final result = await _webBook.getContent(
       source: bookSource,
       chapterUrl: chapterUrl,
+      originalBook: cachedBook,
+      bookChapter: cachedChapter,
       nextChapterUrl: nextChapterUrl.isEmpty ? null : nextChapterUrl,
       chapterTitle: chapterTitle.isEmpty ? null : chapterTitle,
     );
