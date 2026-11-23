@@ -953,15 +953,21 @@ class AnalyzeRule {
   }
 
   /// 节点 → JS 字面量：`{t:文本, h:内部HTML, ot:自身文本, a:属性表, o:外层HTML,
-  /// u:页面地址}`。由预置脚本的 `__javaElements` 包装成 jsoup 风格对象
-  /// （size/get/text/html/select/children/attr('abs:…')）；JSON 模式的元素
-  /// 额外带 `j`（原始对象）供字段直读。
+  /// u:页面地址, g:标签名, p:元素子序号路径, r:根序号}`，载荷为
+  /// `{r:[根HTML...], els:[...]}`。由预置脚本的 `__javaElements` 包装成
+  /// jsoup 风格对象：读取类方法直接取字面量，树遍历（parent/parents/
+  /// siblings/next/prev/select/children）用「根 HTML + 路径」在沙箱内定位到
+  /// 同一 jsoup DOM 节点（对应 legado 里 Rhino 直调 jsoup 的上下文语义）；
+  /// 根 HTML 超体积上限时省略 r/p，遍历降级为空，其余读取不受影响。
+  /// JSON 模式的元素额外带 `j`（原始对象）供字段直读。
   String _elementsJsLiteral(List<dynamic> elements) {
-    final out = <Map<String, dynamic>>[];
     final base = redirectUrl ?? baseUrl ?? '';
+    final roots = <String>[];
+    final rootIndex = <Element, int>{};
+    final els = <Map<String, dynamic>>[];
     for (final e in elements) {
       if (e is Element) {
-        out.add(<String, dynamic>{
+        final lit = <String, dynamic>{
           't': e.text.trim(),
           'h': e.innerHtml,
           'ot': e.nodes
@@ -975,15 +981,52 @@ class AnalyzeRule {
           },
           'o': e.outerHtml,
           'u': base,
-        });
+          'g': (e.localName ?? '').toLowerCase(),
+        };
+        final root = _elementRootPath(e);
+        if (root != null) {
+          final html = root.$1.outerHtml;
+          if (html.length <= _jsElementRootMax) {
+            final id = rootIndex.putIfAbsent(root.$1, () {
+              roots.add(html);
+              return roots.length - 1;
+            });
+            lit['r'] = id;
+            lit['p'] = root.$2;
+          }
+        }
+        els.add(lit);
       } else if (e is Map) {
-        out.add(<String, dynamic>{'t': e.toString(), 'j': e});
+        els.add(<String, dynamic>{'t': e.toString(), 'j': e});
       } else {
-        out.add(<String, dynamic>{'t': e?.toString() ?? ''});
+        els.add(<String, dynamic>{'t': e?.toString() ?? ''});
       }
     }
-    return jsonEncode(out);
+    return jsonEncode(<String, dynamic>{'r': roots, 'els': els});
   }
+
+  /// 元素在文档中的元素子序号路径（文档根在前）。游离/片段树返回 null
+  /// （沙箱侧无法用整页 HTML 复原其上下文）。
+  (Element, List<int>)? _elementRootPath(Element e) {
+    final path = <int>[];
+    Element cur = e;
+    while (true) {
+      final parent = cur.parentNode;
+      if (parent == null) return null;
+      final idx = parent.children.indexOf(cur);
+      if (idx < 0) return null;
+      path.insert(0, idx);
+      if (parent is Document) return (cur, path);
+      if (parent is Element) {
+        cur = parent;
+        continue;
+      }
+      return null;
+    }
+  }
+
+  /// 单个规则载荷附带的根 HTML 体积上限（字符）；超限不带 DOM 上下文。
+  static const int _jsElementRootMax = 512 * 1024;
 
   String _replaceRegex(String result, _RuleState st) {
     if (st.replaceRegex.isEmpty) return result;

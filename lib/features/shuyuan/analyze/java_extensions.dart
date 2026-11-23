@@ -1903,14 +1903,112 @@ const String javaExtensionsJsPrelude = r'''
   }
 
   // ── 元素包装（java.getElements / getElement 的返回值） ──
-  // 宿主按规则把节点序列化成
-  // {t:text, h:html, ot:ownText, a:attrs, o:outerHtml, u:baseUrl, j:json}
-  // 由本函数包装成 jsoup 风格的轻量对象：脚本里常见的
-  // `list.size() / list.get(i) / el.text() / el.html() / el.attr('href')`
-  // 都能工作；属性同时挂成直读字段（el.href）。`select/children` 用沙箱内
-  // 的 jsoup DOM 重新解析 outerHtml 实现（对应 legado 里 Rhino 直调 jsoup），
-  // `attr('abs:…')` 按元素所在页面 URL 绝对化。
-  function __wrapEl(o) {
+  // 宿主字面量：单元素 {t:text, h:html, ot:ownText, a:attrs, o:outerHtml,
+  // u:baseUrl, j:json}；kind 'e'/'g' 的载荷为
+  // {r:[根HTML...], els:[元素字面量 + g:tagName, p:元素子序号路径, r:根序号]}。
+  // r/p 用于在沙箱里把元素定位回与 select/children 相同的 jsoup DOM 节点
+  // （对应 legado 里 Rhino 直调 jsoup 的上下文语义），parent(s)/siblings/
+  // next/prev 等遍历依赖它；宿主未附带上下文（r/p 缺省，如根节点超体积
+  // 上限）时这些遍历返回空，其余读取方法不受影响。
+  function __elCtx(roots) {
+    return { roots: roots || [], docs: [], nodes: {} };
+  }
+
+  function __elDoc(ctx, ri) {
+    if (ctx.docs[ri] !== undefined) return ctx.docs[ri];
+    var html = ctx.roots[ri];
+    var doc = null;
+    var Jsoup = global.org && global.org.jsoup && global.org.jsoup.Jsoup;
+    if (html && Jsoup && typeof Jsoup.parse === 'function') {
+      try { doc = Jsoup.parse(String(html), ''); } catch (e) { doc = null; }
+    }
+    ctx.docs[ri] = doc;
+    return doc;
+  }
+
+  function __cxNode(ctx, o) {
+    if (!ctx || !o || !o.p) return null;
+    var ri = o.r || 0;
+    var key = ri + ':' + o.p.join('.');
+    if (ctx.nodes[key] !== undefined) return ctx.nodes[key];
+    var n = __elDoc(ctx, ri);
+    if (n) {
+      for (var i = 0; i < o.p.length; i++) {
+        var kids = n.children();
+        n = kids.get ? kids.get(o.p[i]) : kids[o.p[i]];
+        if (!n) break;
+      }
+      // 双端解析器结构不一致时按标签名兜底校验，不一致视为无上下文，
+      // 避免把兄弟/父级错认成别的元素。
+      if (n && o.g && String(n.tagName()).toLowerCase() !==
+          String(o.g).toLowerCase()) n = null;
+    }
+    ctx.nodes[key] = n || null;
+    return n || null;
+  }
+
+  function __nodePath(n) {
+    var path = [];
+    var cur = n;
+    while (cur && cur.__parent) {
+      var par = cur.__parent;
+      var idx = 0;
+      for (var i = 0; i < par.__children.length; i++) {
+        var c = par.__children[i];
+        if (c.__kind !== 'el') continue;
+        if (c === cur) break;
+        idx++;
+      }
+      path.unshift(idx);
+      if (par.__kind === 'doc') break;
+      cur = par;
+    }
+    return path;
+  }
+
+  function __elLiteral(n, base) {
+    var attrs = {};
+    var raw = n.__attrs || {};
+    for (var k in raw) attrs[k] = raw[k];
+    return {
+      t: n.text(), h: n.html(), ot: n.ownText(), o: n.outerHtml(),
+      a: attrs, u: base == null ? '' : String(base),
+      g: n.tagName(), p: __nodePath(n), r: 0
+    };
+  }
+
+  // 沙箱节点 → 包装列表；ctx 直接以节点所在文档为种子（不再解析根 HTML），
+  // 路径可再定位，节点同一性保证 contains/indexOf 跨列表可用。
+  function __wrapNodes(nodes, base) {
+    var arr = [];
+    var doc = null;
+    if (nodes) {
+      for (var i = 0; i < nodes.length; i++) {
+        var n = nodes.get ? nodes.get(i) : nodes[i];
+        if (!n || n.__kind !== 'el') continue;
+        if (!doc) {
+          var d = n;
+          while (d && d.__kind !== 'doc') d = d.__parent;
+          doc = d || null;
+          if (!doc) continue;
+        }
+        arr.push(__elLiteral(n, base));
+      }
+    }
+    if (!doc || !arr.length) return __javaElements([]);
+    var ctx = __elCtx([]);
+    ctx.docs[0] = doc;
+    return __javaElements({ r: [], els: arr }, ctx);
+  }
+
+  function __wrapEl(o, ctx) {
+    function nav() { return __cxNode(ctx, o); }
+    function one(n) {
+      if (!n) return null;
+      var l = __wrapNodes([n], o.u);
+      return l.length ? l[0] : null;
+    }
+    function many(nodes) { return __wrapNodes(nodes, o.u); }
     var el = {
       __javaEl: true,
       text: function () { return o.t || ''; },
@@ -1929,19 +2027,142 @@ const String javaExtensionsJsPrelude = r'''
         var raw = (o.a && o.a[name] != null) ? String(o.a[name]) : '';
         return abs ? syAbsUrl(raw, o.u) : raw;
       },
+      hasAttr: function (k) {
+        var name = String(k == null ? '' : k);
+        if (name.indexOf('abs:') === 0) name = name.substring(4);
+        return !!(o.a && Object.prototype.hasOwnProperty.call(o.a, name));
+      },
+      removeAttr: function (k) {
+        var name = String(k == null ? '' : k);
+        if (name.indexOf('abs:') === 0) name = name.substring(4);
+        if (o.a) delete o.a[name];
+        return el;
+      },
+      id: function () {
+        return (o.a && o.a['id'] != null) ? String(o.a['id']) : '';
+      },
+      className: function () {
+        return (o.a && o.a['class'] != null) ? String(o.a['class']) : '';
+      },
+      classNames: function () {
+        var cls = o.a && o.a['class'];
+        if (cls == null) return [];
+        return String(cls).split(/\s+/).filter(function (s) { return !!s; });
+      },
+      hasClass: function (name) {
+        return el.classNames().indexOf(String(name)) >= 0;
+      },
+      addClass: function (name) {
+        var n = String(name);
+        if (n && !el.hasClass(n)) {
+          var cur = el.className();
+          el.attr('class', cur ? cur + ' ' + n : n);
+        }
+        return el;
+      },
+      removeClass: function (name) {
+        var n = String(name);
+        var kept = el.classNames().filter(function (s) { return s !== n; });
+        if (o.a) o.a['class'] = kept.join(' ');
+        return el;
+      },
+      toggleClass: function (name) {
+        return el.hasClass(name) ? el.removeClass(name) : el.addClass(name);
+      },
+      tagName: function () { return o.g ? String(o.g) : ''; },
+      val: function (value) {
+        if (arguments.length >= 1) return el.attr('value', value);
+        return el.attr('value');
+      },
+      hasText: function () { return /\S/.test(String(o.t || '')); },
+      data: function () {
+        var n = nav();
+        return n ? n.data() : '';
+      },
       select: function (sel) {
-        return __wrapElSelect(o, sel);
+        var n = nav();
+        if (!n) return __wrapElSelect(o, sel);
+        return many(n.select(String(sel == null ? '' : sel)));
+      },
+      selectFirst: function (sel) {
+        var l = el.select(sel);
+        return l.length ? l[0] : null;
       },
       children: function () {
+        var n = nav();
+        if (n) return many(n.children());
         var doc = __wrapElDoc(o);
         var roots = doc ? doc.children() : null;
         var root = (roots && roots.length) ? roots.get(0) : null;
-        return root ? __javaElements(__elLiterals(root.children(), o.u))
-            : __javaElements([]);
+        return root ? __wrapNodes(root.children(), o.u) : __javaElements([]);
+      },
+      child: function (i) { return el.children().get(i); },
+      firstElementChild: function () {
+        var n = nav();
+        return n ? one(n.firstElementChild()) : null;
+      },
+      lastElementChild: function () {
+        var n = nav();
+        return n ? one(n.lastElementChild()) : null;
+      },
+      parent: function () {
+        var n = nav();
+        return n ? one(n.parent()) : null;
+      },
+      parents: function () {
+        var n = nav();
+        return n ? many(n.parents()) : __javaElements([]);
+      },
+      siblingElements: function () {
+        var n = nav();
+        return n ? many(n.siblingElements()) : __javaElements([]);
+      },
+      siblings: function () { return el.siblingElements(); },
+      elementSiblingIndex: function () {
+        var n = nav();
+        return n ? n.elementSiblingIndex() : 0;
+      },
+      siblingIndex: function () { return el.elementSiblingIndex(); },
+      nextElementSibling: function () {
+        var n = nav();
+        return n ? one(n.nextElementSibling()) : null;
+      },
+      previousElementSibling: function () {
+        var n = nav();
+        return n ? one(n.previousElementSibling()) : null;
+      },
+      nextElementSiblings: function () {
+        var n = nav();
+        return n ? many(n.nextElementSiblings()) : __javaElements([]);
+      },
+      previousElementSiblings: function () {
+        var n = nav();
+        return n ? many(n.previousElementSiblings()) : __javaElements([]);
+      },
+      firstElementSibling: function () {
+        var n = nav();
+        return n ? one(n.firstElementSibling()) : el;
+      },
+      lastElementSibling: function () {
+        var n = nav();
+        return n ? one(n.lastElementSibling()) : el;
       },
       toString: function () { return o.t || ''; },
       json: o.j
     };
+    function lit() { return o; }
+    function navFn() { return nav(); }
+    try {
+      Object.defineProperty(el, '__lit', {
+        value: lit, enumerable: false, configurable: true
+      });
+      Object.defineProperty(el, '__nav', {
+        value: navFn, enumerable: false, configurable: true
+      });
+    } catch (e) {
+      el.__lit = lit;
+      el.__nav = navFn;
+    }
     var a = o.a || {};
     for (var k in a) {
       if (el[k] === undefined) el[k] = a[k];
@@ -2000,47 +2221,251 @@ const String javaExtensionsJsPrelude = r'''
     return Jsoup.parse(String(html), o.u == null ? '' : String(o.u));
   }
 
-  function __elLiterals(list, base) {
-    var out = [];
-    if (!list || !list.length) return out;
-    for (var i = 0; i < list.length; i++) {
-      var e = list.get ? list.get(i) : list[i];
-      if (!e) continue;
-      var attrs = {};
-      var raw = e.__attrs || {};
-      for (var k in raw) attrs[k] = raw[k];
-      out.push({
-        t: e.text(), h: e.html(), ot: e.ownText(),
-        o: e.outerHtml(), a: attrs, u: base
-      });
-    }
-    return out;
-  }
-
   function __wrapElSelect(o, sel) {
     var doc = __wrapElDoc(o);
     if (!doc) return __javaElements([]);
-    return __javaElements(__elLiterals(doc.select(String(sel == null ? '' : sel)),
-        o.u));
+    return __wrapNodes(doc.select(String(sel == null ? '' : sel)), o.u);
   }
 
-  function __javaElements(arr) {
-    var list = [];
-    var src = arr || [];
-    for (var i = 0; i < src.length; i++) list.push(__wrapEl(src[i]));
+  // 元素列表（jsoup Elements / legado ArrayList<Element> 同形接口）。
+  // v 兼容纯字面量数组与宿主新载荷 {r:[根HTML...], els:[...]}；
+  // 无上下文（r/p 缺省）时选择器按 outerHtml 重解析兜底，
+  // 遍历族（parents/siblings/next/prev）返回空。
+  function __decorateElements(list) {
+    function nodesOf(el) { return el && el.__nav ? el.__nav() : null; }
+    function litOf(el) { return el && el.__lit ? el.__lit() : null; }
+    function base() {
+      var l = list.length ? litOf(list[0]) : null;
+      return l && l.u != null ? l.u : '';
+    }
+    function wrapN(n) {
+      if (!n) return null;
+      var l = __wrapNodes([n], base());
+      return l.length ? l[0] : null;
+    }
+    function elIs(el, sel) {
+      var n = nodesOf(el);
+      if (n) return n.is(String(sel));
+      var o = litOf(el);
+      if (!o) return false;
+      var doc = __wrapElDoc(o);
+      var root = doc ? doc.children().get(0) : null;
+      return root ? root.is(String(sel)) : false;
+    }
+    function siblingsWalk(next, all, query) {
+      var out = [];
+      var sel = (query == null || query === '') ? null : String(query);
+      for (var i = 0; i < list.length; i++) {
+        var e = nodesOf(list[i]);
+        if (!e) continue;
+        do {
+          e = next ? e.nextElementSibling() : e.previousElementSibling();
+          if (!e) break;
+          if (!sel || e.is(sel)) out.push(wrapN(e));
+        } while (all);
+      }
+      return __decorateElements(out);
+    }
     list.size = function () { return list.length; };
-    list.get = function (i) { return list[i]; };
-    list.first = function () { return list[0]; };
-    list.last = function () { return list[list.length - 1]; };
+    list.get = function (i) {
+      var idx = i < 0 ? list.length + i : i;
+      return idx >= 0 && idx < list.length ? list[idx] : null;
+    };
+    list.first = function () { return list.length ? list[0] : null; };
+    list.last = function () {
+      return list.length ? list[list.length - 1] : null;
+    };
+    list.isEmpty = function () { return list.length === 0; };
+    list.toArray = function () { return list.slice(); };
+    list.asList = function () { return list.slice(); };
+    list.contains = function (x) {
+      if (list.indexOf(x) >= 0) return true;
+      var xn = nodesOf(x);
+      if (!xn) return false;
+      for (var i = 0; i < list.length; i++) {
+        if (nodesOf(list[i]) === xn) return true;
+      }
+      return false;
+    };
     list.text = function () {
       var out = [];
       for (var i = 0; i < list.length; i++) out.push(list[i].text());
       return out.join('\n');
     };
-    // jsoup Elements 常用接口（书源脚本 `getElements(...).toArray()/isEmpty()`）。
-    list.toArray = function () { return list.slice(); };
-    list.isEmpty = function () { return list.length === 0; };
+    list.html = function () {
+      var out = [];
+      for (var i = 0; i < list.length; i++) out.push(list[i].html());
+      return out.join('\n');
+    };
+    list.outerHtml = function () {
+      var out = [];
+      for (var i = 0; i < list.length; i++) out.push(list[i].outerHtml());
+      return out.join('\n');
+    };
+    list.eachText = function () {
+      var out = [];
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].hasText()) out.push(list[i].text());
+      }
+      return out;
+    };
+    list.eachAttr = function (name) {
+      var out = [];
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].hasAttr(name)) out.push(list[i].attr(name));
+      }
+      return out;
+    };
+    list.attr = function (name, value) {
+      if (arguments.length >= 2) {
+        for (var i = 0; i < list.length; i++) list[i].attr(name, value);
+        return list;
+      }
+      for (var j = 0; j < list.length; j++) {
+        if (list[j].hasAttr(name)) return list[j].attr(name);
+      }
+      return '';
+    };
+    list.hasAttr = function (name) {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].hasAttr(name)) return true;
+      }
+      return false;
+    };
+    list.removeAttr = function (name) {
+      for (var i = 0; i < list.length; i++) list[i].removeAttr(name);
+      return list;
+    };
+    list.addClass = function (name) {
+      for (var i = 0; i < list.length; i++) list[i].addClass(name);
+      return list;
+    };
+    list.removeClass = function (name) {
+      for (var i = 0; i < list.length; i++) list[i].removeClass(name);
+      return list;
+    };
+    list.toggleClass = function (name) {
+      for (var i = 0; i < list.length; i++) list[i].toggleClass(name);
+      return list;
+    };
+    list.hasClass = function (name) {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].hasClass(name)) return true;
+      }
+      return false;
+    };
+    list.hasText = function () {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].hasText()) return true;
+      }
+      return false;
+    };
+    list.val = function (value) {
+      if (arguments.length >= 1) {
+        for (var i = 0; i < list.length; i++) list[i].val(value);
+        return list;
+      }
+      return list.length ? list[0].val() : '';
+    };
+    list.select = function (sel) {
+      var out = [];
+      var seen = [];
+      var q = String(sel == null ? '' : sel);
+      for (var i = 0; i < list.length; i++) {
+        var l = list[i].select(q);
+        for (var j = 0; j < l.length; j++) {
+          var n = nodesOf(l[j]);
+          if (n) {
+            if (seen.indexOf(n) >= 0) continue;
+            seen.push(n);
+          }
+          out.push(l[j]);
+        }
+      }
+      return __decorateElements(out);
+    };
+    list.selectFirst = function (sel) {
+      var l = list.select(sel);
+      return l.length ? l[0] : null;
+    };
+    list.eq = function (i) {
+      var el = list.get(i);
+      return __decorateElements(el ? [el] : []);
+    };
+    list.not = function (sel) {
+      var out = [];
+      for (var i = 0; i < list.length; i++) {
+        if (!elIs(list[i], sel)) out.push(list[i]);
+      }
+      return __decorateElements(out);
+    };
+    list.has = function (sel) {
+      var out = [];
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].select(sel).length) out.push(list[i]);
+      }
+      return __decorateElements(out);
+    };
+    list.is = function (sel) {
+      for (var i = 0; i < list.length; i++) {
+        if (elIs(list[i], sel)) return true;
+      }
+      return false;
+    };
+    list.parents = function () {
+      var out = [];
+      var seen = [];
+      for (var i = 0; i < list.length; i++) {
+        var n = nodesOf(list[i]);
+        if (!n) continue;
+        var ps = n.parents();
+        for (var j = 0; j < ps.length; j++) {
+          var p = ps.get(j);
+          if (seen.indexOf(p) >= 0) continue;
+          seen.push(p);
+          out.push(wrapN(p));
+        }
+      }
+      return __decorateElements(out);
+    };
+    list.next = function (query) {
+      return siblingsWalk(true, false, query);
+    };
+    list.nextAll = function (query) {
+      return siblingsWalk(true, true, query);
+    };
+    list.prev = function (query) {
+      return siblingsWalk(false, false, query);
+    };
+    list.prevAll = function (query) {
+      return siblingsWalk(false, true, query);
+    };
+    list.remove = function (arg) {
+      if (typeof arg === 'number') {
+        var idx = arg < 0 ? list.length + arg : arg;
+        if (idx < 0 || idx >= list.length) return null;
+        return list.splice(idx, 1)[0];
+      }
+      var at = list.indexOf(arg);
+      if (at < 0) return false;
+      list.splice(at, 1);
+      return true;
+    };
+    list.toString = function () { return list.outerHtml(); };
     return list;
+  }
+
+  function __javaElements(v, ctxSeed) {
+    var payload = null;
+    var els = v || [];
+    if (v && !Array.isArray(v) && v.els) {
+      payload = v;
+      els = v.els || [];
+    }
+    var ctx = ctxSeed || (payload ? __elCtx(payload.r || []) : null);
+    var list = [];
+    for (var i = 0; i < els.length; i++) list.push(__wrapEl(els[i], ctx));
+    return __decorateElements(list);
   }
 
   global.__javaElements = __javaElements;
@@ -3416,7 +3841,7 @@ const String javaExtensionsJsPrelude = r'''
       }
       if (kind === 'l') return __javaStringList(v || []);
       if (kind === 'e') return __javaElements(v || []);
-      if (kind === 'g') return (v && v.length) ? __wrapEl(v[0]) : null;
+      if (kind === 'g') return __javaElements(v || []).first();
       return String(v == null ? '' : v);
     }
     var seen = global.__javaRuleSeen;

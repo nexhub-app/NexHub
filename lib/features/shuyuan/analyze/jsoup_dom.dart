@@ -113,6 +113,31 @@ const String jsoupDomJsPrelude = r'''
     return null;
   }
 
+  function hasVisibleText(root) {
+    var stack = [root];
+    while (stack.length) {
+      var n = stack.pop();
+      if (n.__kind === "text") {
+        if (!n.__data && /\S/.test(n.__text)) return true;
+        continue;
+      }
+      for (var i = 0; i < n.__children.length; i++) stack.push(n.__children[i]);
+    }
+    return false;
+  }
+
+  function dataOf(root) {
+    var out = [];
+    (function walk(n) {
+      if (n.__kind === "text") {
+        if (n.__data) out.push(n.__text);
+        return;
+      }
+      for (var i = 0; i < n.__children.length; i++) walk(n.__children[i]);
+    })(root);
+    return out.join("");
+  }
+
   function allDesc(root) {
     var out = [];
     var stack = [root];
@@ -731,6 +756,8 @@ const String jsoupDomJsPrelude = r'''
     if (!sel) return elements([]);
     var groups = splitTop(sel, ",");
     var all = allDesc(root);
+    // jsoup Collector 从根开始匹配：Element.select 包含元素自身（Document 不参与）。
+    if (root.__kind === "el") all.unshift(root);
     var out = [];
     for (var i = 0; i < groups.length; i++) {
       var g = groups[i].trim();
@@ -850,6 +877,91 @@ const String jsoupDomJsPrelude = r'''
     },
     nextElementSibling: function () { return nextEl(this); },
     previousElementSibling: function () { return prevEl(this); },
+    nextElementSiblings: function () {
+      var out = [this];
+      var n = nextEl(this);
+      while (n) { out.push(n); n = nextEl(n); }
+      return elements(out);
+    },
+    previousElementSiblings: function () {
+      var out = [this];
+      var n = prevEl(this);
+      while (n) { out.push(n); n = prevEl(n); }
+      return elements(out);
+    },
+    firstElementSibling: function () {
+      var p = parentEl(this);
+      return p ? p.firstElementChild() : this;
+    },
+    lastElementSibling: function () {
+      var p = parentEl(this);
+      return p ? p.lastElementChild() : this;
+    },
+    firstElementChild: function () {
+      for (var i = 0; i < this.__children.length; i++) {
+        if (this.__children[i].__kind === "el") return this.__children[i];
+      }
+      return null;
+    },
+    lastElementChild: function () {
+      for (var i = this.__children.length - 1; i >= 0; i--) {
+        if (this.__children[i].__kind === "el") return this.__children[i];
+      }
+      return null;
+    },
+    // jsoup 1.16 `siblingElements()`，1.17+ 更名 `siblings()`（不含自身）。
+    siblingElements: function () {
+      var out = [];
+      var p = this.__parent;
+      if (p) {
+        for (var i = 0; i < p.__children.length; i++) {
+          var c = p.__children[i];
+          if (c.__kind === "el" && c !== this) out.push(c);
+        }
+      }
+      return elements(out);
+    },
+    siblings: function () { return this.siblingElements(); },
+    // jsoup 1.16 `elementSiblingIndex()`（元素子序列下标），1.17+ `siblingIndex()`。
+    elementSiblingIndex: function () {
+      var p = this.__parent;
+      if (!p) return 0;
+      var idx = 0;
+      for (var i = 0; i < p.__children.length; i++) {
+        var c = p.__children[i];
+        if (c.__kind !== "el") continue;
+        if (c === this) return idx;
+        idx++;
+      }
+      return 0;
+    },
+    siblingIndex: function () { return this.elementSiblingIndex(); },
+    hasText: function () { return hasVisibleText(this); },
+    data: function () { return dataOf(this); },
+    className: function () { return String(this.__attrs["class"] || ""); },
+    addClass: function (name) {
+      var n = String(name);
+      if (n && !hasClass(this, n)) {
+        var cur = this.__attrs["class"];
+        this.__attrs["class"] = cur == null || cur === "" ? n : cur + " " + n;
+      }
+      return this;
+    },
+    removeClass: function (name) {
+      var n = String(name);
+      var cur = this.__attrs["class"];
+      if (cur != null && n) {
+        var kept = String(cur).split(/\s+/).filter(function (s) {
+          return !!s && s !== n;
+        });
+        this.__attrs["class"] = kept.join(" ");
+      }
+      return this;
+    },
+    toggleClass: function (name) {
+      return hasClass(this, String(name))
+        ? this.removeClass(name) : this.addClass(name);
+    },
     remove: function () { detach(this); return this; },
     before: function (html) {
       insertNodes(this, parseFragmentNodes(html), false);
@@ -875,7 +987,13 @@ const String jsoupDomJsPrelude = r'''
       }
       return this;
     },
-    val: function () { return String(this.__attrs["value"] || ""); },
+    val: function (value) {
+      if (arguments.length >= 1) {
+        this.__attrs["value"] = String(value == null ? "" : value);
+        return this;
+      }
+      return String(this.__attrs["value"] || "");
+    },
     body: function () {
       return firstByTag(this, "body") || this;
     },
@@ -933,31 +1051,79 @@ const String jsoupDomJsPrelude = r'''
   };
   ElementsProto.eachText = function () {
     var out = [];
-    for (var i = 0; i < this.length; i++) out.push(textOf(this[i]));
+    for (var i = 0; i < this.length; i++) {
+      if (this[i].hasText()) out.push(textOf(this[i]));
+    }
     return out;
   };
   ElementsProto.eachAttr = function (name) {
     var out = [];
     for (var i = 0; i < this.length; i++) {
-      out.push(this[i].attr(name));
+      if (this[i].hasAttr(name)) out.push(this[i].attr(name));
     }
     return out;
   };
-  ElementsProto.attr = function (name) {
-    return this.length ? this[0].attr(name) : "";
+  ElementsProto.attr = function (name, value) {
+    if (arguments.length >= 2) {
+      for (var i = 0; i < this.length; i++) this[i].attr(name, value);
+      return this;
+    }
+    for (var j = 0; j < this.length; j++) {
+      if (this[j].hasAttr(name)) return this[j].attr(name);
+    }
+    return "";
   };
   ElementsProto.hasAttr = function (name) {
-    return this.length ? this[0].hasAttr(name) : false;
+    for (var i = 0; i < this.length; i++) {
+      if (this[i].hasAttr(name)) return true;
+    }
+    return false;
+  };
+  ElementsProto.removeAttr = function (name) {
+    var n = String(name).toLowerCase();
+    for (var i = 0; i < this.length; i++) delete this[i].__attrs[n];
+    return this;
+  };
+  ElementsProto.addClass = function (name) {
+    for (var i = 0; i < this.length; i++) this[i].addClass(name);
+    return this;
+  };
+  ElementsProto.removeClass = function (name) {
+    for (var i = 0; i < this.length; i++) this[i].removeClass(name);
+    return this;
+  };
+  ElementsProto.toggleClass = function (name) {
+    for (var i = 0; i < this.length; i++) this[i].toggleClass(name);
+    return this;
+  };
+  ElementsProto.hasClass = function (name) {
+    for (var i = 0; i < this.length; i++) {
+      if (this[i].hasClass(name)) return true;
+    }
+    return false;
+  };
+  ElementsProto.hasText = function () {
+    for (var i = 0; i < this.length; i++) {
+      if (this[i].hasText()) return true;
+    }
+    return false;
+  };
+  ElementsProto.val = function (value) {
+    if (arguments.length >= 1) {
+      for (var i = 0; i < this.length; i++) this[i].val(value);
+      return this;
+    }
+    return this.length ? this[0].val() : "";
   };
   ElementsProto.html = function () {
     var out = [];
     for (var i = 0; i < this.length; i++) out.push(this[i].html());
-    return out.join("");
+    return out.join("\n");
   };
   ElementsProto.outerHtml = function () {
     var out = [];
     for (var i = 0; i < this.length; i++) out.push(this[i].outerHtml());
-    return out.join("");
+    return out.join("\n");
   };
   ElementsProto.select = function (sel) {
     var out = [];
@@ -1008,6 +1174,37 @@ const String jsoupDomJsPrelude = r'''
     }
     return elements(out);
   };
+  // jsoup Elements.next/nextAll/prev/prevAll：逐个元素取元素兄弟；
+  // prev 方向为逆文档序（最近者在前），带查询时只保留匹配项。
+  function siblingWalk(list, next, all, query) {
+    var out = [];
+    var sel = query == null ? null : String(query);
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i];
+      do {
+        var sib = next ? nextEl(e) : prevEl(e);
+        if (!sib) break;
+        if (!sel || sib.is(sel)) out.push(sib);
+        e = sib;
+      } while (all);
+    }
+    return elements(out);
+  }
+  ElementsProto.next = function (query) {
+    return siblingWalk(this, true, false, query);
+  };
+  ElementsProto.nextAll = function (query) {
+    return siblingWalk(this, true, true, query);
+  };
+  ElementsProto.prev = function (query) {
+    return siblingWalk(this, false, false, query);
+  };
+  ElementsProto.prevAll = function (query) {
+    return siblingWalk(this, false, true, query);
+  };
+  // java.util.List（legado 侧 Elements 即 ArrayList）常用判定。
+  ElementsProto.contains = function (el) { return this.indexOf(el) >= 0; };
+  ElementsProto.asList = function () { return this.slice(); };
   ElementsProto.remove = function (arg) {
     if (typeof arg === "number") {
       var idx = arg < 0 ? this.length + arg : arg;
