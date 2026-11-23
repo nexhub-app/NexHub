@@ -682,6 +682,28 @@ const String sourceContextJsPrelude = r'''
     }
     return key.indexOf('||POST||') >= 0 ? 'POST' : 'GET';
   }
+  // StrResponse.body 在 legado 是 String（属性 + body() 方法双形态都可用）。
+  // 用「可调用值 + 绑定 String.prototype 方法 + length 属性」模拟：
+  // `res.body`、`String(res.body)`、`res.body()`、`res.body.substring(1)`、
+  // `res.body.length` 全部可用。
+  function syStringCallable(text) {
+    var t = text == null ? '' : String(text);
+    var f = function () { return t; };
+    f.toString = f.valueOf = function () { return t; };
+    try {
+      var names = Object.getOwnPropertyNames(String.prototype);
+      for (var i = 0; i < names.length; i++) {
+        var k = names[i];
+        if (k === 'constructor') continue;
+        try {
+          var d = Object.getOwnPropertyDescriptor(String.prototype, k);
+          if (d && typeof d.value === 'function') f[k] = d.value.bind(t);
+        } catch (e) {}
+      }
+      Object.defineProperty(f, 'length', { value: t.length });
+    } catch (e) {}
+    return f;
+  }
   // java.connect/get/post/head 的统一返回对象：StrResponse 与 Jsoup Response
   // 的超集（body()/code()/headers()/header()/cookies()/url()/raw()…）。
   function syResp(key, bodyText) {
@@ -691,7 +713,7 @@ const String sourceContextJsPrelude = r'''
     var finalUrl = meta && meta.url ? String(meta.url) : '';
     var headers = (meta && meta.headers) || {};
     var resp = {
-      body: function () { return bodyText; },
+      body: syStringCallable(bodyText),
       bodyAsBytes: function () {
         var c = global.__ajaxBytesCache;
         var b64 = c && c[key];
@@ -733,12 +755,6 @@ const String sourceContextJsPrelude = r'''
         };
       },
     };
-    // legado StrResponse 同时暴露 body 属性与 body() 方法；JS 无法同名共存，
-    // 用可调用值 + toString/valueOf 让 `String(res.body)` 也拿到正文。
-    try {
-      resp.body.toString = function () { return bodyText; };
-      resp.body.valueOf = function () { return bodyText; };
-    } catch (e) {}
     return resp;
   }
   // 交互式重放的响应对象：与 syResp 同形，供 startBrowserAwait 返回。
@@ -746,7 +762,7 @@ const String sourceContextJsPrelude = r'''
     var text = body == null ? '' : String(body);
     var h = headers || {};
     return {
-      body: function () { return text; },
+      body: syStringCallable(text),
       code: function () { return Number(code) || 0; },
       statusCode: function () { return Number(code) || 0; },
       headers: function () { return syHeadersMap(h); },
@@ -773,8 +789,17 @@ const String sourceContextJsPrelude = r'''
       }
     });
     global.java.getSource = function () { return global.source; };
+    // 确定性重放的会话语义：legado 桥同步执行，同一脚本内对同一 URL 的
+    // 多次 java.ajax 是多次真实请求。这里按「每次顶层求值内的同键调用
+    // 序号」拆键：第 1 次用原始键、第 n 次追加 `||DUP||n`，宿主 settle
+    // 对每个键各抓一次；重放轮计数器复位 → 同脚本仍生成同一组键命中缓存。
     global.java.__ajaxReq = function (url) {
-      var key = String(url == null ? '' : url);
+      var raw = String(url == null ? '' : url);
+      var seq = global.__ajaxCallSeq;
+      if (!seq) seq = global.__ajaxCallSeq = Object.create(null);
+      var n = (seq[raw] || 0) + 1;
+      seq[raw] = n;
+      var key = n === 1 ? raw : raw + '||DUP||' + n;
       var c = global.__ajaxCache;
       if (c && c[key] != null) {
         return c[key];
@@ -828,10 +853,11 @@ const String sourceContextJsPrelude = r'''
     };
     // POST 记录组合键 url||POST||body（宿主 settle 拆分后组装选项串；
     // 选项串在标记之前，headers/followRedirects 随 URL 一起保留）。
-    // legado Jsoup requestBody 语义：空 body 也是 POST，不降级为 GET。
+    // legado Jsoup requestBody 语义：body 原样字节发送，不做表单重编码、
+    // 不自动补 Content-Type；空 body 也是 POST，不降级为 GET。
     global.java.post = function (urlStr, bodyStr, headers, timeout) {
       var keyUrl = syWithHeaders(urlStr, headers,
-          { followRedirects: false, _syHeaderMode: 'replace' });
+          { followRedirects: false, _syHeaderMode: 'replace', _syRawBody: true });
       var b = bodyStr == null ? '' : String(bodyStr);
       var key = keyUrl + '||POST||' + b;
       return syResp(key, global.java.__ajaxReq(key));
@@ -1877,18 +1903,42 @@ const String javaExtensionsJsPrelude = r'''
   }
 
   // ── 元素包装（java.getElements / getElement 的返回值） ──
-  // 宿主按规则把节点序列化成 {t:text, h:html, ot:ownText, a:attrs, j:json}
+  // 宿主按规则把节点序列化成
+  // {t:text, h:html, ot:ownText, a:attrs, o:outerHtml, u:baseUrl, j:json}
   // 由本函数包装成 jsoup 风格的轻量对象：脚本里常见的
   // `list.size() / list.get(i) / el.text() / el.html() / el.attr('href')`
-  // 都能工作；属性同时挂成直读字段（el.href）。`.select()` 需要同步回调
-  // 宿主按选择器再查，沙箱内做不到，故不提供（调用会抛错，走脚本兜底）。
+  // 都能工作；属性同时挂成直读字段（el.href）。`select/children` 用沙箱内
+  // 的 jsoup DOM 重新解析 outerHtml 实现（对应 legado 里 Rhino 直调 jsoup），
+  // `attr('abs:…')` 按元素所在页面 URL 绝对化。
   function __wrapEl(o) {
     var el = {
       __javaEl: true,
       text: function () { return o.t || ''; },
       html: function () { return o.h || ''; },
       ownText: function () { return o.ot || ''; },
-      attr: function (k) { return (o.a && o.a[k]) || ''; },
+      outerHtml: function () { return o.o != null ? o.o : (o.h || ''); },
+      attr: function (k, value) {
+        var name = String(k == null ? '' : k);
+        var abs = name.indexOf('abs:') === 0;
+        if (abs) name = name.substring(4);
+        if (arguments.length >= 2) {
+          if (!o.a) o.a = {};
+          o.a[name] = String(value == null ? '' : value);
+          return el;
+        }
+        var raw = (o.a && o.a[name] != null) ? String(o.a[name]) : '';
+        return abs ? syAbsUrl(raw, o.u) : raw;
+      },
+      select: function (sel) {
+        return __wrapElSelect(o, sel);
+      },
+      children: function () {
+        var doc = __wrapElDoc(o);
+        var roots = doc ? doc.children() : null;
+        var root = (roots && roots.length) ? roots.get(0) : null;
+        return root ? __javaElements(__elLiterals(root.children(), o.u))
+            : __javaElements([]);
+      },
       toString: function () { return o.t || ''; },
       json: o.j
     };
@@ -1902,6 +1952,76 @@ const String javaExtensionsJsPrelude = r'''
       }
     }
     return el;
+  }
+
+  // 绝对化（jsoup `abs:` 属性语义）：已是绝对地址原样返回；协议相对
+  // `//host/x` 继承 base 的 scheme；根相对 `/x` 取 base 的 origin；其余按
+  // base 目录拼接并归一 `.`/`..`。base 缺失时原样返回。
+  function syAbsUrl(raw, base) {
+    var s = String(raw == null ? '' : raw);
+    if (!s) return '';
+    if (/^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(s)) return s;
+    var b = String(base == null ? '' : base).replace(/[?#].*$/, '');
+    if (!b) return s;
+    if (s.indexOf('//') === 0) {
+      var sm = /^([a-zA-Z][a-zA-Z0-9+.\-]*:)/.exec(b);
+      return (sm ? sm[1] : 'http:') + s;
+    }
+    var om = /^([a-zA-Z][a-zA-Z0-9+.\-]*:\/\/[^\/]*)/.exec(b);
+    if (s.charAt(0) === '/') return (om ? om[1] : b) + s;
+    var joined = b.replace(/[^\/]*$/, '') + s;
+    var origin = '';
+    var rest = joined;
+    var jm = /^([a-zA-Z][a-zA-Z0-9+.\-]*:\/\/[^\/]*)(.*)$/.exec(joined);
+    if (jm) { origin = jm[1]; rest = jm[2]; }
+    var parts = rest.split('/');
+    var segs = [];
+    for (var i = 0; i < parts.length; i++) {
+      var seg = parts[i];
+      if (seg === '..') {
+        if (segs.length > 1) segs.pop();
+      } else if (seg !== '.') {
+        segs.push(seg);
+      }
+    }
+    var path = segs.join('/');
+    if (path.charAt(0) !== '/') path = '/' + path;
+    return origin + path;
+  }
+
+  // 用外层 HTML 重新解析出文档（select/children 的 jsoup 语义载体：
+  // doc 的唯一元素子节点即原元素，doc.select 因此包含根自身，与 jsoup
+  // Element.select 一致）。
+  function __wrapElDoc(o) {
+    var html = o.o != null ? o.o : (o.h || '');
+    if (!html) return null;
+    var Jsoup = global.org && global.org.jsoup && global.org.jsoup.Jsoup;
+    if (!Jsoup || typeof Jsoup.parse !== 'function') return null;
+    return Jsoup.parse(String(html), o.u == null ? '' : String(o.u));
+  }
+
+  function __elLiterals(list, base) {
+    var out = [];
+    if (!list || !list.length) return out;
+    for (var i = 0; i < list.length; i++) {
+      var e = list.get ? list.get(i) : list[i];
+      if (!e) continue;
+      var attrs = {};
+      var raw = e.__attrs || {};
+      for (var k in raw) attrs[k] = raw[k];
+      out.push({
+        t: e.text(), h: e.html(), ot: e.ownText(),
+        o: e.outerHtml(), a: attrs, u: base
+      });
+    }
+    return out;
+  }
+
+  function __wrapElSelect(o, sel) {
+    var doc = __wrapElDoc(o);
+    if (!doc) return __javaElements([]);
+    return __javaElements(__elLiterals(doc.select(String(sel == null ? '' : sel)),
+        o.u));
   }
 
   function __javaElements(arr) {
@@ -1924,6 +2044,35 @@ const String javaExtensionsJsPrelude = r'''
   }
 
   global.__javaElements = __javaElements;
+
+  // java.getStringList 返回 legado 的 List<String>：脚本除下标/长度外还常
+  // 调 `.size()/.get(i)/.isEmpty()/.toArray()`。Array 上挂这些方法
+  // （非枚举，不干扰 join/JSON/遍历），元素统一成字符串。
+  function __javaStringList(arr) {
+    var list = arr ? arr.slice() : [];
+    for (var i = 0; i < list.length; i++) {
+      list[i] = list[i] == null ? '' : String(list[i]);
+    }
+    var methods = {
+      size: function () { return list.length; },
+      get: function (i) {
+        var idx = i < 0 ? list.length + i : i;
+        return idx >= 0 && idx < list.length ? list[idx] : null;
+      },
+      isEmpty: function () { return list.length === 0; },
+      toArray: function () { return list.slice(); },
+    };
+    for (var name in methods) {
+      try {
+        Object.defineProperty(list, name, {
+          value: methods[name], enumerable: false, configurable: true,
+        });
+      } catch (e) {
+        list[name] = methods[name];
+      }
+    }
+    return list;
+  }
 
   // ── AES（ECB / CBC / GCM；PKCS5/7 或 NoPadding；GCM 自带 tag） ──
   // 纯 JS 实现：同步沙箱内无法回调宿主做加解密，且 QuickJS 没有 WebCrypto。
@@ -3265,7 +3414,7 @@ const String javaExtensionsJsPrelude = r'''
           try { v = JSON.parse(v); } catch (e) { v = []; }
         }
       }
-      if (kind === 'l') return (v || []).slice();
+      if (kind === 'l') return __javaStringList(v || []);
       if (kind === 'e') return __javaElements(v || []);
       if (kind === 'g') return (v && v.length) ? __wrapEl(v[0]) : null;
       return String(v == null ? '' : v);
@@ -3278,7 +3427,7 @@ const String javaExtensionsJsPrelude = r'''
       if (!pend) pend = global.__javaRulePending = [];
       pend.push({ op: 'get', k: kind, r: rule, c: cArg, u: isUrl ? 1 : 0, key: key });
     }
-    if (kind === 'l') return [];
+    if (kind === 'l') return __javaStringList([]);
     if (kind === 'e') return __javaElements([]);
     if (kind === 'g') return null;
     return '';

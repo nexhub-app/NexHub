@@ -1,6 +1,6 @@
 /// WebBook 正文多页并发池自测：
 /// 保序返回、单项失败不影响他项、并发上限生效。
-import 'dart:async';
+library;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexhub/features/shuyuan/web_book/web_book.dart';
@@ -14,9 +14,9 @@ void main() {
         4,
         (url) async {
           final delay = switch (url) {
-            'a' => Duration(milliseconds: 60),
-            'b' => Duration(milliseconds: 20),
-            _ => Duration(milliseconds: 1),
+            'a' => const Duration(milliseconds: 60),
+            'b' => const Duration(milliseconds: 20),
+            _ => const Duration(milliseconds: 1),
           };
           await Future<void>.delayed(delay);
           return 'done-$url';
@@ -35,6 +35,25 @@ void main() {
         },
       );
       expect(result, <String?>['ok1', null, 'ok2']);
+    });
+
+    test('propagateErrors：任一项失败令整批失败（legado mapAsync）', () async {
+      var lateRan = false;
+      await expectLater(
+        WebBook.mapOrderedPool<String>(
+          ['boom', 'late'],
+          2,
+          (url) async {
+            if (url == 'boom') throw StateError('fail');
+            await Future<void>.delayed(const Duration(milliseconds: 5));
+            lateRan = true;
+            return url;
+          },
+          propagateErrors: true,
+        ),
+        throwsStateError,
+      );
+      expect(lateRan, isTrue, reason: '同批在飞请求照常完成后再抛出');
     });
 
     test('并发数不超过 limit', () async {

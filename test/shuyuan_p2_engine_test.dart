@@ -29,8 +29,15 @@ void main() {
       expect(out, 'y##z=y'); // 仅替换 x，'=y' 尾巴保留
     });
 
+    test('legado 形态 `##regex[##replacement]`（空选择器整串替换）', () {
+      // md3：replaceRegex 行按 `##` 拆分，[0] 选择器为空 → 正文原样作为
+      // 替换目标；[1] 是正则，[2] 是替换文本（缺省为空串）。
+      expect(BookContent.applyReplaceRules('abc danger x', '##danger'), 'abc  x');
+      expect(BookContent.applyReplaceRules('a1b22c', r'##\d+##数'), 'a数b数c');
+    });
+
     test('空 pattern 行跳过（防 RegExp(\'\') 撑爆正文）', () {
-      final out = BookContent.applyReplaceRules('abc', '##danger');
+      final out = BookContent.applyReplaceRules('abc', '##');
       expect(out, 'abc');
     });
 

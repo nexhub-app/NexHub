@@ -246,6 +246,77 @@ void main() {
       }
     });
 
+    test('`_syRawBody`（java.post）：原文发送、不补 Content-Type', () async {
+      String? method;
+      String? body;
+      String? contentType;
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((req) async {
+        method = req.method;
+        body = await utf8.decoder.bind(req).join();
+        contentType = req.headers.contentType?.mimeType;
+        req.response
+          ..statusCode = 200
+          ..headers.contentType = ContentType.html
+          ..write('OK');
+        req.response.close();
+      });
+      try {
+        final origin = _origin(server);
+        const raw = '{"k":"中"}';
+        final au = AnalyzeUrl(
+          url: '$origin/p,'
+              '{"method":"POST","body":${jsonEncode(raw)},"_syRawBody":true}',
+          baseUrl: origin,
+        );
+        expect(await au.getStrResponse(), 'OK');
+        expect(method, 'POST');
+        expect(body, raw);
+        expect(contentType, isNull);
+        expect(au.headerMap['Content-Type'], isNull);
+        // 对照：无 `_syRawBody` 的声明式 POST 仍按 legado analyzeFields 补头。
+        final normal = AnalyzeUrl(
+          url: '$origin/p,{"method":"POST","body":${jsonEncode(raw)}}',
+          baseUrl: origin,
+        );
+        expect(normal.headerMap['Content-Type'], 'application/json');
+      } finally {
+        await server.close(force: true);
+      }
+    });
+
+    test('skipPageCache：同 URL 重复请求不被阶段缓存去重', () async {
+      var hits = 0;
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((req) {
+        hits++;
+        req.response
+          ..statusCode = 200
+          ..headers.contentType = ContentType.html
+          ..write('B$hits');
+        req.response.close();
+      });
+      final origin = _origin(server);
+      final ctx = ShuyuanSourceContext('skip-page-cache');
+      try {
+        await ShuyuanSourceContext.run(ctx, () async {
+          final a = AnalyzeUrl(
+              url: '$origin/x', baseUrl: origin, skipPageCache: true);
+          expect(await a.getStrResponse(), 'B1');
+          final b = AnalyzeUrl(
+              url: '$origin/x', baseUrl: origin, skipPageCache: true);
+          expect(await b.getStrResponse(), 'B2');
+          final c = AnalyzeUrl(url: '$origin/x', baseUrl: origin);
+          expect(await c.getStrResponse(), 'B3');
+          final d = AnalyzeUrl(url: '$origin/x', baseUrl: origin);
+          expect(await d.getStrResponse(), 'B3', reason: '阶段缓存命中');
+          expect(hits, 3);
+        });
+      } finally {
+        await server.close(force: true);
+      }
+    });
+
     test('webViewDelayTime 解析为非负数', () {
       final au = AnalyzeUrl(
         url: 'http://h.test/x,{"webViewDelayTime":1200}',

@@ -25,9 +25,10 @@ class BookContent {
   }
 
   // 预编译正则
-  static final _brRegex = RegExp(r'<br\s*/?\s*>', caseSensitive: false);
-  static final _pOpenRegex = RegExp(r'<p[^>]*>');
-  static final _pCloseRegex = RegExp(r'</p>');
+  // legado HtmlFormatter.wrapHtmlRegex：这些块级标签一律视为段落边界。
+  static final _wrapHtmlRegex =
+      RegExp(r'</?(?:div|p|br|hr|h\d|article|dd|dl)[^>]*>',
+          caseSensitive: false);
   static final _htmlTagRegex = RegExp(r'<[^>]*>');
   // CSS flex `order` 乱序反爬检测：匹配带 style="...order:N..." 的 <p> 段落。
   static final _cssOrderPRegex = RegExp(
@@ -36,7 +37,6 @@ class BookContent {
   );
   static final _crlfRegex = RegExp(r'\r\n');
   static final _crRegex = RegExp(r'\r');
-  static final _whitespaceRegex = RegExp(r'[ \t]+');
 
   // 内容选择器列表（静态常量）
   static const _contentSelectors = [
@@ -218,15 +218,12 @@ class BookContent {
     // 必须在 HTML 剥离(_formatContent)之前，此时 content 仍含 <p style="order:N"> 标签。
     content = _reorderCssOrderParagraphs(content);
 
-    // 若抽取结果是 HTML（如 @html），在应用 replaceRegex 前先把 <br>/<p> 边界
-    // 规整为换行，使 line-anchored 的 replaceRegex 能按行匹配导航/广告文本，
-    // 表现与 @textNodes 抽取后的纯文本一致（笔趣阁多页一致性修复）。
+    // legado HtmlFormatter.wrapHtmlRegex：块级标签先规整成换行，使 line-anchored
+    // 的 replaceRegex 能按行匹配导航/广告文本，表现与 @textNodes 抽取后的
+    // 纯文本一致（笔趣阁多页一致性修复）。
     // 必须在 _reorderCssOrderParagraphs 之后，避免破坏 order 乱序还原所需的 <p> 标签。
     if (content.contains('<')) {
-      content = content
-          .replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n')
-          .replaceAll(RegExp(r'</p>', caseSensitive: false), '\n')
-          .replaceAll(RegExp(r'<p[^>]*>', caseSensitive: false), '\n');
+      content = content.replaceAll(_wrapHtmlRegex, '\n');
     }
 
     // legado 的 replaceRegex 在整章（全部页拼接）之后只跑一次；分页抓取
@@ -376,7 +373,12 @@ class BookContent {
     final out = <NovelBlock>[];
     for (final line in text.split('\n')) {
       final trimmed = line.trim();
-      if (trimmed.isEmpty) continue;
+      if (trimmed.isEmpty) {
+        // legado 外层替换后按行统一 `"　　$it"`，空行也保留缩进占位
+        // （行内残留空白原样保留在缩进之后）。
+        if (hasReplace) out.add(NovelTextBlock('　　$line'));
+        continue;
+      }
       final img = _inlineImgTagRegex.firstMatch(trimmed);
       if (img != null && img.group(0) == trimmed) {
         final url = img.group(1)!;
@@ -384,11 +386,16 @@ class BookContent {
         out.add(origin != null
             ? NovelImageBlock(url, source: origin.source, style: origin.style)
             : NovelImageBlock(url));
+      } else if (hasReplace) {
+        // 替换后的行只做“加缩进”：与 legado `"　　$it"` 逐字一致，不回收
+        // 替换结果自带的缩进（替换前已逐行 trim，不存在源自带缩进）。
+        out.add(NovelTextBlock('　　$line'));
       } else {
         out.add(NovelTextBlock(line));
       }
     }
-    return out.isEmpty ? const <NovelBlock>[] : _applyIndentBlocks(out);
+    if (out.isEmpty) return const <NovelBlock>[];
+    return hasReplace ? out : _applyIndentBlocks(out);
   }
 
   static String _getContent(AnalyzeRule analyzeRule, String contentRule) {
@@ -514,24 +521,21 @@ class BookContent {
   ) {
     if (content.isEmpty) return const [];
 
-    // 先把残留的 <br>/<p> 边界规整成换行（与旧 _formatContent 一致）。
-    content = content
-        .replaceAll(_brRegex, '\n')
-        .replaceAll(_pOpenRegex, '\n')
-        .replaceAll(_pCloseRegex, '\n');
+    // 块级标签边界规整成换行（legado HtmlFormatter 的段落切分口径）。
+    content = content.replaceAll(_wrapHtmlRegex, '\n');
 
     final rawLines = content.split('\n');
     final blocks = <NovelBlock>[];
     for (final rawLine in rawLines) {
       // 1) 提取本块内插图（懒加载属性优先，回退 src）。
       final imgs = _extractImageUrls(rawLine, baseUrl, redirectUrl);
-      // 2) 文本化：剥离标签 + 解码实体 + 规整空白。
+      // 2) 文本化：剥离标签 + 解码实体。行内空白保持原样（legado 只折叠
+      //    换行两侧的空白，不压缩行内连续空格）。
       var text = rawLine.replaceAll(_htmlTagRegex, '');
       text = _decodeEntities(text);
       text = text
           .replaceAll(_crlfRegex, '\n')
           .replaceAll(_crRegex, '\n')
-          .replaceAll(_whitespaceRegex, ' ')
           .trim();
       if (text.isNotEmpty) {
         blocks.add(NovelTextBlock(text));
@@ -626,9 +630,9 @@ class BookContent {
   }
 
   /// 解码 HTML 实体并对齐 legado `HtmlFormatter` 的空白归一：
-  /// `&nbsp;/&ensp;/&emsp;` → 半角空格，`&thinsp;/&zwnj;/&zwj;` 与其
-  /// Unicode 形态删除；随后完整 HTML4 反转义（legado 正文在格式化后执行
-  /// `StringEscapeUtils.unescapeHtml4`）。
+  /// `(&nbsp;)+` → 单空格，`&ensp;/&emsp;` → 空格，
+  /// `&thinsp;/&zwnj;/&zwj;` 与其 Unicode 形态删除；随后完整 HTML4
+  /// 反转义（legado 正文在格式化后执行 `StringEscapeUtils.unescapeHtml4`）。
   static String _decodeEntities(String text) {
     if (!text.contains('&') &&
         !text.contains('\u00A0') &&
@@ -639,7 +643,14 @@ class BookContent {
         !text.contains('\u200D')) {
       return text;
     }
-    return AnalyzeRule.unescapeHtml(text)
+    var out = text;
+    if (out.contains('&')) {
+      out = out
+          .replaceAll(RegExp(r'(&nbsp;)+'), ' ')
+          .replaceAll(RegExp(r'&ensp;|&emsp;'), ' ')
+          .replaceAll(RegExp(r'&thinsp;|&zwnj;|&zwj;'), '');
+    }
+    return AnalyzeRule.unescapeHtml(out)
         .replaceAll('\u00A0', ' ')
         .replaceAll('\u2002', ' ')
         .replaceAll('\u2003', ' ')
@@ -782,11 +793,13 @@ class BookContent {
     return cleanedLines.join('\n');
   }
 
-  /// 替换规则应用（legado replaceRegex 常见形态）：
+  /// 替换规则应用（legado replaceRegex 语义）：
   /// - `@js:`/`<js>` 净化脚本 → 规则引擎求值（result=正文）；
-  /// - 多行多规则：每行一条 `pattern##replacement`（replacement 可含 ##），
-  ///   依序应用；空 pattern 行跳过（防 RegExp('') 撑爆正文）。
-  /// multiLine: true 让 ^...$ 锚点支持每行边界匹配。
+  /// - legado `SourceRule` 形态：整行 `##pattern##replacement[##任意]`，
+  ///   选择器为空 → 正文原样进入替换；第 4 段存在时只替换首个命中；
+  /// - 兼容 NexHub 旧形态 `pattern##replacement`（逐规则行应用）；
+  /// - 结果按 legado `getString` 默认反转义一次（unescapeHtml4）。
+  /// 替换在整章字符串上执行（legado 在全部页拼接后只跑一次）。
   ///
   /// [analyzeRule] 为正文页规则实例时，JS 分支复用其 book/chapter/baseUrl
   /// 绑定（legado 的 replaceRegex 在正文 AnalyzeRule 上求值）。
@@ -806,23 +819,44 @@ class BookContent {
     for (final line in rr.split('\n')) {
       final rule = line.trim();
       if (rule.isEmpty) continue;
+      if (rule.startsWith('##')) {
+        // legado SourceRule：ruleStrS[0] 为空串 → AnalyzeByRegex 原样返回
+        // 正文，随后按 ruleStrS[1..2] 做整章替换。
+        final parts = rule.substring(2).split('##');
+        final pattern = parts[0];
+        final replacement = parts.length >= 2 ? parts[1] : '';
+        final replaceFirst = parts.length >= 3;
+        if (pattern.isEmpty) continue;
+        try {
+          // 整章替换按 Java 默认正则语义（无 MULTILINE/DOTALL），
+          // `^`/`$` 只锚定整章首尾。
+          final re = _compileCompatRegex(pattern, multiLine: false);
+          out = replaceFirst
+              ? out.replaceFirst(re, replacement)
+              : out.replaceAll(re, replacement);
+        } catch (_) {}
+        continue;
+      }
       final parts = rule.split('##');
       final pattern = parts[0];
       final replacement = parts.length >= 2 ? parts.sublist(1).join('##') : '';
       if (pattern.isEmpty) continue;
       try {
-        // Java→Dart 正则兼容：(?i) 等内联标志原先会直接抛错被吞掉。
-        final compat = RegexCompat.translate(pattern);
-        out = out.replaceAll(
-            RegExp(
-              compat.pattern,
-              multiLine: true,
-              caseSensitive: compat.caseSensitive,
-              dotAll: compat.dotAll,
-            ),
-            replacement);
+        // multiLine: true 让 ^...$ 锚点支持每行边界匹配。
+        out = out.replaceAll(_compileCompatRegex(pattern), replacement);
       } catch (_) {}
     }
-    return out;
+    return AnalyzeRule.unescapeHtml(out);
+  }
+
+  /// Java→Dart 正则兼容（(?i) 等内联标志原先会直接抛错被吞掉）。
+  static RegExp _compileCompatRegex(String pattern, {bool multiLine = true}) {
+    final compat = RegexCompat.translate(pattern);
+    return RegExp(
+      compat.pattern,
+      multiLine: multiLine,
+      caseSensitive: compat.caseSensitive,
+      dotAll: compat.dotAll,
+    );
   }
 }

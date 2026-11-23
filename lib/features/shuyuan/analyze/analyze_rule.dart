@@ -952,11 +952,13 @@ class AnalyzeRule {
     return s;
   }
 
-  /// 节点 → JS 字面量：`{t:文本, h:内部HTML, ot:自身文本, a:属性表}`。
-  /// 由预置脚本的 `__javaElements` 包装成 jsoup 风格对象（size/get/text/
-  /// html/attr）；JSON 模式的元素额外带 `j`（原始对象）供字段直读。
+  /// 节点 → JS 字面量：`{t:文本, h:内部HTML, ot:自身文本, a:属性表, o:外层HTML,
+  /// u:页面地址}`。由预置脚本的 `__javaElements` 包装成 jsoup 风格对象
+  /// （size/get/text/html/select/children/attr('abs:…')）；JSON 模式的元素
+  /// 额外带 `j`（原始对象）供字段直读。
   String _elementsJsLiteral(List<dynamic> elements) {
     final out = <Map<String, dynamic>>[];
+    final base = redirectUrl ?? baseUrl ?? '';
     for (final e in elements) {
       if (e is Element) {
         out.add(<String, dynamic>{
@@ -971,6 +973,8 @@ class AnalyzeRule {
             for (final entry in e.attributes.entries)
               entry.key.toString(): entry.value,
           },
+          'o': e.outerHtml,
+          'u': base,
         });
       } else if (e is Map) {
         out.add(<String, dynamic>{'t': e.toString(), 'j': e});

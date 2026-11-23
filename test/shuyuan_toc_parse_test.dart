@@ -2,6 +2,7 @@
 /// `-` 前缀翻转（单页与多页）、formatJs 绑定、preUpdateJs 前置时序。
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -175,12 +176,14 @@ void main() {
 
     Future<List<XiaoshuoBookChapter>> fetch(
       XiaoshuoBookSource source,
-      XiaoshuoBook book,
-    ) async {
+      XiaoshuoBook book, {
+      bool runPerJs = false,
+    }) async {
       final ctx = ShuyuanSourceContext('toc-net-test')..bindSource(source);
       return ShuyuanSourceContext.run(
         ctx,
-        () => WebBook().getChapterList(source: source, book: book),
+        () => WebBook().getChapterList(
+            source: source, book: book, runPerJs: runPerJs),
       );
     }
 
@@ -199,10 +202,28 @@ void main() {
         'chapterUrl': '@href',
       });
       final book = _book('$base/detail.html')..tocUrl = '$base/wrong.html';
-      final chapters = await fetch(source, book);
+      final chapters = await fetch(source, book, runPerJs: true);
       // 若 preUpdateJs 在解析后才跑，请求会落在 wrong.html → 0 章。
       expect(chapters.map((c) => c.title), ['第一章', '第二章']);
       expect(book.variableMap['tocVar'], 'V1');
+    });
+
+    test('preUpdateJs 默认（runPerJs=false）不执行', () async {
+      server = await _startServer(<String, String>{
+        '/wrong.html': '<div id="list"></div>',
+        '/real.html': '<div id="list"><a href="/c/1.html">第一章</a></div>',
+      });
+      base = 'http://${server.address.host}:${server.port}';
+      final source = _source(<String, dynamic>{
+        'preUpdateJs': "book.tocUrl = '$base/real.html';",
+        'chapterList': '#list a',
+        'chapterName': 'text',
+        'chapterUrl': '@href',
+      });
+      final book = _book('$base/detail.html')..tocUrl = '$base/wrong.html';
+      await expectLater(
+          fetch(source, book), throwsA(isA<TocEmptyException>()));
+      expect(book.tocUrl, '$base/wrong.html');
     });
 
     test('多页目录 + `-` 前缀：合并后整列表反转（页序也反转）', () async {
@@ -252,6 +273,54 @@ void main() {
       );
       expect(chapters.map((c) => c.title),
           ['0:B2', '1:B1', '2:A2', '3:A1']);
+    });
+
+    test('目录分页并发跟随下载线程设置（threadCount=1 严格串行）', () async {
+      SharedPreferences.setMockInitialValues(<String, Object>{
+        'download_settings': jsonEncode(<String, dynamic>{'threadCount': 1}),
+      });
+      var inFlight = 0;
+      var peak = 0;
+      final local = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      local.listen((req) async {
+        inFlight++;
+        if (inFlight > peak) peak = inFlight;
+        // 响应慢于同 host 最小间隔（800ms）：若并发池 >1，第二页会在第一页
+        // 未完成时发出 → peak 2；严格串行则 peak 恒为 1。
+        await Future<void>.delayed(const Duration(milliseconds: 1000));
+        final n = int.parse(
+            RegExp(r'^/toc(\d+)\.html$').firstMatch(req.uri.path)!.group(1)!);
+        final links = StringBuffer('<a class="c" href="/c$n">T$n</a>');
+        if (n == 1) {
+          for (var i = 2; i <= 5; i++) {
+            links.write('<a class="next" href="/toc$i.html">P$i</a>');
+          }
+        }
+        req.response
+          ..statusCode = 200
+          ..headers.contentType = ContentType.html
+          ..write('<div id="list">$links</div>');
+        await req.response.close();
+        inFlight--;
+      });
+      try {
+        final origin = 'http://${local.address.host}:${local.port}';
+        final source = _source(<String, dynamic>{
+          'chapterList': '#list a.c',
+          'chapterName': 'text',
+          'chapterUrl': '@href',
+          'nextTocUrl': '#list a.next@href',
+        });
+        final chapters = await fetch(
+          source,
+          _book('$origin/detail.html')..tocUrl = '$origin/toc1.html',
+        );
+        expect(chapters.map((c) => c.title),
+            ['T1', 'T2', 'T3', 'T4', 'T5']);
+        expect(peak, 1);
+      } finally {
+        await local.close(force: true);
+      }
     });
   });
 }

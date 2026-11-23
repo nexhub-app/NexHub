@@ -25,11 +25,12 @@ import 'package:nexhub/features/shuyuan/web_book/web_book.dart';
 XiaoshuoBookSource _source({
   Map<String, dynamic>? info,
   Map<String, dynamic>? content,
+  int bookSourceType = 0,
 }) {
   return XiaoshuoBookSource.fromJson(<String, dynamic>{
     'bookSourceUrl': 'https://src.test',
     'bookSourceName': 'parity-test',
-    'bookSourceType': 0,
+    'bookSourceType': bookSourceType,
     if (info != null) 'ruleBookInfo': info,
     if (content != null) 'ruleContent': content,
   });
@@ -274,6 +275,37 @@ void main() {
       // 逐页替换时两页各自孤立，跨页表达式不可能命中。
       expect(_texts(finalized), <String>['　　第一合并']);
     });
+
+    test('legado `##` 替换形态：整章正则 + 反转义 + 空行也缩进', () {
+      final ar = AnalyzeRule()..setContent('x');
+      final finalized = BookContent.finalizeChapter(
+        blocks: const <NovelBlock>[
+          NovelTextBlock('第1段'),
+          NovelTextBlock(''),
+          NovelTextBlock('第 2 段&amp;尾'),
+        ],
+        contentRule: ContentRule(replaceRegex: r'##\d+##'),
+        analyzeRule: ar,
+        mediaSource: false,
+      );
+      expect(_texts(finalized),
+          <String>['　　第段', '　　', '　　第  段&尾']);
+    });
+
+    test('块级标签（div/hr/hN/article）转换行，行内空格不折叠', () {
+      final source = _source(content: <String, dynamic>{'content': '#c@html'});
+      final blocks = BookContent.analyzeContent(
+        bookSource: source,
+        book: _book('https://src.test/b'),
+        bookChapter: _chapter('https://src.test/c/1.html'),
+        baseUrl: 'https://src.test/c/1.html',
+        redirectUrl: 'https://src.test/c/1.html',
+        body: '<div id="c">甲  乙<div>丙</div><hr>'
+            '<article>丁</article><h2>戊</h2>己</div>',
+      );
+      expect(_texts(blocks).map((t) => t.trim()),
+          <String>['甲  乙', '丙', '丁', '戊', '己']);
+    });
   });
 
   group('WebBook 详情/正文网络链路', () {
@@ -348,6 +380,85 @@ void main() {
       // 下一页地址等于 nextChapterUrl 时必须停止，不能抓取下一章。
       expect(paths, isNot(contains('/c1_3.html')));
       expect(paths, containsAllInOrder(<String>['/c1.html', '/c1_2.html']));
+    });
+
+    test('音频源 subContent 存歌词变量，不并入正文', () async {
+      serverA = await _startServer(<String, String>{
+        '/a1.html': '<div id="c">音频直链</div><div id="sub">歌词段</div>',
+      });
+      serverB = await _startServer(<String, String>{});
+      final origin = _origin(serverA);
+      final source = _source(bookSourceType: 1, content: <String, dynamic>{
+        'content': '#c@text',
+        'subContent': '#sub@text',
+      });
+      final result = await WebBook().getContent(
+        source: source,
+        chapterUrl: '$origin/a1.html',
+        originalBook: _book('$origin/book.html'),
+      );
+      expect(_texts(result.blocks), <String>['音频直链']);
+      expect(result.lyric, '歌词段');
+    });
+
+    test('图片源忽略 subContent（md3 仅在线小说追加）', () async {
+      serverA = await _startServer(<String, String>{
+        '/i1.html': '<div id="c">图集说明</div><div id="sub">附加页</div>',
+      });
+      serverB = await _startServer(<String, String>{});
+      final origin = _origin(serverA);
+      final source = _source(bookSourceType: 2, content: <String, dynamic>{
+        'content': '#c@text',
+        'subContent': '#sub@text',
+      });
+      final result = await WebBook().getContent(
+        source: source,
+        chapterUrl: '$origin/i1.html',
+        originalBook: _book('$origin/book.html'),
+      );
+      expect(_texts(result.blocks), <String>['　　图集说明']);
+      expect(result.lyric, isNull);
+    });
+
+    test('并发正文分页失败令整章失败（legado mapAsync 不静默丢页）', () async {
+      final paths = <String>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((req) {
+        paths.add(req.uri.path);
+        if (req.uri.path == '/b3.html') {
+          req.response.statusCode = 500;
+          req.response.close();
+          return;
+        }
+        final body = switch (req.uri.path) {
+          '/b1.html' => '<div id="c">第一页</div>'
+              '<a class="n" href="/b2.html">N</a>'
+              '<a class="n" href="/b3.html">N</a>',
+          '/b2.html' => '<div id="c">第二页</div>',
+          _ => null,
+        };
+        req.response
+          ..statusCode = body == null ? 404 : 200
+          ..headers.contentType = ContentType.html
+          ..write(body ?? '');
+        req.response.close();
+      });
+      serverA = server;
+      serverB = await _startServer(<String, String>{});
+      final origin = _origin(server);
+      final source = _source(content: <String, dynamic>{
+        'content': '#c@html',
+        'nextContentUrl': 'a.n@href',
+      });
+      await expectLater(
+        WebBook().getContent(
+          source: source,
+          chapterUrl: '$origin/b1.html',
+          originalBook: _book('$origin/book.html'),
+        ),
+        throwsA(anything),
+      );
+      expect(paths, containsAll(<String>['/b1.html', '/b2.html', '/b3.html']));
     });
   });
 }

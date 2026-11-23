@@ -480,7 +480,7 @@ class JsEngine {
           '片段=${_brief(jsStr)}');
     }
     _seedDeterministicRandom(jsStr);
-    var result = runtime.evaluate('eval(${jsonEncode(jsStr)})');
+    var result = _evalTopLevel(jsStr);
     if (watch != null) {
       AppLog.instance.i('[书源JS] 大脚本求值完成 长度=${jsStr.length} '
           '耗时=${watch.elapsedMilliseconds}ms 错误=${result.isError}');
@@ -510,12 +510,22 @@ class JsEngine {
       }
       _fillAsymCache(fills);
       _seedDeterministicRandom(jsStr);
-      result = runtime.evaluate('eval(${jsonEncode(jsStr)})');
+      result = _evalTopLevel(jsStr);
       if (needDrain) {
         _drainJavaBridge();
       }
     }
     return result;
+  }
+
+  /// 顶层 eval：先重置 `java.ajax` 同键计数再执行脚本。
+  /// 重放轮（asym/规则/网络排空）共享同一份 ajax 缓存，同一脚本每轮按
+  /// 相同顺序拼出的第 n 个重复请求必须得到相同缓存键，才能逐轮收敛。
+  NexJsEvalResult _evalTopLevel(String jsStr) {
+    try {
+      runtime.evaluate('globalThis.__ajaxCallSeq = Object.create(null);');
+    } catch (_) {}
+    return runtime.evaluate('eval(${jsonEncode(jsStr)})');
   }
 
   /// 书源脚本的随机源在重放轮之间必须可复现。

@@ -88,6 +88,16 @@ class AnalyzeUrl {
   /// 地址是 `raw().request().url()` 的基址发现来源）。null = 跟随。
   bool? followRedirects;
 
+  /// 内部标记 `_syRawBody`：`java.post` 对齐 legado Jsoup
+  /// `RequestBody.create(null, body)` —— 原文发送，不做表单重编码、
+  /// 不自动补 Content-Type。
+  bool _syRawBody = false;
+
+  /// 跳过 HTTP 阶段缓存（settleAjax 为 java.ajax 发请求时使用）：
+  /// legado 桥是同步真实请求，同一 URL 的第二次 java.ajax 必须真的再发
+  /// 一次，不能命中阶段缓存被去重。
+  bool skipPageCache;
+
   /// URL 内 JS 的求值器（同一 AnalyzeUrl 内复用，连同其 JS 引擎）。
   /// 一个 URL 模板常有多个 `{{...}}`，旧实现每个都 new AnalyzeRule →
   /// new QuickJS 运行时且从不释放。
@@ -115,6 +125,7 @@ class AnalyzeUrl {
     this.key,
     this.speakText,
     this.speakSpeed,
+    this.skipPageCache = false,
     Map<String, String>? headerMapF,
   }) {
     _rawUrl = url;
@@ -311,6 +322,10 @@ class AnalyzeUrl {
         if (option['_syHeaderMode'] == 'replace') {
           _headerMapReplaced = true;
         }
+        // 内部标记：java.post 的请求体是「原始字节」语义（见字段注释）。
+        if (option['_syRawBody'] == true) {
+          _syRawBody = true;
+        }
 
         final js = option['js']?.toString();
         if (js != null && js.isNotEmpty) {
@@ -338,6 +353,9 @@ class AnalyzeUrl {
     final isPost = method?.toUpperCase() == 'POST';
 
     if (isPost) {
+      // java.post：原文发送，不编码、不补 Content-Type（legado Jsoup
+      // RequestBody.create(null, body)）。
+      if (_syRawBody) return;
       final b = body;
       if (b == null || b.isEmpty) return;
       if (_looksLikeStructuredBody(b)) {
@@ -921,7 +939,7 @@ class AnalyzeUrl {
     final cacheKey = activeCtx == null
         ? null
         : _pageCacheKey(jsStr, sourceRegex, requestHeaders);
-    if (activeCtx != null && cacheKey != null) {
+    if (activeCtx != null && cacheKey != null && !skipPageCache) {
       final hit = activeCtx.pageCache[cacheKey];
       if (hit != null) {
         // 重放命中：恢复该响应当初的最终地址（legado 重放=重跑，res.url 不变）。
@@ -977,9 +995,12 @@ class AnalyzeUrl {
         try {
           final m = method?.toUpperCase();
           if (m == 'POST') {
+            // `_syRawBody` 用字节载荷：Dio 的 ImplyContentTypeInterceptor 会
+            // 给 String 载荷补 application/json，legado RequestBody.create
+            // (null, body) 则是无 Content-Type 的原文发送。
             response = await dio.post<List<int>>(
               url,
-              data: this.body,
+              data: _syRawBody ? utf8.encode(this.body ?? '') : this.body,
               options: buildOptions(),
             );
           } else if (m == 'HEAD') {
@@ -1140,7 +1161,7 @@ class AnalyzeUrl {
       } catch (_) {}
     }
 
-    if (activeCtx != null && cacheKey != null) {
+    if (activeCtx != null && cacheKey != null && !skipPageCache) {
       _lastCacheKey = cacheKey;
       activeCtx.pageCachePut(cacheKey, body, finalUrl: lastFinalUrl);
     }

@@ -6,6 +6,7 @@
 /// 直接基于 XiaoshuoHttp/AnalyzeUrl + 静态分析方法实现，便于在新项目架构下复用。
 library;
 
+import '../../../core/download/download_settings.dart';
 import '../../../core/models/explore_kind.dart';
 import '../../../core/models/novel_block.dart';
 import '../../../core/novel/novel_chinese_converter.dart';
@@ -305,6 +306,7 @@ class WebBook {
     required XiaoshuoBookSource source,
     required XiaoshuoBook book,
     void Function(List<XiaoshuoBookChapter>)? onBatch,
+    bool runPerJs = false,
   }) async {
     // 变量贯通：注入搜索/发现阶段暂存的本书变量（书可能来自详情缓存或
     // 上层裸建，统一按 bookUrl 兜底补齐，供 @get/java.get 求值）。
@@ -313,12 +315,12 @@ class WebBook {
       stagedVars.forEach((k, v) => book.variableMap.putIfAbsent(k, () => v));
     }
     final tocRule = source.getTocRule();
-    // legado WebBook.runPreUpdateJs：**更新目录前**执行 preUpdateJs（可刷新
-    // cookie / 通过 java.put 写入变量 / 修改 book.tocUrl），随后目录抓取与
-    // 规则求值才能读到这些准备工作。旧实现把它放在目录解析之后当列表后处理，
-    // 依赖它准备变量的源目录恒为空。失败不阻断目录流程。
+    // legado WebBook.getChapterListAwait(runPerJs=false)：目录抓取本身不执行
+    // preUpdateJs，由调用方决定先跑一次（TocViewModel/ReadBookLoadDelegate
+    // 传 true；RefreshTocUseCase 先自跑再传 false）。NexHub 的目录入口
+    // （resolver/阅读器刷新）等价于前者，传 runPerJs=true。
     final preUpdateJs = tocRule.preUpdateJs;
-    if (preUpdateJs != null && preUpdateJs.isNotEmpty) {
+    if (runPerJs && preUpdateJs != null && preUpdateJs.isNotEmpty) {
       final ctx = ShuyuanSourceContext.current;
       ctx?.bookInfoRefreshRequested = false;
       try {
@@ -507,7 +509,7 @@ class WebBook {
       }
       final pageResults = await mapOrderedPool<List<XiaoshuoBookChapter>>(
         urls,
-        4,
+        await _downloadThreadCount(),
         (url) async {
           final pageAnalyze = AnalyzeUrl(
             url: url,
@@ -528,6 +530,8 @@ class WebBook {
             applyReverse: false,
           );
         },
+        // legado mapAsync：任一分页失败令整个目录失败，不静默丢页。
+        propagateErrors: true,
       );
       for (final pages in pageResults) {
         if (pages != null) appendBatch(pages);
@@ -684,11 +688,13 @@ class WebBook {
         nextChapterUrl: nextChapterUrl,
       );
       if (batchUrls.length > 1) {
+        // legado BookContent 并发正文：threadCount.coerceIn(1, 4)。
+        final contentThreads = (await _downloadThreadCount()).clamp(1, 4);
         // 并发 worker 内「取回即解析」，让同步 HTML 解析与同批其他页的
         // 网络请求重叠，缩短整章就绪的墙钟时间。
         final pages = await mapOrderedPool<List<NovelBlock>>(
           batchUrls,
-          4,
+          contentThreads,
           (url) async {
             final analyze = AnalyzeUrl(
               url: url,
@@ -713,6 +719,8 @@ class WebBook {
               deferChapterPostProcess: true,
             );
           },
+          // legado mapAsync：任一分页失败令整章失败，不静默丢页。
+          propagateErrors: true,
         );
         for (final pageContent in pages) {
           if (pageContent == null) continue;
@@ -779,6 +787,7 @@ class WebBook {
 
     // legado BookContent 外层：全部页拼接后执行 subContent（附加正文/音频
     // 歌词）与 title 规则（一次）。subContent 以首页响应为求值内容。
+    // legado 无 try/catch：subContent 规则异常直接令整章失败。
     final postRule = AnalyzeRule(book: book, chapter: chapter)
       ..setContent(firstBody, chapterUrl)
       ..setBaseUrl(chapterUrl)
@@ -786,30 +795,33 @@ class WebBook {
       ..setNextChapterUrl(nextChapterUrl);
     final subRule = contentRule.subContent;
     if (subRule != null && subRule.isNotEmpty) {
-      try {
-        var subContent = postRule.getString(subRule, unescape: false).trim();
-        if (subContent.toLowerCase().startsWith('http')) {
-          final subAnalyze = AnalyzeUrl(
-            url: subContent,
-            baseUrl: firstBaseUrl,
-            source: source,
-            ruleData: book,
-            chapter: chapter,
-          );
-          subContent = await subAnalyze.getStrResponse();
-        }
-        if (subContent.isNotEmpty) {
-          if (mediaSource) {
-            chapter.putVariable('lyric', subContent);
-          } else {
+      var subContent = postRule.getString(subRule, unescape: false).trim();
+      if (subContent.toLowerCase().startsWith('http')) {
+        final subAnalyze = AnalyzeUrl(
+          url: subContent,
+          baseUrl: firstBaseUrl,
+          source: source,
+          ruleData: book,
+          chapter: chapter,
+        );
+        subContent = await subAnalyze.getStrResponse();
+      }
+      if (subContent.isNotEmpty) {
+        // legado BookContent：isOnLineTxt(0) 追加正文；isAudio(1) 存歌词
+        // 变量；图片(2)/文件(3)/视频(4) 源忽略 subContent。
+        switch (source.bookSourceType) {
+          case 0:
             blocks.addAll(BookContent.extractAppendedBlocks(
               content: subContent,
               baseUrl: chapterUrl,
               redirectUrl: firstBaseUrl,
             ));
-          }
+          case 1:
+            chapter.putVariable('lyric', subContent);
+          default:
+            break;
         }
-      } catch (_) {}
+      }
     }
     final appliedTitle =
         BookContent.applyChapterTitle(postRule, contentRule, chapter);
@@ -901,24 +913,27 @@ class WebBook {
   }
 
   /// 有界并发池：对 [urls] 并发执行 [task]，结果**按输入顺序**返回；
-  /// 单项抛错对应位为 null，不影响其他项。[limit] 为最大并发数。
+  /// 单项抛错对应位为 null，不影响其他项（[propagateErrors] 为 true 时
+  /// 改为对齐 legado mapAsync：按输入顺序重抛首个异常）。[limit] 为最大并发数。
   ///
   /// 静态纯调度逻辑（网络经 [task] 注入），便于单测保序性与并发上限。
   static Future<List<T?>> mapOrderedPool<T>(
     List<String> urls,
     int limit,
-    Future<T> Function(String url) task,
-  ) async {
+    Future<T> Function(String url) task, {
+    bool propagateErrors = false,
+  }) async {
     final results = List<T?>.filled(urls.length, null);
     if (urls.isEmpty) return results;
+    final errors = List<Object?>.filled(urls.length, null);
     var cursor = 0;
     Future<void> worker() async {
       while (cursor < urls.length) {
         final i = cursor++;
         try {
           results[i] = await task(urls[i]);
-        } on Object {
-          results[i] = null;
+        } on Object catch (e) {
+          errors[i] = e;
         }
       }
     }
@@ -928,7 +943,23 @@ class WebBook {
     await Future.wait(
       <Future<void>>[for (var w = 0; w < workerCount; w++) worker()],
     );
+    if (propagateErrors) {
+      for (final e in errors) {
+        if (e != null) throw e;
+      }
+    }
     return results;
+  }
+
+  /// 并发分页线程数（legado DownloadCacheSettings.threadCount）。
+  /// 设置读取失败（未初始化存储）时回退默认值。
+  Future<int> _downloadThreadCount() async {
+    try {
+      final settings = await DownloadSettingsStore().load();
+      return settings.threadCount;
+    } on Object {
+      return const DownloadSettings().threadCount;
+    }
   }
 
 

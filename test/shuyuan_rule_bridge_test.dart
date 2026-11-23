@@ -40,12 +40,63 @@ void main() {
       expect(r.getString("@js:java.getStringList('.i a@text')[1]"), '乙');
     });
 
+    test('getStringList 返回带 Java List 方法的列表（legado List<String>）', () {
+      final r = rule();
+      expect(
+          r.getString("@js:var l=java.getStringList('.i a@text'); "
+              "l.size()+'|'+l.get(1)+'|'+l.isEmpty()+'|'+l.toArray().length"),
+          '2|乙|false|2');
+    });
+
     test('规则未命中时返回空列表 / null，不抛错', () {
       final r = rule();
       expect(r.getString("@js:java.getElements('.nope').size()"), '0');
       // eval 会把字符串 "null" 归一化成空串，故用布尔判断而非 String(null)。
       expect(r.getString("@js:java.getElement('.nope') === null ? 'YES' : 'NO'"),
           'YES');
+    });
+  });
+
+  group('元素包装的 jsoup 接口（outerHtml/select/children/abs:）', () {
+    test('outerHtml 返回外层 HTML（legado Element.outerHtml）', () {
+      final r = rule();
+      expect(r.getString("@js:java.getElement('.i a').outerHtml()"),
+          '<a href="/a">甲</a>');
+    });
+
+    test('select 含根自身，结果元素保留 abs: 绝对化', () {
+      final r = rule();
+      expect(r.getString("@js:java.getElement('.i').select('.i').size()"), '1');
+      expect(
+          r.getString("@js:java.getElement('.i').select('a').get(1).text()"),
+          '乙');
+      expect(r.getString("@js:java.getElement('.i a').attr('abs:href')"),
+          'https://x.test/a');
+      // 单元素 select 自身（jsoup Element.select 包含根匹配）。
+      expect(r.getString("@js:java.getElement('.i a').select('a').size()"), '1');
+    });
+
+    test('children 返回直接子元素并可用 abs: 属性', () {
+      final r = rule();
+      expect(r.getString("@js:java.getElement('.i').children().size()"), '2');
+      expect(
+          r.getString("@js:java.getElement('.i').children().first().text()"),
+          '甲');
+      expect(
+          r.getString(
+              "@js:java.getElement('.i').children().get(1).attr('abs:href')"),
+          'https://x.test/b');
+    });
+
+    test('相对路径按元素所在页面目录绝对化', () {
+      final r = AnalyzeRule()
+        ..setContent('<div class="i"><img src="imgs/x.png"></div>')
+        ..setBaseUrl('https://x.test/dir/page.html');
+      expect(r.getString("@js:java.getElement('.i img').attr('abs:src')"),
+          'https://x.test/dir/imgs/x.png');
+      expect(
+          r.getString("@js:java.getElement('.i img').attr('src')"),
+          'imgs/x.png');
     });
   });
 

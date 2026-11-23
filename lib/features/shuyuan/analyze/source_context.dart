@@ -869,13 +869,14 @@ class ShuyuanSourceContext {
         });
         continue;
       }
-      var url = key;
+      var url = _stripAjaxDupSuffix(key);
+      final isDup = url != key;
       String? postBody;
       const marker = '||POST||';
-      final markerIdx = key.indexOf(marker);
+      final markerIdx = url.indexOf(marker);
       if (markerIdx >= 0) {
-        url = key.substring(0, markerIdx);
-        postBody = key.substring(markerIdx + marker.length);
+        postBody = url.substring(markerIdx + marker.length);
+        url = url.substring(0, markerIdx);
       }
       try {
         var requestUrl = url;
@@ -900,6 +901,10 @@ class ShuyuanSourceContext {
           url: requestUrl,
           baseUrl: source.bookSourceUrl,
           source: source,
+          // 只有同脚本重复调用（DUP 键）才绕过阶段缓存：legado 每次
+          // java.ajax 都是真实请求，不能让第二次命中第一次的页面缓存。
+          // 首次调用仍复用既有页面缓存（重放架构的跨轮去重）。
+          skipPageCache: isDup,
         );
         final resp = await analyzeUrl
             .getStrResponse()
@@ -932,6 +937,11 @@ class ShuyuanSourceContext {
     fetched += _settleFileOps(ctx);
     return fetched;
   }
+
+  /// `java.__ajaxReq` 的重复调用拆键尾缀 `||DUP||n`（n≥1）：真实请求键是
+  /// 去掉尾缀的原始键；缓存仍按带尾缀的完整键存，脚本重放时逐键命中。
+  static String _stripAjaxDupSuffix(String key) =>
+      key.replaceFirst(RegExp(r'\|\|DUP\|\|\d+$'), '');
 
   /// legado `java.ajax` 失败口径：catch 后返回 `e.stackTraceStr`（异常类名 +
   /// 消息 + 栈帧），源常以 `startsWith("java")` 判定失败；失败缓存写空串会

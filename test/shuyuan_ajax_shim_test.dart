@@ -3,10 +3,12 @@
 library;
 
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexhub/features/shuyuan/analyze/js_engine.dart';
 import 'package:nexhub/features/shuyuan/analyze/source_context.dart';
+import 'package:nexhub/features/shuyuan/model/book_source.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -58,6 +60,73 @@ void main() {
     });
   });
 
+  test('响应 .body 同时支持属性与函数（legado StrResponse.body）', () {
+    final ctx = ShuyuanSourceContext('src_1')
+      ..ajaxCache['https://x.com/b'] = 'BODY';
+    ShuyuanSourceContext.run(ctx, () {
+      final e = JsEngine();
+      expect(
+          e.eval("r=java.connect('https://x.com/b'); "
+              "r.body + '|' + r.body() + '|' + r.body.length"),
+          'BODY|BODY|4');
+    });
+  });
+
+  test('同脚本重复 java.ajax：按次拆键，重放轮计数复位并可逐键命中', () {
+    final ctx = ShuyuanSourceContext('src_1');
+    ShuyuanSourceContext.run(ctx, () {
+      final e = JsEngine();
+      const script = "java.ajax('https://x.com/dup') + '|' + "
+          "java.ajax('https://x.com/dup')";
+      final first = e.eval(script);
+      expect(first.contains('__AJAX_'), isTrue, reason: first);
+      expect(ctx.ajaxPending,
+          ['https://x.com/dup', 'https://x.com/dup||DUP||2']);
+      // 重放同一脚本：内层 ajax 序号从 1 重新开始，仍生成同一组键。
+      e.eval(script);
+      expect(ctx.ajaxPending,
+          ['https://x.com/dup', 'https://x.com/dup||DUP||2']);
+      ctx.ajaxCache['https://x.com/dup'] = 'A';
+      ctx.ajaxCache['https://x.com/dup||DUP||2'] = 'B';
+      expect(e.eval(script), 'A|B');
+    });
+  });
+
+  test('settleAjax 对 DUP 键各发一次真实请求（绕过阶段缓存）', () async {
+    final hits = <String>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((req) {
+      hits.add(req.uri.path);
+      req.response
+        ..statusCode = 200
+        ..headers.contentType = ContentType.html
+        ..write('R${hits.length}');
+      req.response.close();
+    });
+    final origin = 'http://${server.address.host}:${server.port}';
+    final source = XiaoshuoBookSource.fromJson(<String, dynamic>{
+      'bookSourceUrl': origin,
+      'bookSourceName': 'dup-settle',
+    });
+    final ctx = ShuyuanSourceContext('dup-settle')..bindSource(source);
+    try {
+      await ShuyuanSourceContext.run(ctx, () async {
+        final e = JsEngine();
+        final script = "java.ajax('$origin/dup') + '|' + "
+            "java.ajax('$origin/dup')";
+        e.eval(script);
+        expect(ctx.ajaxPending, ['$origin/dup', '$origin/dup||DUP||2']);
+        expect(await ShuyuanSourceContext.settleAjax(ctx, source), 2);
+        expect(hits, ['/dup', '/dup']);
+        expect(ctx.ajaxCache['$origin/dup'], 'R1');
+        expect(ctx.ajaxCache['$origin/dup||DUP||2'], 'R2');
+        expect(e.eval(script), 'R1|R2');
+      });
+    } finally {
+      await server.close(force: true);
+    }
+  });
+
   test('loginCheck 协议：result 种子可改写（code==500 判未登录）', () {
     final e = JsEngine();
     const status = 200;
@@ -86,16 +155,19 @@ void main() {
       final e = JsEngine();
       e.eval("java.post('https://x.com/p','a=1&b=2')");
       // java.post 走 legado Jsoup 口径：不跟随重定向（302 Location 是脚本
-      // 要的答案），选项串在 POST 标记之前，且请求头按 headerMapF 替换。
+      // 要的答案），选项串在 POST 标记之前，且请求头按 headerMapF 替换；
+      // `_syRawBody` 表示 body 原文发送（不重编码、不补 Content-Type）。
       expect(ctx.ajaxPending, [
         'https://x.com/p,'
-            '{"followRedirects":false,"_syHeaderMode":"replace"}'
+            '{"followRedirects":false,"_syHeaderMode":"replace",'
+            '"_syRawBody":true}'
             '||POST||a=1&b=2'
       ]);
       e.eval("java.post('https://x.com/p2','',{})");
       expect(ctx.ajaxPending.last,
           'https://x.com/p2,'
-          '{"followRedirects":false,"_syHeaderMode":"replace"}||POST||');
+          '{"followRedirects":false,"_syHeaderMode":"replace",'
+          '"_syRawBody":true}||POST||');
     });
   });
 

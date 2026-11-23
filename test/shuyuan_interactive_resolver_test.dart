@@ -9,6 +9,7 @@ import 'package:nexhub/core/models/novel_block.dart';
 import 'package:nexhub/core/models/plugin_config.dart';
 import 'package:nexhub/features/shuyuan/analyze/js_engine.dart';
 import 'package:nexhub/features/shuyuan/analyze/source_context.dart';
+import 'package:nexhub/features/shuyuan/model/xiaoshuo_book_chapter.dart';
 import 'package:nexhub/features/shuyuan/presentation/shuyuan_browser_screen.dart';
 import 'package:nexhub/features/shuyuan/presentation/shuyuan_interactive.dart';
 import 'package:nexhub/features/shuyuan/presentation/shuyuan_login_dialog.dart';
@@ -134,5 +135,39 @@ void main() {
 
     final loaded = await ShuyuanSourceContext.forSource(config.id);
     expect(loaded.cookies['sid']?['value'], '1');
+  });
+
+  group('nextChapterUrl 相邻章兜底（legado getChapter(i+1) ?: getChapter(0)）', () {
+    XiaoshuoBookChapter ch(int index, String url) => XiaoshuoBookChapter(
+          bookUrl: 'https://x.test/b',
+          url: url,
+          title: '第$index章',
+          index: index,
+        );
+
+    test('非末章取下一章', () {
+      final list = [ch(0, 'u0'), ch(1, 'u1'), ch(2, 'u2')];
+      expect(ShuyuanNovelResolver.nextChapterUrlFallback(list, 0), 'u1');
+      expect(ShuyuanNovelResolver.nextChapterUrlFallback(list, 1), 'u2');
+    });
+
+    test('末章回落首章（成环）', () {
+      final list = [ch(0, 'u0'), ch(1, 'u1'), ch(2, 'u2')];
+      expect(ShuyuanNovelResolver.nextChapterUrlFallback(list, 2), 'u0');
+    });
+
+    test('空目录 / 空 URL 返回空串', () {
+      expect(ShuyuanNovelResolver.nextChapterUrlFallback(const [], 0), '');
+      expect(
+          ShuyuanNovelResolver.nextChapterUrlFallback(
+              [ch(0, ''), ch(1, '')], 0),
+          '');
+    });
+
+    test('跳过 URL 为空的相邻章（兜底首章）', () {
+      final list = [ch(0, 'u0'), ch(1, ''), ch(2, 'u2')];
+      expect(ShuyuanNovelResolver.nextChapterUrlFallback(list, 1), 'u2');
+      expect(ShuyuanNovelResolver.nextChapterUrlFallback(list, 0), 'u0');
+    });
   });
 }

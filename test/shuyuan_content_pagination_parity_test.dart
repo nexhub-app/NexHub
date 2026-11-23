@@ -2,7 +2,8 @@
 /// - 不按「同章 URL 形态」过滤，纯靠已访问集合 + nextChapterUrl 停止；
 /// - 串行模式空页照常拼接并继续提取下页；
 /// - 无页数上限；
-/// - 并发模式不做连续前缀截断（中间页失败不影响后续页）。
+/// - 并发模式任一页失败令整章失败（md3 mapAsync 会传播），但不做连续
+///   前缀截断：已发现的后续页仍会被并发请求。
 library;
 
 import 'dart:io';
@@ -104,17 +105,30 @@ void main() {
     expect(_texts(blocks).last, '　　第31页');
   });
 
-  test('并发模式中间页失败不截断后续页', () async {
-    server = await _serve(<String, String>{
-      '/c1.html': '<div id="c">第一页</div>'
-          '<a class="next" href="/c2.html"><a class="next" href="/c3.html">'
-          '<a class="next" href="/c4.html">',
-      // /c2.html 未注册 → 404（页面为空）
-      '/c3.html': '<div id="c">第三页</div>',
-      '/c4.html': '<div id="c">第四页</div>',
+  test('并发模式中间页失败令整章失败，但后续页仍被并发拉取（不截断）', () async {
+    final requested = <String>[];
+    server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((req) {
+      requested.add(req.uri.path);
+      final routes = <String, String>{
+        '/c1.html': '<div id="c">第一页</div>'
+            '<a class="next" href="/c2.html"><a class="next" href="/c3.html">'
+            '<a class="next" href="/c4.html">',
+        '/c3.html': '<div id="c">第三页</div>',
+        '/c4.html': '<div id="c">第四页</div>',
+      };
+      final body = routes[req.uri.path];
+      req.response
+        ..statusCode = body == null ? 404 : 200
+        ..headers.contentType = ContentType.html
+        ..write(body ?? '');
+      req.response.close();
     });
     final origin = 'http://${server.address.address}:${server.port}';
-    final blocks = await fetch('$origin/c1.html');
-    expect(_texts(blocks), <String>['　　第一页', '　　第三页', '　　第四页']);
+    // md3 BookContent 并发分支用 mapAsync 展开，任一页异常（404/空 body!!）
+    // 直接令整章失败，不会静默跳过；同时页列表先整体展开，后续页不做前缀截断。
+    await expectLater(fetch('$origin/c1.html'), throwsA(anything));
+    expect(requested,
+        containsAll(<String>['/c2.html', '/c3.html', '/c4.html']));
   });
 }
