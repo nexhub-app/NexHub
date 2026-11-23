@@ -1,6 +1,8 @@
 /// 章节目录解析：依据书源 `ruleToc` 解析章节列表（标题、URL、卷/VIP/付费标记）。
 library;
 
+import 'dart:convert';
+
 import '../../../core/utils/app_log.dart';
 import '../analyze/js_engine.dart';
 import '../analyze/analyze_rule.dart';
@@ -307,6 +309,9 @@ class BookChapterList {
         'isVip': ch.isVip,
         'isPay': ch.isPay,
         'bookUrl': ch.bookUrl,
+        'wordCount': ch.wordCount,
+        'reviewImg': ch.reviewImg,
+        'variable': ch.variable,
         'variableMap': Map<String, String>.from(ch.variableMap),
       };
       bindings['chapter'] = snapshot;
@@ -367,6 +372,38 @@ class BookChapterList {
           ? raw.toInt()
           : (raw is String ? int.tryParse(raw.trim()) : null);
       if (parsed != null) ch.index = parsed;
+    }
+    void applyText(String key, void Function(String? value) setter) {
+      if (!changed(key)) return;
+      final raw = mutated[key];
+      if (raw == null) {
+        setter(null);
+      } else if (raw is String) {
+        setter(raw);
+      }
+    }
+
+    applyText('wordCount', (v) => ch.wordCount = v);
+    applyText('reviewImg', (v) => ch.reviewImg = v);
+    if (changed('variable')) {
+      final raw = mutated['variable'];
+      ch.variable = raw is String ? raw : null;
+      // legado 的 variableMap 惰性取自 variable：直改 JSON 后正文阶段
+      // @get 应读到新值；非 JSON 内容只保留原文，不破坏已解析变量表。
+      final variable = ch.variable;
+      if (variable != null && variable.trim().isNotEmpty) {
+        try {
+          final decoded = jsonDecode(variable);
+          if (decoded is Map) {
+            ch.variableMap
+              ..clear()
+              ..addAll(<String, String>{
+                for (final e in decoded.entries)
+                  e.key.toString(): e.value?.toString() ?? '',
+              });
+          }
+        } catch (_) {}
+      }
     }
     void applyFlag(String key, void Function(bool value) setter) {
       if (!changed(key)) return;

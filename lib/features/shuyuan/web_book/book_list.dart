@@ -19,6 +19,10 @@ import '../model/search_book.dart';
 import '../model/xiaoshuo_book.dart';
 import 'book_info.dart';
 
+/// legado `BookList.analyzeBookList(filter=…)`：返回 false 丢弃该条目，
+/// 且不再对该条目求值字数/最新章节/简介/封面/详情链接等后续规则。
+typedef BookListFilter = bool Function(String name, String author, String? kind);
+
 class BookList {
   static List<SearchBook> analyzeBookList({
     required XiaoshuoBookSource bookSource,
@@ -27,6 +31,8 @@ class BookList {
     required bool isSearch,
     String? searchKey,
     Map<String, String>? ruleData,
+    BookListFilter? filter,
+    bool Function(int size)? shouldBreak,
   }) {
     // 登录墙拦截：部分书源（如八一中文 81txt）的搜索接口被服务端「登录/验证码」
     // 拦截，返回的其实是登录页而非结果。若不拦截，下方的通用兜底解析会把登录页
@@ -121,7 +127,8 @@ class BookList {
         if (pattern != null && pattern.isNotEmpty) {
           try {
             if (_fullMatch(pattern, baseUrl)) {
-              final detail = _detailPageAsSearchBook(bookSource, body, baseUrl);
+              final detail =
+                  _detailPageAsSearchBook(bookSource, body, baseUrl, filter);
               if (detail == null) return const <SearchBook>[];
               // legado BookList：整页即书 → 响应体存入 infoHtml，
               // 详情阶段免抓取复用。
@@ -138,7 +145,7 @@ class BookList {
         // legado：列表为空且未声明 bookUrlPattern → 整页按详情解析
         //（getInfoItem 以 name 非空为产出前提，解析不出书名则无结果）。
         if ((bookSource.bookUrlPattern ?? '').isEmpty) {
-          final detail = _detailPageAsSearchBook(bookSource, body, baseUrl);
+          final detail = _detailPageAsSearchBook(bookSource, body, baseUrl, filter);
           if (detail == null) return const <SearchBook>[];
           detail.infoHtml = body;
           return [detail];
@@ -169,6 +176,7 @@ class BookList {
           ruleLastChapter,
           ruleIntro,
           ruleWordCount,
+          filter,
         );
         if (book != null && book.name.isNotEmpty) {
           // legado BookList：列表基址就是这本书的地址时，整页响应即详情
@@ -185,6 +193,9 @@ class BookList {
                 element;
           }
         }
+        // legado BookList：每处理一条（含被 filter 拒绝的）后按已收条数
+        // 检查是否提前结束，避免继续对后续条目求值规则。
+        if (shouldBreak != null && shouldBreak(books.length)) break;
       }
 
       // legado：全部条目书名为空时直接返回空列表，不回退到链接猜测。
@@ -212,6 +223,7 @@ class BookList {
     List<dynamic> ruleLastChapter,
     List<dynamic> ruleIntro,
     List<dynamic> ruleWordCount,
+    BookListFilter? filter,
   ) {
     // legado getSearchItem：先 setRuleData(searchBook) 再逐字段求值，规则里
     // 的 `{{$.field}}`/`{{book.field}}` 读到的是**当前条目**已解析字段
@@ -253,6 +265,13 @@ class BookList {
           itemBook.kind = kind;
         }
       } catch (_) {}
+
+      // legado BookList.getSearchItem：filter 在 kind 之后、字数/最新章节/
+      // 简介/封面/详情链接之前调用；返回 false 丢弃条目并跳过后续求值。
+      if (filter != null &&
+          !filter(name, author, kind.isEmpty ? null : kind)) {
+        return null;
+      }
 
       // 与 legado getSearchItem 求值顺序一致：
       // name → author → kind → wordCount → lastChapter → intro → cover → url。
@@ -407,6 +426,7 @@ class BookList {
     XiaoshuoBookSource bookSource,
     String body,
     String baseUrl,
+    BookListFilter? filter,
   ) {
     final book = XiaoshuoBook(bookUrl: baseUrl, name: '');
     BookInfo.analyzeBookInfo(
@@ -416,6 +436,10 @@ class BookList {
       redirectUrl: baseUrl,
       body: body,
     );
+    // legado BookList.getInfoItem：filter 在详情解析后、书名非空判断前调用。
+    if (filter != null && !filter(book.name, book.author, book.kind)) {
+      return null;
+    }
     if (book.name.isEmpty) return null;
     return SearchBook(
       bookUrl: book.bookUrl.isNotEmpty ? book.bookUrl : baseUrl,

@@ -36,6 +36,8 @@ class WebBook {
     required XiaoshuoBookSource source,
     required String key,
     int page = 1,
+    BookListFilter? filter,
+    bool Function(int size)? shouldBreak,
   }) async {
     final searchUrl = source.searchUrl;
     if (searchUrl == null || searchUrl.isEmpty) {
@@ -49,11 +51,13 @@ class WebBook {
     }.where((k) => k != key && k.isNotEmpty).toList();
 
     final merged = <SearchBook>[
-      ...await _searchOnce(source, searchUrl, key, page),
+      ...await _searchOnce(source, searchUrl, key, page,
+          filter: filter, shouldBreak: shouldBreak),
     ];
     for (final k in variants) {
       try {
-        merged.addAll(await _searchOnce(source, searchUrl, k, page));
+        merged.addAll(await _searchOnce(source, searchUrl, k, page,
+            filter: filter, shouldBreak: shouldBreak));
       } on Object {
         // 单个变体失败不影响主结果。
       }
@@ -75,8 +79,10 @@ class WebBook {
     XiaoshuoBookSource source,
     String searchUrl,
     String key,
-    int page,
-  ) async {
+    int page, {
+    BookListFilter? filter,
+    bool Function(int size)? shouldBreak,
+  }) async {
     final analyzeUrl = AnalyzeUrl(
       url: searchUrl,
       baseUrl: source.bookSourceUrl,
@@ -97,6 +103,8 @@ class WebBook {
       body: body,
       isSearch: true,
       searchKey: key,
+      filter: filter,
+      shouldBreak: shouldBreak,
     );
   }
 
@@ -220,22 +228,54 @@ class WebBook {
       isSearch: false,
     );
 
-    return searchBooks
-        .map((sb) => XiaoshuoBook(
-              bookUrl: sb.bookUrl,
-              name: sb.name,
-              author: sb.author,
-              coverUrl: sb.coverUrl,
-              intro: sb.intro,
-              kind: sb.kind,
-              lastChapter: sb.lastChapter,
-              tocUrl: sb.tocUrl,
-              wordCount: sb.wordCount,
-              bookInfoHtml: sb.infoHtml,
-              type: sb.type,
-            ))
-        .toList();
+    return searchBooks.map(_fromSearchBook).toList();
   }
+
+  /// 抓取任意发现页 URL，返回「最终响应地址 + 书籍列表」。
+  ///
+  /// 对齐 legado `WebBook.exploreBookWithResolvedUrl`：isSearch=false，
+  /// 列表规则按最终响应地址解析；[ruleData] 只参与 URL/登录脚本求值
+  ///（legado 在列表解析阶段对 Book 规则数据换用空 RuleData，不泄漏进
+  /// `{{book.*}}` 列表模板）。
+  Future<(String, List<XiaoshuoBook>)> exploreBookWithResolvedUrl({
+    required XiaoshuoBookSource source,
+    required String url,
+    int page = 1,
+    XiaoshuoBook? ruleData,
+  }) async {
+    final analyzeUrl = AnalyzeUrl(
+      url: url,
+      baseUrl: source.bookSourceUrl,
+      source: source,
+      page: page,
+      ruleData: ruleData,
+    );
+    var body = await analyzeUrl.getStrResponse();
+    body = await analyzeUrl.applyLoginCheck(body);
+    final resolvedUrl = analyzeUrl.lastFinalUrl ?? analyzeUrl.url;
+    if (body.isEmpty) return (resolvedUrl, <XiaoshuoBook>[]);
+    final searchBooks = BookList.analyzeBookList(
+      bookSource: source,
+      baseUrl: resolvedUrl,
+      body: body,
+      isSearch: false,
+    );
+    return (resolvedUrl, searchBooks.map(_fromSearchBook).toList());
+  }
+
+  static XiaoshuoBook _fromSearchBook(SearchBook sb) => XiaoshuoBook(
+        bookUrl: sb.bookUrl,
+        name: sb.name,
+        author: sb.author,
+        coverUrl: sb.coverUrl,
+        intro: sb.intro,
+        kind: sb.kind,
+        lastChapter: sb.lastChapter,
+        tocUrl: sb.tocUrl,
+        wordCount: sb.wordCount,
+        bookInfoHtml: sb.infoHtml,
+        type: sb.type,
+      );
 
   /// 获取书籍详情：抓取 `bookUrl` 并通过 `ruleBookInfo` 解析。
   ///
@@ -608,6 +648,18 @@ class WebBook {
       return BookContentResult(
         content: chapterUrl,
         blocks: <NovelBlock>[NovelTextBlock(chapterUrl)],
+      );
+    }
+
+    // legado WebBook.getContentAwait：一级目录（卷章，URL 为标题占位）在
+    // 抓取前短路，直接返回卷说明（tag），不执行正文规则、不发请求。
+    // BookContent.analyzeContent 内保留同样守卫作兜底。
+    if (chapter.isVolume && chapter.url.startsWith(chapter.title)) {
+      final tag = chapter.tag ?? '';
+      return BookContentResult(
+        content: tag,
+        blocks:
+            tag.isEmpty ? const <NovelBlock>[] : <NovelBlock>[NovelTextBlock(tag)],
       );
     }
 

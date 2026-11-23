@@ -28,6 +28,12 @@ class ShuyuanAdapter {
     }
     if (source.ruleBookInfo != null) {
       routes['detail'] = const RouteConfig(url: '', method: 'GET');
+      // 关联书籍模块（legado RelatedBooks）：详情页「猜你喜欢」区经
+      // related 路由加载；未声明模块的源不暴露该路由。
+      final relatedBooks = source.ruleBookInfo!['relatedBooks']?.toString();
+      if (relatedBooks != null && relatedBooks.trim().isNotEmpty) {
+        routes['related'] = const RouteConfig(url: '', method: 'GET');
+      }
     }
     if (source.ruleToc != null) {
       routes['toc'] = const RouteConfig(url: '', method: 'GET');

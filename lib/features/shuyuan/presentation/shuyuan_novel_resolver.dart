@@ -54,6 +54,7 @@ import '../analyze/web_file_naming.dart';
 import '../shuyuan_adapter.dart';
 import '../shuyuan_explore_info_store.dart';
 import '../shuyuan_explore_kinds_store.dart';
+import '../web_book/related_books.dart';
 import '../web_book/web_book.dart';
 import 'shuyuan_interactive.dart';
 
@@ -373,6 +374,8 @@ class ShuyuanNovelResolver
         return await _handleLatest(source, bookSource, vars);
       case 'detail':
         return await _handleDetail(source, bookSource, vars);
+      case 'related':
+        return await _handleRelated(source, bookSource, vars);
       case 'toc':
       case 'chapters':
       case 'episodes':
@@ -1240,6 +1243,28 @@ class ShuyuanNovelResolver
     );
     _rememberBookInfo(book);
     return _xiaoshuoBookToMediaItem(book, source);
+  }
+
+  /// 关联书籍（legado RelatedBooks）：按 `ruleBookInfo.relatedBooks` 声明的
+  /// 模块并行探索并过滤当前书。详情页「猜你喜欢」只有单列表形态，此处
+  /// 扁平化返回；模块 key/title 的展示形态待 UI 扩展。
+  Future<List<MediaItem>> _handleRelated(
+    PluginConfig source,
+    XiaoshuoBookSource bookSource,
+    Map<String, String> vars,
+  ) async {
+    final id = vars['id'] ?? vars['detailUrl'] ?? '';
+    if (id.isEmpty) {
+      throw ArgumentError('related requires vars["id"]');
+    }
+    final book = _bookInfoCache[id] ??
+        _seedFor(id) ??
+        XiaoshuoBook(bookUrl: id, name: '');
+    final modules = await RelatedBooks.load(book: book, source: bookSource);
+    return <MediaItem>[
+      for (final module in modules)
+        ..._mapAndSeedBooks(module.books, source),
+    ];
   }
 
   // ── 章节列表 ──
