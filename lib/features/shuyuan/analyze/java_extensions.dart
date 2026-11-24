@@ -413,6 +413,21 @@ const String sourceContextJsPrelude = r'''
     return sv == null ? '' : String(sv);
   }
 
+  // legado CacheManager.getInt/getLong：String.toIntOrNull 口径（非整数值
+  // 返回 null，而不是 0/截断）。
+  function __cacheToInt(v) {
+    if (v == null) return null;
+    var s = String(v).trim();
+    return /^-?\d+$/.test(s) ? parseInt(s, 10) : null;
+  }
+  // getDouble/getFloat：toDoubleOrNull 口径。
+  function __cacheToDouble(v) {
+    if (v == null) return null;
+    var s = String(v).trim();
+    if (s === '') return null;
+    var n = Number(s);
+    return isNaN(n) ? null : n;
+  }
   var cache = {
     put: function (k, v, saveTime) {
       var s = String(v == null ? '' : v);
@@ -430,6 +445,14 @@ const String sourceContextJsPrelude = r'''
       // 返回空串会让 JSON.parse('') 抛 SyntaxError 中断整个发现页脚本。
       return v == null ? null : v;
     },
+    // legado CacheManager 数值/内存族（内存层与磁盘层同源：本实现 put 后
+    // 两处都写，数值 getter 直接按字符串解析，缺失/非数值返回 null）。
+    getFromMemory: function (k) { return cache.getMemory(k); },
+    getInt: function (k) { return __cacheToInt(cache.get(k)); },
+    getLong: function (k) { return __cacheToInt(cache.get(k)); },
+    getDouble: function (k) { return __cacheToDouble(cache.get(k)); },
+    getFloat: function (k) { return __cacheToDouble(cache.get(k)); },
+    getByteArray: function (k) { return null; },
     delete: function (k) {
       delete syCtx().cache[String(k)];
       syOp('cacheDel', k, '');

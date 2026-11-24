@@ -45,6 +45,14 @@ class JsNullableOutcome {
       JsNullableOutcome(failed: true, error: error);
 }
 
+/// 绑定注入用的原始 JS 表达式：宿主直接把 `var x = <expr>;` 写入沙箱，
+/// 不做字符串化（jsoup 元素包装等对象绑定依赖它，见 AnalyzeRule._evalJs）。
+class RawJs {
+  final String expr;
+
+  const RawJs(this.expr);
+}
+
 class JsEngine {
   NexJsRuntime? _runtime;
   /// 是否已注入全局预置脚本（繁简转换 t2s()/s2t() + java.* 第一梯队）。
@@ -752,6 +760,7 @@ class JsEngine {
   }
 
   String _toJsValue(dynamic value) {
+    if (value is RawJs) return value.expr;
     if (value == null) return 'null';
     if (value is String) return '"${_escapeJs(value)}"';
     if (value is num) return value.toString();

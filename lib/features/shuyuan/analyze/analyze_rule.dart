@@ -274,20 +274,37 @@ class AnalyzeRule {
     if (ruleList.isEmpty) return '';
     var result = mContent ?? content;
     if (result != null && ruleList.isNotEmpty) {
-      for (final sourceRule in ruleList) {
+      if (result is Map) {
+        // legado NativeObject 快捷路径（AnalyzeRule.getString）：内容是对象
+        // （JS 列表条目/JSON 字段）时**只执行第一条规则**——`字段@js:...`
+        // 写在对象上时基准不会把后续段继续作用在对象上；LinkedTreeMap 的
+        // 「只按首段键取」在 Dart 侧同样由 Map 分支覆盖。
+        final sourceRule = ruleList.first;
         _putAll(sourceRule.putMap);
         final st = _makeUpRule(sourceRule, result);
-        if (result == null) continue;
-        if (st.rule.isNotEmpty || st.replaceRegex.isEmpty) {
-          if (st.templateMode) {
-            // 模板模式：内嵌表达式替换后的整串即结果。
-            result = st.rule;
-          } else {
-            result = _executeRule(result, sourceRule.mode, st.rule, isUrl: isUrl);
-          }
+        dynamic nativeResult = st.templateMode
+            ? st.rule
+            : _executeRule(result, sourceRule.mode, st.rule, isUrl: isUrl);
+        if (nativeResult != null && st.replaceRegex.isNotEmpty) {
+          nativeResult = _replaceRegex(nativeResult.toString(), st);
         }
-        if (result != null && st.replaceRegex.isNotEmpty) {
-          result = _replaceRegex(result.toString(), st);
+        result = nativeResult;
+      } else {
+        for (final sourceRule in ruleList) {
+          _putAll(sourceRule.putMap);
+          final st = _makeUpRule(sourceRule, result);
+          if (result == null) continue;
+          if (st.rule.isNotEmpty || st.replaceRegex.isEmpty) {
+            if (st.templateMode) {
+              // 模板模式：内嵌表达式替换后的整串即结果。
+              result = st.rule;
+            } else {
+              result = _executeRule(result, sourceRule.mode, st.rule, isUrl: isUrl);
+            }
+          }
+          if (result != null && st.replaceRegex.isNotEmpty) {
+            result = _replaceRegex(result.toString(), st);
+          }
         }
       }
     }
@@ -309,18 +326,16 @@ class AnalyzeRule {
     if (ruleList.isEmpty) return [];
     var result = content;
     if (content != null && ruleList.isNotEmpty) {
-      for (final sourceRule in ruleList) {
+      if (result is Map) {
+        // legado NativeObject 快捷路径（AnalyzeRule.getStringList）：只执行
+        // 第一条规则，按 mode 分派后立即进入列表归一。
+        final sourceRule = ruleList.first;
         _putAll(sourceRule.putMap);
         final st = _makeUpRule(sourceRule, result);
-        if (result == null) continue;
         if (st.rule.isNotEmpty || st.replaceRegex.isEmpty) {
           if (st.templateMode) {
             result = st.rule;
           } else if (sourceRule.mode == Mode.js && st.rule.trim().isNotEmpty) {
-            // legado evalJS 列表语境：JS 直接返回数组时逐个条目作为列表项
-            //（nextTocUrl 常见写法 `let list = [...]; list`）。空数组必须
-            // 产出空列表——字符串化成 "[]" 会被绝对化成假分页地址并多抓
-            // 一次 404 页面。
             final js = _evalJs(st.rule, result, structured: true);
             if (js is List) {
               result = js
@@ -331,8 +346,6 @@ class AnalyzeRule {
               result = js ?? '';
             }
           } else if (sourceRule.mode == Mode.webJs && st.rule.trim().isNotEmpty) {
-            // legado getStringList：WebJs 结果先按 JSON 字符串数组解析，
-            // 解析失败按原串（后续再按换行切分）。
             final raw = _evalWebJs(st.rule, result);
             result = _parseWebJsStringList(raw) ?? raw;
           } else {
@@ -345,6 +358,46 @@ class AnalyzeRule {
             result = result.map((o) => _replaceRegex(o.toString(), st)).toList();
           } else {
             result = _replaceRegex(result.toString(), st);
+          }
+        }
+      } else {
+        for (final sourceRule in ruleList) {
+          _putAll(sourceRule.putMap);
+          final st = _makeUpRule(sourceRule, result);
+          if (result == null) continue;
+          if (st.rule.isNotEmpty || st.replaceRegex.isEmpty) {
+            if (st.templateMode) {
+              result = st.rule;
+            } else if (sourceRule.mode == Mode.js && st.rule.trim().isNotEmpty) {
+              // legado evalJS 列表语境：JS 直接返回数组时逐个条目作为列表项
+              //（nextTocUrl 常见写法 `let list = [...]; list`）。空数组必须
+              // 产出空列表——字符串化成 "[]" 会被绝对化成假分页地址并多抓
+              // 一次 404 页面。
+              final js = _evalJs(st.rule, result, structured: true);
+              if (js is List) {
+                result = js
+                    .map((e) => e == null ? '' : e.toString())
+                    .where((s) => s.isNotEmpty)
+                    .toList();
+              } else {
+                result = js ?? '';
+              }
+            } else if (sourceRule.mode == Mode.webJs && st.rule.trim().isNotEmpty) {
+              // legado getStringList：WebJs 结果先按 JSON 字符串数组解析，
+              // 解析失败按原串（后续再按换行切分）。
+              final raw = _evalWebJs(st.rule, result);
+              result = _parseWebJsStringList(raw) ?? raw;
+            } else {
+              result = _executeRule(result, sourceRule.mode, st.rule,
+                  isUrl: isUrl, single: false);
+            }
+          }
+          if (result != null && st.replaceRegex.isNotEmpty) {
+            if (result is List) {
+              result = result.map((o) => _replaceRegex(o.toString(), st)).toList();
+            } else {
+              result = _replaceRegex(result.toString(), st);
+            }
           }
         }
       }
@@ -511,6 +564,22 @@ class AnalyzeRule {
     return _analyzeByJson!;
   }
 
+  /// element/元素列表 → 沙箱里的 jsoup 风格对象绑定（legado 的 `src`/`result`
+  /// 就是 jsoup Element 实体，脚本可调 `.text()/.html()/.select()/.attr()`）。
+  /// 其余内容（字符串/Map/JSON 列表）返回 null，维持既有序列化口径。
+  dynamic _jsElementBinding(dynamic value) {
+    if (value is Element) {
+      return RawJs(
+          '__javaElements(${_elementsJsLiteral(<dynamic>[value])}).first()');
+    }
+    if (value is List &&
+        value.isNotEmpty &&
+        value.every((e) => e is Element)) {
+      return RawJs('__javaElements(${_elementsJsLiteral(value)})');
+    }
+    return null;
+  }
+
   dynamic _evalJs(String jsStr, dynamic result,
       {Map<String, dynamic>? extraBindings, bool structured = false}) {
     try {
@@ -541,9 +610,9 @@ class AnalyzeRule {
         // 变量表经 __javaVars 种子注入（动态 java.get 可读），脚本内 java.put
         // 的写入在 eval 后由 takeJavaVars 排空回写（对齐 legado java.put/get
         // 跨规则段共享变量的语义）。
-        'result': result,
+        'result': _jsElementBinding(result) ?? result,
         'baseUrl': baseUrl ?? '',
-        'src': content?.toString() ?? '',
+        'src': _jsElementBinding(content) ?? (content?.toString() ?? ''),
         'title': chapter?.title ?? '',
         // 对照 legado AnalyzeRule JS bindings：脚本可直接读 chapter.* /
         // nextChapterUrl（目录规则按章求值、正文规则拼下一章地址均依赖）。

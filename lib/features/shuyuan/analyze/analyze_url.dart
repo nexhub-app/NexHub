@@ -11,6 +11,7 @@ import 'package:dio/dio.dart';
 
 import 'concurrent_rate_limiter.dart';
 import 'package:dio/io.dart';
+import 'package:enough_convert/big5.dart' show Big5Codec;
 import 'package:fast_gbk/fast_gbk.dart';
 import '../../../core/utils/app_log.dart';
 import 'analyze_rule.dart';
@@ -39,6 +40,14 @@ class AnalyzeUrl {
   String? key;
   String? speakText;
   int? speakSpeed;
+
+  /// 听书源 URL 模板绑定（legado `AnalyzeUrl` 同名构造参数）：朗读接口常把
+  /// 音色/发音人/情感写进 URL 的 `{{currentToneID}}` 等占位符，缺绑定会以
+  /// 空串请求（服务端回默认音色或直接失败）。
+  String? currentToneID;
+  String? currentSpeakerName;
+  String? currentEmotionName;
+  String? currentEmotionTag;
 
   final Map<String, String> headerMap = {};
   String? body;
@@ -130,6 +139,10 @@ class AnalyzeUrl {
     this.key,
     this.speakText,
     this.speakSpeed,
+    this.currentToneID,
+    this.currentSpeakerName,
+    this.currentEmotionName,
+    this.currentEmotionTag,
     this.skipPageCache = false,
     this.skipRateLimit = false,
     Map<String, String>? headerMapF,
@@ -617,6 +630,12 @@ class AnalyzeUrl {
         'page': page,
         'key': key ?? '',
         'speakText': speakText ?? '',
+        // legado AnalyzeUrl.evalJS 的听书绑定：speakSpeed/音色/发音人/情感。
+        'speakSpeed': speakSpeed ?? 0,
+        'currentToneID': currentToneID ?? '',
+        'currentSpeakerName': currentSpeakerName ?? '',
+        'currentEmotionName': currentEmotionName ?? '',
+        'currentEmotionTag': currentEmotionTag ?? '',
       });
     } catch (_) {
       return currentResult;
@@ -1103,32 +1122,26 @@ class AnalyzeUrl {
       final contentType = _extractHeaderValue(
         response.headers['content-type'],
       );
-      final effectiveCs = _normalizeCharset(charset) ??
-          _extractCharsetFromContentType(contentType) ??
-          _extractCharsetFromMeta(bytes);
-      body = typeHex
-          ? _toHex(bytes)
-          : _decodeBody(bytes, charset, contentType);
+      String charsetLabel;
+      if (typeHex) {
+        body = _toHex(bytes);
+        charsetLabel = 'hex';
+      } else {
+        final decoded = _decodeBodyDetailed(bytes, charset, contentType);
+        body = decoded.text;
+        charsetLabel = decoded.charset;
+      }
       AppLog.instance.d(
           '[书源HTTP] ← ${response.statusCode} ${body.length}字符 '
-          'charset=${typeHex ? 'hex' : (effectiveCs ?? 'utf8-容错')}');
+          'charset=$charsetLabel');
 
       // 解码后统一检测「验证/反爬挑战页」（覆盖 Cloudflare、以及 PTCMS 等站点
       // 自带的「系统安全验证」等）。命中则抛 [VerificationRequiredException]，
       // 交由既有 WebView 验证回灌流程过验证，而非静默返回空结果或抛普通异常被上层吞掉。
-      // webJs 选项（legado 语义）：页面内容需在 WebView 内执行取值脚本
-      // 才能得到正文——抛 WebView 渲染回灌请求（脚本经异常携带）。
       // type=hex 的二进制响应不做文本挑战检测。
-      if (!typeHex && webJs != null && webJs!.trim().isNotEmpty) {
-        throw VerificationRequiredException(
-          url: url,
-          body: body,
-          statusCode: response.statusCode,
-          preferWebView: true,
-          webJs: webJs,
-        );
-      }
-
+      // 注意：webJs 选项只在 WebView 分支消费（legado `AnalyzeUrl`：直连
+      // 拿到响应后直接走规则解析，不因 webJs 声明强制转 WebView；
+      // webJs 的页面内执行由 useWebView 分支与挑战回灌各自携带）。
       if (!typeHex && _looksLikeVerificationChallenge(body)) {
         throw VerificationRequiredException(
           url: url,
@@ -1691,7 +1704,21 @@ class AnalyzeUrl {
   /// 声明（许多 GBK 系站点只写 meta，Content-Type 不带 charset，缺此探测会
   /// 全部按 UTF-8 容错解码 → 中文乱码）
   /// 4. UTF-8 容错解码
-  String _decodeBody(Uint8List bytes, String? optionCharset, String? contentType) {
+  String _decodeBody(Uint8List bytes, String? optionCharset, String? contentType) =>
+      _decodeBodyDetailed(bytes, optionCharset, contentType).text;
+
+  /// 解码响应体并返回**实际采用的字符集**（日志/排查需要；旧实现另行
+  /// 推断标签，探测失败时日志与真实解码口径不一致）。
+  ///
+  /// 优先级对齐 legado `OkHttpUtils` 的 `ResponseBody.text`：
+  /// 1. UTF-8 BOM 剥离
+  /// 2. 选项 `charset`
+  /// 3. 响应头 `Content-Type` 的 charset
+  /// 4. HTML `<meta charset>` 声明（GBK 系站点常见）
+  /// 5. 无声明时按字节统计探测 GBK / Big5（legado `EncodingDetect`），
+  ///    兜底 UTF-8 容错
+  ({String text, String charset}) _decodeBodyDetailed(
+      Uint8List bytes, String? optionCharset, String? contentType) {
     // legado `Utf8BomUtils.removeUTF8BOM`：解码前统一剥 UTF-8 BOM。
     // Dart 的 UTF-8 解码器会自行忽略 BOM，但 GBK 等显式字符集路径会把
     // `EF BB BF` 当正文解出乱码前缀，故必须在选择字符集前剥离。
@@ -1701,24 +1728,106 @@ class AnalyzeUrl {
         bytes[2] == 0xBF) {
       bytes = Uint8List.sublistView(bytes, 3);
     }
-    final effectiveCharset = _normalizeCharset(optionCharset) ??
+    final charset = _normalizeCharset(optionCharset) ??
         _extractCharsetFromContentType(contentType) ??
-        _extractCharsetFromMeta(bytes);
+        _extractCharsetFromMeta(bytes) ??
+        _detectCharset(bytes);
 
-    if (effectiveCharset != null) {
-      final lower = effectiveCharset.toLowerCase();
-      if (lower == 'gbk' || lower == 'gb2312' || lower == 'gb18030') {
-        return gbk.decode(bytes);
-      }
-      if (lower == 'big5') {
-        // Dart 内置不支持 Big5（无解码表可引），明确降级为 UTF-8 容错解码。
-        AppLog.instance.w(
-            '[书源HTTP] Big5 字符集无内置解码表，按 UTF-8 容错降级（可能乱码）');
-        return utf8.decode(bytes, allowMalformed: true);
+    final lower = charset.toLowerCase();
+    if (lower == 'gbk' ||
+        lower == 'gb2312' ||
+        lower == 'gb18030' ||
+        lower == 'cp936') {
+      // 容错解码：坏字节按 U+FFFD 处理（Java `new String(bytes, cs)` 同），
+      // 不让一个坏序列把整页请求打断。
+      return (
+        text: gbk.decode(bytes, allowMalformed: true),
+        charset: charset,
+      );
+    }
+    if (lower.startsWith('big5')) {
+      return (
+        text: const Big5Codec(allowInvalid: true).decode(bytes),
+        charset: charset,
+      );
+    }
+    return (
+      text: utf8.decode(bytes, allowMalformed: true),
+      charset: charset,
+    );
+  }
+
+  /// 无任何声明时按字节统计判断 GBK / Big5（legado `EncodingDetect` 的
+  /// 简化同语义实现）。
+  ///
+  /// 先试严格 UTF-8（合法 UTF-8 直接采纳）；否则分别用 GBK/Big5 容错解码
+  /// 前 64KB，按「常用汉字/标点加分，替换符/私用区/生僻字扣分」打分取高者；
+  /// GBK 独有的尾字节（0x80-0xA0，Big5 编码不可能产生）额外加权。
+  /// 平局偏 GBK（简中站点远多于繁中）。
+  static String _detectCharset(Uint8List bytes) {
+    try {
+      utf8.decode(bytes);
+      return 'utf-8';
+    } catch (_) {}
+    final sample = bytes.length > 65536
+        ? Uint8List.sublistView(bytes, 0, 65536)
+        : bytes;
+    final gbkText = gbk.decode(sample, allowMalformed: true);
+    final big5Text = const Big5Codec(allowInvalid: true).decode(sample);
+    final gbkScore =
+        _charsetScore(gbkText) + 3 * _gbkOnlyTrailCount(sample);
+    final big5Score = _charsetScore(big5Text);
+    return gbkScore >= big5Score ? 'gbk' : 'big5';
+  }
+
+  /// 常用汉字/标点集合：正确解码命中的大多是这些字，错误解码命中的
+  /// 是生僻字、私用区或替换符（逐字符打分，见 [_charsetScore]）。
+  static const String _commonHan =
+      '的一是在不了有和人这中大为上个国我以要他时来用们生到作地于出就分对成会可主发年动同工也能下过子说产种面而方后多定行学法所民得经十三之进着等部度家电力里如水化高自二理起小物现实加量都两体制机当使点从业本去把性好应开它合还因由其些然前外天政四日那社义事平形相全表间样与关各重新线内数正心反你明看原又么利比或但质气第向道命此变条只没结解问意建月公无系军很情者最立代想已通并提直题党程展五果料象员革位入常文总次品式活设及管特件长求老头基资边流路级少图山统接知较将组见计别她手角期根论运农指几九区强放决西被干做必战先回则任取据处队南给色光门即保治北造百规热领七海口东导器压志世金增争济阶油思术极交受联什认六共权收证改清己美再采转更单风切打白教速花带安场身车例真务具万每目至达走积示议声报斗完类八离华名确才科张信马节话米整空元况今集温传土许步群广石记需段研界拉林律叫且究观越织装影算低持音众书布复容儿须际商非验连断深难近矿千周委素技备半办青省列习响约支般史感劳便团往酸历市克何除消构府称太准精值号率族维划选标写存候毛亲快效斯院查江型眼王按格养易置派层片始却专状育厂京识适属圆包火住调满县局照参红细引听该铁价严龙飞'
+      '這個們時來為國說過對發會後學經進著電裡現實體開還關樣線數麼問題黨員長頭資邊級統組見計別幾區強決幹戰給門熱領島壓濟極聯權證轉單風帶場車務萬達積聲報鬥類離確張節話傳許廣記需觀織裝書復兒須際驗連斷難礦週備辦習響勞團歷稱準號劃選標寫親效院查養層專狀廠識適屬圓調縣紅聽鐵價嚴龍飛';
+
+  /// 常用全角标点（正确解码的中文文本几乎每行都会出现）。
+  static const String _commonCjkPunct = '，。、；：？！「」『』（）《》〈〉【】…—～·';
+
+  static int _charsetScore(String text) {
+    var score = 0;
+    for (final c in text.runes) {
+      if (c == 0xFFFD) {
+        score -= 6;
+      } else if (c < 0x80) {
+        continue;
+      } else if (c >= 0x4E00 && c <= 0x9FFF) {
+        score += _commonHan.contains(String.fromCharCode(c)) ? 2 : -1;
+      } else if (_commonCjkPunct.contains(String.fromCharCode(c))) {
+        score += 1;
+      } else if (c >= 0xE000 && c <= 0xF8FF) {
+        score -= 4; // 私用区：错码的典型产物
+      } else if ((c >= 0x3000 && c <= 0x303F) ||
+          (c >= 0xFF00 && c <= 0xFFEF)) {
+        score += 1;
+      } else {
+        score -= 1;
       }
     }
+    return score;
+  }
 
-    return utf8.decode(bytes, allowMalformed: true);
+  /// GBK 独占尾字节（0x80-0xA0）计数：Big5 尾字节只落在 0x40-0x7E /
+  /// 0xA1-0xFE，出现即为 GBK 的强结构证据。
+  static int _gbkOnlyTrailCount(Uint8List bytes) {
+    var count = 0;
+    var i = 0;
+    while (i < bytes.length) {
+      final b = bytes[i];
+      if (b < 0x81 || b > 0xFE || i + 1 >= bytes.length) {
+        i++;
+        continue;
+      }
+      final t = bytes[i + 1];
+      if (t >= 0x80 && t <= 0xA0) count++;
+      i += (t >= 0x40 && t <= 0xFE && t != 0x7F) ? 2 : 1;
+    }
+    return count;
   }
 
   /// 从 HTML 头部探测 `<meta charset>` / `http-equiv="Content-Type"` 声明的字符集。

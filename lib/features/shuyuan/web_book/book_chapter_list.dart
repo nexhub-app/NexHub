@@ -63,9 +63,6 @@ class BookChapterList {
     }
 
     var chapters = <XiaoshuoBookChapter>[];
-    // URL 去重：避免目录页中"最新章节预览"等栏与正式列表重复收录同一章节，
-    // 也防止跨书链接被错误计入。通用能力，仅按绝对 URL 去重，不影响正常多章节。
-    final seenUrls = <String>{};
 
     var listRule = tocRule.chapterList ?? '';
     var reverse = false;
@@ -234,11 +231,11 @@ class BookChapterList {
               }
             } catch (_) {}
 
-            // URL 去重：挡掉"最新章节预览"等重复收录；baseUrl 兜底条目
-            // （无真实 URL 的卷/占位章节）不参与去重，避免多条被折叠成一条。
-            if (bookChapter.url == baseUrl || seenUrls.add(bookChapter.url)) {
-              chapters.add(bookChapter);
-            }
+            // 对照 legado BookChapterList：单页内逐条全部入列（不去重）。
+            // 同页重复链接（「最新章节预览」+ 正式列表）由合并层
+            //（WebBook 的整列反转 → LinkedHashSet 去重）按工作顺序取舍，
+            // 与基准的保留位置一致。
+            chapters.add(bookChapter);
           }
         } catch (_) {
           // 跳过坏条目，继续解析后续元素。

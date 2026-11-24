@@ -235,9 +235,14 @@ class BookContent {
       }
     }
 
-    // 内容清洗：块级剥离 HTML + 按段提取插图 + 按段去除广告行。
+    // 内容清洗：块级剥离 HTML + 按段提取插图。广告行清洗须在整章
+    // replaceRegex 之后执行（legado：拼接 → 逐行 trim → 替换 → 缩进），
+    // 分页/整章场景统一由 [finalizeChapter] 按行过滤；整章模式在此就地
+    // 清洗（此时替换已完成）。
     var blocks = _formatToBlocks(content, baseUrl, redirectUrl ?? baseUrl);
-    blocks = _cleanContentAdsBlocks(blocks);
+    if (!deferChapterPostProcess) {
+      blocks = _cleanContentAdsBlocks(blocks);
+    }
 
     // legado ruleContent.imageDecode 是「图片 bytes 二次解密 js」（见
     // ImageUtils.decode 非封面分支），在图片下载层执行（ShuyuanImageDecoder），
@@ -297,15 +302,15 @@ class BookContent {
     }
   }
 
-  /// 附加正文（subContent）提取：只做 HTML 分块与去广告，不做
-  /// replaceRegex/缩进——与正文页一起交给 [finalizeChapter] 整章后处理。
+  /// 附加正文（subContent）提取：只做 HTML 分块，不做
+  /// replaceRegex/去广告/缩进——与正文页一起交给 [finalizeChapter] 整章后处理
+  ///（广告行须在整章替换之后过滤）。
   static List<NovelBlock> extractAppendedBlocks({
     required String content,
     required String baseUrl,
     required String redirectUrl,
   }) {
-    final blocks = _formatToBlocks(content, baseUrl, redirectUrl);
-    return _cleanContentAdsBlocks(blocks);
+    return _formatToBlocks(content, baseUrl, redirectUrl);
   }
 
   static final RegExp _inlineImgTagRegex = RegExp(
@@ -375,6 +380,10 @@ class BookContent {
         out.add(origin != null
             ? NovelImageBlock(url, source: origin.source, style: origin.style)
             : NovelImageBlock(url));
+      } else if (_isAdLine(trimmed)) {
+        // 广告行在整章替换之后过滤：替换规则改写后的行按新文本判定
+        //（对齐 legado 顺序：拼接 → 逐行 trim → 替换 → 清洗 → 缩进）。
+        continue;
       } else if (hasReplace) {
         // 替换后的行只做“加缩进”：与 legado `"　　$it"` 逐字一致，不回收
         // 替换结果自带的缩进（替换前已逐行 trim，不存在源自带缩进）。
@@ -408,6 +417,21 @@ class BookContent {
     return '';
   }
 
+  /// 单行广告判定：跳过导航/版权等整行模式，短行再匹配广告关键词。
+  /// 供块级清洗与整章替换后的逐行过滤共用（两处判定必须一致）。
+  static bool _isAdLine(String trimmed) {
+    for (final pattern in _skipPatterns) {
+      if (pattern.hasMatch(trimmed)) return true;
+    }
+    // 仅对"短行"做广告关键词匹配，避免正文中出现"点击/微信"等常见词被整段误删。
+    if (trimmed.length <= _adLineMaxLength) {
+      for (final keyword in _adLineKeywords) {
+        if (trimmed.contains(keyword)) return true;
+      }
+    }
+    return false;
+  }
+
   /// 内容广告清理（块级）：按文本段匹配广告关键词与跳过模式，删除广告文本块；
   /// 插图块原样保留（插图不是广告行）。
   static List<NovelBlock> _cleanContentAdsBlocks(List<NovelBlock> blocks) {
@@ -420,28 +444,7 @@ class BookContent {
       if (b is! NovelTextBlock) continue;
       final trimmed = b.text.trim();
       if (trimmed.isEmpty) continue;
-
-      // 跳过导航 / 版权等整行模式（始终移除）。
-      bool isAd = false;
-      for (final pattern in _skipPatterns) {
-        if (pattern.hasMatch(trimmed)) {
-          isAd = true;
-          break;
-        }
-      }
-      if (isAd) continue;
-
-      // 仅对"短行"做广告关键词匹配，避免正文中出现"点击/微信"等常见词被整段误删。
-      if (trimmed.length <= _adLineMaxLength) {
-        for (final keyword in _adLineKeywords) {
-          if (trimmed.contains(keyword)) {
-            isAd = true;
-            break;
-          }
-        }
-      }
-      if (isAd) continue;
-
+      if (_isAdLine(trimmed)) continue;
       out.add(b);
     }
     return out;

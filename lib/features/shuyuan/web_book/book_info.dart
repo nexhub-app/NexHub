@@ -134,38 +134,6 @@ class BookInfo {
       } catch (_) {}
     }
 
-    if (bookInfoRule.bookStatus != null && bookInfoRule.bookStatus!.isNotEmpty) {
-      try {
-        final bookStatus = analyzeRule.getString(bookInfoRule.bookStatus!);
-        if (bookStatus.isNotEmpty) {
-          book.bookStatus = bookStatus;
-        }
-      } catch (_) {}
-    }
-
-    if (bookInfoRule.updateTime != null && bookInfoRule.updateTime!.isNotEmpty) {
-      try {
-        final updateTime = analyzeRule.getString(bookInfoRule.updateTime!);
-        if (updateTime.isNotEmpty) {
-          book.updateTime = updateTime;
-        }
-      } catch (_) {}
-    }
-
-    if (bookInfoRule.recommendations != null &&
-        bookInfoRule.recommendations!.isNotEmpty) {
-      try {
-        final recommendations =
-            analyzeRule.getStringList(bookInfoRule.recommendations!);
-        if (recommendations.isNotEmpty) {
-          book.recommendations = recommendations
-              .where((s) => s.trim().isNotEmpty)
-              .map((s) => s.trim())
-              .toList();
-        }
-      } catch (_) {}
-    }
-
     // 对照 legado BookInfo：文件类书源（bookSourceType=3）没有目录，
     // 详情阶段解析下载地址列表；为空直接失败（md3 抛「下载链接为空」），
     // 否则用户会看到一个没有任何可读文件的详情页。
@@ -205,6 +173,40 @@ class BookInfo {
       if (book.tocUrl == baseUrl) {
         book.tocHtml = body;
       }
+    }
+
+    // 超集字段（legado BookInfo 无此项）排在 tocUrl/downloadUrls 之后求值：
+    // 与基准的求值顺序一致，@put 变量链在目录地址求值完成后再消费。
+    if (bookInfoRule.bookStatus != null && bookInfoRule.bookStatus!.isNotEmpty) {
+      try {
+        final bookStatus = analyzeRule.getString(bookInfoRule.bookStatus!);
+        if (bookStatus.isNotEmpty) {
+          book.bookStatus = bookStatus;
+        }
+      } catch (_) {}
+    }
+
+    if (bookInfoRule.updateTime != null && bookInfoRule.updateTime!.isNotEmpty) {
+      try {
+        final updateTime = analyzeRule.getString(bookInfoRule.updateTime!);
+        if (updateTime.isNotEmpty) {
+          book.updateTime = updateTime;
+        }
+      } catch (_) {}
+    }
+
+    if (bookInfoRule.recommendations != null &&
+        bookInfoRule.recommendations!.isNotEmpty) {
+      try {
+        final recommendations =
+            analyzeRule.getStringList(bookInfoRule.recommendations!);
+        if (recommendations.isNotEmpty) {
+          book.recommendations = recommendations
+              .where((s) => s.trim().isNotEmpty)
+              .map((s) => s.trim())
+              .toList();
+        }
+      } catch (_) {}
     }
 
     // 变量回写：详情规则新 @put/java.put 的变量并入暂存，供目录/正文
