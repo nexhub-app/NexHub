@@ -43,7 +43,8 @@ class ShuyuanSource {
   final Map<String, dynamic>? ruleContent;
   final Map<String, dynamic>? ruleExplore;
 
-  /// 段评规则（legado `BookSource.ruleReview`）：整图保留、原样透传。
+  /// 段评规则（legado `BookSource.ruleReview`）：导入期按原始 Map 保留
+  /// （往返不丢未知字段），转 [XiaoshuoBookSource] 时映射为 [ReviewRule]。
   final Map<String, dynamic>? ruleReview;
 
   /// 首页模块 JSON 数组文本（legado `BookSource.homepageModules`）。

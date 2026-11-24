@@ -3090,6 +3090,48 @@
   "novelContentEditRestore": "恢复原文",
   "novelContentEditRestoreConfirm": "放弃对本章的修改并恢复为源站原文？",
   "novelContentEditRestored": "已恢复原文",
+  "@novelReviewQuotes": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "@novelReview": {
+    "description": "阅读器段评面板入口与标题"
+  },
+  "novelReview": "段评",
+  "novelReviewEmpty": "本章还没有段评",
+  "novelReviewLoadFailed": "段评加载失败",
+  "novelReviewPostHint": "写一条段评…",
+  "novelReviewReplyHint": "回复这条段评…",
+  "novelReviewSend": "发送",
+  "novelReviewReply": "回复",
+  "novelReviewVoteUp": "赞",
+  "novelReviewVoteDown": "踩",
+  "novelReviewDelete": "删除",
+  "novelReviewDeleteConfirm": "删除这条段评？",
+  "novelReviewPosted": "已发布",
+  "novelReviewActionFailed": "操作失败",
+  "@novelReviewScopeParagraph": {
+    "placeholders": {
+      "index": {
+        "type": "int"
+      }
+    }
+  },
+  "novelReviewScopeChapter": "全章",
+  "novelReviewScopeParagraph": "第 {index} 段",
+  "novelReviewBubbleLabel": "本段 {count} 条段评",
+  "@novelReviewBubbleLabel": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "novelReviewLoadMore": "加载更多",
+  "novelReviewQuotes": "回复 {count} 条",
   "novelPayChapter": "购买本章",
   "novelPayChapterTitle": "章节付费",
   "novelPayChapterConfirm": "将按书源规则执行购买操作，完成后自动重新加载本章。",

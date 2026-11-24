@@ -304,6 +304,56 @@ Loaded when opening a specific chapter:
 }
 ```
 
+##### 6 (cont.). Paragraph comments (ruleReview)
+
+Optional source capability: the reader gains a "Paragraph comments" panel (overflow-menu entry + in-body bubbles at paragraph ends). It appears once `reviewUrl` and `contentRule` are declared; without them the reading path is untouched.
+
+`contentRule` / `avatarRule` / `postTimeRule` are three parallel **list rules**, aligned by index: the Nth content pairs with the Nth avatar and the Nth time. A missing field just leaves that value empty — the item is kept.
+
+| Field / key | Description |
+| --- | --- |
+| `reviewUrl` | Comment list URL; supports `{{page}}` / `{{paragraph}}` placeholders and a `,{"method":"POST",...}` option suffix. |
+| `contentRule` | Comment text (list rule). HTML fragments are stripped, `<br>` becomes a newline, entities are unescaped. |
+| `avatarRule` | Author avatar (list rule); relative URLs are made absolute. |
+| `postTimeRule` | Post time (list rule), shown verbatim. |
+| `reviewQuoteUrl` | Replies of one comment. |
+| `voteUpUrl` / `voteDownUrl` | Like / dislike endpoints; the button appears only when declared. |
+| `postReviewUrl` | Post a comment; the user's text is passed through `{{key}}`. |
+| `postQuoteUrl` | Reply to a comment; `{{key}}` is the reply text. |
+| `deleteUrl` | Delete endpoint; the button appears only when declared. |
+| `paragraphRule` | Paragraph-index list rule (app extension, not in Legado): anchors each comment to a paragraph, aligned by index. Values are 0-based integers; text like "para 7" yields the first number, and unparsable entries stay chapter-level. |
+
+Placeholders:
+
+| Placeholder | Description |
+| --- | --- |
+| `{{page}}` | List pagination, incremented by "Load more". |
+| `{{paragraph}}` | Paragraph index (0-based, the body block index — heading and image blocks count). Bound when the panel is opened from a paragraph; omitted for "Whole chapter". |
+| `{{key}}` | User input (post / reply); same encoding channel as search keywords, no manual escaping for CJK. |
+| `{{$.field}}` | Item context: `content` / `avatar` / `postTime` / `paragraph` / `index`. |
+
+```json
+"ruleReview": {
+  "reviewUrl": "https://api.example.com/comment/list?chapterId=123&page={{page}}",
+  "contentRule": "#commentList .item .text@text",
+  "avatarRule": "#commentList .item img@src",
+  "postTimeRule": "#commentList .item .time@text",
+  "paragraphRule": "#commentList .item@data-p",
+  "reviewQuoteUrl": "https://api.example.com/comment/replies?id={{$.index}}",
+  "voteUpUrl": "https://api.example.com/comment/vote?id={{$.index}}&type=up,{\"method\":\"POST\"}",
+  "postQuoteUrl": "https://api.example.com/comment/quote?id={{$.index}},{\"method\":\"POST\",\"body\":\"content={{key}}\"}",
+  "postReviewUrl": "https://api.example.com/comment/add,{\"method\":\"POST\",\"body\":\"chapterId=123&content={{key}}\"}",
+  "deleteUrl": "https://api.example.com/comment/delete?id={{$.index}},{\"method\":\"POST\"}"
+}
+```
+
+Notes:
+
+- Two ways to wire paragraphs, pick one: (1) put `{{paragraph}}` in `reviewUrl` and let the panel request per paragraph; (2) omit it and declare `paragraphRule`, so the panel fetches the chapter list once and filters by paragraph.
+- In-body bubbles are drawn only for sources declaring `paragraphRule` (one chapter-level request yields the whole distribution). Sources that only request per paragraph get no bubbles — their entry is "long-press a paragraph → toolbar 'Paragraph comments'".
+- Action URLs also accept `<js>` / `@js:` and the URL option suffix; source headers, cookies and login headers apply.
+- A non-empty response body counts as success (sources commonly answer `{"code":0}`); the panel then reloads the list.
+
 ##### 7. Video parsing (player / video)
 
 The core of anime sources. The video route gets the player page HTML, then a selector / script / WebView extracts the real video URL (m3u8 / mp4).
@@ -1109,6 +1159,7 @@ The authoritative constraints live in lib/core/models/plugin_config.dart; this t
 | `mediaHostRewrite` | Optional. Media host rewrite map `{"from-host": "to-host"}` (exact match, case-insensitive). Cover and other media URLs get their host rewritten before loading — for scenarios like signed CDNs that reject Referer or primary CDNs refusing direct connections, where a fallback CDN is needed. Rewritten target hosts join the per-source ECH takeover scope, so covers and pages share one encrypted channel; the image cache reads the source's effective network profile (per-source proxy / ECH applies to images too). |
 | `webviewConfig.adblock / timeoutSeconds` | Optional. WebView adblock toggle and timeout (default true / 20s). |
 | `comments` | Optional. Comments config: provider(source/bangumi), routes(list required; replies/post/reply/like/report optional), selectors, login(url=WebView login page + checkCookie=cookie key + checkUrl/loggedInSelector=session probe). |
+| `selectors.xiaoshuo.ruleReview` | Optional. Source paragraph comments (Legado `ruleReview`): reviewUrl / contentRule gate the reader panel; also avatarRule, postTimeRule, reviewQuoteUrl, voteUpUrl, voteDownUrl, postReviewUrl, postQuoteUrl, deleteUrl and paragraphRule (app extension: paragraph anchors + in-body bubbles). See section 6 (cont.). |
 | `network` | Optional. Source-level network override: proxy / dns / hosts / sni / ech; inherits global by default, invalid values only warn. (sni and ech are both runtime-effective for direct HTTPS) |
 | `announcement` | Optional. Source announcement: {title, body?, url?, updatedAt?}. |
 | `webFavorite` | Optional. Web favorites: enabled / title / route / url / addRoute / addUrl / requireLogin; when present, the 'Web Favorites' tab shows in browse. |

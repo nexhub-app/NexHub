@@ -16,6 +16,7 @@ import '../models/explore_kind.dart';
 import '../models/media_item.dart';
 import '../models/novel_block.dart';
 import '../models/plugin_config.dart';
+import '../models/source_review.dart';
 import '../models/web_file_item.dart';
 import '../novel/novel_pay_result.dart';
 import '../resolver/builtin_resolver.dart';
@@ -791,8 +792,87 @@ class MediaApiService {
     return _asContentResult(r);
   }
 
-  /// 源是否为文件类书源（legado `bookSourceType == 3`）。
+  // ── 段评（书源 `ruleReview`） ──
+
+  /// 段评列表。源未声明 `ruleReview.reviewUrl`/`contentRule` 时返回空列表
+  /// （调用方据此隐藏段评入口）。
+  Future<List<SourceReview>> fetchChapterReviews(
+    PluginConfig source, {
+    required String novelId,
+    required String chapterUrl,
+    String? chapterTitle,
+    int page = 1,
+    int? paragraph,
+  }) async {
+    final vars = <String, String>{
+      'id': novelId,
+      'chapter': chapterUrl,
+      'url': chapterUrl,
+      'chapterTitle': chapterTitle ?? '',
+      'page': '$page',
+      // 段落锚点（0 起）：源模板可用 `{{paragraph}}` 收窄到本段。
+      if (paragraph != null) 'paragraph': '$paragraph',
+    };
+    final r = await registry
+        .find(source, 'reviews')
+        .resolve(source, 'reviews', vars: vars);
+    return r is List ? r.whereType<SourceReview>().toList() : const [];
+  }
+
+  /// 某条段评的回复列表（`ruleReview.reviewQuoteUrl`）。
+  Future<List<SourceReview>> fetchReviewQuotes(
+    PluginConfig source, {
+    required String novelId,
+    required String chapterUrl,
+    required SourceReview target,
+    String? chapterTitle,
+  }) async {
+    final vars = <String, String>{
+      'id': novelId,
+      'chapter': chapterUrl,
+      'url': chapterUrl,
+      'chapterTitle': chapterTitle ?? '',
+      'review': target.content,
+      'reviewContext': jsonEncode(target.context),
+    };
+    final r = await registry
+        .find(source, 'reviewQuotes')
+        .resolve(source, 'reviewQuotes', vars: vars);
+    return r is List ? r.whereType<SourceReview>().toList() : const [];
+  }
+
+  /// 段评动作：[action] ∈ post/quote/voteUp/voteDown/delete。
   ///
+  /// [text] 是用户输入（发帖/回复），引擎按 `{{key}}` 注入动作 URL；
+  /// [target] 是投票/回复/删除的对象。
+  Future<bool> runReviewAction(
+    PluginConfig source, {
+    required String action,
+    String text = '',
+    SourceReview? target,
+    String novelId = '',
+    String chapterUrl = '',
+    String? chapterTitle,
+    int? paragraph,
+  }) async {
+    final vars = <String, String>{
+      'action': action,
+      'text': text,
+      'id': novelId,
+      'chapter': chapterUrl,
+      'url': chapterUrl,
+      'chapterTitle': chapterTitle ?? '',
+      if (target != null) 'review': target.content,
+      if (target != null) 'reviewContext': jsonEncode(target.context),
+      if (paragraph != null) 'paragraph': '$paragraph',
+    };
+    final r = await registry
+        .find(source, 'reviewAction')
+        .resolve(source, 'reviewAction', vars: vars);
+    return r == true;
+  }
+
+  /// 源是否为文件类书源（legado `bookSourceType == 3`）。
   /// 只读 selectors 判断，不触发解析；供详情页与读按钮切换逻辑使用。
   bool isWebFileSource(PluginConfig source) {
     final Object? xiaoshuo = source.selectors?['xiaoshuo'];

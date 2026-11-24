@@ -31,6 +31,7 @@ import '../../../core/models/novel_block.dart'
 import 'package:meta/meta.dart';
 
 import '../../../core/models/plugin_config.dart';
+import '../../../core/models/source_review.dart';
 import '../../../core/novel/novel_pay_result.dart';
 import '../../../core/resolver/source_resolver.dart';
 import '../../../core/resolver/resolver_registry.dart';
@@ -41,6 +42,7 @@ import '../web_book/book_chapter_list.dart';
 import '../web_book/book_content.dart';
 import '../web_book/book_info.dart';
 import '../web_book/book_list.dart';
+import '../web_book/book_review.dart';
 import '../model/book_source.dart';
 import '../model/search_book.dart';
 import '../model/source_callback_result.dart';
@@ -213,6 +215,7 @@ class ShuyuanNovelResolver
     );
     // 登录窗/交互浏览器可能由另一个 ctx 实例写入并落盘。
     await ctx.refreshCookiesFromStore();
+    await ctx.refreshLoginFromStore();
     return ctx;
   }
 
@@ -390,6 +393,12 @@ class ShuyuanNovelResolver
         return await _handleComicImages(source, bookSource, vars);
       case 'pay':
         return await _handlePayAction(source, bookSource, vars);
+      case 'reviews':
+        return await _handleReviews(bookSource, vars);
+      case 'reviewQuotes':
+        return await _handleReviewQuotes(bookSource, vars);
+      case 'reviewAction':
+        return await _handleReviewAction(bookSource, vars);
       case 'webFiles':
         return await _handleWebFiles(source, bookSource, vars);
       case 'webFileDownload':
@@ -573,6 +582,8 @@ class ShuyuanNovelResolver
                 url: chapterUrl,
                 title: vars['chapterTitle'] ?? '',
               );
+          final isMediaSource = bookSource.bookSourceType == 1 ||
+              bookSource.bookSourceType == 4;
           final blocks = BookContent.analyzeContent(
             bookSource: bookSource,
             book: book,
@@ -580,10 +591,23 @@ class ShuyuanNovelResolver
             baseUrl: chapterUrl,
             redirectUrl: chapterUrl,
             body: html,
-            mediaSource: bookSource.bookSourceType == 1 ||
-                bookSource.bookSourceType == 4,
+            mediaSource: isMediaSource,
+            // 整章后处理（subContent / title / replaceRegex / 缩进）统一交给
+            // assembleChapter：与直连链路同一实现，渲染回灌不再丢附加正文。
+            processTitle: false,
+            deferChapterPostProcess: true,
           );
-          if (blocks.isEmpty) {
+          final assembly = await BookContent.assembleChapter(
+            bookSource: bookSource,
+            book: book,
+            bookChapter: chapter,
+            firstBody: html,
+            baseUrl: chapterUrl,
+            redirectUrl: chapterUrl,
+            blocks: blocks,
+            mediaSource: isMediaSource,
+          );
+          if (assembly.blocks.isEmpty) {
             throw SourceResolveException(
               sourceId: source.id,
               apiName: 'content',
@@ -591,7 +615,7 @@ class ShuyuanNovelResolver
             );
           }
           return NovelContentResult(
-            blocks,
+            assembly.blocks,
             title: chapter.title.isEmpty ? null : chapter.title,
           );
         case 'video':
@@ -1521,6 +1545,150 @@ class ShuyuanNovelResolver
     // 图文块列表（文本段 + 插图），保留解析层给出的原始顺序，
     // 供阅读器图文混排显示。
     return NovelContentResult(result.blocks, title: result.title);
+  }
+
+  // ── 段评 ──
+
+  /// 段评列表（`ruleReview.reviewUrl`）。
+  ///
+  /// vars：`id`（书 URL）、`url`/`chapter`（章节 URL）、`chapterTitle`、
+  /// `page`（段评分页，缺省 1）。书籍/章节对象沿用详情/目录阶段的缓存，
+  /// 规则里的 `book.*`、`chapter.*` 与正文同一口径。
+  Future<List<SourceReview>> _handleReviews(
+    XiaoshuoBookSource bookSource,
+    Map<String, String> vars,
+  ) async {
+    final chapterUrl = vars['url'] ?? vars['chapter'] ?? '';
+    final bookId = vars['id'] ?? '';
+    final book =
+        (bookId.isEmpty ? null : (_bookInfoCache[bookId] ?? _seedFor(bookId))) ??
+            XiaoshuoBook(bookUrl: bookId, name: '');
+    final chapter = _chapterFor(bookId, chapterUrl) ??
+        (chapterUrl.isEmpty
+            ? null
+            : XiaoshuoBookChapter(
+                bookUrl: book.bookUrl,
+                url: chapterUrl,
+                title: vars['chapterTitle'] ?? '',
+              ));
+    final page = int.tryParse(vars['page'] ?? '') ?? 1;
+    return BookReview.fetchReviews(
+      bookSource: bookSource,
+      book: book,
+      chapter: chapter,
+      baseUrl: chapterUrl.isEmpty ? book.tocUrl ?? book.bookUrl : chapterUrl,
+      page: page,
+      // 段落锚点：面板从某一段打开时把段号绑给 `{{paragraph}}`。
+      paragraph: int.tryParse(vars['paragraph'] ?? ''),
+    );
+  }
+
+  /// 某条段评的回复列表（`ruleReview.reviewQuoteUrl`）。
+  /// vars 额外携带 `review`（正文）与 `reviewContext`（条目上下文 JSON）。
+  Future<List<SourceReview>> _handleReviewQuotes(
+    XiaoshuoBookSource bookSource,
+    Map<String, String> vars,
+  ) async {
+    final chapterUrl = vars['url'] ?? vars['chapter'] ?? '';
+    final bookId = vars['id'] ?? '';
+    final book =
+        (bookId.isEmpty ? null : (_bookInfoCache[bookId] ?? _seedFor(bookId))) ??
+            XiaoshuoBook(bookUrl: bookId, name: '');
+    return BookReview.fetchQuotes(
+      bookSource: bookSource,
+      target: _reviewFromVars(vars),
+      book: book,
+      chapter: _chapterFor(bookId, chapterUrl),
+      baseUrl: chapterUrl.isEmpty ? book.tocUrl ?? book.bookUrl : chapterUrl,
+    );
+  }
+
+  /// 段评动作：`action` ∈ post/quote/voteUp/voteDown/delete。
+  /// vars：`text`（用户输入）、`review`/`reviewContext`（目标条目）。
+  Future<bool> _handleReviewAction(
+    XiaoshuoBookSource bookSource,
+    Map<String, String> vars,
+  ) async {
+    final chapterUrl = vars['url'] ?? vars['chapter'] ?? '';
+    final bookId = vars['id'] ?? '';
+    final book =
+        (bookId.isEmpty ? null : (_bookInfoCache[bookId] ?? _seedFor(bookId))) ??
+            XiaoshuoBook(bookUrl: bookId, name: '');
+    final chapter = _chapterFor(bookId, chapterUrl);
+    final baseUrl = chapterUrl.isEmpty ? book.tocUrl ?? book.bookUrl : chapterUrl;
+    final text = vars['text'] ?? '';
+    final paragraph = int.tryParse(vars['paragraph'] ?? '');
+    switch (vars['action'] ?? '') {
+      case 'post':
+        return BookReview.postReview(
+          bookSource: bookSource,
+          text: text,
+          book: book,
+          chapter: chapter,
+          baseUrl: baseUrl,
+          paragraph: paragraph,
+        );
+      case 'quote':
+        return BookReview.postQuote(
+          bookSource: bookSource,
+          target: _reviewFromVars(vars),
+          text: text,
+          book: book,
+          chapter: chapter,
+          baseUrl: baseUrl,
+          paragraph: paragraph,
+        );
+      case 'voteUp':
+        return BookReview.vote(
+          bookSource: bookSource,
+          target: _reviewFromVars(vars),
+          up: true,
+          book: book,
+          chapter: chapter,
+          baseUrl: baseUrl,
+        );
+      case 'voteDown':
+        return BookReview.vote(
+          bookSource: bookSource,
+          target: _reviewFromVars(vars),
+          up: false,
+          book: book,
+          chapter: chapter,
+          baseUrl: baseUrl,
+        );
+      case 'delete':
+        return BookReview.deleteReview(
+          bookSource: bookSource,
+          target: _reviewFromVars(vars),
+          book: book,
+          chapter: chapter,
+          baseUrl: baseUrl,
+        );
+      default:
+        return false;
+    }
+  }
+
+  /// 从 vars 还原段评条目（跨 isolate/路由只传字符串）。
+  SourceReview _reviewFromVars(Map<String, String> vars) {
+    final rawContext = vars['reviewContext'] ?? '';
+    Map<String, dynamic> context = <String, dynamic>{};
+    if (rawContext.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(rawContext);
+        if (decoded is Map) {
+          context = <String, dynamic>{
+            for (final e in decoded.entries) e.key.toString(): e.value,
+          };
+        }
+      } catch (_) {}
+    }
+    return SourceReview(
+      content: vars['review'] ?? context['content']?.toString() ?? '',
+      avatar: context['avatar']?.toString() ?? '',
+      postTime: context['postTime']?.toString() ?? '',
+      context: context.isEmpty ? null : context,
+    );
   }
 
   // ── 付费动作 ──

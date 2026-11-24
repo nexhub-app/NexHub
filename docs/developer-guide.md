@@ -304,6 +304,56 @@ NexHub 的解析能力完全由源 JSON 驱动。一个源是一个 JSON 文件�
 }
 ```
 
+##### 六（续）、段评（ruleReview）
+
+书源可选能力：阅读器里多出「段评」面板（三点菜单入口 + 正文段尾气泡）。声明 `reviewUrl` 与 `contentRule` 后自动出现；未声明不影响阅读链路。
+
+`contentRule` / `avatarRule` / `postTimeRule` 是三条并列的**列表规则**，引擎按序号对齐：第 N 条内容配第 N 个头像、第 N 个时间。某项缺失只留空，条目不会丢。
+
+| 字段 / 键 | 说明 |
+| --- | --- |
+| `reviewUrl` | 段评列表地址，支持 `{{page}}` / `{{paragraph}}` 占位符与 `,{"method":"POST",...}` 选项串。 |
+| `contentRule` | 段评内容（列表规则）。HTML 片段会剥标签、`<br>` 转换行、实体反转义。 |
+| `avatarRule` | 发布者头像（列表规则），相对地址自动补全。 |
+| `postTimeRule` | 发布时间（列表规则），原样展示，不解析格式。 |
+| `reviewQuoteUrl` | 某条段评的回复列表地址。 |
+| `voteUpUrl` / `voteDownUrl` | 点赞 / 点踩地址，声明后才显示对应按钮。 |
+| `postReviewUrl` | 发表段评地址，用户输入经 `{{key}}` 传入。 |
+| `postQuoteUrl` | 回复某条段评地址，`{{key}}` 为回复文本。 |
+| `deleteUrl` | 删除段评地址，声明后才显示删除按钮。 |
+| `paragraphRule` | 段号列表规则（本应用扩展，Legado 无此字段）：把每条段评锚定到具体段落，与内容按序号对齐。取整数（0 起）；值带文字（如「第 7 段」）时取其中第一个数字，识别不出则该条按章级处理。 |
+
+占位符：
+
+| 占位符 | 说明 |
+| --- | --- |
+| `{{page}}` | 列表翻页，面板「加载更多」时递增。 |
+| `{{paragraph}}` | 段落序号（0 起，正文块下标，标题/插图块也占位）。从某段打开面板时绑定本段；切「全章」时不带该参数。 |
+| `{{key}}` | 用户输入文本（发帖 / 回复），与搜索关键词同一条编码通道，中文无需自行转义。 |
+| `{{$.字段}}` | 条目上下文：`content` / `avatar` / `postTime` / `paragraph` / `index`。 |
+
+```json
+"ruleReview": {
+  "reviewUrl": "https://api.example.com/comment/list?chapterId=123&page={{page}}",
+  "contentRule": "#commentList .item .text@text",
+  "avatarRule": "#commentList .item img@src",
+  "postTimeRule": "#commentList .item .time@text",
+  "paragraphRule": "#commentList .item@data-p",
+  "reviewQuoteUrl": "https://api.example.com/comment/replies?id={{$.index}}",
+  "voteUpUrl": "https://api.example.com/comment/vote?id={{$.index}}&type=up,{\"method\":\"POST\"}",
+  "postQuoteUrl": "https://api.example.com/comment/quote?id={{$.index}},{\"method\":\"POST\",\"body\":\"content={{key}}\"}",
+  "postReviewUrl": "https://api.example.com/comment/add,{\"method\":\"POST\",\"body\":\"chapterId=123&content={{key}}\"}",
+  "deleteUrl": "https://api.example.com/comment/delete?id={{$.index}},{\"method\":\"POST\"}"
+}
+```
+
+使用要点：
+
+- 段落锚点二选一：① `reviewUrl` 带 `{{paragraph}}`，面板按段请求；② `reviewUrl` 不带，声明 `paragraphRule`，面板拿整章列表后按段过滤。
+- 正文段尾气泡只对声明了 `paragraphRule` 的源出现（一次章级请求即可算出全章分布）。只按段请求的源没有气泡，入口是「长按段落 → 工具栏『段评』」。
+- 动作地址同样支持 `<js>` / `@js:` 与 URL 选项串，源 header / Cookie / 登录头照常生效。
+- 动作结果判定：响应体非空即视为成功（源站常见 `{"code":0}`），面板随后重新拉取列表。
+
 ##### 七、视频解析模块（player / video）
 
 影视源的核心。由 video 路由拿到播放页 HTML，再用选择器 / 脚本 / WebView 抽出真实视频地址（m3u8 / mp4）。
@@ -1126,6 +1176,7 @@ function __processVideo(json, context){ return json.url; }
 | `mediaHostRewrite` | 可选。媒体域名改写映射 `{"原host": "目标host"}`（精确匹配，大小写不敏感）。封面等媒体 URL 的 host 按映射改写后再加载，适用于「签名 CDN 禁 Referer」「主 CDN 拒直连」等需要切换备用 CDN 的场景。改写后的目标域会纳入源级 ECH 接管范围，封面与页面共用同一条加密通道；图片缓存按源取网络档案（源级代理 / ECH 对图片同样生效）。 |
 | `webviewConfig.adblock / timeoutSeconds` | 可选。WebView 广告拦截开关与超时（默认 true / 20s）。 |
 | `comments` | 可选。评论配置：provider(source/bangumi)、routes(list 必需，replies/post/reply/like/report 可选)、selectors、login(url=WebView 登录页 + checkCookie=Cookie 键名 + checkUrl/loggedInSelector=登录态探测)。 |
+| `selectors.xiaoshuo.ruleReview` | 可选。书源段评规则（Legado `ruleReview`）：reviewUrl / contentRule 决定是否出现阅读器「段评」面板；另支持 avatarRule、postTimeRule、reviewQuoteUrl、voteUpUrl、voteDownUrl、postReviewUrl、postQuoteUrl、deleteUrl、paragraphRule（本应用扩展，段号锚点 + 正文气泡）。详见第六节（续）。 |
 | `network` | 可选。源级网络覆盖：proxy / dns / hosts / sni / ech；缺省继承全局，非法值只告警不阻断启用。（sni 与 ech 均对直连 HTTPS 真实生效） |
 | `announcement` | 可选。源公告：{title, body?, url?, updatedAt?}。 |
 | `webFavorite` | 可选。网络收藏：enabled / title / route / url / addRoute / addUrl / requireLogin；声明后在线浏览显示「网络收藏」Tab。 |

@@ -11216,6 +11216,114 @@ abstract class AppLocalizations {
   /// **'Original content restored'**
   String get novelContentEditRestored;
 
+  /// No description provided for @novelReview.
+  ///
+  /// In en, this message translates to:
+  /// **'Paragraph comments'**
+  String get novelReview;
+
+  /// No description provided for @novelReviewEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No paragraph comments on this chapter yet'**
+  String get novelReviewEmpty;
+
+  /// No description provided for @novelReviewLoadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to load paragraph comments'**
+  String get novelReviewLoadFailed;
+
+  /// No description provided for @novelReviewPostHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Write a paragraph comment…'**
+  String get novelReviewPostHint;
+
+  /// No description provided for @novelReviewReplyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Reply to this comment…'**
+  String get novelReviewReplyHint;
+
+  /// No description provided for @novelReviewSend.
+  ///
+  /// In en, this message translates to:
+  /// **'Send'**
+  String get novelReviewSend;
+
+  /// No description provided for @novelReviewReply.
+  ///
+  /// In en, this message translates to:
+  /// **'Reply'**
+  String get novelReviewReply;
+
+  /// No description provided for @novelReviewVoteUp.
+  ///
+  /// In en, this message translates to:
+  /// **'Like'**
+  String get novelReviewVoteUp;
+
+  /// No description provided for @novelReviewVoteDown.
+  ///
+  /// In en, this message translates to:
+  /// **'Dislike'**
+  String get novelReviewVoteDown;
+
+  /// No description provided for @novelReviewDelete.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete'**
+  String get novelReviewDelete;
+
+  /// No description provided for @novelReviewDeleteConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete this comment?'**
+  String get novelReviewDeleteConfirm;
+
+  /// No description provided for @novelReviewPosted.
+  ///
+  /// In en, this message translates to:
+  /// **'Posted'**
+  String get novelReviewPosted;
+
+  /// No description provided for @novelReviewActionFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Action failed'**
+  String get novelReviewActionFailed;
+
+  /// No description provided for @novelReviewScopeChapter.
+  ///
+  /// In en, this message translates to:
+  /// **'Whole chapter'**
+  String get novelReviewScopeChapter;
+
+  /// No description provided for @novelReviewScopeParagraph.
+  ///
+  /// In en, this message translates to:
+  /// **'Paragraph {index}'**
+  String novelReviewScopeParagraph(int index);
+
+  /// No description provided for @novelReviewBubbleLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} paragraph comments'**
+  String novelReviewBubbleLabel(int count);
+
+  /// No description provided for @novelReviewLoadMore.
+  ///
+  /// In en, this message translates to:
+  /// **'Load more'**
+  String get novelReviewLoadMore;
+
+  /// No description provided for @novelReviewQuotes.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} replies'**
+  String novelReviewQuotes(int count);
+
   /// No description provided for @novelPayChapter.
   ///
   /// In en, this message translates to:

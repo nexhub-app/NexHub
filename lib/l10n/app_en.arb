@@ -3113,6 +3113,45 @@
   "novelContentEditRestore": "Restore original",
   "novelContentEditRestoreConfirm": "Discard your edits and restore the chapter to its original content?",
   "novelContentEditRestored": "Original content restored",
+  "@novelReviewQuotes": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "novelReview": "Paragraph comments",
+  "novelReviewEmpty": "No paragraph comments on this chapter yet",
+  "novelReviewLoadFailed": "Failed to load paragraph comments",
+  "novelReviewPostHint": "Write a paragraph comment…",
+  "novelReviewReplyHint": "Reply to this comment…",
+  "novelReviewSend": "Send",
+  "novelReviewReply": "Reply",
+  "novelReviewVoteUp": "Like",
+  "novelReviewVoteDown": "Dislike",
+  "novelReviewDelete": "Delete",
+  "novelReviewDeleteConfirm": "Delete this comment?",
+  "novelReviewPosted": "Posted",
+  "novelReviewActionFailed": "Action failed",
+  "@novelReviewScopeParagraph": {
+    "placeholders": {
+      "index": {
+        "type": "int"
+      }
+    }
+  },
+  "novelReviewScopeChapter": "Whole chapter",
+  "novelReviewScopeParagraph": "Paragraph {index}",
+  "novelReviewBubbleLabel": "{count} paragraph comments",
+  "@novelReviewBubbleLabel": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "novelReviewLoadMore": "Load more",
+  "novelReviewQuotes": "{count} replies",
   "novelPayChapter": "Buy chapter",
   "novelPayChapterTitle": "Chapter purchase",
   "novelPayChapterConfirm": "Run the source's purchase action? The chapter will reload when it finishes.",

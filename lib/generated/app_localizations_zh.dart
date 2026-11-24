@@ -5800,6 +5800,66 @@ class AppLocalizationsZh extends AppLocalizations {
   String get novelContentEditRestored => '已恢复原文';
 
   @override
+  String get novelReview => '段评';
+
+  @override
+  String get novelReviewEmpty => '本章还没有段评';
+
+  @override
+  String get novelReviewLoadFailed => '段评加载失败';
+
+  @override
+  String get novelReviewPostHint => '写一条段评…';
+
+  @override
+  String get novelReviewReplyHint => '回复这条段评…';
+
+  @override
+  String get novelReviewSend => '发送';
+
+  @override
+  String get novelReviewReply => '回复';
+
+  @override
+  String get novelReviewVoteUp => '赞';
+
+  @override
+  String get novelReviewVoteDown => '踩';
+
+  @override
+  String get novelReviewDelete => '删除';
+
+  @override
+  String get novelReviewDeleteConfirm => '删除这条段评？';
+
+  @override
+  String get novelReviewPosted => '已发布';
+
+  @override
+  String get novelReviewActionFailed => '操作失败';
+
+  @override
+  String get novelReviewScopeChapter => '全章';
+
+  @override
+  String novelReviewScopeParagraph(int index) {
+    return '第 $index 段';
+  }
+
+  @override
+  String novelReviewBubbleLabel(int count) {
+    return '本段 $count 条段评';
+  }
+
+  @override
+  String get novelReviewLoadMore => '加载更多';
+
+  @override
+  String novelReviewQuotes(int count) {
+    return '回复 $count 条';
+  }
+
+  @override
   String get novelPayChapter => '购买本章';
 
   @override

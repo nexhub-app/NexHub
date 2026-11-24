@@ -48,7 +48,8 @@ class ShuyuanImageHeaders {
     if (bookSource == null) return null;
     final header = bookSource.header ?? '';
     final hasOverlay =
-        ShuyuanSourceContext.persistedCookiesFor(config.id).isNotEmpty;
+        ShuyuanSourceContext.persistedCookiesFor(config.id).isNotEmpty ||
+            ShuyuanSourceContext.hasPersistedLoginHeaderFor(config.id);
     // 快路径：静态 header 的映射已就绪、无登录覆盖层、URL 无选项串时
     // 无需重建 AnalyzeUrl（封面列表每帧都会走到这里）。
     if (!_isScriptHeader(header) &&
@@ -58,11 +59,9 @@ class ShuyuanImageHeaders {
     }
     try {
       // 每次取图新建临时上下文：header 脚本可能读取 source 字段/jsLib，
-      // 登录覆盖层供 resolveRequestHeaders 按 host 合并进 Cookie。
+      // 登录覆盖层（Cookie + 登录头）供 resolveRequestHeaders 合并且请求。
       final ctx = ShuyuanSourceContext(config.id)..bindSource(bookSource);
-      ShuyuanSourceContext.persistedCookiesFor(config.id).forEach((k, v) {
-        ctx.cookies[k] = Map<String, String>.from(v);
-      });
+      ShuyuanSourceContext.seedPersistedAuth(ctx);
       return ShuyuanSourceContext.run(ctx, () {
         return AnalyzeUrl(url: url, source: bookSource)
             .resolveRequestHeaders();

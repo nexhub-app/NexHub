@@ -127,6 +127,13 @@ class AnalyzeUrl {
   /// 限流（`java.ajaxAll(urls, skipRateLimit)` 批请求专用）。
   bool skipRateLimit;
 
+  /// 交给 URL 模板里 `{{...}}` 的额外 JS 绑定（键名即占位符名）。
+  ///
+  /// 供非 legado 原生占位符使用（如段评的 `{{paragraph}}`=段落序号）：
+  /// 值直接进 JS 绑定表，字符串/数字都按 JS 语义参与表达式。
+  /// 同名键优先于内置绑定（`page`/`key` 等仍由构造参数提供）。
+  final Map<String, dynamic> extraBindings = <String, dynamic>{};
+
   /// URL 内 JS 的求值器（同一 AnalyzeUrl 内复用，连同其 JS 引擎）。
   /// 一个 URL 模板常有多个 `{{...}}`，旧实现每个都 new AnalyzeRule →
   /// new QuickJS 运行时且从不释放。
@@ -161,7 +168,11 @@ class AnalyzeUrl {
     this.skipPageCache = false,
     this.skipRateLimit = false,
     Map<String, String>? headerMapF,
+    Map<String, dynamic>? extraBindings,
   }) {
+    if (extraBindings != null && extraBindings.isNotEmpty) {
+      this.extraBindings.addAll(extraBindings);
+    }
     _rawUrl = url;
     // legado AnalyzeUrl init：baseUrl 命中 URL 选项串即截断，后续任何
     // `getAbsoluteURL(baseUrl, …)` 都不会把 `,{...}` 卷进基准路径。
@@ -234,33 +245,7 @@ class AnalyzeUrl {
 
   void replaceKeyPageJs() {
     if (url.contains('{{') && url.contains('}}')) {
-      final jsPattern = RegExp(r'\{\{([\w\W]*?)\}\}');
-      url = url.replaceAllMapped(jsPattern, (match) {
-        final expr = match.group(1)!;
-        if (expr == 'page') {
-          return page.toString();
-        }
-        if (expr == 'key') {
-          // 占位符替换为「原始关键词」而非预编码值：编码统一延迟到
-          // [analyzeUrl] 之后按源声明的 charset 处理（GBK 站点按 GBK 编码，
-          // 其余按 UTF-8），避免 GBK 站点收到 UTF-8 乱码而搜索无结果。
-          return key ?? '';
-        }
-        final trimmed = expr.trim();
-        // 规则形态（$. / $[ / @ / // 开头）→ 规则引擎对 itemContext 求值
-        // （legado makeUpRule isRule 路由；API 返回的模板 URL 字段依赖此
-        // 通道解析 bid/sourceId 等条目字段）。
-        if (itemContext != null &&
-            (trimmed.startsWith(r'$.') ||
-                trimmed.startsWith(r'$[') ||
-                trimmed.startsWith('@') ||
-                trimmed.startsWith('//'))) {
-          final ar = AnalyzeRule()..setContent(itemContext);
-          return ar.getString(trimmed);
-        }
-        final jsResult = _evalJs(expr, url);
-        return jsResult;
-      });
+      url = _expandBracedExpressions(url);
     }
 
     // 通用书源格式兼容：搜索/发现 URL 普遍使用尖括号占位符
@@ -277,7 +262,7 @@ class AnalyzeUrl {
     url = url.replaceAll('《page》', page.toString());
 
     // 兜底：确保任何残留的 {{key}}/{{page}} 被替换（极少见，
-    // 仅当上面的正则未覆盖时触发）。
+    // 仅当上面的扫描未覆盖时触发）。
     if (key != null && key!.isNotEmpty) {
       url = url.replaceAll('{{key}}', key!);
     }
@@ -292,6 +277,108 @@ class AnalyzeUrl {
       final picked = page - 1 < pages.length ? pages[page - 1] : pages.last;
       return picked.trim();
     });
+  }
+
+  /// 展开 URL 模板里的 `{{表达式}}`。
+  ///
+  /// 逐字符平衡扫描（不是非贪婪正则）：表达式内部可以再出现 `}}`（嵌套对象
+  /// 字面量、字符串里的 `}}`），旧的非贪婪正则会在第一个 `}}` 处截断，把
+  /// `{{ () => ({a:{b:1}})() }}` 这类写法切成非法表达式 → 求值失败、模板
+  /// 残留。扫描器对引号内文本与 `[...]` 嵌套按代码语义跳过；括号不平衡时
+  /// 回落到「第一个 `}}`」（与旧行为一致，保证坏模板不会把整条 URL 吞掉）。
+  String _expandBracedExpressions(String src) {
+    final out = StringBuffer();
+    var i = 0;
+    while (i < src.length) {
+      final open = src.indexOf('{{', i);
+      if (open < 0) {
+        out.write(src.substring(i));
+        break;
+      }
+      out.write(src.substring(i, open));
+      final end = _findBracedEnd(src, open);
+      if (end < 0) {
+        // 无闭合：`{{` 当普通字面量，原样保留剩余内容。
+        out.write(src.substring(open));
+        break;
+      }
+      out.write(_evalBracedExpression(src.substring(open + 2, end - 2)));
+      i = end;
+    }
+    return out.toString();
+  }
+
+  /// 从 [open]（指向 `{{` 的第一个 `{`）起找平衡的 `}}` 结束位置，
+  /// 返回结束标记之后的偏移；找不到返回 -1。
+  ///
+  /// 语义对齐 legado `RuleAnalyzer.chompCodeBalanced`：`\` 转义下一字符，
+  /// 引号内不参与计数，`[...]` 内部不参与 `{}` 计数。
+  static int _findBracedEnd(String src, int open) {
+    var pos = open;
+    var bracketDepth = 0;
+    var braceDepth = 0;
+    var inSingleQuote = false;
+    var inDoubleQuote = false;
+    while (pos < src.length) {
+      final c = src[pos++];
+      if (c == r'\') {
+        pos++; // 转义字符：跳过后一个字符
+        continue;
+      }
+      if (c == "'" && !inDoubleQuote) {
+        inSingleQuote = !inSingleQuote;
+        continue;
+      }
+      if (c == '"' && !inSingleQuote) {
+        inDoubleQuote = !inDoubleQuote;
+        continue;
+      }
+      if (inSingleQuote || inDoubleQuote) continue;
+      if (c == '[') {
+        bracketDepth++;
+        continue;
+      }
+      if (c == ']') {
+        bracketDepth--;
+        continue;
+      }
+      if (bracketDepth > 0) continue;
+      if (c == '{') {
+        braceDepth++;
+      } else if (c == '}') {
+        braceDepth--;
+        if (braceDepth <= 0) return pos;
+      }
+    }
+    // 不平衡：回落「第一个 `}}`」（旧非贪婪正则行为）。
+    final fallback = src.indexOf('}}', open + 2);
+    return fallback < 0 ? -1 : fallback + 2;
+  }
+
+  /// 求值单个 `{{...}}` 内的表达式。
+  String _evalBracedExpression(String expr) {
+    if (expr == 'page') {
+      return page.toString();
+    }
+    if (expr == 'key') {
+      // 占位符替换为「原始关键词」而非预编码值：编码统一延迟到
+      // [analyzeUrl] 之后按源声明的 charset 处理（GBK 站点按 GBK 编码，
+      // 其余按 UTF-8），避免 GBK 站点收到 UTF-8 乱码而搜索无结果。
+      return key ?? '';
+    }
+    final trimmed = expr.trim();
+    // 规则形态（$. / $[ / @ / // 开头）→ 规则引擎对 itemContext 求值
+    // （legado makeUpRule isRule 路由；API 返回的模板 URL 字段依赖此
+    // 通道解析 bid/sourceId 等条目字段）。
+    if (itemContext != null &&
+        (trimmed.startsWith(r'$.') ||
+            trimmed.startsWith(r'$[') ||
+            trimmed.startsWith('@') ||
+            trimmed.startsWith('//'))) {
+      final ar = AnalyzeRule()..setContent(itemContext);
+      return ar.getString(trimmed);
+    }
+    return _evalJs(expr, url);
   }
 
   void analyzeUrl() {
@@ -691,6 +778,9 @@ class AnalyzeUrl {
         // `java.ruleUrl` 拿到的是**当前**规则地址：analyzeJs 期间是原始
         // 模板，之后是展开结果。沙箱不持有宿主对象，按次注入当前值。
         '__syRuleUrl': ruleUrl,
+        // 调用方追加占位符（如段评的 `paragraph`）：放在内置绑定之后，
+        // 同名键覆盖内置值（调用方明确知道自己在覆盖什么）。
+        ...extraBindings,
       });
     } catch (_) {
       return currentResult;

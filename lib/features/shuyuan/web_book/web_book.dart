@@ -893,63 +893,28 @@ class WebBook {
     }
 
     // legado BookContent 外层：全部页拼接后执行 subContent（附加正文/音频
-    // 歌词）与 title 规则（一次）。subContent 以首页响应为求值内容。
-    // legado 无 try/catch：subContent 规则异常直接令整章失败。
-    final postRule = AnalyzeRule(book: book, chapter: chapter)
-      ..setContent(firstBody, chapterUrl)
-      ..setBaseUrl(chapterUrl)
-      ..setRedirectUrl(firstBaseUrl)
-      ..setNextChapterUrl(nextChapterUrl);
-    final subRule = contentRule.subContent;
-    if (subRule != null && subRule.isNotEmpty) {
-      var subContent = postRule.getString(subRule, unescape: false).trim();
-      if (subContent.toLowerCase().startsWith('http')) {
-        final subAnalyze = AnalyzeUrl(
-          url: subContent,
-          baseUrl: firstBaseUrl,
-          source: source,
-          ruleData: book,
-          chapter: chapter,
-        );
-        subContent = await subAnalyze.getStrResponse();
-      }
-      if (subContent.isNotEmpty) {
-        // legado BookContent：`isOnLineTxt` → 追加正文；`isAudio` → 写 lyric
-        // 变量；图片/文件/视频源忽略。判据走 BookType 位语义（兼容本应用
-        // 0..4 编号），组合类型（text|audio）两边都要执行。
-        if (book.isOnLineTxtBook || source.bookSourceType == 0) {
-          blocks.addAll(BookContent.extractAppendedBlocks(
-            content: subContent,
-            baseUrl: chapterUrl,
-            redirectUrl: firstBaseUrl,
-          ));
-        }
-        if (book.isAudioBook || source.bookSourceType == 1) {
-          chapter.putVariable('lyric', subContent);
-        }
-      }
-    }
-    final appliedTitle =
-        BookContent.applyChapterTitle(postRule, contentRule, chapter);
-
-    // legado BookContent 外层：全部页 + 附加正文拼接后只跑一次
-    // replaceRegex，再统一缩进（逐页阶段只做提取/清洗）。
-    final finalized = BookContent.finalizeChapter(
+    // 歌词）、title 规则与整章 replaceRegex/缩进（一次）。
+    final assembly = await BookContent.assembleChapter(
+      bookSource: source,
+      book: book,
+      bookChapter: chapter,
+      firstBody: firstBody,
+      baseUrl: chapterUrl,
+      redirectUrl: firstBaseUrl,
       blocks: blocks,
-      contentRule: contentRule,
-      analyzeRule: postRule,
       mediaSource: mediaSource,
+      nextChapterUrl: nextChapterUrl,
     );
+    final finalized = assembly.blocks;
     if (finalized.isEmpty) {
-      return BookContentResult(content: '', title: appliedTitle, error: '解析失败');
+      return BookContentResult(
+          content: '', title: assembly.title, error: '解析失败');
     }
 
-    // 音频源歌词由 subContent 写入章节变量（md3 同源），随结果回传给播放器。
-    final lyricText = chapter.getVariable('lyric').trim();
     return BookContentResult(
       blocks: finalized,
-      title: appliedTitle,
-      lyric: lyricText.isEmpty ? null : lyricText,
+      title: assembly.title,
+      lyric: assembly.lyric,
     );
   }
 

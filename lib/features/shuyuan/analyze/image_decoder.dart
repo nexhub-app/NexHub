@@ -71,11 +71,9 @@ class ShuyuanImageDecoder {
     try {
       final engine = JsEngine.forSource(config.id);
       // 与 header 求值同款临时上下文：封面解码脚本可能读取 source 字段与
-      // jsLib，也可能走 java.* 桥；登录覆盖层按持久化 Cookie 注入。
+      // jsLib，也可能走 java.* 桥；登录覆盖层（Cookie + 登录头）按持久化注入。
       final ctx = ShuyuanSourceContext(config.id)..bindSource(source);
-      ShuyuanSourceContext.persistedCookiesFor(config.id).forEach((k, v) {
-        ctx.cookies[k] = Map<String, String>.from(v);
-      });
+      ShuyuanSourceContext.seedPersistedAuth(ctx);
       final out = ShuyuanSourceContext.run(ctx, () {
         return engine.eval(rule, bindings: <String, dynamic>{
           'result': <int>[for (final b in bytes) b],
@@ -112,9 +110,7 @@ class ShuyuanImageDecoder {
     try {
       final engine = JsEngine.forSource(config.id);
       final ctx = ShuyuanSourceContext(config.id)..bindSource(source);
-      ShuyuanSourceContext.persistedCookiesFor(config.id).forEach((k, v) {
-        ctx.cookies[k] = Map<String, String>.from(v);
-      });
+      ShuyuanSourceContext.seedPersistedAuth(ctx);
       final out = ShuyuanSourceContext.run(ctx, () {
         return engine.eval(rule, bindings: <String, dynamic>{
           'result': <int>[for (final b in bytes) b],

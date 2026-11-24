@@ -84,14 +84,21 @@ class ShuyuanSourceContext {
   final Set<String> cookiePrimedRoots = <String>{};
 
   /// source.putLoginInfo/getLoginInfoMap。
+  ///
+  /// 与 legado `BaseSource.putLoginInfo` 对齐：**持久化**。旧实现只驻内存，
+  /// 进程重启后登录表单值清空、`loginCheckJs` 判未登录，用户被迫重填。
   final Map<String, String> loginInfo = {};
 
   /// source.putLoginHeader/getLoginHeaderMap（登录请求头，随请求合并）。
+  /// 同样持久化（非 Cookie 的 `Authorization`/token 靠它跨重启生效）。
   final Map<String, String> loginHeader = {};
 
   /// legado `getLoginHeader()` 的原样字符串（书源可写入非 JSON 私有格式，
   /// 例如以 `#` 前缀区分命名空间，由脚本自行解析）。
   String loginHeaderRaw = '';
+
+  /// 登录信息/登录头有写（需持久化）。
+  bool loginDirty = false;
 
   /// source 变量（ShuyuanVariableStore 的内存镜像，排空时持久化）。
   final Map<String, String> sourceVars = {};
@@ -606,6 +613,7 @@ class ShuyuanSourceContext {
                   for (final e in decoded.entries)
                     e.key.toString(): e.value?.toString() ?? '',
                 });
+              loginDirty = true;
             }
           } catch (_) {}
         case 'loginInfoDel':
@@ -614,6 +622,7 @@ class ShuyuanSourceContext {
           } else {
             loginInfo.remove(a);
           }
+          loginDirty = true;
         case 'loginHeader':
           try {
             final decoded = jsonDecode(a);
@@ -629,6 +638,7 @@ class ShuyuanSourceContext {
                       loginHeader[k.toString()] = v?.toString() ?? '');
                 }
               } catch (_) {}
+              loginDirty = true;
             } else if (decoded is Map) {
               loginHeader
                 ..clear()
@@ -637,11 +647,13 @@ class ShuyuanSourceContext {
                     e.key.toString(): e.value?.toString() ?? '',
                 });
               loginHeaderRaw = jsonEncode(loginHeader);
+              loginDirty = true;
             }
           } catch (_) {}
         case 'loginHeaderDel':
           loginHeaderRaw = '';
           loginHeader.clear();
+          loginDirty = true;
       }
     }
   }
@@ -792,6 +804,23 @@ class ShuyuanSourceContext {
     } catch (_) {}
   }
 
+  /// 登录表单值/登录头的跨实例刷新（登录窗写入 → 解析器缓存的 ctx 可见）。
+  /// 本实例有未落盘写入时跳过（同 Cookie 覆盖层口径）。
+  Future<void> refreshLoginFromStore() async {
+    if (loginDirty) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_loginStoreKey);
+      if (raw == null || raw.isEmpty) return;
+      _loginCache = _decodeLoginStore(raw);
+      final entry = _loginCache![sourceId];
+      if (entry == null) return;
+      loginInfo.clear();
+      loginHeader.clear();
+      seedLogin(this, entry);
+    } catch (_) {}
+  }
+
   // ── cookie 覆盖层持久化（per sourceId） ──
   static const String _cookieStoreKey = 'shuyuan_source_cookies_v1';
   static Map<String, Map<String, Map<String, String>>>? _cookieCache;
@@ -801,7 +830,13 @@ class ShuyuanSourceContext {
   static const String _cacheStoreKey = 'shuyuan_source_cache_v1';
   static Map<String, Map<String, Map<String, dynamic>>>? _cacheStore;
 
-  /// 创建上下文并装载持久化状态（cookie 覆盖层 + 源变量）。
+  // ── 登录信息持久化（per sourceId，legado BaseSource.putLoginInfo/
+  // putLoginHeader 的 CacheManager 落盘对等） ──
+  // 形如 {sourceId: {info: {k:v}, header: "raw", headerMap: {k:v}}}。
+  static const String _loginStoreKey = 'shuyuan_source_login_v1';
+  static Map<String, Map<String, dynamic>>? _loginCache;
+
+  /// 创建上下文并装载持久化状态（cookie 覆盖层 + 源变量 + 登录信息）。
   ///
   /// 旧实现在 `_loadedSources` 命中时直接返回**空上下文**（无 cookie、
   /// 无变量）——resolver 实例重建后登录态即丢失。SharedPreferences 实例
@@ -815,6 +850,15 @@ class ShuyuanSourceContext {
         _cookieCache ??= _decodeCookieStore(raw);
         final mine = _cookieCache![sourceId];
         if (mine != null) ctx.cookies.addAll(mine);
+      }
+    } catch (_) {}
+    // 登录表单值 / 登录头（legado：重启后仍在）。
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_loginStoreKey);
+      if (raw != null && raw.isNotEmpty) {
+        _loginCache ??= _decodeLoginStore(raw);
+        seedLogin(ctx, _loginCache![sourceId]);
       }
     } catch (_) {}
     // 源变量（源管理里维护的「源变量」）：脚本 source.getVariable 的初值。
@@ -851,29 +895,56 @@ class ShuyuanSourceContext {
     return mine;
   }
 
-  /// 启动期预读 cookie 覆盖层：图片头钩子是同步调用（取图期无法 await），
-  /// 未预热时只会看到空覆盖层，登录后的 Cookie 不会进图片请求。
+  /// 启动期预读 cookie 覆盖层与登录态：图片头钩子是同步调用（取图期无法
+  /// await），未预热时只会看到空覆盖层，登录后的 Cookie / 登录头不会进图片请求。
   static Future<void> warmCookieCache() async {
-    if (_cookieCache != null) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_cookieStoreKey);
-      if (raw != null && raw.isNotEmpty) {
-        _cookieCache ??= _decodeCookieStore(raw);
+      if (_cookieCache == null) {
+        final raw = prefs.getString(_cookieStoreKey);
+        if (raw != null && raw.isNotEmpty) {
+          _cookieCache = _decodeCookieStore(raw);
+        }
+      }
+      if (_loginCache == null) {
+        final raw = prefs.getString(_loginStoreKey);
+        if (raw != null && raw.isNotEmpty) {
+          _loginCache = _decodeLoginStore(raw);
+        }
       }
     } catch (_) {}
   }
 
-  /// 排空后持久化（仅 dirty 时）：源变量 + cookie 覆盖层。
+  /// 排空后持久化（仅 dirty 时）：源变量 + 登录信息 + cookie 覆盖层 + cache。
   ///
   /// 旧实现只落 cookie，`sourceVarsDirty` 写了没人读 —— 脚本里
-  /// `source.putVariable` 的写入重启即丢。
+  /// `source.putVariable` 的写入重启即丢。登录信息（`putLoginInfo`/
+  /// `putLoginHeader`）同样是脚本写入、需要跨重启保留的状态。
   Future<void> persistIfNeeded() async {
     if (sourceVarsDirty) {
       sourceVarsDirty = false;
       try {
         await ShuyuanVariableStore.save(
             sourceId, Map<String, String>.from(sourceVars));
+      } catch (_) {}
+    }
+    if (loginDirty) {
+      loginDirty = false;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        _loginCache ??= {};
+        if (loginInfo.isEmpty && loginHeader.isEmpty && loginHeaderRaw.isEmpty) {
+          // 全部清空（deleteLoginInfo/deleteLoginHeader）：移除记录，
+          // 避免残留空壳条目。
+          _loginCache!.remove(sourceId);
+        } else {
+          _loginCache![sourceId] = <String, dynamic>{
+            'info': Map<String, String>.from(loginInfo),
+            'header': loginHeaderRaw,
+            'headerMap': Map<String, String>.from(loginHeader),
+          };
+        }
+        await prefs.setString(_loginStoreKey, jsonEncode(_loginCache));
       } catch (_) {}
     }
     if (!cookiesDirty && !cacheDirty) return;
@@ -928,6 +999,14 @@ class ShuyuanSourceContext {
         await prefs.setString(_cacheStoreKey, jsonEncode(_cacheStore));
       }
     } catch (_) {}
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_loginStoreKey);
+      if (raw != null && raw.isNotEmpty) {
+        _loginCache = _decodeLoginStore(raw)..remove(sourceId);
+        await prefs.setString(_loginStoreKey, jsonEncode(_loginCache));
+      }
+    } catch (_) {}
   }
 
   static Map<String, Map<String, Map<String, String>>> _decodeCookieStore(
@@ -976,6 +1055,73 @@ class ShuyuanSourceContext {
       }
     } catch (_) {}
     return out;
+  }
+
+  static Map<String, Map<String, dynamic>> _decodeLoginStore(String raw) {
+    final out = <String, Map<String, dynamic>>{};
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        decoded.forEach((src, entry) {
+          if (entry is! Map) return;
+          final info = <String, String>{};
+          final headerMap = <String, String>{};
+          for (final field in <String, Map<String, String>>{
+            'info': info,
+            'headerMap': headerMap,
+          }.entries) {
+            final raw = entry[field.key];
+            if (raw is! Map) continue;
+            raw.forEach((k, v) {
+              field.value[k.toString()] = v?.toString() ?? '';
+            });
+          }
+          out[src.toString()] = <String, dynamic>{
+            'info': info,
+            'header': entry['header']?.toString() ?? '',
+            'headerMap': headerMap,
+          };
+        });
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  /// 把持久化的登录表单值/登录头装回上下文（`forSource` 与取图期临时上下文共用）。
+  static void seedLogin(ShuyuanSourceContext ctx, Map<String, dynamic>? entry) {
+    if (entry == null) return;
+    final info = entry['info'];
+    if (info is Map) {
+      info.forEach((k, v) => ctx.loginInfo[k.toString()] = v?.toString() ?? '');
+    }
+    ctx.loginHeaderRaw = entry['header']?.toString() ?? '';
+    final headerMap = entry['headerMap'];
+    if (headerMap is Map) {
+      headerMap.forEach((k, v) =>
+          ctx.loginHeader[k.toString()] = v?.toString() ?? '');
+    }
+    if (ctx.loginHeaderRaw.isEmpty && ctx.loginHeader.isNotEmpty) {
+      ctx.loginHeaderRaw = jsonEncode(ctx.loginHeader);
+    }
+  }
+
+  /// 该源是否有持久化的登录请求头（取图期快路径判定，同步读取）。
+  static bool hasPersistedLoginHeaderFor(String sourceId) {
+    final entry = _loginCache?[sourceId];
+    if (entry == null) return false;
+    final headerMap = entry['headerMap'];
+    return headerMap is Map && headerMap.isNotEmpty;
+  }
+
+  /// 给取图/解码用的临时上下文注入持久化登录态（Cookie 覆盖层 + 登录头）。
+  ///
+  /// 图片/封面走的不是 AnalyzeUrl 主链路，旧实现只注入 Cookie，带
+  /// `Authorization` 一类登录头的站点在取图期一律 401。
+  static void seedPersistedAuth(ShuyuanSourceContext ctx) {
+    persistedCookiesFor(ctx.sourceId).forEach((k, v) {
+      ctx.cookies[k] = Map<String, String>.from(v);
+    });
+    seedLogin(ctx, _loginCache?[ctx.sourceId]);
   }
 
   /// settle：抓取 ajaxPending 中未满足的请求写入 ajaxCache（登录脚本等

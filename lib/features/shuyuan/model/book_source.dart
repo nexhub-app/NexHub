@@ -8,6 +8,7 @@ import 'rule_toc.dart';
 import 'rule_content.dart';
 import 'rule_book_info.dart';
 import 'rule_explore.dart';
+import 'rule_review.dart';
 
 class XiaoshuoBookSource {
   String bookSourceUrl;
@@ -42,8 +43,10 @@ class XiaoshuoBookSource {
   TocRule? ruleToc;
   ContentRule? ruleContent;
 
-  /// 段评规则（legado `BookSource.ruleReview: ReviewRule?`）：引擎暂不消费，
-  /// 但必须原样透传，避免导入/导出往返丢字段。
+  /// 段评规则（legado `BookSource.ruleReview: ReviewRule?`）。
+  ///
+  /// 以原始 Map 承载（导入/导出往返不丢未知字段），需要按字段取值时用
+  /// [getReviewRule] 解析为 [ReviewRule]；渲染层阅读器「段评」面板消费。
   Map<String, dynamic>? ruleReview;
 
   /// 首页模块定义（legado `BookSource.homepageModules: String?`，JSON 数组
@@ -134,6 +137,9 @@ class XiaoshuoBookSource {
     ruleContent ??= ContentRule();
     return ruleContent!;
   }
+
+  ReviewRule getReviewRule() =>
+      ReviewRule.fromJson(ruleReview ?? const <String, dynamic>{});
 
   factory XiaoshuoBookSource.fromJson(Map<String, dynamic> json) {
     return XiaoshuoBookSource(

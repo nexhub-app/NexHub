@@ -8,6 +8,8 @@
 /// - `sort`/`rss`：RSS 专属，书源场景忽略。
 library;
 
+import 'dart:convert';
+
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
@@ -18,6 +20,7 @@ import '../../../core/navigation/app_page_route.dart';
 import '../../../core/services/source_repository.dart';
 import '../../../core/utils/app_log.dart';
 import '../../../core/widgets/module_source_search_screen.dart';
+import '../model/rule_review.dart';
 import '../../../generated/app_localizations.dart';
 import '../../manga/presentation/manga_online_list_screen.dart';
 import '../../media/presentation/media_online_list_screen.dart';
@@ -155,6 +158,32 @@ bool shuyuanHasCustomButton(PluginConfig source) {
   final Object? xiaoshuo = source.selectors?['xiaoshuo'];
   return xiaoshuo is Map && xiaoshuo['customButton'] == true;
 }
+
+/// 书源声明的段评规则（`selectors['xiaoshuo'].ruleReview`），未声明返回 null。
+///
+/// 兼容对象与 JSON 字符串两种形态（部分源把整段规则存成字符串）。
+ReviewRule? shuyuanReviewRule(PluginConfig source) {
+  final Object? xiaoshuo = source.selectors?['xiaoshuo'];
+  if (xiaoshuo is! Map) return null;
+  final Object? raw = xiaoshuo['ruleReview'];
+  try {
+    if (raw is Map) {
+      return ReviewRule.fromJson(Map<String, dynamic>.from(raw.cast<Object?, Object?>()));
+    }
+    if (raw is String && raw.trim().isNotEmpty) {
+      final Object? decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return ReviewRule.fromJson(
+            Map<String, dynamic>.from(decoded.cast<Object?, Object?>()));
+      }
+    }
+  } catch (_) {}
+  return null;
+}
+
+/// 书源是否可展示段评面板（声明了列表地址 + 内容规则）。
+bool shuyuanHasReviewRule(PluginConfig source) =>
+    shuyuanReviewRule(source)?.hasList ?? false;
 
 /// 书源是否开启事件监听（md3 `BookSource.eventListener`）。
 bool shuyuanHasEventListener(PluginConfig source) {

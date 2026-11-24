@@ -77,6 +77,9 @@ class ShuyuanAdapter {
         xiaoshuoSelectors['tocUrl'] = source.tocUrl;
       }
     } else {
+      // 显式字段映射（无 raw 的来源：代码内置源、历史存量）。列表必须与
+      // [ShuyuanSource] 建模字段同步——漏一个字段，该源转成 PluginConfig 后
+      // 运行期就读不到它（段评规则、登录三件套、并发限速、事件回调都曾因此丢失）。
       xiaoshuoSelectors = {
         'bookSourceName': source.bookSourceName,
         'bookSourceUrl': source.bookSourceUrl,
@@ -87,12 +90,31 @@ class ShuyuanAdapter {
         'header': source.header,
         'searchUrl': source.searchUrl,
         'exploreUrl': source.exploreUrl,
+        'exploreScreen': source.exploreScreen,
         'tocUrl': source.tocUrl,
         'ruleSearch': source.ruleSearch,
         'ruleBookInfo': source.ruleBookInfo,
         'ruleToc': source.ruleToc,
         'ruleContent': source.ruleContent,
         'ruleExplore': source.ruleExplore,
+        'ruleReview': source.ruleReview,
+        'homepageModules': source.homepageModules,
+        'bookUrlPattern': source.bookUrlPattern,
+        'customOrder': source.customOrder,
+        'enabledExplore': source.enabledExplore,
+        'jsLib': source.jsLib,
+        'enabledCookieJar': source.enabledCookieJar,
+        'concurrentRate': source.concurrentRate,
+        'loginUrl': source.loginUrl,
+        'loginUi': source.loginUi,
+        'loginCheckJs': source.loginCheckJs,
+        'coverDecodeJs': source.coverDecodeJs,
+        'variableComment': source.variableComment,
+        'lastUpdateTime': source.lastUpdateTime,
+        'respondTime': source.respondTime,
+        'weight': source.weight,
+        'eventListener': source.eventListener,
+        'customButton': source.customButton,
       };
     }
     final selectors = <String, dynamic>{

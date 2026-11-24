@@ -558,11 +558,13 @@ Future<void> _runFormLogin(
   );
   if (saved != true) return;
 
-  // 表单值写入 ctx.loginInfo（登录脚本经 source.getLoginInfoMap 读取）。
+  // 表单值写入 ctx.loginInfo（登录脚本经 source.getLoginInfoMap 读取），
+  // 并标记为待持久化：重启后表单预填值仍在（legado putLoginInfo 落盘）。
   for (final row in rows) {
     if (row.type == 'button' || row.type == 'label') continue;
     ctx.loginInfo[row.name] = values[row.name] ?? '';
   }
+  ctx.loginDirty = true;
 
   // 执行登录脚本（mini-settle：java.ajax 走确定性重放）。
   // 每次登录都重新抓取：清掉上次尝试的 ajax 缓存（宿主表 + JS 全局），

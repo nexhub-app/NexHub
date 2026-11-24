@@ -5927,6 +5927,66 @@ class AppLocalizationsEn extends AppLocalizations {
   String get novelContentEditRestored => 'Original content restored';
 
   @override
+  String get novelReview => 'Paragraph comments';
+
+  @override
+  String get novelReviewEmpty => 'No paragraph comments on this chapter yet';
+
+  @override
+  String get novelReviewLoadFailed => 'Failed to load paragraph comments';
+
+  @override
+  String get novelReviewPostHint => 'Write a paragraph comment…';
+
+  @override
+  String get novelReviewReplyHint => 'Reply to this comment…';
+
+  @override
+  String get novelReviewSend => 'Send';
+
+  @override
+  String get novelReviewReply => 'Reply';
+
+  @override
+  String get novelReviewVoteUp => 'Like';
+
+  @override
+  String get novelReviewVoteDown => 'Dislike';
+
+  @override
+  String get novelReviewDelete => 'Delete';
+
+  @override
+  String get novelReviewDeleteConfirm => 'Delete this comment?';
+
+  @override
+  String get novelReviewPosted => 'Posted';
+
+  @override
+  String get novelReviewActionFailed => 'Action failed';
+
+  @override
+  String get novelReviewScopeChapter => 'Whole chapter';
+
+  @override
+  String novelReviewScopeParagraph(int index) {
+    return 'Paragraph $index';
+  }
+
+  @override
+  String novelReviewBubbleLabel(int count) {
+    return '$count paragraph comments';
+  }
+
+  @override
+  String get novelReviewLoadMore => 'Load more';
+
+  @override
+  String novelReviewQuotes(int count) {
+    return '$count replies';
+  }
+
+  @override
   String get novelPayChapter => 'Buy chapter';
 
   @override

@@ -41,6 +41,7 @@ import '../../../core/models/media_item.dart';
 import '../../../features/player/presentation/video_player_screen.dart';
 import '../../../core/navigation/app_page_route.dart';
 import '../../../core/models/novel_block.dart';
+import '../../../core/models/source_review.dart';
 import '../../../core/utils/app_log.dart';
 import '../../../core/utils/volume_key_listener.dart';
 import '../../../core/platform/platform_service.dart';
@@ -60,6 +61,8 @@ import '../../../core/novel/novel_pay_result.dart'
     show NovelPayOutcome, NovelPayResult;
 import '../../../core/services/novel_highlight_sync_service.dart';
 import 'novel_selection_ai_dialog.dart';
+import 'novel_review_sheet.dart';
+import 'novel_review_bubble.dart';
 import '../../../core/reader/tap_zone_resolver.dart';
 import '../../../core/reader/reading_queue_store.dart';
 import '../../../core/widgets/reading_queue_sheet.dart'
@@ -72,6 +75,7 @@ import '../../../core/services/novel_progress_sync_service.dart';
 import '../../../core/services/source_repository.dart';
 import '../../shuyuan/model/source_callback_result.dart';
 import '../../shuyuan/presentation/shuyuan_callback_host.dart';
+import '../../shuyuan/web_book/book_review.dart';
 import '../../../core/async_session.dart';
 import '../../../core/player/audio_playback_service.dart';
 import '../../../core/stats/reading_session_recorder.dart';
@@ -452,6 +456,14 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
 
   /// 当前书籍的高亮规则（惰性加载，在 [_loadChapter] 中填充）。
   NovelHighlightRuleSet? _highlightRuleSet;
+
+  /// 段评段落锚点计数（正文块下标 → 条数）：段尾气泡的数据源。
+  /// 只有声明了 `ruleReview.paragraphRule` 的书源才会填充（其余源没有
+  /// 段落归属信息，气泡无从画起，仍走「长按 → 段评」入口）。
+  Map<int, int> _reviewCounts = const <int, int>{};
+
+  /// 已拉取计数的章节标识（章节 URL），避免同章重复请求。
+  String? _reviewCountsChapterUrl;
 
   /// 内容编辑：正文编辑持久化管理器 + 「当前章是否被编辑过」标记
   /// （控制菜单「内容编辑 / 恢复原文」入口与已编辑角标）。
@@ -1666,6 +1678,84 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     if (!mounted) return;
     setState(() {});
     await _loadChapter(_chapterIndex, restorePage: _currentPage);
+  }
+
+  /// 段评气泡是否可用：源声明了 `paragraphRule`（能给出段落归属）才画。
+  bool get _reviewBubblesEnabled {
+    final PluginConfig? source = _source;
+    if (source == null || _isLocalMode) return false;
+    return shuyuanReviewRule(source)?.hasParagraphAnchor ?? false;
+  }
+
+  /// 拉取本章段评并按段落计数（段尾气泡）。
+  ///
+  /// 只在源声明 `paragraphRule` 时执行：一次章级请求换全章气泡分布；
+  /// 同一章不重复请求（`force` 用于面板操作后刷新）。
+  Future<void> _loadReviewCounts({bool force = false}) async {
+    final PluginConfig? source = _source;
+    if (!_reviewBubblesEnabled) {
+      if (_reviewCounts.isNotEmpty) {
+        setState(() => _reviewCounts = const <int, int>{});
+      }
+      return;
+    }
+    final List<Episode> chs = _effectiveChapters;
+    if (_chapterIndex < 0 || _chapterIndex >= chs.length) return;
+    final Episode chapter = chs[_chapterIndex];
+    if (!force && _reviewCountsChapterUrl == chapter.url) return;
+    _reviewCountsChapterUrl = chapter.url;
+    try {
+      final MediaApiService api = context.read<MediaApiService>();
+      final List<SourceReview> reviews = await api.fetchChapterReviews(
+        source!,
+        novelId: widget.novelId,
+        chapterUrl: chapter.url,
+        chapterTitle: chapter.title,
+      );
+      if (!mounted || _reviewCountsChapterUrl != chapter.url) return;
+      setState(() {
+        _reviewCounts = BookReview.countByParagraph(reviews);
+      });
+    } catch (e) {
+      // 气泡是附加能力：拉取失败只记日志，不影响正文与「长按 → 段评」。
+      AppLog.instance.w('[段评] 气泡计数拉取失败: $e');
+    }
+  }
+
+  /// 打开某一段的段评面板（气泡点击），关闭后刷新气泡计数。
+  Future<void> _openReviewForParagraph(int paragraph) async {
+    final PluginConfig? source = _source;
+    if (source == null || _isLocalMode) return;
+    final List<Episode> chs = _effectiveChapters;
+    if (_chapterIndex < 0 || _chapterIndex >= chs.length) return;
+    final Episode chapter = chs[_chapterIndex];
+    await showNovelReviewSheet(
+      context,
+      source: source,
+      novelId: widget.novelId,
+      chapterUrl: chapter.url,
+      chapterTitle: chapter.title,
+      paragraph: paragraph,
+    );
+    if (!mounted) return;
+    await _loadReviewCounts(force: true);
+  }
+
+  /// 段评面板（三点菜单入口，源声明 `ruleReview` 时可见）。
+  Future<void> _showReviewSheet() async {
+    final PluginConfig? source = _source;
+    if (source == null || _isLocalMode) return;
+    if (_chapterIndex < 0 || _chapterIndex >= widget.chapters.length) return;
+    final Episode chapter = widget.chapters[_chapterIndex];
+    await showNovelReviewSheet(
+      context,
+      source: source,
+      novelId: widget.novelId,
+      chapterUrl: chapter.url,
+      chapterTitle: chapter.title,
+    );
+    if (!mounted) return;
+    await _loadReviewCounts(force: true);
   }
 
   /// 切换 TTS 朗读（三点菜单入口）。
@@ -3257,6 +3347,9 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       setState(() {
         _rawParagraphs = effective;
         _paragraphs = _applyConvert(effective);
+        // 换章即失效：新章要重新拉段评计数（下面帧后异步取，不阻塞渲染）。
+        _reviewCountsChapterUrl = null;
+        _reviewCounts = const <int, int>{};
         // 媒体章节检测（legado type=1/4）：正文为媒体直链块时切播放卡片，
         // 跳过分页控制器（无文本可分页）。
         final mediaBlock = _paragraphs.whereType<NovelMediaBlock>().firstOrNull;
@@ -3270,6 +3363,8 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       });
       _notifyReadCallbacks(index);
       if (_isMediaChapter) return;
+      // 段评气泡计数：帧后异步取，正文先渲染（失败不影响阅读）。
+      unawaited(_loadReviewCounts());
       _setupControllers(restorePage: restorePage);
       // 章节加载完成、分页就绪后检查一次预下载（单页章 / 直达章末场景，
       // 不依赖用户翻页也能触发；postFrame 等 LayoutBuilder 算出分页）。
@@ -4290,6 +4385,14 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
         label: l10n.selectionNote,
         onPressed: () => _selHighlightWithNote(),
       ),
+      // 段评（段落锚点）：选区起点所在段 → 打开只看本段的段评面板。
+      // 仅对声明了 ruleReview 的书源出现，其它源工具栏保持不变。
+      if (_source != null && shuyuanHasReviewRule(_source!))
+        _selToolbarButton(
+          icon: Icons.forum_outlined,
+          label: l10n.novelReview,
+          onPressed: _selReview,
+        ),
       _selToolbarButton(
         icon: Icons.translate_rounded,
         label: l10n.selectionTranslate,
@@ -4619,6 +4722,55 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(AppLocalizations.of(context).selectionCopied)),
     );
+  }
+
+  /// 选区块 → 段评面板（段落锚点，0 起；无法定位时为章级）。
+  Future<void> _selReview() async {
+    final PluginConfig? source = _source;
+    final int? paragraph = _paragraphIndexForSelection();
+    _selectionController.clearSelection();
+    setState(() {
+      _showSelectionToolbar = false;
+      _uiVisible = true; // 恢复控制面板
+    });
+    if (source == null || _isLocalMode) return;
+    final chs = _effectiveChapters;
+    if (_chapterIndex < 0 || _chapterIndex >= chs.length) return;
+    final Episode chapter = chs[_chapterIndex];
+    await showNovelReviewSheet(
+      context,
+      source: source,
+      novelId: widget.novelId,
+      chapterUrl: chapter.url,
+      chapterTitle: chapter.title,
+      paragraph: paragraph,
+    );
+    if (!mounted) return;
+    await _loadReviewCounts(force: true);
+  }
+
+  /// 选区起点所在的段落（块）下标，0 起。
+  ///
+  /// 口径与朗读（`_tts.currentIndex`）/分页行（`NovelLine.paragraphIndex`）
+  /// 完全一致：**块列表下标**，不是「第几个纯文字段」。段评面板与源模板
+  /// `{{paragraph}}` 都用这个数，滚动与分页两种排版下取值相同。
+  int? _paragraphIndexForSelection() {
+    final int? global = _selectionController.selectionStart ??
+        _selectionController.selectionAnchor;
+    if (global == null) return null;
+    // 分页模式：行自带段落下标（含标题/插图行的真实块位置）。
+    final int? paged = _selectionController.paragraphIndexAt(global);
+    if (paged != null) return paged;
+    // 滚动模式：按文本块长度累加定位（与 setBlocks 的文本流同源）。
+    var offset = 0;
+    for (var i = 0; i < _paragraphs.length; i++) {
+      final NovelBlock b = _paragraphs[i];
+      if (b is! NovelTextBlock) continue;
+      final int len = b.text.length;
+      if (global >= offset && global < offset + len) return i;
+      offset += len;
+    }
+    return null;
   }
 
   /// 划词翻译：把当前选中文本交给小说翻译管线（术语表/风格与整章翻译
@@ -6223,6 +6375,8 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
                       ttsActive: _tts.state != NovelTtsState.stopped,
                       searchKeyword: _searchKeyword,
                       searchRegex: _searchRegex,
+                      reviewCounts: _reviewCounts,
+                      onReviewTap: _openReviewForParagraph,
                       onParagraphTap: _onParagraphTapped,
                       onImageTap: (url, src) =>
                           _showImageViewer(url, src ?? _source),
@@ -6461,11 +6615,19 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
                     height: 1.5,
                   )
                 : baseStyle;
+            final int reviewCount =
+                (!isHeading && _reviewCounts.isNotEmpty)
+                    ? (_reviewCounts[idx] ?? 0)
+                    : 0;
             final Widget bodyText = _buildHighlightedBodyText(
               text,
               baseStyle,
               headingStyle,
               isHeading,
+              reviewCount: reviewCount,
+              onReviewTap: reviewCount > 0
+                  ? () => _openReviewForParagraph(idx)
+                  : null,
             );
             // 滚动模式选区：非 TTS 态文本块包长按手势，复用与分页同源的
             // 章节全局字符偏移坐标系（[NovelSelectionController.setBlocks]）。
@@ -6554,8 +6716,10 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     String text,
     TextStyle baseStyle,
     TextStyle headingStyle,
-    bool isHeading,
-  ) {
+    bool isHeading, {
+    int reviewCount = 0,
+    VoidCallback? onReviewTap,
+  }) {
     final style = isHeading ? headingStyle : baseStyle;
     // 滚动模式正文两端对齐（与分页模式 justify 语义一致）；
     // 标题行恒居中（章节分界视觉），其余正文按 [NovelTextAlignMode] 取
@@ -6576,11 +6740,34 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
         fontWeight: FontWeight.w700,
       ),
     );
+    // 段评气泡：段尾追加一个行内 WidgetSpan（滚动模式自由排版，追加不改变
+    // 行宽硬约束；分页模式由行尾浮层承担，见 _NovelPageWidget）。
+    final List<InlineSpan> bubbleSpan = reviewCount > 0
+        ? <InlineSpan>[
+            const WidgetSpan(child: SizedBox(width: 4)),
+            WidgetSpan(
+              alignment: PlaceholderAlignment.middle,
+              child: NovelReviewBubble(
+                count: reviewCount,
+                onTap: onReviewTap,
+              ),
+            ),
+          ]
+        : const <InlineSpan>[];
     if (spans == null) {
-      return Text(text, style: style, textAlign: align);
+      if (bubbleSpan.isEmpty) {
+        return Text(text, style: style, textAlign: align);
+      }
+      return Text.rich(
+        TextSpan(
+          style: style,
+          children: <InlineSpan>[TextSpan(text: text), ...bubbleSpan],
+        ),
+        textAlign: align,
+      );
     }
     return Text.rich(
-      TextSpan(style: style, children: spans),
+      TextSpan(style: style, children: <InlineSpan>[...spans, ...bubbleSpan]),
       textAlign: align,
     );
   }
@@ -6759,6 +6946,8 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
                     }
                   case 'payChapter':
                     _payCurrentChapter();
+                  case 'reviews':
+                    _showReviewSheet();
                   case 'sourceCustomButton':
                     _runReaderCustomButton(longPress: false);
                   case 'bookmarkList':
@@ -6829,6 +7018,17 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
                       child: ListTile(
                         leading: const Icon(Icons.paid_rounded),
                         title: Text(l10n.novelPayChapter),
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                      ),
+                    ),
+                  // 段评（legado ruleReview）：源声明了段评列表才显示。
+                  if (_source != null && shuyuanHasReviewRule(_source!))
+                    PopupMenuItem<String>(
+                      value: 'reviews',
+                      child: ListTile(
+                        leading: const Icon(Icons.forum_outlined),
+                        title: Text(l10n.novelReview),
                         contentPadding: EdgeInsets.zero,
                         dense: true,
                       ),
@@ -9046,6 +9246,12 @@ class _NovelPageWidget extends StatelessWidget {
   /// （由阅读器状态基于会话分页缓存计算；null/空串表示不可用）。
   final String Function(int page)? bookPageLabel;
 
+  /// 段评段落锚点计数（正文块下标 → 条数）：段末行右侧画气泡。
+  final Map<int, int> reviewCounts;
+
+  /// 气泡点击：打开只看该段的段评面板。
+  final void Function(int paragraphIndex)? onReviewTap;
+
   const _NovelPageWidget({
     required this.lines,
     this.onImageTap,
@@ -9067,6 +9273,8 @@ class _NovelPageWidget extends StatelessWidget {
     required this.footerCenter,
     required this.headerFooterColor,
     required this.headerFooterMargin,
+    this.reviewCounts = const <int, int>{},
+    this.onReviewTap,
     this.ttsCurrentIndex = -1,
     this.ttsActive = false,
     this.searchKeyword,
@@ -9286,6 +9494,44 @@ class _NovelPageWidget extends StatelessWidget {
     return content;
   }
 
+  /// 段末行 → 叠加段评气泡（不改行宽/行高：气泡是浮层，分页测量已在上游
+  /// 完成，这里只做视觉标记，避免「气泡一出现正文重排」）。
+  Widget _lineWithReviewBubble(
+    NovelLine line,
+    Widget child,
+    double imgW,
+    TextStyle style,
+    int count,
+  ) {
+    final double fs = style.fontSize ?? prefs.fontSize;
+    final double endX = line.charLefts.isNotEmpty
+        ? line.charLefts.last + fs
+        : (line.text.length * fs);
+    final double maxLeft = imgW > 24 ? imgW - 24 : 0;
+    final double left = (endX + 6).clamp(0.0, maxLeft);
+    // 撑满正文列宽：气泡按行末 x 定位，行宽不足时夹到右边界，避免被
+    // 页面裁剪（末行通常较短，只有行满时才会贴边）。
+    return SizedBox(
+      width: imgW > 0 ? imgW : null,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: <Widget>[
+          child,
+          Positioned(
+            left: left,
+            top: 2,
+            child: NovelReviewBubble(
+              count: count,
+              onTap: onReviewTap == null
+                  ? null
+                  : () => onReviewTap!(line.paragraphIndex),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// 把本页所有行构建为 Widget 列表（含文本行的长按选区手势与插图渲染）。
   ///
   /// 文本行在非 TTS 态下包裹长按选区手势（长按=选区，短按仍由外层翻页手势
@@ -9302,13 +9548,28 @@ class _NovelPageWidget extends StatelessWidget {
     for (var li = 0; li < lines.length; li++) {
       final item = lines[li];
       if (item is NovelTextLineItem) {
-        final Widget line = _buildLine(
+        Widget line = _buildLine(
           context,
           item.line,
           item.line.isHeading ? headingStyle : textStyle,
           lineIndexInPage: li,
           targetWidth: imgW,
         );
+        // 段评气泡：只画在段末行（该段最后一行右侧余白处）。
+        final int reviewCount = (item.line.isLastLine &&
+                !item.line.isHeading &&
+                reviewCounts.isNotEmpty)
+            ? (reviewCounts[item.line.paragraphIndex] ?? 0)
+            : 0;
+        if (reviewCount > 0) {
+          line = _lineWithReviewBubble(
+            item.line,
+            line,
+            imgW,
+            item.line.isHeading ? headingStyle : textStyle,
+            reviewCount,
+          );
+        }
         final Widget wrapped = !ttsActive
             ? _StableLongPressDetector(
                 onLongPressStart: (d) => _onSelLongPressStart(li, d),

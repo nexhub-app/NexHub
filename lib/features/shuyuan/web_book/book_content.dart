@@ -9,11 +9,25 @@ import 'package:meta/meta.dart';
 import '../../../core/models/novel_block.dart';
 import '../../../core/utils/app_log.dart';
 import '../analyze/analyze_rule.dart';
+import '../analyze/analyze_url.dart';
 import '../analyze/regex_compat.dart';
 import '../model/book_source.dart';
 import '../model/rule_content.dart';
 import '../model/xiaoshuo_book.dart';
 import '../model/xiaoshuo_book_chapter.dart';
+
+/// 整章装配结果（legado `BookContent.getContentAwait` 的外层产物）。
+class ChapterAssembly {
+  const ChapterAssembly({required this.blocks, this.title, this.lyric});
+
+  final List<NovelBlock> blocks;
+
+  /// `ruleContent.title` 生效后的章节名（未声明/未命中为 null）。
+  final String? title;
+
+  /// 音频源 `subContent` 写入的歌词（无则 null）。
+  final String? lyric;
+}
 
 class BookContent {
   // 预编译正则
@@ -218,30 +232,29 @@ class BookContent {
       content = content.replaceAll(_wrapHtmlRegex, '\n');
     }
 
-    // legado 的 replaceRegex 在整章（全部页拼接）之后只跑一次；分页抓取
-    // 场景由 web_book 传入 deferChapterPostProcess，逐页只做提取与清洗，
-    // 统一交给 [finalizeChapter]。
-    if (!deferChapterPostProcess &&
-        contentRule.replaceRegex != null &&
-        contentRule.replaceRegex!.isNotEmpty) {
-      // 逐行 trim 后应用替换规则（对齐 legado：逐行 trim）
-      content = content.split('\n').map((line) => line.trim()).join('\n');
-      watch.reset();
-      content = applyReplaceRules(content, contentRule.replaceRegex!,
-          analyzeRule: analyzeRule);
-      if (watch.elapsedMilliseconds >= 500) {
-        AppLog.instance.i('[书源正文] 替换规则 源=${bookSource.bookSourceName} '
-            '长度=${content.length} 耗时=${watch.elapsedMilliseconds}ms');
-      }
-    }
-
-    // 内容清洗：块级剥离 HTML + 按段提取插图。广告行清洗须在整章
-    // replaceRegex 之后执行（legado：拼接 → 逐行 trim → 替换 → 缩进），
-    // 分页/整章场景统一由 [finalizeChapter] 按行过滤；整章模式在此就地
-    // 清洗（此时替换已完成）。
+    // legado 的 replaceRegex 在整章（全部页拼接）之后只跑一次，输入是
+    // `HtmlFormatter.formatKeepImg` 的输出（标签已剥、实体已解、`<img>`
+    // 已绝对化），**不是**原始 HTML。旧实现单页入口直接把原始 HTML 喂给
+    // 替换规则，两条入口的替换命中面不同；现在统一走 [finalizeChapter]。
     var blocks = _formatToBlocks(content, baseUrl, redirectUrl ?? baseUrl);
+
     if (!deferChapterPostProcess) {
-      blocks = _cleanContentAdsBlocks(blocks);
+      // 单页入口（渲染回灌等）：先分块再整章后处理（替换 → 广告行过滤 →
+      // 缩进），与 web_book 的整章入口同一实现。
+      watch.reset();
+      blocks = finalizeChapter(
+        blocks: blocks,
+        contentRule: contentRule,
+        analyzeRule: analyzeRule,
+        mediaSource: false,
+      );
+      if (watch.elapsedMilliseconds >= 500) {
+        final int replacedChars = blocks
+            .whereType<NovelTextBlock>()
+            .fold<int>(0, (sum, b) => sum + b.text.length);
+        AppLog.instance.i('[书源正文] 替换规则 源=${bookSource.bookSourceName} '
+            '长度=$replacedChars 耗时=${watch.elapsedMilliseconds}ms');
+      }
     }
 
     // legado ruleContent.imageDecode 是「图片 bytes 二次解密 js」（见
@@ -254,13 +267,6 @@ class BookContent {
       blocks = blocks.map((b) => b is NovelImageBlock
           ? NovelImageBlock(b.url, source: b.source, style: style)
           : b).toList();
-    }
-
-    // legado HtmlFormatter.formatKeepImg 对正文每一段统一补两个全角空格
-    // （与 replaceRegex 是否声明无关）；幂等剥离源自带缩进后再统一加。
-    // 整章模式延后到 [finalizeChapter]，避免分页各自缩进。
-    if (!deferChapterPostProcess && blocks.isNotEmpty) {
-      blocks = _applyIndentBlocks(blocks);
     }
 
     return blocks;
@@ -396,6 +402,77 @@ class BookContent {
     return hasReplace ? out : _applyIndentBlocks(out);
   }
 
+  /// 整章装配（legado `BookContent.getContentAwait` 外层，逐页解析**之后**
+  /// 只跑一次）：subContent 附加正文/歌词 → `ruleContent.title` →
+  /// 整章 replaceRegex + 缩进。
+  ///
+  /// 直连链路（[WebBook.getContent]）与 WebView 渲染回灌链路
+  /// （`ShuyuanNovelResolver.resolveRenderedHtml` 的 content/video 分支）共用
+  /// 同一实现：旧实现只在直连链路执行 subContent，回灌链路拿到的正文缺
+  /// 「展开全文/分页正文」追加段，两条入口行为不一致。
+  static Future<ChapterAssembly> assembleChapter({
+    required XiaoshuoBookSource bookSource,
+    required XiaoshuoBook book,
+    required XiaoshuoBookChapter bookChapter,
+    required String firstBody,
+    required String baseUrl,
+    required String redirectUrl,
+    required List<NovelBlock> blocks,
+    required bool mediaSource,
+    String? nextChapterUrl,
+  }) async {
+    final contentRule = bookSource.getContentRule();
+    // legado BookContent 外层：subContent/title 都以首页响应为求值内容。
+    final postRule = AnalyzeRule(book: book, chapter: bookChapter)
+      ..setContent(firstBody, baseUrl)
+      ..setBaseUrl(baseUrl)
+      ..setRedirectUrl(redirectUrl)
+      ..setNextChapterUrl(nextChapterUrl);
+    final subRule = contentRule.subContent;
+    if (subRule != null && subRule.isNotEmpty) {
+      // legado 无 try/catch：subContent 规则异常直接令整章失败。
+      var subContent = postRule.getString(subRule, unescape: false).trim();
+      if (subContent.toLowerCase().startsWith('http')) {
+        final subAnalyze = AnalyzeUrl(
+          url: subContent,
+          baseUrl: redirectUrl,
+          source: bookSource,
+          ruleData: book,
+          chapter: bookChapter,
+        );
+        subContent = await subAnalyze.getStrResponse();
+      }
+      if (subContent.isNotEmpty) {
+        // legado BookContent：`isOnLineTxt` → 追加正文；`isAudio` → 写 lyric
+        // 变量；图片/文件/视频源忽略。判据走 BookType 位语义（兼容本应用
+        // 0..4 编号），组合类型（text|audio）两边都要执行。
+        if (book.isOnLineTxtBook || bookSource.bookSourceType == 0) {
+          blocks.addAll(extractAppendedBlocks(
+            content: subContent,
+            baseUrl: baseUrl,
+            redirectUrl: redirectUrl,
+          ));
+        }
+        if (book.isAudioBook || bookSource.bookSourceType == 1) {
+          bookChapter.putVariable('lyric', subContent);
+        }
+      }
+    }
+    final appliedTitle = applyChapterTitle(postRule, contentRule, bookChapter);
+    final finalized = finalizeChapter(
+      blocks: blocks,
+      contentRule: contentRule,
+      analyzeRule: postRule,
+      mediaSource: mediaSource,
+    );
+    final lyric = bookChapter.getVariable('lyric').trim();
+    return ChapterAssembly(
+      blocks: finalized,
+      title: appliedTitle,
+      lyric: lyric.isEmpty ? null : lyric,
+    );
+  }
+
   static String _getContent(AnalyzeRule analyzeRule, String contentRule) {
     try {
       return analyzeRule.getString(contentRule, unescape: false);
@@ -430,24 +507,6 @@ class BookContent {
       }
     }
     return false;
-  }
-
-  /// 内容广告清理（块级）：按文本段匹配广告关键词与跳过模式，删除广告文本块；
-  /// 插图块原样保留（插图不是广告行）。
-  static List<NovelBlock> _cleanContentAdsBlocks(List<NovelBlock> blocks) {
-    final out = <NovelBlock>[];
-    for (final b in blocks) {
-      if (b is NovelImageBlock) {
-        out.add(b);
-        continue;
-      }
-      if (b is! NovelTextBlock) continue;
-      final trimmed = b.text.trim();
-      if (trimmed.isEmpty) continue;
-      if (_isAdLine(trimmed)) continue;
-      out.add(b);
-    }
-    return out;
   }
 
   /// 段落缩进（幂等）：仅作用于文本块，插图块原样保留。
