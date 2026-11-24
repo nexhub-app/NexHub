@@ -62,6 +62,21 @@ class AnalyzeUrl {
   String? requestType;
   int webViewDelayTime = 0;
 
+  /// legado `AnalyzeUrl.serverID`（URL 选项 `serverID`）：当前无消费点，仅
+  /// 保留解析结果供脚本/日志排查。
+  int? serverID;
+
+  /// legado `AnalyzeUrl.urlNoQuery`：剥离 query 的请求基址。
+  /// GET/HEAD 请求 = `urlNoQuery + '?' + encodedQuery`。
+  String urlNoQuery = '';
+
+  /// legado `AnalyzeUrl.encodedQuery/encodedForm`：按源 charset 编码后的
+  /// GET query / POST 表单。**不改写** [url] / [body] 原文——基准只存这两
+  /// 个派生值，`url` 字段始终是模板展开后的原始形态（同名参数二次编码、
+  /// `java.ruleUrl`/请求头求值都读它）。
+  String? encodedQuery;
+  String? encodedForm;
+
   /// 构造时的原始 URL 模板（`initUrl()` 重新解析的起点）。
   late final String _rawUrl;
 
@@ -167,7 +182,13 @@ class AnalyzeUrl {
   }
 
   void _initUrl() {
+    // 对照 legado `AnalyzeUrl.initUrl()`：`ruleUrl = mUrl` 是**第一行**，
+    // 随后 analyzeJs 才更新它。URL 模板里的脚本读 `java.ruleUrl` 时拿到
+    // 的是原始模板（拼接重试地址/去参数依赖它）；旧实现放在最后，求值期
+    // 恒为空串。
+    ruleUrl = url;
     analyzeJs();
+    ruleUrl = url;
     replaceKeyPageJs();
     ruleUrl = url;
     analyzeUrl();
@@ -289,37 +310,11 @@ class AnalyzeUrl {
       final optionStr = originalUrl.substring(paramMatch.end - 1);
       final option = parseJsonLenient(optionStr);
       if (option != null) {
+        // 字段处理次序对齐 legado `AnalyzeUrl.analyzeUrl`：
+        // method → headers → body → type → charset → retry → webView →
+        // webJs → bodyJs → dnsIp → js → serverID → webViewDelayTime。
+        // 选项 js 永远最后执行，且此前所有字段都已就位。
         method = option['method']?.toString();
-        // body 可为字符串或 JSON 对象/数组（QQ 等 API 源的
-        // `"body":{"key":"{{key}}"}` 写法）：对象须按 JSON 序列化，
-        // 此前 toString() 产出 Dart Map 字面量 `{key: value}` 导致服务端
-        // 解析失败 → API 型源搜索全空。
-        final rawBody = option['body'];
-        if (rawBody is String) {
-          body = rawBody;
-        } else if (rawBody != null) {
-          body = jsonEncode(rawBody);
-        }
-        charset = option['charset']?.toString();
-        // legado `UrlOption.setRetry`：`toIntOrNull` 宽容，非数字回落 0。
-        retry = int.tryParse('${option['retry'] ?? ''}'.trim()) ?? 0;
-        // legado URL 选项键是 `webView`；`useWebView` 是历史兼容写法。
-        final wvRaw = option['webView'] ?? option['useWebView'];
-        useWebView = legadoUseWebView(wvRaw);
-        webJs = option['webJs']?.toString();
-        bodyJs = option['bodyJs']?.toString();
-        dnsIp = option['dnsIp']?.toString();
-        requestType = option['type']?.toString();
-        // legado `max(0, option.webViewDelayTime ?: 0)`：页面加载后额外等待。
-        final wvDelay = option['webViewDelayTime'];
-        webViewDelayTime = wvDelay is num
-            ? wvDelay.toInt()
-            : int.tryParse('${wvDelay ?? ''}'.trim()) ?? 0;
-        if (webViewDelayTime < 0) webViewDelayTime = 0;
-        final frRaw = option['followRedirects'];
-        if (frRaw != null) {
-          followRedirects = frRaw == true || '$frRaw' == 'true';
-        }
 
         final headers = option['headers'];
         if (headers is Map) {
@@ -337,6 +332,27 @@ class AnalyzeUrl {
           }
         }
 
+        // body 可为字符串或 JSON 对象/数组（QQ 等 API 源的
+        // `"body":{"key":"{{key}}"}` 写法）：对象须按 JSON 序列化，
+        // 此前 toString() 产出 Dart Map 字面量 `{key: value}` 导致服务端
+        // 解析失败 → API 型源搜索全空。
+        final rawBody = option['body'];
+        if (rawBody is String) {
+          body = rawBody;
+        } else if (rawBody != null) {
+          body = jsonEncode(rawBody);
+        }
+        requestType = option['type']?.toString();
+        charset = option['charset']?.toString();
+        // legado `UrlOption.setRetry`：`toIntOrNull` 宽容，非数字回落 0。
+        retry = int.tryParse('${option['retry'] ?? ''}'.trim()) ?? 0;
+        // legado URL 选项键是 `webView`；`useWebView` 是历史兼容写法。
+        final wvRaw = option['webView'] ?? option['useWebView'];
+        useWebView = legadoUseWebView(wvRaw);
+        webJs = option['webJs']?.toString();
+        bodyJs = option['bodyJs']?.toString();
+        dnsIp = option['dnsIp']?.toString();
+
         // 内部标记：JS 垫片（java.connect/get/post/head、Jsoup）声明本次
         // 请求按 legado headerMapF 的替换语义发头。
         if (option['_syHeaderMode'] == 'replace') {
@@ -351,28 +367,51 @@ class AnalyzeUrl {
         if (js != null && js.isNotEmpty) {
           url = _evalJs(js, url);
         }
+
+        final sid = option['serverID'];
+        if (sid != null) {
+          serverID = sid is num ? sid.toInt() : int.tryParse('$sid'.trim());
+        }
+        // legado `max(0, option.webViewDelayTime ?: 0)`：页面加载后额外等待。
+        final wvDelay = option['webViewDelayTime'];
+        webViewDelayTime = wvDelay is num
+            ? wvDelay.toInt()
+            : int.tryParse('${wvDelay ?? ''}'.trim()) ?? 0;
+        if (webViewDelayTime < 0) webViewDelayTime = 0;
+        final frRaw = option['followRedirects'];
+        if (frRaw != null) {
+          followRedirects = frRaw == true || '$frRaw' == 'true';
+        }
       }
     }
 
-    // 参数编码放在最后（legado analyzeQuery/analyzeFields 次序）。绝对化
-    // 由 [_getAbsoluteUrl] 保留原始 query，非 ASCII 值不会被提前转成
-    // UTF-8 百分号编码，GBK 站点仍按源声明 charset 编码。
-    _encodeRequestParams();
+    // 参数编码：只生成派生值（legado analyzeQuery/analyzeFields 次序），
+    // 不改写 url/body 原文。
+    _prepareRequestParams();
   }
 
-  /// 按源声明的字符集对请求参数编码，逐行对齐 legado
-  /// `AnalyzeUrl.analyzeQuery/analyzeFields/encodeParams`：
-  /// - GET query：整串已是「query 安全字符 + 合法 `%XX`」则原样，否则按
-  ///   字符逐个百分号编码（安全 ASCII 保留，其余取 charset 字节）；
-  ///   `charset=escape` 走 JS escape 编码。
-  /// - POST form：声明了 Content-Type 时 legado 不做 form 编码；否则按 `&`
-  ///   拆分逐键值编码（已编码判定/escape/URLEncoder 三态与 legado 一致）。
-  /// - GBK 系站点按 GBK 取字节，其余 UTF-8。
-  void _encodeRequestParams() {
+  /// 生成 `urlNoQuery` / `encodedQuery` / `encodedForm`，对齐 legado
+  /// `AnalyzeUrl.analyzeUrl` 尾部按 method 分派：
+  /// - GET：`urlNoQuery = url`，含 `?` 时切出 query 交给 `encodeParams(…, true)`；
+  /// - POST：不切 query，仅按需生成 `encodedForm`（未声明 Content-Type、
+  ///   且 body 非 JSON/XML 时）；
+  /// - HEAD：只切 query。
+  ///
+  /// 与旧实现的差别：`url` / `body` 字段保持原文，请求时由
+  /// [_requestUrl] / `encodedForm` 组装。同一实例二次请求不会「已编码再编
+  /// 码」，`java.ruleUrl`/请求头求值也不再看到被改写过的地址。
+  void _prepareRequestParams() {
     final cs = _normalizeCharset(charset);
-    final isPost = method?.toUpperCase() == 'POST';
+    final m = method?.toUpperCase();
+    urlNoQuery = url;
+    encodedQuery = null;
+    encodedForm = null;
 
-    if (isPost) {
+    // data: 内联载荷不是网络地址：`?` 属于 base64/参数内容，不能按 query
+    // 切分（切了会把载荷截断成无效 URI）。
+    if (url.startsWith('data:')) return;
+
+    if (m == 'POST') {
       // java.post：原文发送，不编码、不补 Content-Type（legado Jsoup
       // RequestBody.create(null, body)）。
       if (_syRawBody) return;
@@ -390,27 +429,33 @@ class AnalyzeUrl {
       }
       // legado analyzeFields 仅在未声明 Content-Type 时执行。
       if (_headerValue(headerMap, 'Content-Type') != null) return;
-      body = _encodeFormLegado(b, cs);
+      encodedForm = _encodeFormLegado(b, cs);
       headerMap.putIfAbsent(
           'Content-Type', () => 'application/x-www-form-urlencoded');
       return;
     }
 
-    // GET：仅编码 query 段（path 由源模板给出，保持原样）。
+    // GET/HEAD：切出 query（path 由源模板给出，保持原样）。
     final qIdx = url.indexOf('?');
     if (qIdx < 0) return;
-    final base = url.substring(0, qIdx);
+    urlNoQuery = url.substring(0, qIdx);
     final query = url.substring(qIdx + 1);
     if (query.isEmpty) return;
     if (cs == 'escape') {
-      url = '$base?${_encodeFormLegado(query, cs)}';
+      encodedQuery = _encodeFormLegado(query, cs);
       return;
     }
     // legado `NetworkUtils.encodedQuery`：整串无需编码时原样保留
     // （ASCII 安全字符之外的空格/引号等仍会按 charset 编码）。
-    if (_encodedQuery(query)) return;
-    url = '$base?${_encodeQueryLegado(query, cs)}';
+    encodedQuery = _encodedQuery(query) ? query : _encodeQueryLegado(query, cs);
   }
+
+  /// GET/HEAD 的实际请求地址：`urlNoQuery + '?' + encodedQuery`。
+  /// `encodedQuery` 为空时就是 `urlNoQuery`（legado `get(urlNoQuery, null)`）。
+  String get _requestUrl =>
+      (encodedQuery != null && encodedQuery!.isNotEmpty)
+          ? '$urlNoQuery?$encodedQuery'
+          : urlNoQuery;
 
   /// JSON / XML 请求体判定（这类体不做 form 编码，按原文发送）。
   bool _looksLikeStructuredBody(String b) {
@@ -574,7 +619,13 @@ class AnalyzeUrl {
     urlStr = urlStr.trim();
     final base = baseUrl;
     if (base == null || base.isEmpty) return urlStr;
-    if (urlStr.startsWith('http')) return urlStr;
+    // 绝对地址判定对齐 legado `String.isAbsUrl()`：只认 `http://`/`https://`
+    // （大小写不敏感）。旧实现 `startsWith('http')` 把 `httpfoo:bar`、
+    // `httpsx://…` 当绝对地址原样返回。
+    final lower = urlStr.toLowerCase();
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
+      return urlStr;
+    }
     if (urlStr.startsWith('data:')) return urlStr;
     if (urlStr.startsWith('javascript')) return '';
     // legado 解析 base 前按首个逗号截断（URL 选项后缀残留）。
@@ -636,6 +687,10 @@ class AnalyzeUrl {
         'currentSpeakerName': currentSpeakerName ?? '',
         'currentEmotionName': currentEmotionName ?? '',
         'currentEmotionTag': currentEmotionTag ?? '',
+        // legado 绑定 `java = this`（AnalyzeUrl 实体），URL 模板脚本读
+        // `java.ruleUrl` 拿到的是**当前**规则地址：analyzeJs 期间是原始
+        // 模板，之后是展开结果。沙箱不持有宿主对象，按次注入当前值。
+        '__syRuleUrl': ruleUrl,
       });
     } catch (_) {
       return currentResult;
@@ -827,7 +882,11 @@ class AnalyzeUrl {
         HttpFetcher.instance.registerHostUserAgent(host, ua);
       }
       final result = await ShuyuanWebviewFetcher.fetch(
-        url: url,
+        // WebView 与 HTTP 分支同源取数：GET 用编码后的 query（旧实现编码
+        // 直接改写 url，行为等价；raw 非 ASCII 参数在 WebView2/OHOS 上
+        // 可能被丢弃）。POST 的 webview 分支在 legado 里是 GET 取壳再渲染，
+        // 同样不需要 body。
+        url: _requestUrl,
         js: webJs ?? jsStr,
         delayMs: webViewDelayTime,
         headers: webHeaders,
@@ -1047,6 +1106,10 @@ class AnalyzeUrl {
       Response<List<int>>? response;
       var attempt = 0;
       var cookiePrimed = false;
+      // 实际请求地址（GET/HEAD）：legado 用 `urlNoQuery + encodedQuery`，
+      // `url` 字段保持模板展开后的原文；POST 用 `urlNoQuery` +
+      // `encodedForm`（表单）或 body 原文。
+      final requestUrl = _requestUrl;
       while (true) {
         try {
           final m = method?.toUpperCase();
@@ -1054,19 +1117,22 @@ class AnalyzeUrl {
             // `_syRawBody` 用字节载荷：Dio 的 ImplyContentTypeInterceptor 会
             // 给 String 载荷补 application/json，legado RequestBody.create
             // (null, body) 则是无 Content-Type 的原文发送。
+            final payload = _syRawBody
+                ? utf8.encode(this.body ?? '')
+                : (encodedForm ?? this.body);
             response = await dio.post<List<int>>(
-              url,
-              data: _syRawBody ? utf8.encode(this.body ?? '') : this.body,
+              urlNoQuery.isEmpty ? url : urlNoQuery,
+              data: payload,
               options: buildOptions(),
             );
           } else if (m == 'HEAD') {
             response = await dio.head<List<int>>(
-              url,
+              requestUrl,
               options: buildOptions(),
             );
           } else {
             response = await dio.get<List<int>>(
-              url,
+              requestUrl,
               options: buildOptions(),
             );
           }
@@ -1104,7 +1170,12 @@ class AnalyzeUrl {
               isRedirect: errResponse.isRedirect,
               extra: errResponse.extra,
             );
-            break;
+            // legado `OkHttpUtils`：非 2xx 同样按 `retry` 重发（循环到
+            // isSuccessful 才返回），最终返回最后一次响应。声明了 retry 的
+            // 源多拿几次机会；未声明（retry=0）时行为与旧实现一致。
+            attempt += 1;
+            if (attempt > retry) break;
+            continue;
           }
           // retry：书源 URL 选项声明的重试次数（网络异常/连接失败重试；
           // 验证挑战异常不在此层——由下方挑战检测分支处理）。
@@ -1165,9 +1236,11 @@ class AnalyzeUrl {
         body = _evalJs(bodyJs!, body);
       }
 
-      if (response.redirects.isNotEmpty) {
-        url = response.redirects.last.location.toString();
-      }
+      // legado `AnalyzeUrl`：`url` 字段只在 analyzeUrl() 里赋值，重定向后
+      // **不改写**——最终地址由 `StrResponse.url`（本实现的 lastFinalUrl）
+      // 单独暴露。旧实现把 `redirects.last.location` 写回 url，Dio 的
+      // location 可能是相对路径，写回后 resolveRequestHeaders/二次请求
+      // 都拿到相对地址（WebView 分支一直是「不改 url」的语义）。
     } on DioException catch (e) {
       AppLog.instance.w('[书源HTTP] Dio异常 ${e.response?.statusCode} $url');
       final status = e.response?.statusCode;
@@ -1277,7 +1350,7 @@ class AnalyzeUrl {
                       b.key.toLowerCase())))
                 .map((e) => '${e.key.toLowerCase()}:${e.value}')
                 .join('\n'));
-    return '$m\n$url\n${body ?? ''}\n${jsStr ?? ''}\n${sourceRegex ?? ''}\n'
+    return '$m\n$_requestUrl\n${body ?? ''}\n${jsStr ?? ''}\n${sourceRegex ?? ''}\n'
         '${followRedirects == false ? 'noredir' : ''}\n$h';
   }
 

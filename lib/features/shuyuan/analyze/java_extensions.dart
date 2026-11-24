@@ -162,6 +162,50 @@ const String sourceContextJsPrelude = r'''
     setWebCookie: function (url, cookieStr) {
       return cookie.setCookie(url, cookieStr);
     },
+    // legado `CookieStore.replaceCookie`：与已有 Cookie **合并**写入
+    //（同 key 以新值覆盖，其余保留）。登录脚本刷新会话时高频使用。
+    replaceCookie: function (url, cookieStr) {
+      var u = String(url == null ? '' : url);
+      var incoming = String(cookieStr == null ? '' : cookieStr);
+      if (!u || !incoming) return null;
+      var oldCookie = cookie.getCookie(u);
+      var merged = cookie.cookieToMap(oldCookie + '; ' + incoming);
+      return cookie.setCookie(u, cookie.mapToCookie(merged));
+    },
+    // legado `CookieStore.cookieToMap(cookie: String)`：Cookie 串 → 键值表。
+    cookieToMap: function (cookieStr) {
+      var map = {};
+      var s = String(cookieStr == null ? '' : cookieStr);
+      if (!s) return map;
+      s.split(/;\s*/).forEach(function (pair) {
+        if (!pair) return;
+        var eq = pair.indexOf('=');
+        if (eq <= 0) return;
+        var k = pair.substring(0, eq).trim();
+        var v = pair.substring(eq + 1).trim();
+        // legado：值非空，或字面量 "null" 才收录。
+        if (v !== '' || v === 'null') map[k] = v;
+      });
+      return map;
+    },
+    // legado `CookieStore.mapToCookie`：键值表 → `k=v; k2=v2`。
+    mapToCookie: function (map) {
+      if (map == null || typeof map !== 'object') return null;
+      var parts = [];
+      for (var k in map) {
+        if (map[k] == null) continue;
+        parts.push(k + '=' + String(map[k]));
+      }
+      return parts.length ? parts.join('; ') : null;
+    },
+    // legado `CookieStore.clear()`：清空本源 cookie 覆盖层。
+    clear: function () {
+      var ctx = syCtx();
+      var names = Object.keys(ctx.cookies);
+      for (var i = 0; i < names.length; i++) delete ctx.cookies[names[i]];
+      syOp('removeCookie', '', '');
+      return null;
+    },
   };
 
   var source = {
@@ -354,7 +398,11 @@ const String sourceContextJsPrelude = r'''
     setVariable: function (v) { return book.putVariable('__variable', v); },
   };
   ['name', 'author', 'bookUrl', 'intro', 'kind', 'coverUrl', 'lastChapter',
-   'tocUrl', 'wordCount', 'origin', 'durChapterTitle']
+   'tocUrl', 'wordCount', 'origin', 'durChapterTitle',
+   // E8：legado `Book` 其余字符串字段（脚本读 `book.originName` 分支、
+   // 写 `book.latestChapterTitle` 修正最新章节等）。
+   'originName', 'latestChapterTitle', 'infoHtml', 'tocHtml', 'group',
+   'customTag', 'customIntro', 'customCoverUrl']
       .forEach(function (f) {
         Object.defineProperty(book, f, {
           get: function () { return syCtx().bookInfo[f] || ''; },
@@ -367,6 +415,65 @@ const String sourceContextJsPrelude = r'''
           },
         });
       });
+  // E8：legado `Book.variable`（变量整段 JSON 串）。读写都落到
+  // bookVars（= variableMap），与 putVariable/getVariable 同一存储。
+  Object.defineProperty(book, 'variable', {
+    get: function () {
+      var c = syCtx();
+      var o = {};
+      for (var k in c.bookVars) o[k] = c.bookVars[k];
+      return JSON.stringify(o);
+    },
+    set: function (v) {
+      var c = syCtx();
+      var parsed = null;
+      if (typeof v === 'string') {
+        try { parsed = JSON.parse(v); } catch (e) { parsed = null; }
+      } else if (v && typeof v === 'object') {
+        parsed = v;
+      }
+      for (var k in c.bookVars) delete c.bookVars[k];
+      if (parsed && typeof parsed === 'object') {
+        for (var key in parsed) {
+          var s = String(parsed[key] == null ? '' : parsed[key]);
+          c.bookVars[key] = s;
+          syOp('bookVar', key, s);
+        }
+      }
+      return v;
+    },
+  });
+  // E8：legado 数值字段可写（脚本按章修正进度/总数）。
+  ['originOrder', 'totalChapterNum', 'latestChapterTime', 'durChapterPos',
+   'fixedType']
+      .forEach(function (f) {
+        Object.defineProperty(book, f, {
+          get: function () {
+            var v = syCtx().bookInfo[f];
+            var n = parseInt(v, 10);
+            return isNaN(n) ? 0 : n;
+          },
+          set: function (v) {
+            var s = String(parseInt(v, 10) || 0);
+            syCtx().bookInfo[f] = s;
+            syOp('bookField', f, s);
+          },
+        });
+      });
+  // E8：legado 布尔字段。
+  ['canUpdate', 'reverseToc'].forEach(function (f) {
+    Object.defineProperty(book, f, {
+      get: function () {
+        var v = syCtx().bookInfo[f];
+        return v == null ? false : String(v) === 'true';
+      },
+      set: function (v) {
+        var s = v ? 'true' : 'false';
+        syCtx().bookInfo[f] = s;
+        syOp('bookField', f, s);
+      },
+    });
+  });
   // legado Book.type 是 Int（0 文本 / 1 音频 / 2 图片），脚本常做数值比较。
   Object.defineProperty(book, 'type', {
     get: function () {
@@ -377,12 +484,17 @@ const String sourceContextJsPrelude = r'''
   });
   // legado Book.durChapterIndex 也是 Int（阅读进度章序号）；规则里参与
   // 数值比较/拼接，按数字返回，缺省 0。durChapterTitle 按字符串字段处理
-  // （见上方字段表）。
+  // （见上方字段表）。E8：基准是实体字段，脚本可写（按章校正进度）。
   Object.defineProperty(book, 'durChapterIndex', {
     get: function () {
       var v = syCtx().bookInfo.durChapterIndex;
       var n = parseInt(v, 10);
       return isNaN(n) ? 0 : n;
+    },
+    set: function (v) {
+      var s = String(parseInt(v, 10) || 0);
+      syCtx().bookInfo.durChapterIndex = s;
+      syOp('bookField', 'durChapterIndex', s);
     },
   });
 
@@ -466,6 +578,27 @@ const String sourceContextJsPrelude = r'''
   };
 
   // legado `source.key` 属性 = 书源 URL（脚本大量使用，只读）。
+  // legado `BaseSource.getHeaderMap(userAgent, hasLoginHeader)`：源 header
+  // + 登录头合并后的请求头表。脚本常用它基于源头做二次加工（签名头、
+  // 覆盖 UA 再 post）。源 header 为 `@js:` 表达式时原样返回脚本串（宿主
+  // 侧解析），避免在沙箱里再跑一遍求值链。
+  source.getHeaderMap = function () {
+    var c = syCtx();
+    var out = {};
+    var parse = function (text) {
+      var s = String(text == null ? '' : text).trim();
+      if (!s) return;
+      try {
+        var o = JSON.parse(s);
+        if (o && typeof o === 'object') {
+          for (var k in o) out[k] = String(o[k]);
+        }
+      } catch (e) {}
+    };
+    parse(c.sourceMeta && c.sourceMeta.header);
+    for (var k in c.loginHeader) out[k] = c.loginHeader[k];
+    return out;
+  };
   Object.defineProperty(source, 'key', {
     get: function () { return syCtx().sourceKey || syCtx().sourceId; },
   });
@@ -475,7 +608,13 @@ const String sourceContextJsPrelude = r'''
     get: function () { return syCtx().sourceKey || syCtx().sourceId; },
   });
   ['bookSourceName', 'bookSourceGroup', 'bookSourceComment', 'header',
-   'loginUrl', 'jsLib'].forEach(function (f) {
+   'loginUrl', 'jsLib',
+   // E7：脚本高频读取的其余源字段（coverDecodeJs 封面解密、concurrentRate
+   // 并发率、searchUrl/exploreUrl 规则、bookUrlPattern 详情判定、
+   // bookSourceType 源类型、customOrder/weight 排序、lastUpdateTime）。
+   'coverDecodeJs', 'concurrentRate', 'searchUrl', 'exploreUrl',
+   'bookUrlPattern', 'ruleReview', 'customOrder', 'weight',
+   'lastUpdateTime'].forEach(function (f) {
     Object.defineProperty(source, f, {
       get: function () {
         var m = syCtx().sourceMeta || {};
@@ -1061,11 +1200,11 @@ const String sourceContextJsPrelude = r'''
           overrideUrlRegex, '__WEBVIEW_OVR_', '__');
     };
     // java.getReadBookConfig()/getThemeConfig()：legado 返回当前阅读/主题
-    // 配置的 GSON JSON 串。重放层拿不到宿主实时样式，返回 legado 默认值
-    // （day 主题 + 默认排版），保证调用方 JSON.parse 后字段齐全、不会因
-    // 函数缺失整段规则失败。
+    // 配置的 GSON JSON 串。宿主未注入实时配置（E9 能力面）时返回 legado
+    // 默认值（day 主题 + 默认排版），保证调用方 JSON.parse 后字段齐全、
+    // 不会因函数缺失整段规则失败。
     global.java.getReadBookConfig = function () {
-      return JSON.stringify({
+      var cfg = {
         name: '默认',
         bgStr: '#EEEEEE',
         bgStrNight: '#000000',
@@ -1127,10 +1266,21 @@ const String sourceContextJsPrelude = r'''
         textAccentColor: '#834E00',
         textAccentColorNight: '#FE4D55',
         textAccentColorEInk: '#000000'
-      });
+      };
+      // 宿主可经 ShuyuanSourceContext.readConfigJson 注入实时排版配置
+      //（E9 通道：当前无阅读器设置源，缺省即上面的 legado 默认值）。
+      var injected = syCtx().readConfigJson;
+      return injected ? String(injected) : JSON.stringify(cfg);
+    };
+    global.java.getReadBookConfigMap = function () {
+      try {
+        return JSON.parse(global.java.getReadBookConfig());
+      } catch (e) {
+        return {};
+      }
     };
     global.java.getThemeConfig = function () {
-      return JSON.stringify({
+      var cfg = {
         themeName: 'MD3-Day',
         isNightTheme: false,
         primaryColor: '#795548',
@@ -1139,7 +1289,22 @@ const String sourceContextJsPrelude = r'''
         bottomBackground: '#EEEEEE',
         backgroundImgPath: null,
         backgroundImgBlur: 0
-      });
+      };
+      var injected = syCtx().themeConfigJson;
+      return injected ? String(injected) : JSON.stringify(cfg);
+    };
+    global.java.getThemeConfigMap = function () {
+      try {
+        return JSON.parse(global.java.getThemeConfig());
+      } catch (e) {
+        return {};
+      }
+    };
+    // legado getThemeMode：dy/day/night/eInk 模式名。宿主未注入时按默认
+    // day 主题返回（与 getThemeConfig 的 isNightTheme=false 一致）。
+    global.java.getThemeMode = function () {
+      var m = syCtx().themeMode;
+      return m == null || m === '' ? 'day' : String(m);
     };
     // ── 文件/归档族（legado JsExtensions）──
     // 同步沙箱没有真实磁盘：虚拟文件系统 = 文本表 __cacheFiles（path→text）
@@ -1370,6 +1535,59 @@ const String sourceContextJsPrelude = r'''
       syOp('fileOp', key, JSON.stringify([b64, e, cs]));
       return '';
     };
+    // legado getZipByteArrayContent：同上的「包内取条目」，返回字节数组
+    // （有符号口径，与 java.base64DecodeToByteArray 一致）。未命中返回空数组。
+    global.java.getZipByteArrayContent = function (url, entry) {
+      var u = String(url == null ? '' : url);
+      var e = String(entry == null ? '' : entry);
+      if (!e) return [];
+      var b64 = null;
+      if (/^https?:\/\//i.test(u)) {
+        b64 = global.__ajaxBytesCache && global.__ajaxBytesCache[u];
+        if (b64 == null) {
+          syOp('ajaxBytes', u, '');
+          return [];
+        }
+      } else {
+        var bytes = global.__syHexToBytes(u);
+        if (!bytes.length) return [];
+        b64 = global.__syB64FromBytes(bytes.map(function (x) { return x & 0xff; }));
+      }
+      var key = 'zc:' + syMd5Hex16(b64) + ':' + e + '|';
+      var cache = global.__fileOpCache;
+      var r = cache && cache[key];
+      if (r != null) {
+        try {
+          var o = JSON.parse(r);
+          if (o && typeof o.b === 'string') return syB64ToBytes(o.b);
+        } catch (err) {}
+        return [];
+      }
+      syOp('fileOp', key, JSON.stringify([b64, e, '']));
+      return [];
+    };
+    // legado RAR/7z 取条目族：宿主解包器只支持 zip，签名保留（脚本调用不再
+    // 抛 TypeError），实际走同一「zip 条目」通道；不支持的格式返回空，
+    // 与宿主解包失败同口径（legado 抛异常由脚本 try/catch 吞掉）。
+    global.java.getRarByteArrayContent = function (url, entry) {
+      return global.java.getZipByteArrayContent(url, entry);
+    };
+    global.java.getRarStringContent = function (url, entry, charsetName) {
+      return global.java.getZipStringContent(url, entry, charsetName);
+    };
+    global.java.get7zByteArrayContent = function (url, entry) {
+      return global.java.getZipByteArrayContent(url, entry);
+    };
+    global.java.get7zStringContent = function (url, entry, charsetName) {
+      return global.java.getZipStringContent(url, entry, charsetName);
+    };
+    // legado unArchiveFile(path)：通用解包入口（按扩展名分派到对应解包器）。
+    global.java.unArchiveFile = function (p) { return syUnarchive(p); };
+    // legado queryBase64TTF(base64)：Base64 字体直接建字体对象（queryTTF
+    // 已支持 base64 输入，等同转发）。
+    global.java.queryBase64TTF = function (b64) {
+      return global.java.queryTTF(b64, true);
+    };
     // ── UI 操作族（发现页选项 action / 登录脚本） ──
     // legado 脚本可在 action 里直接打开浏览器、刷新选项栏、复制文本；
     // 同步沙箱内不能真开界面，统一记 op 由宿主排空后执行。
@@ -1503,7 +1721,13 @@ const String sourceContextJsPrelude = r'''
     global.__syLoginEnd = function () { global.__syLogin = null; };
     Object.defineProperty(global.java, 'ruleUrl', {
       configurable: true,
-      get: function () { return global.__syLogin ? global.__syLogin.ruleUrl : ''; },
+      get: function () {
+        // loginCheckJs 环境优先（宿主在重解析前注入完整快照）；其余场景
+        // 由 AnalyzeUrl 每轮求值注入当前 ruleUrl（legado 绑定 `java = this`
+        // 即 AnalyzeUrl 实体，`java.ruleUrl` 恒可读）。
+        if (global.__syLogin) return global.__syLogin.ruleUrl;
+        return global.__syRuleUrl == null ? '' : String(global.__syRuleUrl);
+      },
     });
     Object.defineProperty(global.java, 'url', {
       configurable: true,

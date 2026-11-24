@@ -764,10 +764,16 @@ class BookContent {
 
   /// 替换规则应用（legado replaceRegex 语义）：
   /// - `@js:`/`<js>` 净化脚本 → 规则引擎求值（result=正文）；
-  /// - legado `SourceRule` 形态：整行 `##pattern##replacement[##任意]`，
-  ///   选择器为空 → 正文原样进入替换；第 4 段存在时只替换首个命中；
-  /// - 兼容 NexHub 旧形态 `pattern##replacement`（逐规则行应用）；
-  /// - 结果按 legado `getString` 默认反转义一次（unescapeHtml4）。
+  /// - legado `SourceRule` 形态 `##pattern##replacement[##]`（选择器为空 →
+  ///   正文原样进入替换；第 4 段存在时只替换首个命中）：**交给规则引擎**
+  ///   执行，`$1..$N`/`${name}` 分组展开、`##` 只切一次等语义与
+  ///   `ruleToc/ruleContent` 一致（legado `analyzeRule.getString(
+  ///   replaceRegex, contentStr)` 同一路径）；
+  /// - NexHub 扩展形态：裸正则（无 `##` 前缀，如 `^广告$`）按「删除命中」
+  ///   处理；`pattern##replacement` 按「pattern → replacement」整章替换
+  ///   （内置源在用，不能被当作选择器规则）；
+  /// - 多行规则逐行应用（NexHub 扩展；legado 把整串当一条规则）。
+  ///
   /// 替换在整章字符串上执行（legado 在全部页拼接后只跑一次）。
   ///
   /// [analyzeRule] 为正文页规则实例时，JS 分支复用其 book/chapter/baseUrl
@@ -779,43 +785,37 @@ class BookContent {
     AnalyzeRule? analyzeRule,
   }) {
     final rr = replaceRegex.trim();
-    if (rr.startsWith('@js:') || rr.contains('<js>')) {
-      final ar = analyzeRule ?? (AnalyzeRule()..setContent(content));
-      final out = ar.getString(rr, mContent: content);
-      return out.isEmpty ? content : out;
-    }
+    if (rr.isEmpty) return content;
     var out = content;
-    for (final line in rr.split('\n')) {
-      final rule = line.trim();
+    var needUnescape = true;
+    for (final raw in rr.split('\n')) {
+      final rule = raw.trim();
       if (rule.isEmpty) continue;
-      if (rule.startsWith('##')) {
-        // legado SourceRule：ruleStrS[0] 为空串 → AnalyzeByRegex 原样返回
-        // 正文，随后按 ruleStrS[1..2] 做整章替换。
-        final parts = rule.substring(2).split('##');
-        final pattern = parts[0];
-        final replacement = parts.length >= 2 ? parts[1] : '';
-        final replaceFirst = parts.length >= 3;
-        if (pattern.isEmpty) continue;
-        try {
-          // 整章替换按 Java 默认正则语义（无 MULTILINE/DOTALL），
-          // `^`/`$` 只锚定整章首尾。
-          final re = _compileCompatRegex(pattern, multiLine: false);
-          out = replaceFirst
-              ? out.replaceFirst(re, replacement)
-              : out.replaceAll(re, replacement);
-        } catch (_) {}
+      final lower = rule.toLowerCase();
+      final isJs = lower.startsWith('@js:') || lower.contains('<js>');
+      if (rule.startsWith('##') || isJs) {
+        final ar = analyzeRule ?? (AnalyzeRule()..setContent(out));
+        final res = ar.getString(rule, mContent: out);
+        // JS 净化脚本产出空串时保留原文（脚本异常不能把整章清空）。
+        out = isJs && res.isEmpty ? out : res;
+        // 引擎已在 getString 末尾按 legado 口径反转义过一次。
+        needUnescape = false;
         continue;
       }
+      // NexHub 扩展形态：裸正则/`pattern##replacement`
       final parts = rule.split('##');
       final pattern = parts[0];
-      final replacement = parts.length >= 2 ? parts.sublist(1).join('##') : '';
       if (pattern.isEmpty) continue;
+      final replacement = parts.length >= 2 ? parts.sublist(1).join('##') : '';
       try {
-        // multiLine: true 让 ^...$ 锚点支持每行边界匹配。
-        out = out.replaceAll(_compileCompatRegex(pattern), replacement);
+        // 整章替换按 Java 默认正则语义（无 MULTILINE/DOTALL），
+        // `^`/`$` 只锚定整章首尾；带替换文本时保持逐行锚点语义。
+        final re = _compileCompatRegex(pattern,
+            multiLine: parts.length >= 2 ? false : true);
+        out = out.replaceAll(re, replacement);
       } catch (_) {}
     }
-    return AnalyzeRule.unescapeHtml(out);
+    return needUnescape ? AnalyzeRule.unescapeHtml(out) : out;
   }
 
   /// Java→Dart 正则兼容（(?i) 等内联标志原先会直接抛错被吞掉）。

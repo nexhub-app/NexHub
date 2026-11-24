@@ -11,6 +11,9 @@ class SearchRule {
   String? bookLastChapter;
   String? bookIntro;
   String? bookWordCount;
+
+  /// legado `BookListRule.updateTime`：列表页书籍的更新时间。
+  String? updateTime;
   String? checkKeyWord;
 
   SearchRule({
@@ -23,6 +26,7 @@ class SearchRule {
     this.bookLastChapter,
     this.bookIntro,
     this.bookWordCount,
+    this.updateTime,
     this.checkKeyWord,
   });
 
@@ -45,6 +49,7 @@ class SearchRule {
       bookLastChapter: pick('lastChapter', 'bookLastChapter'),
       bookIntro: pick('intro', 'bookIntro'),
       bookWordCount: pick('wordCount', 'bookWordCount'),
+      updateTime: json['updateTime'] as String?,
       checkKeyWord: json['checkKeyWord'] as String?,
     );
   }
@@ -59,6 +64,7 @@ class SearchRule {
         if (bookLastChapter != null) 'bookLastChapter': bookLastChapter,
         if (bookIntro != null) 'bookIntro': bookIntro,
         if (bookWordCount != null) 'bookWordCount': bookWordCount,
+        if (updateTime != null) 'updateTime': updateTime,
         if (checkKeyWord != null) 'checkKeyWord': checkKeyWord,
       };
 }

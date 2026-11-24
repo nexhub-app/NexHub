@@ -62,6 +62,15 @@ class ShuyuanSourceContext {
         'customOrder': bs.customOrder,
         'lastUpdateTime': bs.lastUpdateTime,
         'weight': bs.weight,
+        // E7：脚本可读的其余源字段（封面解密 JS、并发率、搜索/发现/详情
+        // 规则串、段评规则等）。缺失字段在 JS 侧回落空串。
+        'coverDecodeJs': bs.coverDecodeJs ?? '',
+        'concurrentRate': bs.concurrentRate ?? '',
+        'searchUrl': bs.searchUrl ?? '',
+        'exploreUrl': bs.exploreUrl ?? '',
+        'bookUrlPattern': bs.bookUrlPattern ?? '',
+        'enabledCookieJar': bs.enabledCookieJar,
+        'ruleReview': bs.ruleReview == null ? '' : jsonEncode(bs.ruleReview),
       });
   }
 
@@ -114,6 +123,13 @@ class ShuyuanSourceContext {
   /// legado `BookSource.enabledCookieJar`：Cookie 罐总闸。关闭时覆盖层
   /// 不随请求发送，响应/WebView 回写的 Cookie 不落覆盖层。
   bool cookieJarEnabled = true;
+
+  /// `java.getReadBookConfig()` / `getThemeConfig()` / `getThemeMode()` 的
+  /// 实时值（JSON 串 / 模式名）。宿主无对应设置源时留空，预置脚本回落到
+  /// legado 默认值（E9：能力通道已具备，当前无实时数据源）。
+  String readConfigJson = '';
+  String themeConfigJson = '';
+  String themeMode = '';
 
   /// java.ajax 确定性重放缓存：完整 ajax URL（含 AnalyzeUrl 选项串）→
   /// 响应体。settle 循环抓取后写入，重放时脚本内 ajax 直出真数据。
@@ -415,6 +431,9 @@ class ShuyuanSourceContext {
         'loginInfo': Map<String, String>.from(loginInfo),
         'loginHeader': Map<String, String>.from(loginHeader),
         'loginHeaderRaw': loginHeaderRaw,
+        'readConfigJson': readConfigJson,
+        'themeConfigJson': themeConfigJson,
+        'themeMode': themeMode,
         'cache': <String, String>{
           for (final e in cache.entries)
             if (!_cacheExpired(e.key)) e.key: e.value,

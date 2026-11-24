@@ -52,7 +52,14 @@ class AnalyzeRule {
 
   /// 本规则实例当前的变量表快照（`@put` / JS java.put 的写入）。
   /// 供各解析阶段结束后把变量回写暂存（跨阶段贯通）。
-  Map<String, String> get variables => _variables;
+  ///
+  /// 含书对象 `variableMap`：legado `put` 的落点是 `chapter ?: book ?:
+  /// ruleData ?: source`，`@put` 默认写进书对象；回写点读此快照即可拿到
+  /// 全部写入（含搜索/详情阶段的 `@put`），无需分别读取。
+  Map<String, String> get variables => <String, String>{
+        ...?book?.variableMap,
+        ..._variables,
+      };
 
   AnalyzeRule setContent(dynamic newContent, [String? newBaseUrl]) {
     content = newContent;
@@ -91,15 +98,20 @@ class AnalyzeRule {
   }
 
   void put(String key, String value) {
-    if (key == 'title' && chapter != null) {
-      chapter!.title = value;
-    }
-    // legado AnalyzeRule.put：chapter → book → ruleData → source。目录逐条
-    // 复用同一个规则实例时，若写入实例级变量表，本章 @put 会污染后续章节
-    //（跨章串扰）。有章节绑定就必须落到本章 variableMap。
+    // 对照 legado `AnalyzeRule.put`：`chapter?.putVariable ?: book?.putVariable
+    // ?: ruleData?.putVariable ?: source?.put`——**没有** `title` 特殊分支。
+    // 旧实现遇到 `@put:{title:...}` 会顺带改写章节标题，导致源用
+    // title 作中间变量时章节名被覆盖（基准只写变量表）。
     final ch = chapter;
     if (ch != null) {
       ch.putVariable(key, value);
+      return;
+    }
+    // 有书对象时写书（legado 搜索阶段即写 SearchBook.variableMap）：
+    // 变量随条目走，不再落实例级表跨条目串扰。
+    final b = book;
+    if (b != null) {
+      b.putVariable(key, value);
       return;
     }
     _variables[key] = value;
@@ -332,7 +344,9 @@ class AnalyzeRule {
         final sourceRule = ruleList.first;
         _putAll(sourceRule.putMap);
         final st = _makeUpRule(sourceRule, result);
-        if (st.rule.isNotEmpty || st.replaceRegex.isEmpty) {
+        // 对照 legado `getStringList`：`if (rule.isNotEmpty)` —— 空规则段
+        // 直接跳过解析器（保留上一步结果），有无 `##` 替换都一样。
+        if (st.rule.isNotEmpty) {
           if (st.templateMode) {
             result = st.rule;
           } else if (sourceRule.mode == Mode.js && st.rule.trim().isNotEmpty) {
@@ -365,7 +379,8 @@ class AnalyzeRule {
           _putAll(sourceRule.putMap);
           final st = _makeUpRule(sourceRule, result);
           if (result == null) continue;
-          if (st.rule.isNotEmpty || st.replaceRegex.isEmpty) {
+          // 同 Map 快捷路径：空规则段不执行解析器。
+          if (st.rule.isNotEmpty) {
             if (st.templateMode) {
               result = st.rule;
             } else if (sourceRule.mode == Mode.js && st.rule.trim().isNotEmpty) {
@@ -641,7 +656,29 @@ class AnalyzeRule {
           ..['tocUrl'] = target.tocUrl ?? ''
           ..['wordCount'] = target.wordCount ?? ''
           ..['type'] = '${target.type}'
-          ..['origin'] = activeCtx.bookSourceUrl;
+          ..['origin'] = activeCtx.bookSourceUrl
+          // F2/E8：legado Book 实体其余可读写字段（脚本按章修正进度、
+          // 读 originName 分支、写 latestChapterTitle 等都依赖它们）。
+          ..['originName'] =
+              '${activeCtx.sourceMeta['bookSourceName'] ?? target.originName ?? ''}'
+          ..['originOrder'] = '${target.originOrder}'
+          ..['fixedType'] = '${target.fixedType}'
+          ..['totalChapterNum'] = '${target.totalChapterNum}'
+          ..['latestChapterTitle'] = target.latestChapterTitle ??
+              target.lastChapter ??
+              ''
+          ..['latestChapterTime'] = '${target.latestChapterTime}'
+          ..['durChapterIndex'] = '${target.durChapterIndex}'
+          ..['durChapterTitle'] = target.durChapterTitle
+          ..['durChapterPos'] = '${target.durChapterPos}'
+          ..['infoHtml'] = target.bookInfoHtml ?? ''
+          ..['tocHtml'] = target.tocHtml ?? ''
+          ..['group'] = target.group ?? ''
+          ..['customTag'] = target.customTag ?? ''
+          ..['customIntro'] = target.customIntro ?? ''
+          ..['customCoverUrl'] = target.customCoverUrl ?? ''
+          ..['reverseToc'] = '${target.reverseToc}'
+          ..['canUpdate'] = '${target.canUpdate}';
       }
       final out = _evalJsWithRuleBridge(jsStr, bindings, structured: structured);
       final javaVars = _jsEngine!.takeJavaVars();
@@ -679,6 +716,35 @@ class AnalyzeRule {
         apply('lastChapter', (v) => target.lastChapter = v);
         apply('tocUrl', (v) => target.tocUrl = v);
         apply('wordCount', (v) => target.wordCount = v);
+        // F2/E8：其余可写字段（与预置脚本的属性表对齐）。
+        apply('originName', (v) => target.originName = v);
+        apply('latestChapterTitle', (v) => target.latestChapterTitle = v);
+        apply('durChapterTitle', (v) => target.durChapterTitle = v);
+        apply('infoHtml', (v) => target.bookInfoHtml = v);
+        apply('tocHtml', (v) => target.tocHtml = v);
+        apply('group', (v) => target.group = v);
+        apply('customTag', (v) => target.customTag = v);
+        apply('customIntro', (v) => target.customIntro = v);
+        apply('customCoverUrl', (v) => target.customCoverUrl = v);
+        void applyInt(String key, void Function(int value) setter) {
+          final v = int.tryParse(activeCtx.bookInfo[key] ?? '');
+          if (v != null) setter(v);
+        }
+
+        void applyBool(String key, void Function(bool value) setter) {
+          final v = activeCtx.bookInfo[key];
+          if (v == null || v.isEmpty) return;
+          setter(v == 'true');
+        }
+
+        applyInt('originOrder', (v) => target.originOrder = v);
+        applyInt('fixedType', (v) => target.fixedType = v);
+        applyInt('totalChapterNum', (v) => target.totalChapterNum = v);
+        applyInt('latestChapterTime', (v) => target.latestChapterTime = v);
+        applyInt('durChapterIndex', (v) => target.durChapterIndex = v);
+        applyInt('durChapterPos', (v) => target.durChapterPos = v);
+        applyBool('reverseToc', (v) => target.reverseToc = v);
+        applyBool('canUpdate', (v) => target.canUpdate = v);
       }
       // 注入对象 book 变量回写：JS 里 book.putVariable 的写入镜像到当前书
       // （variableMap），规则层 @get/{book.getVariable} 即可读到。
@@ -1157,16 +1223,90 @@ class AnalyzeRule {
     }
   }
 
-  /// 展开 `##` 正则替换中的 `$1`..`$9` 分组引用（`$0` 为整串）。
+  /// 展开 `##` 正则替换中的分组引用，对齐 Java `Matcher.replaceAll`：
+  /// - `$N`（多位数字，`$10` 取第 10 组；组号超出时回退到能命中的更短数字）
+  /// - `${name}` 命名分组（`(?<name>…)`）
+  /// - `\$` / `\\` 反斜杠转义（其余反斜杠序列原样保留，避免破坏
+  ///   `C:\path` 这类替换文本）
+  ///
   /// Dart 的字符串替换不展开 `$N`，须显式映射。
   static String _expandReplacement(Match m, String replacement) {
-    if (!replacement.contains(r'$')) return replacement;
-    return replacement.replaceAllMapped(RegExp(r'\$(\d)'), (rm) {
-      final idx = int.parse(rm.group(1)!);
+    if (!replacement.contains(r'$') && !replacement.contains(r'\')) {
+      return replacement;
+    }
+    String groupAt(int idx) {
       if (idx == 0) return m.group(0) ?? '';
       if (idx <= m.groupCount) return m.group(idx) ?? '';
       return '';
-    });
+    }
+
+    final out = StringBuffer();
+    var i = 0;
+    while (i < replacement.length) {
+      final ch = replacement[i];
+      if (ch == r'\') {
+        if (i + 1 < replacement.length) {
+          final next = replacement[i + 1];
+          if (next == r'$' || next == r'\') {
+            out.write(next);
+            i += 2;
+            continue;
+          }
+        }
+        out.write(ch);
+        i++;
+        continue;
+      }
+      if (ch == r'$' && i + 1 < replacement.length) {
+        final next = replacement[i + 1];
+        if (next == '{') {
+          final end = replacement.indexOf('}', i + 2);
+          if (end > i + 2) {
+            final name = replacement.substring(i + 2, end);
+            String? named;
+            if (RegExp(r'^[A-Za-z][A-Za-z0-9]*$').hasMatch(name)) {
+              try {
+                // 命名分组只存在于 RegExpMatch（Dart 的 Match 接口无此方法）。
+                named = m is RegExpMatch ? m.namedGroup(name) : null;
+              } catch (_) {
+                named = null;
+              }
+            }
+            final asIndex = int.tryParse(name);
+            if (named != null || asIndex != null) {
+              out.write(named ?? groupAt(asIndex!));
+              i = end + 1;
+              continue;
+            }
+            out.write(replacement.substring(i, end + 1));
+            i = end + 1;
+            continue;
+          }
+        }
+        if (next.codeUnitAt(0) >= 0x30 && next.codeUnitAt(0) <= 0x39) {
+          var j = i + 1;
+          while (j < replacement.length) {
+            final c = replacement.codeUnitAt(j);
+            if (c < 0x30 || c > 0x39) break;
+            j++;
+          }
+          var digits = replacement.substring(i + 1, j);
+          // 组号不存在时按 Java 行为抛错；此处改为回退到可命中的更短组号，
+          // 保证 `$10`（只有 2 组）不退化成长度为 10 的乱码输出。
+          while (digits.length > 1 &&
+              int.parse(digits) > m.groupCount) {
+            digits = digits.substring(0, digits.length - 1);
+            j--;
+          }
+          out.write(groupAt(int.parse(digits)));
+          i = j;
+          continue;
+        }
+      }
+      out.write(ch);
+      i++;
+    }
+    return out.toString();
   }
 
   String _getAbsoluteUrl(String url) {
@@ -1192,7 +1332,13 @@ class AnalyzeRule {
     final trimmed = url.trim();
     if (trimmed.startsWith('data:')) return trimmed;
     if (trimmed.startsWith('javascript')) return '';
-    if (trimmed.startsWith('http')) return trimmed;
+    // 绝对地址判定对齐 legado `String.isAbsUrl()`：只认 http:// / https://
+    // （大小写不敏感）。旧实现 `startsWith('http')` 会把 `httpfoo:bar`、
+    // `httpsx://…` 当成绝对地址原样返回。
+    final lower = trimmed.toLowerCase();
+    if (lower.startsWith('http://') || lower.startsWith('https://')) {
+      return trimmed;
+    }
     if (base == null || base.isEmpty) return trimmed;
     var pathPart = trimmed;
     var optionPart = '';
@@ -1214,14 +1360,21 @@ class AnalyzeRule {
   /// HTML5 专有实体 / 大小写变体原样保留；数字实体按 Apache 语义解析
   /// （允许 0 与代理区码点，非法码点 > 0x10FFFF 抛 [ArgumentError]，
   /// 超出 int32 的溢出值视为解析失败、原样保留）。
-  static final RegExp _entityPattern =
-      RegExp(r'&(?:#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);');
+  /// 数字实体允许缺分号（HTML4 规范：`&#123` 合法），命名实体要求分号
+  /// 且必须命中 HTML4 表——第二条备选分支只收数字实体，并要求其后不是
+  /// 字母数字（避免把 `&#123abc` 这类普通文本吃掉）。
+  static final RegExp _entityPattern = RegExp(
+      r'&(?:#\d+|#[xX][0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);'
+      r'|&(?:#\d+|#[xX][0-9a-fA-F]+)(?![0-9a-zA-Z])');
 
   static String unescapeHtml(String str) {
     if (!str.contains('&')) return str;
     return str.replaceAllMapped(_entityPattern, (m) {
       final entity = m.group(0)!;
-      final body = entity.substring(1, entity.length - 1);
+      // 缺分号的数字实体：按原文补一个分号再走统一解析。
+      final body = entity.endsWith(';')
+          ? entity.substring(1, entity.length - 1)
+          : entity.substring(1);
       if (body.startsWith('#')) {
         final hex = body.length > 1 && (body[1] == 'x' || body[1] == 'X');
         final digits = body.substring(hex ? 2 : 1);

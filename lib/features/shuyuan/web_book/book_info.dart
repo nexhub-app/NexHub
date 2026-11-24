@@ -134,10 +134,15 @@ class BookInfo {
       } catch (_) {}
     }
 
-    // 对照 legado BookInfo：文件类书源（bookSourceType=3）没有目录，
-    // 详情阶段解析下载地址列表；为空直接失败（md3 抛「下载链接为空」），
-    // 否则用户会看到一个没有任何可读文件的详情页。
-    final bool isWebFile = bookSource.bookSourceType == 3;
+    // 对照 legado BookInfo：文件类书源没有目录，详情阶段解析下载地址列表；
+    // 为空直接失败（md3 抛「下载链接为空」），否则用户会看到一个没有任何
+    // 可读文件的详情页。
+    //
+    // 判据用 `Book.isWebFile`（BookType 位掩码 128，可与 text 位并存），
+    // 旧实现只看 `bookSourceType == 3`：组合类型（如 text|webFile）或书对象
+    // 的 type 被改过时会走错分支（下载链接 vs 目录）。
+    final bool isWebFile =
+        book.isWebFileBook || bookSource.bookSourceType == 3;
     if (isWebFile) {
       final urls = analyzeRule.getStringList(
         bookInfoRule.downloadUrls,
@@ -155,13 +160,14 @@ class BookInfo {
         );
       }
     } else {
-      if (bookInfoRule.tocUrl != null && bookInfoRule.tocUrl!.isNotEmpty) {
-        try {
-          final tocUrl = analyzeRule.getString(bookInfoRule.tocUrl!, isUrl: true);
-          if (tocUrl.isNotEmpty) {
-            book.tocUrl = tocUrl;
-          }
-        } catch (_) {}
+      // 对照 legado BookInfo：**无条件**用详情规则覆盖 tocUrl
+      //（`book.tocUrl = getString(infoRule.tocUrl, isUrl = true)`）——
+      // 规则为空/未命中时得到空串，随后回退 baseUrl。旧实现「规则为空就
+      // 保留搜索阶段旧值」，搜索给了错误 tocUrl 时会一路用错地址。
+      try {
+        book.tocUrl = analyzeRule.getString(bookInfoRule.tocUrl ?? '', isUrl: true);
+      } catch (_) {
+        book.tocUrl = '';
       }
 
       // 对照 legado BookInfo：目录地址回落到详情页**原始** URL（baseUrl）；

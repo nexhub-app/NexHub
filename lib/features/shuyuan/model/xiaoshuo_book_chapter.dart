@@ -20,6 +20,19 @@ class XiaoshuoBookChapter {
   String? variable;
   Map<String, String> variableMap = {};
 
+  // ── legado `BookChapter` 扩展字段（F3）──
+  /// 目录层级（EPUB/多级目录用，0 = 一级）。
+  int tocLevel;
+
+  /// 章节真实资源地址（音频/文件类书源；legado `BookChapter.resourceUrl`）。
+  String? resourceUrl;
+
+  /// 正文在源文件中的起止偏移（EPUB/本地文件续读定位）。
+  int start;
+  int end;
+  String? startFragmentId;
+  String? endFragmentId;
+
   XiaoshuoBookChapter({
     required this.bookUrl,
     this.url = '',
@@ -33,6 +46,12 @@ class XiaoshuoBookChapter {
     this.reviewImg,
     this.baseUrl,
     this.variable,
+    this.tocLevel = 0,
+    this.resourceUrl,
+    this.start = 0,
+    this.end = 0,
+    this.startFragmentId,
+    this.endFragmentId,
   });
 
   factory XiaoshuoBookChapter.fromJson(Map<String, dynamic> json) {
@@ -49,6 +68,12 @@ class XiaoshuoBookChapter {
       reviewImg: json['reviewImg'] as String?,
       baseUrl: json['baseUrl'] as String?,
       variable: json['variable'] as String?,
+      tocLevel: json['tocLevel'] as int? ?? 0,
+      resourceUrl: json['resourceUrl'] as String?,
+      start: json['start'] as int? ?? 0,
+      end: json['end'] as int? ?? 0,
+      startFragmentId: json['startFragmentId'] as String?,
+      endFragmentId: json['endFragmentId'] as String?,
     );
   }
 
@@ -65,6 +90,12 @@ class XiaoshuoBookChapter {
         if (reviewImg != null) 'reviewImg': reviewImg,
         if (baseUrl != null) 'baseUrl': baseUrl,
         if (variable != null) 'variable': variable,
+        if (tocLevel != 0) 'tocLevel': tocLevel,
+        if (resourceUrl != null) 'resourceUrl': resourceUrl,
+        if (start != 0) 'start': start,
+        if (end != 0) 'end': end,
+        if (startFragmentId != null) 'startFragmentId': startFragmentId,
+        if (endFragmentId != null) 'endFragmentId': endFragmentId,
       };
 
   /// 对齐 legado `BookChapter.getAbsoluteURL()`：

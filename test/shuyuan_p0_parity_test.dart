@@ -89,9 +89,11 @@ void main() {
       rule.put('k', 'v');
       expect(ch.variableMap['k'], 'v');
       expect(rule.variables.containsKey('k'), isFalse);
-      // legado put 对 title 特殊处理：回写章节标题。
+      // legado `put` 只写变量表：`title` 没有特殊处理，不得回写章节标题
+      //（章节标题由 ruleContent.title 改写；detail 见 P2 轮 B3）。
       rule.put('title', '新名');
-      expect(ch.title, '新名');
+      expect(ch.title, '旧名');
+      expect(ch.variableMap['title'], '新名');
 
       final bare = AnalyzeRule();
       bare.put('k', 'v');

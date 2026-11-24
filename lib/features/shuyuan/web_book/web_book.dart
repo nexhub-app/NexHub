@@ -6,6 +6,8 @@
 /// 直接基于 XiaoshuoHttp/AnalyzeUrl + 静态分析方法实现，便于在新项目架构下复用。
 library;
 
+import 'package:meta/meta.dart';
+
 import '../../../core/download/download_settings.dart';
 import '../../../core/models/explore_kind.dart';
 import '../../../core/models/novel_block.dart';
@@ -124,10 +126,21 @@ class WebBook {
     if (exploreUrl == null || exploreUrl.trim().isEmpty) {
       return const <ExploreKind>[];
     }
-    return parseExploreKinds(exploreUrl,
+    String? scriptError;
+    final kinds = parseExploreKinds(exploreUrl,
         infoMap: infoMap,
         baseUrl: source.bookSourceUrl,
-        onScriptError: onScriptError);
+        onScriptError: (error) {
+          scriptError = error;
+          onScriptError?.call(error);
+        });
+    if (scriptError != null && kinds.isEmpty) {
+      // 对照 legado `BookSourceExtensions`：发现分类脚本异常生成
+      // `ERROR:<message>` 条目（不可浏览，UI 显示具体原因）。旧实现只回调
+      // 错误并返回空列表，用户看到的是「分类一片空白」。
+      return <ExploreKind>[ExploreKind(title: 'ERROR:$scriptError')];
+    }
+    return kinds;
   }
 
   /// 解析书源的发现分类列表（基于 `exploreUrl` 多级 URL 字符串）。
@@ -153,6 +166,35 @@ class WebBook {
   /// 当前源上下文中 bookUrl 对应的搜索条目（{{\$.field}} 模板求值根）。
   Object? _bookItemContext(String bookUrl) =>
       ShuyuanSourceContext.current?.bookItemContext[bookUrl];
+
+  /// legado `String.withPageParam(page, param)`：运行期地址的参数兜底翻页。
+  ///
+  /// 只在地址**不带**页码规则时生效（对齐 legado `supportsParamPagination`：
+  /// 含 `{{`/`}}`、`<`、内嵌 JS、URL 选项 `,{` 的一律不改写——那些地址自己
+  /// 负责页码）。第一页按原地址请求，保证书源直入的首次请求不变。
+  @visibleForTesting
+  static String withPageParam(
+      XiaoshuoBookSource source, String url, int page) {
+    if (page <= 1 || url.trim().isEmpty) return url;
+    if (url.contains('{{') ||
+        url.contains('}}') ||
+        url.contains('<') ||
+        url.contains('@js:') ||
+        url.toLowerCase().contains('<js>') ||
+        RegExp(r',\s*\{').hasMatch(url)) {
+      return url;
+    }
+    final param = (source.getExploreRule().pageParam ?? '').trim();
+    final name = param.isEmpty ? 'page' : param;
+    final hashIndex = url.indexOf('#');
+    final base = hashIndex >= 0 ? url.substring(0, hashIndex) : url;
+    final fragment = hashIndex >= 0 ? url.substring(hashIndex) : '';
+    final pattern = RegExp('([?&])${RegExp.escape(name)}=\\d+');
+    final withPage = pattern.hasMatch(base)
+        ? base.replaceAllMapped(pattern, (m) => '${m.group(1)}$name=$page')
+        : '$base${base.contains('?') ? '&' : '?'}$name=$page';
+    return '$withPage$fragment';
+  }
 
   /// 抓取发现页（按分类 URL 列表逐个请求并合并结果）。
   Future<List<XiaoshuoBook>> exploreBook({
@@ -209,8 +251,11 @@ class WebBook {
     required String categoryUrl,
     int page = 1,
   }) async {
+    // legado `ExploreShowViewModel.fetchPage`：分类地址本身不含页码规则时，
+    // 按 `exploreRule.pageParam`（缺省 `page`）在运行期补参数翻页。
+    final requestUrl = withPageParam(source, categoryUrl, page);
     final analyzeUrl = AnalyzeUrl(
-      url: categoryUrl,
+      url: requestUrl,
       baseUrl: source.bookSourceUrl,
       source: source,
       page: page,
@@ -532,7 +577,9 @@ class WebBook {
           bookSource: source,
           book: book,
           baseUrl: nextUrl,
-          redirectUrl: pageAnalyze.url,
+          // legado `BookChapterList`：串行分页的 baseUrl 与 redirectUrl 都是
+          // nextUrl（请求页），不是响应最终地址——相对章节地址按请求页拼接。
+          redirectUrl: nextUrl,
           body: pageBody,
           nextUrlsOut: pageNextUrls,
           applyReverse: false,
@@ -819,6 +866,10 @@ class WebBook {
             chapter: chapter,
           );
           final pageBody = await pageAnalyze.getStrResponse();
+          // legado `BookContent`：`res.body?.let { … }`——空 body 不追加、不
+          // 更新 nextUrl，循环随即结束（旧实现继续对空页求值并再提取下一页，
+          // 白白多发请求）。
+          if (pageBody.isEmpty) break;
 
           final pageContent = BookContent.analyzeContent(
             bookSource: source,
@@ -863,19 +914,18 @@ class WebBook {
         subContent = await subAnalyze.getStrResponse();
       }
       if (subContent.isNotEmpty) {
-        // legado BookContent：isOnLineTxt(0) 追加正文；isAudio(1) 存歌词
-        // 变量；图片(2)/文件(3)/视频(4) 源忽略 subContent。
-        switch (source.bookSourceType) {
-          case 0:
-            blocks.addAll(BookContent.extractAppendedBlocks(
-              content: subContent,
-              baseUrl: chapterUrl,
-              redirectUrl: firstBaseUrl,
-            ));
-          case 1:
-            chapter.putVariable('lyric', subContent);
-          default:
-            break;
+        // legado BookContent：`isOnLineTxt` → 追加正文；`isAudio` → 写 lyric
+        // 变量；图片/文件/视频源忽略。判据走 BookType 位语义（兼容本应用
+        // 0..4 编号），组合类型（text|audio）两边都要执行。
+        if (book.isOnLineTxtBook || source.bookSourceType == 0) {
+          blocks.addAll(BookContent.extractAppendedBlocks(
+            content: subContent,
+            baseUrl: chapterUrl,
+            redirectUrl: firstBaseUrl,
+          ));
+        }
+        if (book.isAudioBook || source.bookSourceType == 1) {
+          chapter.putVariable('lyric', subContent);
         }
       }
     }
