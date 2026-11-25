@@ -4,6 +4,8 @@
 /// `reviewAction` 路由（书源引擎），本文件只负责展示与交互。
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -29,6 +31,11 @@ Future<void> showNovelReviewSheet(
   required String chapterUrl,
   String? chapterTitle,
   int? paragraph,
+
+  /// true = 打开就只看这一条段评所在段落（点气泡进）；false = 默认全章
+  /// （三点菜单 / 长按工具栏进，仍可切「第 N 段」）。对齐 legado：
+  /// 点某段的段评图标就是看这一段。
+  bool scopeToParagraph = false,
 }) {
   return showModalBottomSheet<void>(
     context: context,
@@ -43,6 +50,7 @@ Future<void> showNovelReviewSheet(
         chapterUrl: chapterUrl,
         chapterTitle: chapterTitle,
         paragraph: paragraph,
+        scopeToParagraph: scopeToParagraph,
       ),
       child: const NovelReviewSheet(),
     ),
@@ -57,8 +65,10 @@ class NovelReviewController extends ChangeNotifier {
     required this.novelId,
     required this.chapterUrl,
     this.chapterTitle,
-    this.paragraph,
-  });
+    int? paragraph,
+    bool scopeToParagraph = false,
+  })  : entryParagraph = paragraph,
+        paragraph = scopeToParagraph ? paragraph : null;
 
   final MediaApiService api;
   final PluginConfig source;
@@ -66,8 +76,11 @@ class NovelReviewController extends ChangeNotifier {
   final String chapterUrl;
   final String? chapterTitle;
 
-  /// 当前段落锚点（null = 全章）。切换时重新拉取（源可用 `{{paragraph}}`
-  /// 收窄请求；不支持时段号只用于本地过滤/发帖携带）。
+  /// 从哪一段打开的（用于「第 N 段」chip 与发帖携带；不影响默认范围）。
+  final int? entryParagraph;
+
+  /// 当前范围（null = 全章）。**默认全章**：从段落进来也先看全章，
+  /// 需要只看本段时点 chip 切换。
   int? paragraph;
 
   /// 源声明的段评规则（决定面板上出现哪些动作按钮），首次访问时解析一次。
@@ -103,6 +116,33 @@ class NovelReviewController extends ChangeNotifier {
 
   /// 已展开的回复：段评序号 → 回复列表。
   final Map<int, List<SourceReview>> quotes = <int, List<SourceReview>>{};
+
+  /// 已展开全部回复的条目（默认只显示前 [kQuotePreview] 条）。
+  final Set<int> expandedQuotes = <int>{};
+
+  /// 每条段评默认展示的回复条数。
+  static const int kQuotePreview = 2;
+
+  /// 是否已销毁：预取回复是「面板关闭后仍可能在跑」的异步链，销毁后
+  /// 继续 notifyListeners 会抛 "used after being disposed"。
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  void _notify() {
+    if (_disposed) return;
+    notifyListeners();
+  }
+
+  /// 本次会话内已投过的条目（`index:up|down`）：按钮置高亮，避免重复投。
+  final Set<String> voted = <String>{};
+
+  bool votedUp(SourceReview r) => voted.contains('${r.index}:up');
+  bool votedDown(SourceReview r) => voted.contains('${r.index}:down');
   final Set<int> loadingQuotes = <int>{};
 
   Future<void> load({bool append = false}) async {
@@ -112,7 +152,7 @@ class NovelReviewController extends ChangeNotifier {
       error = null;
       page = 1;
     }
-    notifyListeners();
+    _notify();
     try {
       final result = await api.fetchChapterReviews(
         source,
@@ -123,6 +163,7 @@ class NovelReviewController extends ChangeNotifier {
         paragraph: paragraph,
       );
       reviews = append ? <SourceReview>[...reviews, ...result] : result;
+      if (rule.hasQuote) unawaited(_prefetchQuotes());
       // 规则没给总数/游标：按「本页满 20 条」判定还有下一页。
       hasMore = result.length >= 20;
       if (append && result.isEmpty) hasMore = false;
@@ -131,7 +172,21 @@ class NovelReviewController extends ChangeNotifier {
       error = '$e';
     } finally {
       loading = false;
-      notifyListeners();
+      _notify();
+    }
+  }
+
+  /// 预取前若干条的回复：面板默认要展示「前几条回复」，不能等用户点开。
+  /// 限流到前 [kQuotePrefetchLimit] 条，避免真实源被瞬间打爆。
+  static const int kQuotePrefetchLimit = 3;
+
+  Future<void> _prefetchQuotes() async {
+    if (!rule.hasQuote) return;
+    final targets = reviews.take(kQuotePrefetchLimit).toList();
+    for (final r in targets) {
+      if (_disposed) return;
+      if (quotes.containsKey(r.index) || loadingQuotes.contains(r.index)) continue;
+      await refreshQuotes(r);
     }
   }
 
@@ -149,7 +204,7 @@ class NovelReviewController extends ChangeNotifier {
           novelId: novelId,
           chapterUrl: chapterUrl,
           chapterTitle: chapterTitle,
-          paragraph: paragraph,
+          paragraph: paragraph ?? entryParagraph,
         ),
       );
 
@@ -166,16 +221,48 @@ class NovelReviewController extends ChangeNotifier {
         ),
       );
 
-  Future<bool> vote(SourceReview target, {required bool up}) => _run(
-        () => api.runReviewAction(
-          source,
-          action: up ? 'voteUp' : 'voteDown',
-          target: target,
-          novelId: novelId,
-          chapterUrl: chapterUrl,
-          chapterTitle: chapterTitle,
-        ),
+  Future<bool> vote(SourceReview target, {required bool up}) async {
+    final bool ok = await _run(
+      () => api.runReviewAction(
+        source,
+        action: up ? 'voteUp' : 'voteDown',
+        target: target,
+        novelId: novelId,
+        chapterUrl: chapterUrl,
+        chapterTitle: chapterTitle,
+      ),
+    );
+    if (!ok) return false;
+    voted
+      ..remove('${target.index}:up')
+      ..remove('${target.index}:down');
+    voted.add('${target.index}:${up ? 'up' : 'down'}');
+    // 重新拉一次：源若提供赞/踩计数，数字随刷新更新。
+    await load();
+    return true;
+  }
+
+  /// 回复后强制刷新该条回复列表（`toggleQuotes` 是展开/收起语义，已展开时
+  /// 再调会把它收起来，导致「回复完就看不见」）。
+  Future<void> refreshQuotes(SourceReview target) async {
+    if (loadingQuotes.contains(target.index)) return;
+    loadingQuotes.add(target.index);
+    _notify();
+    try {
+      quotes[target.index] = await api.fetchReviewQuotes(
+        source,
+        novelId: novelId,
+        chapterUrl: chapterUrl,
+        target: target,
+        chapterTitle: chapterTitle,
       );
+    } catch (e) {
+      AppLog.instance.w('[段评] 回复刷新失败: $e');
+    } finally {
+      loadingQuotes.remove(target.index);
+      _notify();
+    }
+  }
 
   Future<bool> delete(SourceReview target) => _run(
         () => api.runReviewAction(
@@ -192,12 +279,12 @@ class NovelReviewController extends ChangeNotifier {
   Future<void> toggleQuotes(SourceReview target) async {
     if (quotes.containsKey(target.index)) {
       quotes.remove(target.index);
-      notifyListeners();
+      _notify();
       return;
     }
     if (loadingQuotes.contains(target.index)) return;
     loadingQuotes.add(target.index);
-    notifyListeners();
+    _notify();
     try {
       final list = await api.fetchReviewQuotes(
         source,
@@ -212,14 +299,14 @@ class NovelReviewController extends ChangeNotifier {
       quotes[target.index] = const <SourceReview>[];
     } finally {
       loadingQuotes.remove(target.index);
-      notifyListeners();
+      _notify();
     }
   }
 
   Future<bool> _run(Future<bool> Function() action) async {
     if (posting) return false;
     posting = true;
-    notifyListeners();
+    _notify();
     var ok = false;
     try {
       ok = await action();
@@ -227,7 +314,7 @@ class NovelReviewController extends ChangeNotifier {
       AppLog.instance.w('[段评] 动作失败: $e');
     } finally {
       posting = false;
-      notifyListeners();
+      _notify();
     }
     return ok;
   }
@@ -287,7 +374,10 @@ class _NovelReviewSheetState extends State<NovelReviewSheet> {
                 const SizedBox(width: AppTokens.spaceSm),
                 Expanded(
                   child: Text(
-                    l10n.novelReview,
+                    c.reviews.isEmpty
+                        ? l10n.novelReview
+                        : '${l10n.novelReview}  ${c.visibleReviews.length}'
+                            '${c.paragraph != null ? ' / ${c.reviews.length}' : ''}',
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
@@ -309,7 +399,7 @@ class _NovelReviewSheetState extends State<NovelReviewSheet> {
               ],
             ),
           ),
-          if (c.rule.hasParagraphAnchor || c.paragraph != null)
+          if (c.rule.hasParagraphAnchor || c.entryParagraph != null)
             _buildScopeBar(context, c, l10n, scheme),
           const Divider(height: 1),
           Flexible(child: _buildList(context, c, l10n, scheme)),
@@ -340,9 +430,10 @@ class _NovelReviewSheetState extends State<NovelReviewSheet> {
           ChoiceChip(
             // 从段落进入时段号固定为入口段；源声明 paragraphRule 时也允许
             // 直接按段查看（段号来自入口/默认 0）。
-            label: Text(l10n.novelReviewScopeParagraph((c.paragraph ?? 0) + 1)),
+            label: Text(l10n.novelReviewScopeParagraph(
+                (c.paragraph ?? c.entryParagraph ?? 0) + 1)),
             selected: c.paragraph != null,
-            onSelected: (_) => c.setScope(c.paragraph ?? 0),
+            onSelected: (_) => c.setScope(c.paragraph ?? c.entryParagraph ?? 0),
           ),
         ],
       ),
@@ -434,13 +525,38 @@ class _NovelReviewSheetState extends State<NovelReviewSheet> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
-                    if (review.postTime.isNotEmpty)
-                      Text(
-                        review.postTime,
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(color: scheme.onSurfaceVariant),
+                    if (review.postTime.isNotEmpty ||
+                        (c.entryParagraph != null &&
+                            review.paragraph == c.entryParagraph))
+                      Row(
+                        children: <Widget>[
+                          if (review.postTime.isNotEmpty)
+                            Text(
+                              review.postTime,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(color: scheme.onSurfaceVariant),
+                            ),
+                          if (c.entryParagraph != null &&
+                              review.paragraph == c.entryParagraph) ...<Widget>[
+                            const SizedBox(width: AppTokens.spaceXs),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 5, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: scheme.primary.withValues(alpha: 0.12),
+                                borderRadius:
+                                    BorderRadius.circular(AppTokens.radiusXs),
+                              ),
+                              child: Text(
+                                l10n.novelReviewInThisParagraph,
+                                style: TextStyle(
+                                    fontSize: 10, color: scheme.primary),
+                              ),
+                            ),
+                          ],
+                        ],
                       ),
                     const SizedBox(height: 2),
                     SelectableText(review.content),
@@ -452,8 +568,13 @@ class _NovelReviewSheetState extends State<NovelReviewSheet> {
                         if (c.rule.canVote &&
                             ((c.rule.voteUpUrl ?? '').isNotEmpty))
                           _smallAction(
-                            icon: Icons.thumb_up_outlined,
-                            label: l10n.novelReviewVoteUp,
+                            icon: c.votedUp(review)
+                                ? Icons.thumb_up_rounded
+                                : Icons.thumb_up_outlined,
+                            label: review.voteUp > 0
+                                ? '${l10n.novelReviewVoteUp} ${review.voteUp}'
+                                : l10n.novelReviewVoteUp,
+                            active: c.votedUp(review),
                             onTap: c.posting
                                 ? null
                                 : () => _runAction(
@@ -464,25 +585,19 @@ class _NovelReviewSheetState extends State<NovelReviewSheet> {
                         if (c.rule.canVote &&
                             ((c.rule.voteDownUrl ?? '').isNotEmpty))
                           _smallAction(
-                            icon: Icons.thumb_down_outlined,
-                            label: l10n.novelReviewVoteDown,
+                            icon: c.votedDown(review)
+                                ? Icons.thumb_down_rounded
+                                : Icons.thumb_down_outlined,
+                            label: review.voteDown > 0
+                                ? '${l10n.novelReviewVoteDown} ${review.voteDown}'
+                                : l10n.novelReviewVoteDown,
+                            active: c.votedDown(review),
                             onTap: c.posting
                                 ? null
                                 : () => _runAction(
                                       context,
                                       () => c.vote(review, up: false),
                                     ),
-                          ),
-                        if ((c.rule.reviewQuoteUrl ?? '').isNotEmpty ||
-                            c.rule.canQuote)
-                          _smallAction(
-                            icon: Icons.chat_bubble_outline_rounded,
-                            label: (quotes == null || quotes.isEmpty)
-                                ? l10n.novelReviewReply
-                                : l10n.novelReviewQuotes(quotes.length),
-                            onTap: c.loadingQuotes.contains(review.index)
-                                ? null
-                                : () => c.toggleQuotes(review),
                           ),
                         if (c.rule.canQuote)
                           _smallAction(
@@ -514,17 +629,73 @@ class _NovelReviewSheetState extends State<NovelReviewSheet> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  for (final SourceReview q in quotes)
+                  for (final SourceReview q
+                      in c.expandedQuotes.contains(review.index)
+                          ? quotes
+                          : quotes.take(NovelReviewController.kQuotePreview))
                     Padding(
-                      padding: const EdgeInsets.only(bottom: 2),
-                      child: Text(
-                        q.postTime.isEmpty
-                            ? q.content
-                            : '${q.postTime}  ${q.content}',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.copyWith(color: scheme.onSurfaceVariant),
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          SourceImage(
+                            url: q.avatar.isEmpty ? null : q.avatar,
+                            source: c.source,
+                            width: 20,
+                            height: 20,
+                            radius: 10,
+                            fit: BoxFit.cover,
+                            errorWidget: Icon(Icons.person_rounded,
+                                size: 13, color: scheme.onSurfaceVariant),
+                          ),
+                          const SizedBox(width: AppTokens.spaceXs),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: <Widget>[
+                                if (q.postTime.isNotEmpty)
+                                  Text(
+                                    q.postTime,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.copyWith(
+                                          fontSize: 11,
+                                          color: scheme.onSurfaceVariant,
+                                        ),
+                                  ),
+                                Text(
+                                  q.content,
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(
+                                          color: scheme.onSurfaceVariant),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  if (quotes.length > NovelReviewController.kQuotePreview)
+                    InkWell(
+                      onTap: () => setState(() {
+                        if (!c.expandedQuotes.remove(review.index)) {
+                          c.expandedQuotes.add(review.index);
+                        }
+                      }),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 2),
+                        child: Text(
+                          c.expandedQuotes.contains(review.index)
+                              ? l10n.novelReviewQuotesCollapse
+                              : l10n.novelReviewQuotesExpand(quotes.length),
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: scheme.primary,
+                          ),
+                        ),
                       ),
                     ),
                 ],
@@ -560,7 +731,7 @@ class _NovelReviewSheetState extends State<NovelReviewSheet> {
                             if (!ok || !context.mounted) return;
                             _replyControllerFor(review.index).clear();
                             setState(() => _replyingTo = null);
-                            await c.toggleQuotes(review);
+                            await c.refreshQuotes(review);
                           },
                   ),
                 ],
@@ -576,7 +747,11 @@ class _NovelReviewSheetState extends State<NovelReviewSheet> {
     required IconData icon,
     required String label,
     required VoidCallback? onTap,
+    bool active = false,
   }) {
+    final Color color = active
+        ? Theme.of(context).colorScheme.primary
+        : Theme.of(context).colorScheme.onSurfaceVariant;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(AppTokens.radiusSm),
@@ -586,9 +761,9 @@ class _NovelReviewSheetState extends State<NovelReviewSheet> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            Icon(icon, size: 14),
+            Icon(icon, size: 14, color: color),
             const SizedBox(width: 2),
-            Text(label, style: const TextStyle(fontSize: 12)),
+            Text(label, style: TextStyle(fontSize: 12, color: color)),
           ],
         ),
       ),

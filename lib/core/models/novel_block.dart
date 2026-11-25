@@ -82,7 +82,37 @@ class NovelImageBlock extends NovelBlock {
   final PluginConfig? source;
   final String? style;
 
-  const NovelImageBlock(this.url, {this.source, this.style});
+  /// 图片 URL 尾部选项里的 `click` 脚本（legado `<img src="url,{...}">`）：
+  /// 源用「内嵌小图 + 点击动作」实现正文里的段评气泡/话题入口。非空时
+  /// 渲染层把它当可点击图标处理，点击执行该脚本（多在脚本里调
+  /// `java.showBrowser(url, html)` 打开源自带的页面）。
+  final String? clickScript;
+
+  /// 是否为**行内**图标（选项 `style:"text"/"inline"`）：不按插图排版，
+  /// 作为段尾小标记（约一行高）。
+  final bool inline;
+
+  const NovelImageBlock(
+    this.url, {
+    this.source,
+    this.style,
+    this.clickScript,
+    this.inline = false,
+  });
+
+  /// 是否为内联 SVG 图标（Flutter 不解 SVG，按插图渲染只会得到破图/整页空白）。
+  bool get isSvgIcon => url.startsWith('data:image/svg');
+
+  /// 是否按「可点击行内图标」处理。
+  ///
+  /// 判据：有 `click`，且（`style` 声明为 text/inline，或地址是内联 SVG）。
+  /// 后者兜底源里常见的「SVG 图标 + click 但漏写 style」——这类地址当插图
+  /// 渲染既解码不了（Flutter 不解 SVG）也点不动，只会变成一张大破图。
+  bool get isInlineAction {
+    final String? click = clickScript?.trim();
+    if (click == null || click.isEmpty) return false;
+    return inline || isSvgIcon;
+  }
 
   /// 是否为可显示的图片地址（http/https 或 data:image 内联）。
   bool get isValid =>
@@ -92,8 +122,11 @@ class NovelImageBlock extends NovelBlock {
 
   @override
   bool operator ==(Object other) =>
-      other is NovelImageBlock && other.url == url;
+      other is NovelImageBlock &&
+      other.url == url &&
+      other.clickScript == clickScript &&
+      other.inline == inline;
 
   @override
-  int get hashCode => url.hashCode;
+  int get hashCode => Object.hash(url, clickScript, inline);
 }

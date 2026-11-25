@@ -6931,7 +6931,29 @@ const String javaExtensionsJsPrelude = r'''
     refreshExplore: function () { return unsupported('refreshExplore'); },
     initUrl: function () { return unsupported('initUrl'); },
     openVideoPlayer: function () { return unsupported('openVideoPlayer'); },
-    showBrowser: function () { return unsupported('showBrowser'); },
+    // legado showBrowser(url, html, js?, options?)：在内置浏览器打开页面；
+    // html 非空时按「注入内容 + url 作基址」加载（源用它渲染自带的段评/话题页）。
+    // 第 3 个参数是页面内注入脚本（七猫系源写 `window.qmpcRun = run;` 这类
+    // 桥接），这里把它并进 html 尾部一起注入；第 4 个参数是页面状态 JSON，
+    // 当前浏览器没有状态通道，忽略。与 startBrowser 共用宿主动作通道。
+    showBrowser: function (url, html, js, options) {
+      var u = String(url == null ? '' : url);
+      var h = String(html == null ? '' : html);
+      var script = String(js == null ? '' : js);
+      if (script) {
+        var tag = '<scr' + 'ipt>' + script + '</scr' + 'ipt>';
+        if (/<\/body>/i.test(h)) {
+          h = h.replace(/<\/body>/i, tag + '</body>');
+        } else {
+          h = h + tag;
+        }
+      }
+      if (!u && !h) return null;
+      // 本 IIFE 在注入对象预置脚本之前执行，syOp 尚未定义（直调会
+      // ReferenceError 让点击静默失败）；按同一排空协议用本段的 syJavaOp。
+      syJavaOp('browserOpen', u, JSON.stringify(['', h]));
+      return null;
+    },
     // ── java.net 包（URL 值语义，不触网）──
     net: P_java_net,
   };

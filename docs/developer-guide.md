@@ -321,28 +321,32 @@ NexHub 的解析能力完全由源 JSON 驱动。一个源是一个 JSON 文件�
 | `postReviewUrl` | 发表段评地址，用户输入经 `{{key}}` 传入。 |
 | `postQuoteUrl` | 回复某条段评地址，`{{key}}` 为回复文本。 |
 | `deleteUrl` | 删除段评地址，声明后才显示删除按钮。 |
-| `paragraphRule` | 段号列表规则（本应用扩展，Legado 无此字段）：把每条段评锚定到具体段落，与内容按序号对齐。取整数（0 起）；值带文字（如「第 7 段」）时取其中第一个数字，识别不出则该条按章级处理。 |
+| `paragraphRule` | 段号列表规则（本应用扩展，Legado 无此字段）：把每条段评锚定到具体段落，与内容按序号对齐。取整数（0 起，**正文段落序号**，插图/图标块不计数）；值带文字（如「第 7 段」）时取第一个数字，识别不出则该条按章级处理。 |
+| `voteUpCountRule` / `voteDownCountRule` | 赞数 / 踩数列表规则（本应用扩展）：按序号对齐，取其中首个数字。声明后按钮上显示计数，点过之后按钮高亮。 |
 
 占位符：
 
 | 占位符 | 说明 |
 | --- | --- |
 | `{{page}}` | 列表翻页，面板「加载更多」时递增。 |
-| `{{paragraph}}` | 段落序号（0 起，正文块下标，标题/插图块也占位）。从某段打开面板时绑定本段；切「全章」时不带该参数。 |
+| `{{paragraph}}` | 段落序号（0 起，**只数正文段落**，插图/图标块不算）。从某段打开面板或点段尾气泡时绑定本段；切「全章」时不带。 |
+| `{{chapter.url}}` | 当前章节 URL（JS 表达式，取自 `chapter` 对象）。按章取段评时用它传章节标识，否则换章后段评会串。 |
 | `{{key}}` | 用户输入文本（发帖 / 回复），与搜索关键词同一条编码通道，中文无需自行转义。 |
 | `{{$.字段}}` | 条目上下文：`content` / `avatar` / `postTime` / `paragraph` / `index`。 |
 
 ```json
 "ruleReview": {
-  "reviewUrl": "https://api.example.com/comment/list?chapterId=123&page={{page}}",
+  "reviewUrl": "https://api.example.com/comment/list?chapterUrl={{chapter.url}}&page={{page}}",
   "contentRule": "#commentList .item .text@text",
   "avatarRule": "#commentList .item img@src",
   "postTimeRule": "#commentList .item .time@text",
   "paragraphRule": "#commentList .item@data-p",
+  "voteUpCountRule": "#commentList .item .up@text",
+  "voteDownCountRule": "#commentList .item .down@text",
   "reviewQuoteUrl": "https://api.example.com/comment/replies?id={{$.index}}",
   "voteUpUrl": "https://api.example.com/comment/vote?id={{$.index}}&type=up,{\"method\":\"POST\"}",
   "postQuoteUrl": "https://api.example.com/comment/quote?id={{$.index}},{\"method\":\"POST\",\"body\":\"content={{key}}\"}",
-  "postReviewUrl": "https://api.example.com/comment/add,{\"method\":\"POST\",\"body\":\"chapterId=123&content={{key}}\"}",
+  "postReviewUrl": "https://api.example.com/comment/add,{\"method\":\"POST\",\"body\":\"chapterUrl={{chapter.url}}&p={{paragraph}}&content={{key}}\"}",
   "deleteUrl": "https://api.example.com/comment/delete?id={{$.index}},{\"method\":\"POST\"}"
 }
 ```
@@ -350,9 +354,34 @@ NexHub 的解析能力完全由源 JSON 驱动。一个源是一个 JSON 文件�
 使用要点：
 
 - 段落锚点二选一：① `reviewUrl` 带 `{{paragraph}}`，面板按段请求；② `reviewUrl` 不带，声明 `paragraphRule`，面板拿整章列表后按段过滤。
+- **一定要用 `{{chapter.url}}`（或其它能区分章节的参数）取数**：写死 `chapterId=1` 会导致换章后仍显示上一章的段评与气泡。
 - 正文段尾气泡只对声明了 `paragraphRule` 的源出现（一次章级请求即可算出全章分布）。只按段请求的源没有气泡，入口是「长按段落 → 工具栏『段评』」。
 - 动作地址同样支持 `<js>` / `@js:` 与 URL 选项串，源 header / Cookie / 登录头照常生效。
 - 动作结果判定：响应体非空即视为成功（源站常见 `{"code":0}`），面板随后重新拉取列表。
+
+##### 六（附）、源内嵌图标（正文里的可点击小图）
+
+很多源不声明 `ruleReview`，而是往正文里插一张小图当「段评/话题」入口：
+
+```html
+<img src="data:image/svg+xml;base64,PHN2...,{"style":"TEXT","click":"java.showBrowser('https://site/panel','')"}">
+```
+
+客户端按 URL 尾部的 `,{...}` 选项处理：
+
+| 选项 | 说明 |
+| --- | --- |
+| `style` | `TEXT` / `inline` = 行内小标记（挂在段落末尾，不占整页）；其它或缺失 = 普通插图。 |
+| `click` | 点击时执行的 JS，可用 `java.showBrowser(url, html?, js?)` 打开应用内页面。 |
+| 其它（如 `headers`） | 只从地址里剥离，不参与渲染。 |
+
+行为说明：
+
+- 选项串会从图片地址中剥离后再加载 —— 带 JSON 尾的地址直接下载会失败（表现为裂图）。
+- 图标本体不按图片解码（源的图标多为 SVG，客户端不引入 SVG 渲染），改用内置图标渲染；
+  点击仍执行你的 `click` 脚本，`java.showBrowser` 会把 `html` 加载进应用内浏览器
+  （第 3 个参数 `js` 会拼到 `html` 尾部一起注入）。
+- 局限：注入页里的 `window.java` 桥未提供，页面若依赖它继续取数需自行改为直连接口。
 
 ##### 七、视频解析模块（player / video）
 

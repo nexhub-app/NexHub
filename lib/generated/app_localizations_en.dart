@@ -5979,6 +5979,17 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String novelReviewQuotesExpand(int count) {
+    return 'Show all $count replies';
+  }
+
+  @override
+  String get novelReviewQuotesCollapse => 'Collapse replies';
+
+  @override
+  String get novelReviewInThisParagraph => 'This paragraph';
+
+  @override
   String get novelReviewLoadMore => 'Load more';
 
   @override

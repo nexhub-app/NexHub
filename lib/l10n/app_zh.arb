@@ -3130,6 +3130,16 @@
       }
     }
   },
+  "novelReviewQuotesExpand": "展开全部 {count} 条回复",
+  "novelReviewQuotesCollapse": "收起回复",
+  "@novelReviewQuotesExpand": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "novelReviewInThisParagraph": "本段",
   "novelReviewLoadMore": "加载更多",
   "novelReviewQuotes": "回复 {count} 条",
   "novelPayChapter": "购买本章",

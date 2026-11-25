@@ -1033,7 +1033,13 @@ class AnalyzeByJsoup {
   }
 
   /// 主入口：获取字符串列表，支持 @ 链式选择器。
-  List<String> getStringList(String ruleStr) {
+  /// [dedupe] 为 false 时属性提取保留重复值。
+  ///
+  /// 默认去重对齐 legado（`getResultLast` 的 `!result.contains(attr)`），
+  /// 但「按序号与另一条规则对齐取值」的场景（段号、赞数这类与条目一一对应
+  /// 的字段）必须保留重复：6 条段评的 `data-p` 是 0,0,2,2,4,4，去重后只剩
+  /// 3 个值，后续按序号对齐就全乱了。
+  List<String> getStringList(String ruleStr, {bool dedupe = true}) {
     if (ruleStr.isEmpty) return [];
 
     final sourceRule = SourceRule(ruleStr);
@@ -1050,8 +1056,8 @@ class AnalyzeByJsoup {
 
     for (final ruleStrX in ruleStrs) {
       final temp = sourceRule.isCss
-          ? _getResultLastCss(_element, ruleStrX)
-          : _getResultList(ruleStrX);
+          ? _getResultLastCss(_element, ruleStrX, dedupe: dedupe)
+          : _getResultList(ruleStrX, dedupe: dedupe);
 
       if (temp.isNotEmpty) {
         results.add(temp);
@@ -1079,7 +1085,7 @@ class AnalyzeByJsoup {
     return textS;
   }
 
-  List<String> _getResultList(String ruleStr) {
+  List<String> _getResultList(String ruleStr, {bool dedupe = true}) {
     if (ruleStr.isEmpty) return [];
 
     var elements = <Element>[_element];
@@ -1132,7 +1138,7 @@ class AnalyzeByJsoup {
     }
 
     if (elements.isEmpty) return [];
-    return _getResultLast(elements, rules[last]);
+    return _getResultLast(elements, rules[last], dedupe: dedupe);
   }
 
   /// 按单步规则获取元素：对齐 legado `ElementsSingle`（下标 + 前缀 + CSS 回退）。
@@ -1141,7 +1147,8 @@ class AnalyzeByJsoup {
   }
 
   /// 按最后一步方法获取结果（text/html/owntext/属性名 等）。
-  List<String> _getResultLast(List<Element> elements, String method) {
+  List<String> _getResultLast(List<Element> elements, String method,
+      {bool dedupe = true}) {
     final result = <String>[];
     final lowerMethod = method.toLowerCase();
 
@@ -1203,7 +1210,9 @@ class AnalyzeByJsoup {
         // jsoup `attr()` 属性名大小写不敏感。
         for (final el in elements) {
           final attr = _attrJsoup(el, method);
-          if (attr.trim().isNotEmpty && !result.contains(attr)) result.add(attr);
+          if (attr.trim().isEmpty) continue;
+          if (dedupe && result.contains(attr)) continue;
+          result.add(attr);
         }
         break;
     }
@@ -1211,7 +1220,8 @@ class AnalyzeByJsoup {
   }
 
   /// CSS 规则带结尾 @ 取值方法。
-  List<String> _getResultLastCss(Element element, String ruleStr) {
+  List<String> _getResultLastCss(Element element, String ruleStr,
+      {bool dedupe = true}) {
     final lastAt = ruleStr.lastIndexOf('@');
     if (lastAt < 0) {
       final elements = _safeQuery(element, ruleStr);
@@ -1223,7 +1233,7 @@ class AnalyzeByJsoup {
     final selector = ruleStr.substring(0, lastAt).trim();
     final extractMethod = ruleStr.substring(lastAt + 1).trim();
     final elements = _safeQuery(element, selector);
-    return _getResultLast(elements, extractMethod);
+    return _getResultLast(elements, extractMethod, dedupe: dedupe);
   }
 
   /// 获取单个字符串（多结果以换行拼接）。

@@ -321,28 +321,32 @@ Optional source capability: the reader gains a "Paragraph comments" panel (overf
 | `postReviewUrl` | Post a comment; the user's text is passed through `{{key}}`. |
 | `postQuoteUrl` | Reply to a comment; `{{key}}` is the reply text. |
 | `deleteUrl` | Delete endpoint; the button appears only when declared. |
-| `paragraphRule` | Paragraph-index list rule (app extension, not in Legado): anchors each comment to a paragraph, aligned by index. Values are 0-based integers; text like "para 7" yields the first number, and unparsable entries stay chapter-level. |
+| `paragraphRule` | Paragraph-index list rule (app extension, not in Legado): anchors each comment to a paragraph, aligned by index. Values are 0-based integers counting **body paragraphs only** (image/icon blocks are not counted); text like "para 7" yields the first number, and unparsable entries stay chapter-level. |
+| `voteUpCountRule` / `voteDownCountRule` | Like/dislike count list rules (app extension): aligned by index, first number wins. When declared the buttons show counts and your own vote is highlighted. |
 
 Placeholders:
 
 | Placeholder | Description |
 | --- | --- |
 | `{{page}}` | List pagination, incremented by "Load more". |
-| `{{paragraph}}` | Paragraph index (0-based, the body block index — heading and image blocks count). Bound when the panel is opened from a paragraph; omitted for "Whole chapter". |
+| `{{paragraph}}` | Paragraph index (0-based, counting **body paragraphs only** — image/icon blocks excluded). Bound when the panel is opened from a paragraph or its bubble; omitted for "Whole chapter". |
+| `{{chapter.url}}` | Current chapter URL (a JS expression on the `chapter` object). Use it to scope comments per chapter, otherwise they leak across chapters. |
 | `{{key}}` | User input (post / reply); same encoding channel as search keywords, no manual escaping for CJK. |
 | `{{$.field}}` | Item context: `content` / `avatar` / `postTime` / `paragraph` / `index`. |
 
 ```json
 "ruleReview": {
-  "reviewUrl": "https://api.example.com/comment/list?chapterId=123&page={{page}}",
+  "reviewUrl": "https://api.example.com/comment/list?chapterUrl={{chapter.url}}&page={{page}}",
   "contentRule": "#commentList .item .text@text",
   "avatarRule": "#commentList .item img@src",
   "postTimeRule": "#commentList .item .time@text",
   "paragraphRule": "#commentList .item@data-p",
+  "voteUpCountRule": "#commentList .item .up@text",
+  "voteDownCountRule": "#commentList .item .down@text",
   "reviewQuoteUrl": "https://api.example.com/comment/replies?id={{$.index}}",
   "voteUpUrl": "https://api.example.com/comment/vote?id={{$.index}}&type=up,{\"method\":\"POST\"}",
   "postQuoteUrl": "https://api.example.com/comment/quote?id={{$.index}},{\"method\":\"POST\",\"body\":\"content={{key}}\"}",
-  "postReviewUrl": "https://api.example.com/comment/add,{\"method\":\"POST\",\"body\":\"chapterId=123&content={{key}}\"}",
+  "postReviewUrl": "https://api.example.com/comment/add,{\"method\":\"POST\",\"body\":\"chapterUrl={{chapter.url}}&p={{paragraph}}&content={{key}}\"}",
   "deleteUrl": "https://api.example.com/comment/delete?id={{$.index}},{\"method\":\"POST\"}"
 }
 ```
@@ -350,9 +354,32 @@ Placeholders:
 Notes:
 
 - Two ways to wire paragraphs, pick one: (1) put `{{paragraph}}` in `reviewUrl` and let the panel request per paragraph; (2) omit it and declare `paragraphRule`, so the panel fetches the chapter list once and filters by paragraph.
+- **Always scope by chapter** (`{{chapter.url}}` or an equivalent parameter): a hard-coded chapter id makes the next chapter show the previous chapter's comments and bubbles.
 - In-body bubbles are drawn only for sources declaring `paragraphRule` (one chapter-level request yields the whole distribution). Sources that only request per paragraph get no bubbles — their entry is "long-press a paragraph → toolbar 'Paragraph comments'".
 - Action URLs also accept `<js>` / `@js:` and the URL option suffix; source headers, cookies and login headers apply.
 - A non-empty response body counts as success (sources commonly answer `{"code":0}`); the panel then reloads the list.
+
+##### 6 (appendix). Inline source icons (clickable images inside the body)
+
+Many sources don't declare `ruleReview`; they inject a small image as a "paragraph comments / topic" entry:
+
+```html
+<img src="data:image/svg+xml;base64,PHN2...,{"style":"TEXT","click":"java.showBrowser('https://site/panel','')"}">
+```
+
+The client handles the trailing `,{...}` options like this:
+
+| Option | Meaning |
+| --- | --- |
+| `style` | `TEXT` / `inline` = small inline marker pinned to the paragraph end (doesn't take a page); anything else or missing = normal illustration. |
+| `click` | JS executed on tap; `java.showBrowser(url, html?, js?)` opens an in-app page. |
+| Anything else (e.g. `headers`) | Stripped from the URL, not used for rendering. |
+
+Notes:
+
+- The option string is stripped before loading — a URL with a JSON tail fails to download (broken image).
+- The icon itself is not decoded as an image (sources usually ship SVG, and the client does not bundle an SVG renderer); a built-in icon is drawn instead. Your `click` script still runs, and `java.showBrowser` loads `html` into the in-app browser (the 3rd argument `js` is appended into `html`).
+- Limitation: the injected page gets no `window.java` bridge; if it relies on that for further data, call the API directly instead.
 
 ##### 7. Video parsing (player / video)
 

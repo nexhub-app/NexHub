@@ -399,6 +399,8 @@ class ShuyuanNovelResolver
         return await _handleReviewQuotes(bookSource, vars);
       case 'reviewAction':
         return await _handleReviewAction(bookSource, vars);
+      case 'scriptAction':
+        return await _handleScriptAction(source, bookSource, vars);
       case 'webFiles':
         return await _handleWebFiles(source, bookSource, vars);
       case 'webFileDownload':
@@ -1545,6 +1547,42 @@ class ShuyuanNovelResolver
     // 图文块列表（文本段 + 插图），保留解析层给出的原始顺序，
     // 供阅读器图文混排显示。
     return NovelContentResult(result.blocks, title: result.title);
+  }
+
+  // ── 通用脚本动作 ──
+
+  /// 执行源内嵌脚本（正文里 `<img src="url,{click:...}">` 的点击动作）。
+  ///
+  /// vars：`script`（JS 源码）、`result`（绑定给脚本的图片地址）。
+  /// 脚本里的宿主动作（`java.showBrowser` / `startBrowser` / `open`）由
+  /// [settleShuyuanInteractive] 落地——与发现页/登录脚本同一条通道。
+  Future<bool> _handleScriptAction(
+    PluginConfig source,
+    XiaoshuoBookSource bookSource,
+    Map<String, String> vars,
+  ) async {
+    final script = (vars['script'] ?? '').trim();
+    if (script.isEmpty) return false;
+    try {
+      final engine = JsEngine.forSource(source.id);
+      engine.eval(script, bindings: <String, dynamic>{
+        'result': vars['result'] ?? '',
+      });
+    } catch (e) {
+      AppLog.instance.w('[书源动作] 内嵌脚本执行失败: $e');
+      return false;
+    }
+    final ctx = ShuyuanSourceContext.current;
+    if (ctx != null) {
+      // 排空宿主 UI 动作（浏览器/验证码）；动作本身失败不影响脚本已执行的事实。
+      await settleShuyuanInteractive(
+        ctx,
+        bookSource,
+        pluginSource: source,
+        openBrowsers: true,
+      );
+    }
+    return true;
   }
 
   // ── 段评 ──

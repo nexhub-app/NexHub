@@ -63,6 +63,7 @@ import '../../../core/services/novel_highlight_sync_service.dart';
 import 'novel_selection_ai_dialog.dart';
 import 'novel_review_sheet.dart';
 import 'novel_review_bubble.dart';
+import 'novel_inline_action_glyph.dart';
 import '../../../core/reader/tap_zone_resolver.dart';
 import '../../../core/reader/reading_queue_store.dart';
 import '../../../core/widgets/reading_queue_sheet.dart'
@@ -462,8 +463,13 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   /// 段落归属信息，气泡无从画起，仍走「长按 → 段评」入口）。
   Map<int, int> _reviewCounts = const <int, int>{};
 
-  /// 已拉取计数的章节标识（章节 URL），避免同章重复请求。
-  String? _reviewCountsChapterUrl;
+  /// 段评计数按章节缓存（章节 URL → 段落序号 → 条数）。
+  ///
+  /// 滚动模式会在章节间来回「settle」并重载正文，此前每次重载都重新拉一次
+  /// 段评（一次来回就是十几个请求）；缓存后同章只取一次，面板操作才强制刷新。
+  final Map<String, Map<int, int>> _reviewCountsByChapter =
+      <String, Map<int, int>>{};
+
 
   /// 内容编辑：正文编辑持久化管理器 + 「当前章是否被编辑过」标记
   /// （控制菜单「内容编辑 / 恢复原文」入口与已编辑角标）。
@@ -1680,6 +1686,108 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     await _loadChapter(_chapterIndex, restorePage: _currentPage);
   }
 
+  /// 正文块下标 ↔ 段落序号（文本块序号）映射（缓存）。
+  ///
+  /// **段落序号**（0 起，跳过插图/图标块）是段评锚点的唯一口径：与分页行的
+  /// `NovelLine.paragraphIndex`、朗读进度、`{{paragraph}}` 全一致，也是源作者
+  /// 直觉里的「第几段」。滚动模式按块下标渲染，才需要这层映射。
+  List<int> _textOrdinalToBlock = const <int>[];
+  List<NovelBlock>? _textOrdinalSource;
+
+  List<int> get _textOrdinals {
+    if (identical(_textOrdinalSource, _paragraphs)) return _textOrdinalToBlock;
+    _textOrdinalSource = _paragraphs;
+    _textOrdinalToBlock = <int>[
+      for (var i = 0; i < _paragraphs.length; i++)
+        if (_paragraphs[i] is NovelTextBlock) i,
+    ];
+    return _textOrdinalToBlock;
+  }
+
+  /// 块下标 → 段落序号（非文本块返回 null）。
+  ///
+  /// 滚动模式的列表下标是**块下标**（含插图/图标块），而段评锚点、气泡计数、
+  /// 分页行的 `paragraphIndex` 都是**段落序号**。点气泡必须换算，否则一段
+  /// 插图就会让「第 N 段」整体错位（表现为点气泡看到别的段、部分段评不显示）。
+  int? _textOrdinalOfBlock(int blockIndex) {
+    final int at = _textOrdinals.indexOf(blockIndex);
+    return at < 0 ? null : at;
+  }
+
+  /// 段落序号 → 块下标（越界回落到入参自身）。
+  int _blockIndexForTextOrdinal(int ordinal) {
+    final List<int> list = _textOrdinals;
+    if (ordinal >= 0 && ordinal < list.length) return list[ordinal];
+    return ordinal;
+  }
+
+  /// 段评计数：段落序号 → 条数（滚动模式按块下标查，故另建一份块下标表）。
+  Map<int, int> get _reviewCountsByBlock {
+    if (_reviewCounts.isEmpty) return const <int, int>{};
+    final out = <int, int>{};
+    _reviewCounts.forEach((ordinal, count) {
+      final int block = _blockIndexForTextOrdinal(ordinal);
+      if (_paragraphs[block.clamp(0, _paragraphs.length - 1)] is NovelTextBlock) {
+        out[block] = count;
+      }
+    });
+    return out;
+  }
+
+  /// 源内嵌图标：段落序号 → 图标块（挂在**前一个**文本段的段尾）。
+  Map<int, NovelImageBlock> _inlineGlyphCache = const <int, NovelImageBlock>{};
+  List<NovelBlock>? _inlineGlyphSource;
+
+  Map<int, NovelImageBlock> get _inlineGlyphByTextOrdinal {
+    if (identical(_inlineGlyphSource, _paragraphs)) return _inlineGlyphCache;
+    _inlineGlyphSource = _paragraphs;
+    final out = <int, NovelImageBlock>{};
+    var ordinal = -1;
+    for (var i = 0; i < _paragraphs.length; i++) {
+      final NovelBlock b = _paragraphs[i];
+      if (b is NovelTextBlock) {
+        ordinal++;
+        continue;
+      }
+      // 内联 SVG 即使没有 click 也占一个段尾位置：图标照样显示，点击为空。
+      if (b is NovelImageBlock &&
+          (b.isInlineAction || b.isSvgIcon) &&
+          ordinal >= 0 &&
+          !out.containsKey(ordinal)) {
+        out[ordinal] = b;
+      }
+    }
+    return _inlineGlyphCache = out;
+  }
+
+  /// 滚动模式用：块下标 → 图标（由段落序号表换算）。
+  Map<int, NovelImageBlock> get _inlineGlyphByBlock {
+    final Map<int, NovelImageBlock> src = _inlineGlyphByTextOrdinal;
+    if (src.isEmpty) return const <int, NovelImageBlock>{};
+    final out = <int, NovelImageBlock>{};
+    src.forEach((ordinal, glyph) => out[_blockIndexForTextOrdinal(ordinal)] = glyph);
+    return out;
+  }
+
+  /// 执行源内嵌图标的 `click` 脚本（在源上下文里跑，`java.showBrowser`
+  /// 等宿主动作由交互层落地）。
+  Future<void> _runInlineAction(NovelImageBlock block) async {
+    final PluginConfig? source = _source;
+    final String? script = block.clickScript;
+    if (source == null || script == null || script.trim().isEmpty) return;
+    final MediaApiService api = context.read<MediaApiService>();
+    final bool ok = await api.runSourceScript(
+      source,
+      script: script,
+      result: block.url,
+    );
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(AppLocalizations.of(context).failed)),
+      );
+    }
+  }
+
   /// 段评气泡是否可用：源声明了 `paragraphRule`（能给出段落归属）才画。
   bool get _reviewBubblesEnabled {
     final PluginConfig? source = _source;
@@ -1691,7 +1799,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
   ///
   /// 只在源声明 `paragraphRule` 时执行：一次章级请求换全章气泡分布；
   /// 同一章不重复请求（`force` 用于面板操作后刷新）。
-  Future<void> _loadReviewCounts({bool force = false}) async {
+  Future<void> _loadReviewCounts({bool force = false, Episode? target}) async {
     final PluginConfig? source = _source;
     if (!_reviewBubblesEnabled) {
       if (_reviewCounts.isNotEmpty) {
@@ -1701,9 +1809,23 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     }
     final List<Episode> chs = _effectiveChapters;
     if (_chapterIndex < 0 || _chapterIndex >= chs.length) return;
-    final Episode chapter = chs[_chapterIndex];
-    if (!force && _reviewCountsChapterUrl == chapter.url) return;
-    _reviewCountsChapterUrl = chapter.url;
+    // 滚动模式会预取相邻章并各自调一次；用「正在加载的章」而不是当前主导章，
+    // 否则预取第 2 章时会去拉第 1 章的段评（表现为「第二章显示第一章段评」）。
+    final Episode chapter = target ?? chs[_chapterIndex];
+    final String key = chapter.url;
+    if (!force) {
+      final Map<int, int>? cached = _reviewCountsByChapter[key];
+      if (cached != null) {
+        final List<Episode> now = _effectiveChapters;
+        final bool isCurrent = _chapterIndex >= 0 &&
+            _chapterIndex < now.length &&
+            now[_chapterIndex].url == key;
+        if (isCurrent && !identical(_reviewCounts, cached) && mounted) {
+          setState(() => _reviewCounts = cached);
+        }
+        return;
+      }
+    }
     try {
       final MediaApiService api = context.read<MediaApiService>();
       final List<SourceReview> reviews = await api.fetchChapterReviews(
@@ -1712,10 +1834,18 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
         chapterUrl: chapter.url,
         chapterTitle: chapter.title,
       );
-      if (!mounted || _reviewCountsChapterUrl != chapter.url) return;
-      setState(() {
-        _reviewCounts = BookReview.countByParagraph(reviews);
-      });
+      if (!mounted) return;
+      final Map<int, int> counts = BookReview.countByParagraph(reviews);
+      AppLog.instance.i('[段评] 本章段评 ${reviews.length} 条，'
+          '气泡分布=$counts 章节=${chapter.url}');
+      _reviewCountsByChapter[key] = counts;
+      // 期间切了章：只写缓存，不改当前显示。
+      final List<Episode> now = _effectiveChapters;
+      final bool sameChapter = _chapterIndex >= 0 &&
+          _chapterIndex < now.length &&
+          now[_chapterIndex].url == key;
+      if (!sameChapter) return;
+      setState(() => _reviewCounts = counts);
     } catch (e) {
       // 气泡是附加能力：拉取失败只记日志，不影响正文与「长按 → 段评」。
       AppLog.instance.w('[段评] 气泡计数拉取失败: $e');
@@ -1736,6 +1866,9 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       chapterUrl: chapter.url,
       chapterTitle: chapter.title,
       paragraph: paragraph,
+      // 点段尾气泡：默认只看这一段（对齐 legado 点该段段评图标的行为）；
+      // 顶部 chip 可切「全章」。
+      scopeToParagraph: true,
     );
     if (!mounted) return;
     await _loadReviewCounts(force: true);
@@ -3347,9 +3480,9 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       setState(() {
         _rawParagraphs = effective;
         _paragraphs = _applyConvert(effective);
-        // 换章即失效：新章要重新拉段评计数（下面帧后异步取，不阻塞渲染）。
-        _reviewCountsChapterUrl = null;
-        _reviewCounts = const <int, int>{};
+        // 换章：当前章计数从缓存取（未命中则先清空，帧后异步补取）。
+        _reviewCounts =
+            _reviewCountsByChapter[chapter.url] ?? const <int, int>{};
         // 媒体章节检测（legado type=1/4）：正文为媒体直链块时切播放卡片，
         // 跳过分页控制器（无文本可分页）。
         final mediaBlock = _paragraphs.whereType<NovelMediaBlock>().firstOrNull;
@@ -3364,7 +3497,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       _notifyReadCallbacks(index);
       if (_isMediaChapter) return;
       // 段评气泡计数：帧后异步取，正文先渲染（失败不影响阅读）。
-      unawaited(_loadReviewCounts());
+      unawaited(_loadReviewCounts(target: chapter));
       _setupControllers(restorePage: restorePage);
       // 章节加载完成、分页就绪后检查一次预下载（单页章 / 直达章末场景，
       // 不依赖用户翻页也能触发；postFrame 等 LayoutBuilder 算出分页）。
@@ -4744,31 +4877,34 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
       chapterUrl: chapter.url,
       chapterTitle: chapter.title,
       paragraph: paragraph,
+      // 长按某段进面板：默认只看这一段（与点气泡一致），可切「全章」。
+      scopeToParagraph: paragraph != null,
     );
     if (!mounted) return;
     await _loadReviewCounts(force: true);
   }
 
-  /// 选区起点所在的段落（块）下标，0 起。
+  /// 选区起点所在的**段落序号**（0 起，跳过插图/图标块）。
   ///
-  /// 口径与朗读（`_tts.currentIndex`）/分页行（`NovelLine.paragraphIndex`）
-  /// 完全一致：**块列表下标**，不是「第几个纯文字段」。段评面板与源模板
-  /// `{{paragraph}}` 都用这个数，滚动与分页两种排版下取值相同。
+  /// 与分页行 `NovelLine.paragraphIndex`、朗读进度同口径；段评锚点与源模板
+  /// `{{paragraph}}` 都用这个数 —— 也就是源作者眼里的「第几段」。
   int? _paragraphIndexForSelection() {
     final int? global = _selectionController.selectionStart ??
         _selectionController.selectionAnchor;
     if (global == null) return null;
-    // 分页模式：行自带段落下标（含标题/插图行的真实块位置）。
+    // 分页模式：行自带段落序号（文本块序号，插图块不计）。
     final int? paged = _selectionController.paragraphIndexAt(global);
     if (paged != null) return paged;
-    // 滚动模式：按文本块长度累加定位（与 setBlocks 的文本流同源）。
+    // 滚动模式：按文本块长度累加定位，再换算成段落序号。
     var offset = 0;
+    var ordinal = 0;
     for (var i = 0; i < _paragraphs.length; i++) {
       final NovelBlock b = _paragraphs[i];
       if (b is! NovelTextBlock) continue;
       final int len = b.text.length;
-      if (global >= offset && global < offset + len) return i;
+      if (global >= offset && global < offset + len) return ordinal;
       offset += len;
+      ordinal++;
     }
     return null;
   }
@@ -6377,6 +6513,8 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
                       searchRegex: _searchRegex,
                       reviewCounts: _reviewCounts,
                       onReviewTap: _openReviewForParagraph,
+                      inlineGlyphs: _inlineGlyphByTextOrdinal,
+                      onInlineTap: _runInlineAction,
                       onParagraphTap: _onParagraphTapped,
                       onImageTap: (url, src) =>
                           _showImageViewer(url, src ?? _source),
@@ -6561,6 +6699,11 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
             // banner 模式铺满整行（按源 style 或全宽，高度自适应）；
             // card 模式按正文宽 72% 卡片式缩列 + [scrollImageAlign] 水平对齐。
             if (block is NovelImageBlock) {
+              // 行内可点击图标已挂到前一段段尾（见 _inlineGlyphByBlock）；
+              // 内联 SVG 同样跳过（解不了，渲染只会是破图）。
+              if (block.isInlineAction || block.isSvgIcon) {
+                return const SizedBox.shrink();
+              }
               final double bodyW =
                   MediaQuery.of(ctx).size.width - _prefs.margin * 2;
               // banner 模式自适应完整显示（按图片真实宽高比撑高，
@@ -6616,19 +6759,57 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
                   )
                 : baseStyle;
             final int reviewCount =
-                (!isHeading && _reviewCounts.isNotEmpty)
-                    ? (_reviewCounts[idx] ?? 0)
+                (isActive && !isHeading && _reviewCounts.isNotEmpty)
+                    ? (_reviewCountsByBlock[idx] ?? 0)
                     : 0;
-            final Widget bodyText = _buildHighlightedBodyText(
-              text,
-              baseStyle,
-              headingStyle,
-              isHeading,
-              reviewCount: reviewCount,
-              onReviewTap: reviewCount > 0
-                  ? () => _openReviewForParagraph(idx)
-                  : null,
-            );
+            // 段尾挂件：源内嵌图标优先（自带上限/点击动作），否则内置段评计数气泡。
+            final NovelImageBlock? inlineGlyph =
+                isActive ? _inlineGlyphByBlock[idx] : null;
+            final Widget? badge = inlineGlyph != null
+                ? NovelInlineActionGlyph(
+                    onTap: (inlineGlyph.clickScript?.trim().isEmpty ?? true)
+                        ? null
+                        : () => _runInlineAction(inlineGlyph),
+                  )
+                : (reviewCount > 0
+                    ? NovelReviewBubble(
+                        count: reviewCount,
+                        onTap: () => _openReviewForParagraph(
+                            _textOrdinalOfBlock(idx) ?? idx),
+                      )
+                    : null);
+            Widget buildBody() => _buildHighlightedBodyText(
+                  text,
+                  baseStyle,
+                  headingStyle,
+                  isHeading,
+                );
+            // 挂件用 Stack 覆盖在段落右下角：**不进入文本流**，也就不会被
+            // 折行推到下一行（滚动模式此前的「气泡单独一行」根因）。
+            // 段落右侧留出挂件宽度，避免盖住最后的文字。
+            final Widget bodyText = badge == null
+                ? buildBody()
+                : LayoutBuilder(
+                    builder: (BuildContext ctx, BoxConstraints c) {
+                      final double maxW = c.maxWidth;
+                      final double textEndX = _lastLineEndX(
+                        text,
+                        isHeading ? headingStyle : baseStyle,
+                        maxW,
+                        Directionality.of(ctx),
+                        MediaQuery.textScalerOf(ctx),
+                      );
+                      final double left =
+                          (textEndX + 4).clamp(0.0, (maxW - 18).clamp(0.0, maxW));
+                      return Stack(
+                        clipBehavior: Clip.none,
+                        children: <Widget>[
+                          buildBody(),
+                          Positioned(left: left, bottom: 0, child: badge),
+                        ],
+                      );
+                    },
+                  );
             // 滚动模式选区：非 TTS 态文本块包长按手势，复用与分页同源的
             // 章节全局字符偏移坐标系（[NovelSelectionController.setBlocks]）。
             // 块为整段多行文本，Phase 4 长按直接选整块（精确折行 x 命中留待后续），
@@ -6711,15 +6892,36 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     );
   }
 
+  /// 段落**最后一行文字**的右端 x 坐标（用于把气泡贴在文字末尾，而不是
+  /// 段落右下角）。没有挂件的段落不会走这里；一次 TextPainter 布局的开销
+  /// 只落在「本段有段评」的少数段落上。
+  double _lastLineEndX(
+    String text,
+    TextStyle style,
+    double maxWidth,
+    TextDirection dir,
+    TextScaler scaler,
+  ) {
+    if (text.isEmpty || maxWidth <= 0) return 0;
+    final TextPainter tp = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textDirection: dir,
+      textScaler: scaler,
+      maxLines: null,
+    )..layout(maxWidth: maxWidth);
+    final List<LineMetrics> lines = tp.computeLineMetrics();
+    final double width = lines.isEmpty ? tp.width : lines.last.width;
+    tp.dispose();
+    return width;
+  }
+
   /// 构建正文文本（带搜索关键词高亮；正则模式按表达式匹配）。
   Widget _buildHighlightedBodyText(
     String text,
     TextStyle baseStyle,
     TextStyle headingStyle,
-    bool isHeading, {
-    int reviewCount = 0,
-    VoidCallback? onReviewTap,
-  }) {
+    bool isHeading,
+  ) {
     final style = isHeading ? headingStyle : baseStyle;
     // 滚动模式正文两端对齐（与分页模式 justify 语义一致）；
     // 标题行恒居中（章节分界视觉），其余正文按 [NovelTextAlignMode] 取
@@ -6740,34 +6942,11 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
         fontWeight: FontWeight.w700,
       ),
     );
-    // 段评气泡：段尾追加一个行内 WidgetSpan（滚动模式自由排版，追加不改变
-    // 行宽硬约束；分页模式由行尾浮层承担，见 _NovelPageWidget）。
-    final List<InlineSpan> bubbleSpan = reviewCount > 0
-        ? <InlineSpan>[
-            const WidgetSpan(child: SizedBox(width: 4)),
-            WidgetSpan(
-              alignment: PlaceholderAlignment.middle,
-              child: NovelReviewBubble(
-                count: reviewCount,
-                onTap: onReviewTap,
-              ),
-            ),
-          ]
-        : const <InlineSpan>[];
     if (spans == null) {
-      if (bubbleSpan.isEmpty) {
-        return Text(text, style: style, textAlign: align);
-      }
-      return Text.rich(
-        TextSpan(
-          style: style,
-          children: <InlineSpan>[TextSpan(text: text), ...bubbleSpan],
-        ),
-        textAlign: align,
-      );
+      return Text(text, style: style, textAlign: align);
     }
     return Text.rich(
-      TextSpan(style: style, children: <InlineSpan>[...spans, ...bubbleSpan]),
+      TextSpan(style: style, children: spans),
       textAlign: align,
     );
   }
@@ -9252,6 +9431,13 @@ class _NovelPageWidget extends StatelessWidget {
   /// 气泡点击：打开只看该段的段评面板。
   final void Function(int paragraphIndex)? onReviewTap;
 
+  /// 源内嵌图标（`<img src="url,{style:'text',click:...}">`）：段落块下标 → 图标块。
+  /// 分页层已排除它们，这里按段末行挂浮层。
+  final Map<int, NovelImageBlock> inlineGlyphs;
+
+  /// 内嵌图标点击：执行源 `click` 脚本。
+  final void Function(NovelImageBlock block)? onInlineTap;
+
   const _NovelPageWidget({
     required this.lines,
     this.onImageTap,
@@ -9275,6 +9461,8 @@ class _NovelPageWidget extends StatelessWidget {
     required this.headerFooterMargin,
     this.reviewCounts = const <int, int>{},
     this.onReviewTap,
+    this.inlineGlyphs = const <int, NovelImageBlock>{},
+    this.onInlineTap,
     this.ttsCurrentIndex = -1,
     this.ttsActive = false,
     this.searchKeyword,
@@ -9496,12 +9684,12 @@ class _NovelPageWidget extends StatelessWidget {
 
   /// 段末行 → 叠加段评气泡（不改行宽/行高：气泡是浮层，分页测量已在上游
   /// 完成，这里只做视觉标记，避免「气泡一出现正文重排」）。
-  Widget _lineWithReviewBubble(
+  Widget _lineWithTrailing(
     NovelLine line,
     Widget child,
     double imgW,
     TextStyle style,
-    int count,
+    Widget trailing,
   ) {
     final double fs = style.fontSize ?? prefs.fontSize;
     final double endX = line.charLefts.isNotEmpty
@@ -9517,16 +9705,7 @@ class _NovelPageWidget extends StatelessWidget {
         clipBehavior: Clip.none,
         children: <Widget>[
           child,
-          Positioned(
-            left: left,
-            top: 2,
-            child: NovelReviewBubble(
-              count: count,
-              onTap: onReviewTap == null
-                  ? null
-                  : () => onReviewTap!(line.paragraphIndex),
-            ),
-          ),
+          Positioned(left: left, top: 2, child: trailing),
         ],
       ),
     );
@@ -9555,19 +9734,41 @@ class _NovelPageWidget extends StatelessWidget {
           lineIndexInPage: li,
           targetWidth: imgW,
         );
-        // 段评气泡：只画在段末行（该段最后一行右侧余白处）。
-        final int reviewCount = (item.line.isLastLine &&
+        // 段尾浮层：源内嵌图标优先（它自带上限/点击动作），否则画内置段评气泡。
+        final TextStyle lineStyle =
+            item.line.isHeading ? headingStyle : textStyle;
+        final NovelImageBlock? glyph = (item.line.isLastLine &&
+                !item.line.isHeading)
+            ? inlineGlyphs[item.line.paragraphIndex]
+            : null;
+        final int reviewCount = (glyph == null &&
+                item.line.isLastLine &&
                 !item.line.isHeading &&
                 reviewCounts.isNotEmpty)
             ? (reviewCounts[item.line.paragraphIndex] ?? 0)
             : 0;
-        if (reviewCount > 0) {
-          line = _lineWithReviewBubble(
+        if (glyph != null) {
+          line = _lineWithTrailing(
             item.line,
             line,
             imgW,
-            item.line.isHeading ? headingStyle : textStyle,
-            reviewCount,
+            lineStyle,
+            NovelInlineActionGlyph(
+              onTap: onInlineTap == null ? null : () => onInlineTap!(glyph),
+            ),
+          );
+        } else if (reviewCount > 0) {
+          line = _lineWithTrailing(
+            item.line,
+            line,
+            imgW,
+            lineStyle,
+            NovelReviewBubble(
+              count: reviewCount,
+              onTap: onReviewTap == null
+                  ? null
+                  : () => onReviewTap!(item.line.paragraphIndex),
+            ),
           );
         }
         final Widget wrapped = !ttsActive

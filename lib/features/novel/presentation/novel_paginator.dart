@@ -17,6 +17,7 @@ library;
 import 'package:flutter/widgets.dart';
 
 import '../../../core/models/novel_block.dart';
+import '../../../core/utils/app_log.dart';
 import '../../../core/novel/novel_line_breaker.dart';
 import '../../../core/novel/novel_reader_preferences.dart';
 import '../../../core/theme/app_tokens.dart';
@@ -222,6 +223,7 @@ class NovelPaginator {
     // 插图块转为 [NovelImageItem]，翻页时独占一页。
     final allItems = <NovelPageItem>[];
     var textBlockIndex = 0;
+    var skippedInline = 0;
     for (var bi = 0; bi < blocks.length; bi++) {
       final block = blocks[bi];
       if (block is NovelTextBlock) {
@@ -260,8 +262,19 @@ class NovelPaginator {
         }
         textBlockIndex++;
       } else if (block is NovelImageBlock) {
+        // 行内可点击图标（源用内嵌小图做段评气泡）：不占页、不参与排版，
+        // 由渲染层挂到前一段的段尾（与内置段评气泡同一槽位）。块下标不变，
+        // 选区/TTS/段评锚点的坐标系不受影响。
+        // 行内可点击图标 / 内联 SVG：都不占页（SVG 客户端解不了，占页只会是空白大图）。
+        if (block.isInlineAction || block.isSvgIcon) {
+          skippedInline++;
+          continue;
+        }
         allItems.add(NovelImageItem(block, blockIndex: bi));
       }
+    }
+    if (skippedInline > 0) {
+      AppLog.instance.i('[正文图] 分页跳过行内图标 $skippedInline 个');
     }
     if (allItems.isEmpty) {
       return const NovelPaginationResult(

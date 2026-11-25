@@ -5852,6 +5852,17 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
+  String novelReviewQuotesExpand(int count) {
+    return '展开全部 $count 条回复';
+  }
+
+  @override
+  String get novelReviewQuotesCollapse => '收起回复';
+
+  @override
+  String get novelReviewInThisParagraph => '本段';
+
+  @override
   String get novelReviewLoadMore => '加载更多';
 
   @override

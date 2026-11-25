@@ -86,13 +86,22 @@ class BookReview {
     final List<String> avatars;
     final List<String> times;
     final List<String> paragraphs;
+    final List<String> upCounts;
+    final List<String> downCounts;
     try {
       contents = analyzeRule.getStringList(contentRule);
       avatars = _listOrEmpty(analyzeRule, rule.avatarRule, isUrl: true);
       times = _listOrEmpty(analyzeRule, rule.postTimeRule);
+      // 段号/赞数必须与内容**按序号一一对应**：属性取值默认会去重
+      // （legado 语义），6 条段评的 data-p=0,0,2,2,4,4 会被压成 3 个值，
+      // 对齐后段号全错位 —— 这里显式保留重复值。
       paragraphs = rule.hasParagraphAnchor
-          ? _listOrEmpty(analyzeRule, rule.paragraphRule)
+          ? _listOrEmpty(analyzeRule, rule.paragraphRule, keepDuplicate: true)
           : const <String>[];
+      upCounts = _listOrEmpty(analyzeRule, rule.voteUpCountRule,
+          keepDuplicate: true);
+      downCounts = _listOrEmpty(analyzeRule, rule.voteDownCountRule,
+          keepDuplicate: true);
     } catch (e) {
       AppLog.instance.w('[段评] 列表规则求值失败: $e');
       return const <SourceReview>[];
@@ -110,6 +119,8 @@ class BookReview {
         postTime: i < times.length ? _plainText(times[i]) : '',
         index: out.length,
         paragraph: anchor,
+        voteUp: i < upCounts.length ? _firstInt(upCounts[i]) ?? 0 : 0,
+        voteDown: i < downCounts.length ? _firstInt(downCounts[i]) ?? 0 : 0,
       ));
     }
     return out;
@@ -290,6 +301,13 @@ class BookReview {
     return out;
   }
 
+  /// 文本里的首个整数（"赞 12" / "12" / "12 条" 都能取到）；无数字返回 null。
+  static int? _firstInt(String raw) {
+    final m = RegExp(r'\d+').firstMatch(raw.trim());
+    if (m == null) return null;
+    return int.tryParse(m.group(0)!);
+  }
+
   /// 段号文本 → 0 起序号；非数字（如「第3段」）提取首个数字；
   /// 仍无法识别返回 null（视为章级段评）。
   static int? _parseParagraph(String raw) {
@@ -307,11 +325,13 @@ class BookReview {
     AnalyzeRule analyzeRule,
     String? rule, {
     bool isUrl = false,
+    bool keepDuplicate = false,
   }) {
     final r = (rule ?? '').trim();
     if (r.isEmpty) return const <String>[];
     try {
-      return analyzeRule.getStringList(r, isUrl: isUrl);
+      return analyzeRule.getStringList(r,
+          isUrl: isUrl, keepDuplicate: keepDuplicate);
     } catch (_) {
       return const <String>[];
     }

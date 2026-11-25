@@ -11312,6 +11312,24 @@ abstract class AppLocalizations {
   /// **'{count} paragraph comments'**
   String novelReviewBubbleLabel(int count);
 
+  /// No description provided for @novelReviewQuotesExpand.
+  ///
+  /// In en, this message translates to:
+  /// **'Show all {count} replies'**
+  String novelReviewQuotesExpand(int count);
+
+  /// No description provided for @novelReviewQuotesCollapse.
+  ///
+  /// In en, this message translates to:
+  /// **'Collapse replies'**
+  String get novelReviewQuotesCollapse;
+
+  /// No description provided for @novelReviewInThisParagraph.
+  ///
+  /// In en, this message translates to:
+  /// **'This paragraph'**
+  String get novelReviewInThisParagraph;
+
   /// No description provided for @novelReviewLoadMore.
   ///
   /// In en, this message translates to:

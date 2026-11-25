@@ -144,10 +144,14 @@ class AnalyzeRule {
     return nonEmpty(sourceVars?[key]);
   }
 
-  List<String> getStringList(String? ruleStr, {bool isUrl = false}) {
+  /// [keepDuplicate] = true 时属性提取保留重复值（段号/赞数这类按序号与
+  /// 条目对齐的字段必须保留；默认 false 对齐 legado 的去重语义）。
+  List<String> getStringList(String? ruleStr,
+      {bool isUrl = false, bool keepDuplicate = false}) {
     if (ruleStr == null || ruleStr.isEmpty) return [];
     final ruleList = _splitSourceRuleCache(ruleStr);
-    return _getStringListFromRules(ruleList, isUrl: isUrl);
+    return _getStringListFromRules(ruleList,
+        isUrl: isUrl, keepDuplicate: keepDuplicate);
   }
 
   String getString(String? ruleStr, {bool unescape = true, bool isUrl = false, dynamic mContent}) {
@@ -334,7 +338,8 @@ class AnalyzeRule {
     return resultStr;
   }
 
-  List<String> _getStringListFromRules(List<SourceRule> ruleList, {bool isUrl = false}) {
+  List<String> _getStringListFromRules(List<SourceRule> ruleList,
+      {bool isUrl = false, bool keepDuplicate = false}) {
     if (ruleList.isEmpty) return [];
     var result = content;
     if (content != null && ruleList.isNotEmpty) {
@@ -364,7 +369,7 @@ class AnalyzeRule {
             result = _parseWebJsStringList(raw) ?? raw;
           } else {
             result = _executeRule(result, sourceRule.mode, st.rule,
-                isUrl: isUrl, single: false);
+                isUrl: isUrl, single: false, keepDuplicate: keepDuplicate);
           }
         }
         if (result != null && st.replaceRegex.isNotEmpty) {
@@ -404,7 +409,7 @@ class AnalyzeRule {
               result = _parseWebJsStringList(raw) ?? raw;
             } else {
               result = _executeRule(result, sourceRule.mode, st.rule,
-                  isUrl: isUrl, single: false);
+                  isUrl: isUrl, single: false, keepDuplicate: keepDuplicate);
             }
           }
           if (result != null && st.replaceRegex.isNotEmpty) {
@@ -458,7 +463,7 @@ class AnalyzeRule {
   }
 
   dynamic _executeRule(dynamic result, Mode mode, String rule,
-      {bool isUrl = false, bool single = true}) {
+      {bool isUrl = false, bool single = true, bool keepDuplicate = false}) {
     switch (mode) {
       case Mode.js:
         // legado 空脚本（如 `规则@js:`）等价于不转换，直接透传上游结果。
@@ -491,7 +496,14 @@ class AnalyzeRule {
         if (isUrl) {
           // legado getStringList 的 Default 分支走 getStringList（全部命中）；
           // 单值 getString 走 getString0（首个），避免多值按换行拼成假 URL。
-          return single ? analyzer.getString0(rule) : analyzer.getStringList(rule);
+          return single
+              ? analyzer.getString0(rule)
+              : analyzer.getStringList(rule, dedupe: !keepDuplicate);
+        }
+        if (!single && keepDuplicate) {
+          // 列表语境且要求保留重复：逐项取全部命中再按换行拼回去，
+          // 外层 `split('\n')` 即可还原「一条规则 → 每元素一项」。
+          return analyzer.getStringList(rule, dedupe: false).join('\n');
         }
         return analyzer.getString(rule);
     }

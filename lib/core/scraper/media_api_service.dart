@@ -872,6 +872,25 @@ class MediaApiService {
     return r == true;
   }
 
+  /// 执行源内嵌脚本（正文行内图标的 `click` 动作）。
+  ///
+  /// [result] 绑定给脚本（图片地址）；脚本里的 `java.showBrowser(url, html)`
+  /// 等宿主动作走书源交互通道落地（打开应用内浏览器）。返回脚本是否执行成功。
+  Future<bool> runSourceScript(
+    PluginConfig source, {
+    required String script,
+    String result = '',
+  }) async {
+    if (script.trim().isEmpty) return false;
+    final r = await registry
+        .find(source, 'scriptAction')
+        .resolve(source, 'scriptAction', vars: <String, String>{
+      'script': script,
+      'result': result,
+    });
+    return r == true;
+  }
+
   /// 源是否为文件类书源（legado `bookSourceType == 3`）。
   /// 只读 selectors 判断，不触发解析；供详情页与读按钮切换逻辑使用。
   bool isWebFileSource(PluginConfig source) {

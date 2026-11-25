@@ -46,6 +46,8 @@ void main() {
         'postQuoteUrl': r'https://api.test/quote?id={{$.index}}&t={{key}}',
         'deleteUrl': r'https://api.test/delete?id={{$.index}}',
         'paragraphRule': '#list .item .para@data-index',
+        'voteUpCountRule': '#list .item .up@text',
+        'voteDownCountRule': '#list .item .down@text',
       });
       expect(rule.hasList, isTrue);
       expect(rule.canPost, isTrue);
@@ -90,14 +92,18 @@ void main() {
   });
 
   group('段落锚点（`{{paragraph}}` / paragraphRule）', () {
-    test('URL 模板可绑定额外占位符', () {
+    // 注：`{{paragraph}}` 走 JS 求值，flutter_js 在 VM 测试环境里不加载，
+    // 这里只能验证 Dart 侧短路的占位符不受额外绑定影响；段落序号的真机行为
+    // 由 device test 覆盖（`{{chapter.url}}` 同理）。
+    test('额外绑定不影响 page/key 展开', () {
       final au = AnalyzeUrl(
-        url: 'https://h.test/reviews?p={{paragraph}}&page={{page}}',
+        url: 'https://h.test/reviews?p={{page}}&k={{key}}',
         baseUrl: 'https://h.test/',
         page: 2,
+        key: 'ab',
         extraBindings: <String, dynamic>{'paragraph': 3},
       );
-      expect(au.url, 'https://h.test/reviews?p=3&page=2');
+      expect(au.url, 'https://h.test/reviews?p=2&k=ab');
     });
 
     test('paragraphRule 给条目打段号（含非纯数字文本）', () {
@@ -150,6 +156,29 @@ void main() {
     });
   });
 
+  group('赞/踩计数解析', () {
+    test('计数规则按序号对齐，取首个数字', () {
+      final reviews = BookReview.parseReviews(
+        rule: ReviewRule(
+          reviewUrl: 'https://api.test/reviews',
+          contentRule: '.rv .content@text',
+          voteUpCountRule: '.rv .up@text',
+          voteDownCountRule: '.rv .down@text',
+        ),
+        body: '<div class="rv"><div class="content">甲</div>'
+            '<span class="up">赞 12</span><span class="down">0</span></div>'
+            '<div class="rv"><div class="content">乙</div>'
+            '<span class="up">3</span><span class="down">踩 2</span></div>',
+        baseUrl: 'https://src.test/c/1.html',
+        redirectUrl: 'https://src.test/c/1.html',
+      );
+      expect(reviews[0].voteUp, 12);
+      expect(reviews[0].voteDown, 0);
+      expect(reviews[1].voteUp, 3);
+      expect(reviews[1].voteDown, 2);
+    });
+  });
+
   group('段评气泡计数（按段分组）', () {
     test('按段号聚合，章级条目不计入', () {
       final counts = BookReview.countByParagraph(<SourceReview>[
@@ -195,6 +224,35 @@ void main() {
       final XiaoshuoBookSource bs =
           ShuyuanSource.fromJson(sel).toBookSource();
       expect(bs.getReviewRule().hasList, isTrue);
+    });
+  });
+
+  group('段号/赞数按序号对齐（属性值重复）', () {
+    test('同段多条时属性值不能去重（否则段号错位）', () {
+      // 6 条段评的 data-p 是 0,0,2,2,4,4；引擎默认会去重成 3 个值。
+      const String body = '''
+<div class="rv" data-p="0"><div class="content">甲</div><span class="up">2</span></div>
+<div class="rv" data-p="0"><div class="content">乙</div><span class="up">1</span></div>
+<div class="rv" data-p="2"><div class="content">丙</div><span class="up">0</span></div>
+<div class="rv" data-p="2"><div class="content">丁</div><span class="up">4</span></div>
+<div class="rv" data-p="4"><div class="content">戊</div><span class="up">0</span></div>
+<div class="rv" data-p="4"><div class="content">己</div><span class="up">6</span></div>
+''';
+      final reviews = BookReview.parseReviews(
+        rule: ReviewRule(
+          reviewUrl: 'https://api.test/reviews',
+          contentRule: '.rv .content@text',
+          paragraphRule: '.rv@data-p',
+          voteUpCountRule: '.up@text',
+        ),
+        body: body,
+        baseUrl: 'https://src.test/c/1.html',
+        redirectUrl: 'https://src.test/c/1.html',
+      );
+      expect(reviews.map((r) => r.content), <String>['甲', '乙', '丙', '丁', '戊', '己']);
+      expect(reviews.map((r) => r.paragraph), <int?>[0, 0, 2, 2, 4, 4]);
+      expect(reviews.map((r) => r.voteUp), <int>[2, 1, 0, 4, 0, 6]);
+      expect(BookReview.countByParagraph(reviews), <int, int>{0: 2, 2: 2, 4: 2});
     });
   });
 

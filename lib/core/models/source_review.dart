@@ -19,6 +19,8 @@ class SourceReview {
     this.postTime = '',
     this.index = 0,
     this.paragraph,
+    this.voteUp = 0,
+    this.voteDown = 0,
     Map<String, dynamic>? context,
   }) : context = <String, dynamic>{
           'content': content,
@@ -27,6 +29,8 @@ class SourceReview {
           'index': index,
           ...?context,
           'paragraph': paragraph ?? (context?['paragraph'] ?? ''),
+          'voteUp': voteUp,
+          'voteDown': voteDown,
         };
 
   /// 段评正文。
@@ -41,8 +45,12 @@ class SourceReview {
   /// 在列表中的序号（0 起）。
   final int index;
 
-  /// 段落锚点（0 起，正文块下标）；null = 未锚定到具体段落（章级）。
+  /// 段落锚点（0 起，**正文段落序号**，插图块不计入）；null = 未锚定（章级）。
   final int? paragraph;
+
+  /// 赞数 / 踩数（源声明计数规则时非 0；0 表示未提供）。
+  final int voteUp;
+  final int voteDown;
 
   /// 模板上下文（`{{$.字段}}` 求值根）。
   final Map<String, dynamic> context;
@@ -52,6 +60,8 @@ class SourceReview {
     String? postTime,
     int? index,
     int? paragraph,
+    int? voteUp,
+    int? voteDown,
   }) {
     return SourceReview(
       content: content ?? this.content,
@@ -59,6 +69,8 @@ class SourceReview {
       postTime: postTime ?? this.postTime,
       index: index ?? this.index,
       paragraph: paragraph ?? this.paragraph,
+      voteUp: voteUp ?? this.voteUp,
+      voteDown: voteDown ?? this.voteDown,
       context: context,
     );
   }

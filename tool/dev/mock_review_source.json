@@ -1,0 +1,48 @@
+[
+  {
+    "bookSourceName": "本地段评演示(mock)",
+    "bookSourceUrl": "http://127.0.0.1:8765",
+    "bookSourceType": 0,
+    "bookSourceGroup": "联调",
+    "bookSourceComment": "配合 tool/dev/mock_review_server.py 使用：验证段评面板、全章/本段、发帖/回复/赞踩/删除、段尾气泡，以及源内嵌图标 + java.showBrowser 的原生路径。按 chapter.url 区分章节：第 1 章 6 条段评，第 2 章没有。",
+    "enabled": true,
+    "enabledExplore": false,
+    "customOrder": 0,
+    "searchUrl": "/search?q={{key}}",
+    "ruleSearch": {
+      "bookList": "#list li",
+      "name": "a@text",
+      "author": ".author@text",
+      "bookUrl": "a@href"
+    },
+    "ruleBookInfo": {
+      "name": "h1@text",
+      "author": ".muted@text",
+      "intro": "p@text",
+      "tocUrl": "a@href"
+    },
+    "ruleToc": {
+      "chapterList": "#list li",
+      "chapterName": "a@text",
+      "chapterUrl": "a@href"
+    },
+    "ruleContent": {
+      "content": "#chapter@html"
+    },
+    "ruleReview": {
+      "reviewUrl": "/api/reviews?chapterUrl={{chapter.url}}&page={{page}}",
+      "contentRule": ".rv .content@text",
+      "avatarRule": ".rv .avatar img@src",
+      "postTimeRule": ".rv .time@text",
+      "paragraphRule": ".rv@data-p",
+      "voteUpCountRule": ".up@text",
+      "voteDownCountRule": ".down@text",
+      "reviewQuoteUrl": "/api/reviews?chapterUrl={{chapter.url}}&pid={{$.index}}",
+      "voteUpUrl": "/api/review/vote?chapterUrl={{chapter.url}}&id={{$.index}}&type=up,{\"method\":\"POST\"}",
+      "voteDownUrl": "/api/review/vote?chapterUrl={{chapter.url}}&id={{$.index}}&type=down,{\"method\":\"POST\"}",
+      "postReviewUrl": "/api/review/add,{\"method\":\"POST\",\"body\":\"chapterUrl={{chapter.url}}&p={{paragraph}}&content={{key}}\"}",
+      "postQuoteUrl": "/api/review/quote,{\"method\":\"POST\",\"body\":\"chapterUrl={{chapter.url}}&id={{$.index}}&content={{key}}\"}",
+      "deleteUrl": "/api/review/delete?chapterUrl={{chapter.url}}&id={{$.index}},{\"method\":\"POST\"}"
+    }
+  }
+]

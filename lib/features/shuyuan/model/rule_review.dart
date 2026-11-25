@@ -25,8 +25,14 @@ class ReviewRule {
   String? deleteUrl;
 
   /// 段号列表规则（NexHub 扩展，基准无此字段）：取值按序号与内容对齐，
-  /// 解析为整数（0 起）；单条解析失败即视为「无锚点」。
+  /// 解析为整数（0 起，**正文段落序号**，插图块不计入）；单条解析失败即
+  /// 视为「无锚点」。
   String? paragraphRule;
+
+  /// 赞数 / 踩数列表规则（NexHub 扩展）：取值与内容按序号对齐，解析为整数
+  /// （取首个数字）。声明后点赞按钮旁显示计数。
+  String? voteUpCountRule;
+  String? voteDownCountRule;
 
   ReviewRule({
     this.reviewUrl,
@@ -40,6 +46,8 @@ class ReviewRule {
     this.postQuoteUrl,
     this.deleteUrl,
     this.paragraphRule,
+    this.voteUpCountRule,
+    this.voteDownCountRule,
   });
 
   /// 是否声明了段评列表（列表 URL + 内容规则缺一不可）。
@@ -52,6 +60,9 @@ class ReviewRule {
 
   /// 是否可对某条段评发回复。
   bool get canQuote => (postQuoteUrl ?? '').trim().isNotEmpty;
+
+  /// 是否声明了回复列表（面板打开时会预取前几条用于默认展示）。
+  bool get hasQuote => (reviewQuoteUrl ?? '').trim().isNotEmpty;
 
   /// 是否可投票（赞/踩任一存在即可）。
   bool get canVote =>
@@ -83,6 +94,8 @@ class ReviewRule {
       postQuoteUrl: pick('postQuoteUrl'),
       deleteUrl: pick('deleteUrl'),
       paragraphRule: pick('paragraphRule'),
+      voteUpCountRule: pick('voteUpCountRule'),
+      voteDownCountRule: pick('voteDownCountRule'),
     );
   }
 
@@ -98,5 +111,7 @@ class ReviewRule {
         if (postQuoteUrl != null) 'postQuoteUrl': postQuoteUrl,
         if (deleteUrl != null) 'deleteUrl': deleteUrl,
         if (paragraphRule != null) 'paragraphRule': paragraphRule,
+        if (voteUpCountRule != null) 'voteUpCountRule': voteUpCountRule,
+        if (voteDownCountRule != null) 'voteDownCountRule': voteDownCountRule,
       };
 }

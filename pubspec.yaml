@@ -89,6 +89,11 @@ dependencies:
   media_kit: ^1.2.6
   media_kit_video: ^2.0.1
   media_kit_libs_video: ^1.0.7
+  # 鸿蒙专属依赖（media_kit_libs_ohos / flutter_secure_storage_ohos）**不写在这里**：
+  # 它们只存在于鸿蒙适配源，pub.dev 上没有，写进主 pubspec 会让官方 SDK（Android /
+  # Windows / iOS / macOS / Linux）直接 `pub get` 失败。鸿蒙构建由
+  # `tool/ohos/prepare_ohos.sh` 把 pubspec_overrides.ohos.yaml 拷成 pubspec_overrides.yaml
+  # 时补入（CI 的 ohos 任务同样走这一步）。
   # 系统通知（OS 通知）。注意：Windows 平台 flutter_local_notifications 无官方后端，
   # 故代码中做平台降级——仅 Android / iOS / Linux / macOS 发 OS 通知，Windows 跳过并
   # 保留应用内未读 badge（与 RssUpdateChecker 既有设计一致）。

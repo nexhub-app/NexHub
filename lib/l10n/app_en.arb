@@ -3150,6 +3150,16 @@
       }
     }
   },
+  "novelReviewQuotesExpand": "Show all {count} replies",
+  "novelReviewQuotesCollapse": "Collapse replies",
+  "@novelReviewQuotesExpand": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "novelReviewInThisParagraph": "This paragraph",
   "novelReviewLoadMore": "Load more",
   "novelReviewQuotes": "{count} replies",
   "novelPayChapter": "Buy chapter",
