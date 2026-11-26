@@ -438,6 +438,25 @@ class JsEngine {
     }
   }
 
+  /// 直接读取全局绑定的当前值（不重新执行脚本、不重复注入上下文/jsLib）。
+  ///
+  /// 用于脚本原地修改绑定对象后的回读：`evalStructured(name)` 会再走一遍
+  /// `_evaluatePrepared`（上下文注入、jsLib 检查、java 排空），而这里只是
+  /// 把已存在的全局对象序列化回来，没有脚本副作用。
+  dynamic readGlobalJson(String name) {
+    try {
+      final r = runtime.evaluate(
+          'JSON.stringify(typeof $name === "undefined" ? null : $name)');
+      if (r.isError) return null;
+      final s = r.stringResult;
+      if (s.isEmpty || s == 'null' || s == 'undefined') return null;
+      return jsonDecode(s);
+    } catch (e) {
+      AppLog.instance.w('[书源JS] 读取绑定失败: $name → $e');
+      return null;
+    }
+  }
+
   /// 三态求值：区分「脚本失败 / 无返回值 / 有返回值（含空串）」。
   ///
   /// 对齐 legado `RhinoScriptEngine.eval` 的 `unwrapReturnValue`

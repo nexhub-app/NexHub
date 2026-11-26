@@ -143,9 +143,12 @@ class AnalyzeUrl {
   AnalyzeRule? _urlRule;
 
   // 静态 Dio 实例提升性能
+  // 超时对齐书源基准：连接/写入 15s、读取 60s（慢页不再在 30s 被切断；
+  // 旧值 receive 30s 会让大目录/慢接口稳定超时）。
   static final Dio _dio = Dio()
     ..options.connectTimeout = const Duration(seconds: 15)
-    ..options.receiveTimeout = const Duration(seconds: 30)
+    ..options.sendTimeout = const Duration(seconds: 15)
+    ..options.receiveTimeout = const Duration(seconds: 60)
     ..options.validateStatus =
         ((status) => status != null && status >= 200 && status < 300)
     // 书源直连链路改用浏览器一致的原始请求（Host 首行 + Title-Case

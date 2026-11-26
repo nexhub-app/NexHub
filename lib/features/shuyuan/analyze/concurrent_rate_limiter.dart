@@ -61,7 +61,10 @@ class ConcurrentRateLimiter {
     if (limit <= 0 || interval.inMilliseconds <= 0) return;
 
     var now = DateTime.now();
-    final window = _windows.putIfAbsent('$key|$r', () => _RateWindow(now));
+    // 窗口只按源 key 索引：运行期改并发率时替换 limit/interval，但保留
+    // 已有窗口的起点与已放行次数（legado ConcurrentRecord 语义），改率
+    // 不会凭空多出 limit 次突发。
+    final window = _windows.putIfAbsent(key, () => _RateWindow(now));
     if (now.difference(window.start) >= interval) {
       window.start = now;
       window.count = 0;

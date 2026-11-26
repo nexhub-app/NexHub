@@ -580,23 +580,43 @@ const String sourceContextJsPrelude = r'''
   // legado `source.key` 属性 = 书源 URL（脚本大量使用，只读）。
   // legado `BaseSource.getHeaderMap(userAgent, hasLoginHeader)`：源 header
   // + 登录头合并后的请求头表。脚本常用它基于源头做二次加工（签名头、
-  // 覆盖 UA 再 post）。源 header 为 `@js:` 表达式时原样返回脚本串（宿主
-  // 侧解析），避免在沙箱里再跑一遍求值链。
+  // 覆盖 UA 再 post）。源 header 为 `@js:`/`<js>` 时交给宿主求值（走规则桥
+  // 重放：首轮登记、下一轮拿到真值），不能再把脚本串当字面 JSON 解析。
   source.getHeaderMap = function () {
     var c = syCtx();
+    var raw = String((c.sourceMeta && c.sourceMeta.header) || '');
     var out = {};
-    var parse = function (text) {
-      var s = String(text == null ? '' : text).trim();
-      if (!s) return;
+    var key = 'h|0|r0|' + raw;
+    var cache = global.__javaRuleCache;
+    var resolved = null;
+    if (raw && cache && cache[key] !== undefined) {
       try {
-        var o = JSON.parse(s);
-        if (o && typeof o === 'object') {
-          for (var k in o) out[k] = String(o[k]);
-        }
-      } catch (e) {}
-    };
-    parse(c.sourceMeta && c.sourceMeta.header);
-    for (var k in c.loginHeader) out[k] = c.loginHeader[k];
+        resolved = JSON.parse(String(cache[key]));
+      } catch (e) {
+        resolved = null;
+      }
+    }
+    if (raw && resolved == null) {
+      var seen = global.__javaRuleSeen;
+      if (!seen) seen = global.__javaRuleSeen = Object.create(null);
+      if (!seen[key]) {
+        seen[key] = true;
+        var pend = global.__javaRulePending;
+        if (!pend) pend = global.__javaRulePending = [];
+        pend.push({ op: 'get', k: 'h', r: raw, c: null, u: 0, key: key });
+      }
+      // 首轮占位：仍是字面 header（动态 header 由下一轮填充）。
+      resolved = {};
+      var literal = raw.trim();
+      if (literal) {
+        try {
+          var o = JSON.parse(literal);
+          if (o && typeof o === 'object') resolved = o;
+        } catch (e) {}
+      }
+    }
+    for (var k in resolved) out[k] = String(resolved[k]);
+    for (var lk in c.loginHeader) out[lk] = c.loginHeader[lk];
     return out;
   };
   Object.defineProperty(source, 'key', {
@@ -3720,12 +3740,24 @@ const String javaExtensionsJsPrelude = r'''
       encryptBase64: function (str) { return ''; },
       encryptHex: function (str) { return ''; },
     };
-    var keyBytes = anyToBytes(key);
+    var algo = String(transformation == null ? '' : transformation)
+        .split('/')[0].toUpperCase();
+    // legado `SymmetricCryptoAndroid`：key 为 null 时走 KeyGenerator 生成
+    // 随机密钥（AES 128 / DES 64 / DESede 192），不是空密钥。
+    var keyBytes;
+    if (key == null) {
+      var keyLen = (algo === 'DES') ? 8
+          : (algo === 'DESEDE' || algo === 'TRIPLEDES') ? 24 : 16;
+      keyBytes = [];
+      for (var ki = 0; ki < keyLen; ki++) {
+        keyBytes.push((Math.random() * 256) | 0);
+      }
+    } else {
+      keyBytes = anyToBytes(key);
+    }
     var ivBytes = (iv == null || iv === '') ? null : anyToBytes(iv);
     var tf = aesParseTf(transformation, ivBytes != null);
     if (!tf) return empty;
-    var algo = String(transformation == null ? '' : transformation)
-        .split('/')[0].toUpperCase();
     var blockSize = 16;
     var run;
     var stream = tf.mode === 'CTR' || tf.mode === 'OFB' ||

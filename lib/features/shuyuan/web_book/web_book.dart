@@ -246,14 +246,19 @@ class WebBook {
   }
 
   /// 抓取指定分类 URL 的书籍列表。
+  ///
+  /// [usePageParamFallback] 只对「运行时拼出的地址」启用（如筛选模板）：
+  /// 书源 kind.url 这类静态分类地址的页码由规则语法自己处理，不能替它
+  /// 追加 `page=` 参数（否则第二页起可能重复首页或命中错误接口）。
   Future<List<XiaoshuoBook>> exploreCategory({
     required XiaoshuoBookSource source,
     required String categoryUrl,
     int page = 1,
+    bool usePageParamFallback = false,
   }) async {
-    // legado `ExploreShowViewModel.fetchPage`：分类地址本身不含页码规则时，
-    // 按 `exploreRule.pageParam`（缺省 `page`）在运行期补参数翻页。
-    final requestUrl = withPageParam(source, categoryUrl, page);
+    final requestUrl = usePageParamFallback
+        ? withPageParam(source, categoryUrl, page)
+        : categoryUrl;
     final analyzeUrl = AnalyzeUrl(
       url: requestUrl,
       baseUrl: source.bookSourceUrl,

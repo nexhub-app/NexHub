@@ -1215,6 +1215,9 @@ class ShuyuanNovelResolver
             source: bookSource,
             categoryUrl: filterUrl,
             page: page,
+            // 筛选地址是运行期拼出的，没有书源 kind.url 的页码规则语义：
+            // 地址自身不带页码规则时允许补 page 参数翻页。
+            usePageParamFallback: true,
           );
           return _mapAndSeedBooks(books, source);
         }

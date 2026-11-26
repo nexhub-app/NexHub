@@ -497,7 +497,7 @@ class AnalyzeByJsoup {
   /// 处理含 `:contains(...)` 的选择器（支持逗号分组与多个 :contains 叠加）。
   static List<Element> _queryContains(Element root, String selector) {
     final result = <Element>[];
-    for (final group in selector.split(',')) {
+    for (final group in _splitSelectorGroups(selector)) {
       var g = group.trim();
       if (g.isEmpty) continue;
       final texts = <String>[];
@@ -525,6 +525,56 @@ class AnalyzeByJsoup {
       }
     }
     return result;
+  }
+
+  /// 选择器逗号分组切分：只在顶层逗号处切，跳过引号、`[...]` 与 `(...)`
+  /// 内部（`[title="a,b"]`、`:has(a,b)`、`:not(.x,.y)` 不能被拆坏）。
+  static List<String> _splitSelectorGroups(String selector) {
+    final out = <String>[];
+    final buf = StringBuffer();
+    var quote = 0;
+    var depth = 0;
+    var escaped = false;
+    for (var i = 0; i < selector.length; i++) {
+      final c = selector.codeUnitAt(i);
+      if (escaped) {
+        buf.writeCharCode(c);
+        escaped = false;
+        continue;
+      }
+      if (quote != 0) {
+        buf.writeCharCode(c);
+        if (c == 0x5C) {
+          escaped = true;
+        } else if (c == quote) {
+          quote = 0;
+        }
+        continue;
+      }
+      if (c == 0x22 || c == 0x27) {
+        quote = c;
+        buf.writeCharCode(c);
+        continue;
+      }
+      if (c == 0x28 || c == 0x5B) {
+        depth++;
+        buf.writeCharCode(c);
+        continue;
+      }
+      if (c == 0x29 || c == 0x5D) {
+        if (depth > 0) depth--;
+        buf.writeCharCode(c);
+        continue;
+      }
+      if (c == 0x2C && depth == 0) {
+        out.add(buf.toString());
+        buf.clear();
+        continue;
+      }
+      buf.writeCharCode(c);
+    }
+    out.add(buf.toString());
+    return out;
   }
 
   // ── jsoup 扩展伪选择器兼容层 ──────────────────────────────────────────

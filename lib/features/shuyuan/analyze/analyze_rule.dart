@@ -915,6 +915,7 @@ class AnalyzeRule {
     final entryBaseUrl = baseUrl;
     final entryRedirect = redirectUrl;
     final entryJson = isJson;
+    final entryRegex = _isRegex;
     // 缓存按「本次求值的内容快照」有效，跨规则求值必须清空（引擎按源池化）。
     // 嵌套求值（桥回放中某条规则又触发 @js）不能清空外层缓存与根内容版本，
     // 否则外层待办键每轮都变，永远不收敛。
@@ -930,6 +931,7 @@ class AnalyzeRule {
           baseUrl = entryBaseUrl;
           redirectUrl = entryRedirect;
           isJson = entryJson;
+          _isRegex = entryRegex;
           _analyzeByJsoup = null;
           _analyzeByXPath = null;
           _analyzeByJson = null;
@@ -1024,6 +1026,16 @@ class AnalyzeRule {
       }
     }
 
+    if (kind == 'h') {
+      // `source.getHeaderMap()`：源 header 可能是 `@js:`/`<js>` 规则，
+      // 由宿主求值后回传完整表（含登录头由 JS 侧合并）。
+      try {
+        return jsonEncode(_resolveSourceHeaderMap(rule));
+      } catch (e) {
+        AppLog.instance.w('[书源JS] 源 header 求值失败: $e');
+        return '{}';
+      }
+    }
     if (kind == 's') {
       return run(() => getString(rule, isUrl: isUrl, mContent: mContent));
     }
@@ -1035,6 +1047,9 @@ class AnalyzeRule {
     final saved = content;
     final savedJson = isJson;
     final savedBase = baseUrl;
+    // 临时内容求值可能把 `_isRegex` 置位（`:` 开头的 allInOne 规则），
+    // 求值结束后必须恢复，否则后续规则会被意外按正则模式解析。
+    final savedRegex = _isRegex;
     setContent(mContent);
     try {
       if (kind == 'l') return run(() => getStringList(rule, isUrl: isUrl));
@@ -1043,11 +1058,63 @@ class AnalyzeRule {
     } finally {
       content = saved;
       isJson = savedJson;
+      _isRegex = savedRegex;
       baseUrl = savedBase;
       _analyzeByJsoup = null;
       _analyzeByXPath = null;
       _analyzeByJson = null;
     }
+  }
+
+  /// 源 header 规则求值：`@js:` / `<js>` 先执行脚本，再按 JSON 或
+  /// `Key: Value` 行解析。脚本失败返回空表，调用方按「无自定义头」处理。
+  bool _resolvingSourceHeader = false;
+
+  Map<String, String> _resolveSourceHeaderMap(String raw) {
+    if (_resolvingSourceHeader) return <String, String>{};
+    _resolvingSourceHeader = true;
+    try {
+      return _resolveSourceHeaderMapInner(raw);
+    } finally {
+      _resolvingSourceHeader = false;
+    }
+  }
+
+  Map<String, String> _resolveSourceHeaderMapInner(String raw) {
+    var text = raw.trim();
+    if (text.isEmpty) return <String, String>{};
+    final lower = text.toLowerCase();
+    String evalHeader(String code) {
+      final v = _evalJs(code, null, structured: true);
+      if (v is Map) return jsonEncode(v);
+      return v?.toString() ?? '';
+    }
+
+    if (lower.startsWith('@js:')) {
+      text = evalHeader(text.substring(4)).trim();
+    } else if (lower.startsWith('<js>') && lower.contains('</js>')) {
+      text = evalHeader(text.substring(4, lower.lastIndexOf('</js>'))).trim();
+    }
+    final out = <String, String>{};
+    if (text.isEmpty) return out;
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is Map) {
+        for (final e in decoded.entries) {
+          out[e.key.toString()] = e.value?.toString() ?? '';
+        }
+        return out;
+      }
+    } catch (_) {}
+    for (final line in text.split('\n')) {
+      final t = line.trim();
+      if (t.isEmpty) continue;
+      final i = t.indexOf(': ');
+      if (i > 0) {
+        out[t.substring(0, i).trim()] = t.substring(i + 1).trim();
+      }
+    }
+    return out;
   }
 
   String evalJs(String jsStr, dynamic result, {Map<String, dynamic>? extraBindings}) {
@@ -1401,7 +1468,11 @@ class AnalyzeRule {
       optionPart = trimmed.substring(optionMatch.start);
     }
     try {
-      final parsedBase = Uri.parse(base);
+      // legado `URL(baseURL.substringBefore(","))`：基址自带的 URL 选项
+      // `,{...}` 不参与解析，否则 Uri.parse 会把选项当路径片段。
+      final comma = base.indexOf(',');
+      final baseForParse = comma >= 0 ? base.substring(0, comma) : base;
+      final parsedBase = Uri.parse(baseForParse);
       return '${parsedBase.resolve(pathPart)}$optionPart';
     } catch (_) {
       return trimmed;

@@ -2,11 +2,16 @@
 library;
 
 /// legado `String?.isTrue(nullIsTrue = false)`：
-/// 空白 / 字面 `null` 为假；忽略大小写的 `false|no|not|0|0.0` 为假；
-/// 其余非空值（含 `"true"`、`"yes"`、`"是"`、`"vip"`、带空白）为真。
+/// 空白 / **未 trim** 的字面 `null` 为假；忽略大小写的
+/// `false|no|not|0|0.0` 为假；其余非空值（含 `" true "`、`" null "`、
+/// `"是"`、`"vip"`）为真。
 bool legadoIsTrue(String? value) {
-  final text = value?.trim() ?? '';
-  if (text.isEmpty || text == 'null') return false;
+  if (value == null) return false;
+  final text = value.trim();
+  if (text.isEmpty) return false;
+  // legado 在 trim 前做精确 `this == "null"` 比较：`" null "` 不算 null，
+  // 后续正则也不匹配假值，最终为 true。
+  if (value == 'null') return false;
   return !RegExp(r'^(?:false|no|not|0|0\.0)$', caseSensitive: false)
       .hasMatch(text);
 }

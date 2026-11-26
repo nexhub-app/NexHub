@@ -330,8 +330,9 @@ class BookChapterList {
         if (ch.bigVariableMap[k] != v) ch.putBigVariable(k, v);
       });
       // 绑定快照在 JS 侧被原地修改（函数型助手不参与 JSON 序列化），
-      // 回读整图后只落回脚本实际改动过的字段。
-      final mutated = engine.evalStructured('chapter');
+      // 回读整图后只落回脚本实际改动过的字段。直接读全局绑定，不再执行
+      // 一遍脚本（避免 jsLib 检查与排空的额外副作用）。
+      final mutated = engine.readGlobalJson('chapter');
       if (mutated is Map) {
         _applyChapterMutations(ch, snapshot, mutated);
       }
