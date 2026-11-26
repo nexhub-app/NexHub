@@ -69,6 +69,10 @@ class JsEngine {
   /// java.put 都会体现；takeJavaChapterVars 取走并清空）。
   Map<String, String> _lastJavaChapterVars = const {};
 
+  /// 上一轮 eval 中 `chapter.putVariable(k, null)` 删除的键
+  /// （`chapter.__syDeleted`；takeJavaChapterDeleted 取走并清空）。
+  Set<String> _lastJavaChapterDeleted = const {};
+
   /// 上一轮 eval 结束时 JS `chapter.__syBigVariables` 的快照（章节大变量表，
   /// legado `RuleBigDataHelp` 的章节级存储）。
   Map<String, String> _lastJavaChapterBigVars = const {};
@@ -204,6 +208,13 @@ class JsEngine {
   Map<String, String> takeJavaChapterVars() {
     final taken = _lastJavaChapterVars;
     _lastJavaChapterVars = const {};
+    return taken;
+  }
+
+  /// 取走上一轮 eval 中 `chapter.putVariable(k, null)` 删除的键（取后清空）。
+  Set<String> takeJavaChapterDeleted() {
+    final taken = _lastJavaChapterDeleted;
+    _lastJavaChapterDeleted = const {};
     return taken;
   }
 
@@ -805,6 +816,14 @@ class JsEngine {
     } else {
       _lastJavaChapterVars = const {};
     }
+    // 章节普通变量删除集：显式回传，宿主按集合 putVariable(k, null)。
+    final chapterDeleted = payload['cd'];
+    _lastJavaChapterDeleted = chapterDeleted is List
+        ? <String>{
+            for (final k in chapterDeleted)
+              if (k != null && k.toString().isNotEmpty) k.toString(),
+          }
+        : const {};
     // 章节大变量：整表快照 + 本轮删除集（删除必须显式回传，否则宿主旧值
     // 会被下一轮种子重新注入，表现为“删了又回来”）。
     final chapterBig = payload['bc'];

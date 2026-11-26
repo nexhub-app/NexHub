@@ -33,7 +33,7 @@ abstract final class JavaFeedback {
 /// source/book/cache 的写回）。须用 globalThis——本表达式在顶层求值，
 /// IIFE 内的 `global` 参数不可见。
 const String javaDrainExpr = r'''
-JSON.stringify({t:(globalThis.__javaToasts||[]).splice(0),l:(globalThis.__javaLogs||[]).splice(0),v:globalThis.__javaVars||{},d:(globalThis.__javaDeleted||[]).splice(0),c:(globalThis.chapter&&globalThis.chapter.variableMap)||null,bc:(globalThis.chapter&&globalThis.chapter.__syBigVariables)||null,bd:(globalThis.chapter&&globalThis.chapter.__syBigDeleted||[]).splice(0)})
+JSON.stringify({t:(globalThis.__javaToasts||[]).splice(0),l:(globalThis.__javaLogs||[]).splice(0),v:globalThis.__javaVars||{},d:(globalThis.__javaDeleted||[]).splice(0),c:(globalThis.chapter&&globalThis.chapter.variableMap)||null,cd:(globalThis.chapter&&globalThis.chapter.__syDeleted||[]).splice(0),bc:(globalThis.chapter&&globalThis.chapter.__syBigVariables)||null,bd:(globalThis.chapter&&globalThis.chapter.__syBigDeleted||[]).splice(0)})
 ''';
 
 /// 注入对象预置脚本（P1-2）：cookie / source / book / cache 四对象，
@@ -239,14 +239,27 @@ const String sourceContextJsPrelude = r'''
       // 与 getVariable()/setVariable() 同一存储（发现页设置状态、登录数据
       // 都走这条通道）。两参写法是本实现的键值扩展，保留兼容。
       if (arguments.length < 2) {
-        var whole = String(k == null ? '' : k);
+        // legado BaseSource.putVariable(variable: String?)：null 删除整段源变量。
+        if (k == null) {
+          delete syCtx().sourceVars['__variable'];
+          syOp('sourceVarDel', '__variable', '');
+          return null;
+        }
+        var whole = String(k);
         syCtx().sourceVars['__variable'] = whole;
         syOp('sourceVar', '__variable', whole);
         return whole;
       }
       if (k == null) return v;
-      syCtx().sourceVars[String(k)] = String(v == null ? '' : v);
-      syOp('sourceVar', k, v);
+      var key = String(k);
+      // legado BaseSource.putVariable(k, null)：删除键，不能写空串占位。
+      if (v == null) {
+        delete syCtx().sourceVars[key];
+        syOp('sourceVarDel', key, '');
+        return null;
+      }
+      syCtx().sourceVars[key] = String(v);
+      syOp('sourceVar', key, v);
       return v;
     },
     setVariable: function (v) {
@@ -391,8 +404,15 @@ const String sourceContextJsPrelude = r'''
   var book = {
     getVariable: function (k) { return syCtx().bookVars[String(k)] || ''; },
     putVariable: function (k, v) {
-      syCtx().bookVars[String(k)] = String(v == null ? '' : v);
-      syOp('bookVar', k, v);
+      var key = String(k);
+      // legado BaseBook.putVariable(k, null)：删除键。
+      if (v == null) {
+        delete syCtx().bookVars[key];
+        syOp('bookVarDel', key, '');
+        return null;
+      }
+      syCtx().bookVars[key] = String(v);
+      syOp('bookVar', key, v);
       return v;
     },
     setVariable: function (v) { return book.putVariable('__variable', v); },
@@ -432,13 +452,22 @@ const String sourceContextJsPrelude = r'''
       } else if (v && typeof v === 'object') {
         parsed = v;
       }
-      for (var k in c.bookVars) delete c.bookVars[k];
+      // 整段替换：旧键中不在新串里的必须发删除事件，否则宿主 variableMap
+      // 残留旧键，后续 getVariable 仍能读到。
+      var removed = [];
+      for (var k in c.bookVars) removed.push(k);
+      for (var i = 0; i < removed.length; i++) delete c.bookVars[removed[i]];
+      var kept = {};
       if (parsed && typeof parsed === 'object') {
         for (var key in parsed) {
           var s = String(parsed[key] == null ? '' : parsed[key]);
           c.bookVars[key] = s;
+          kept[key] = true;
           syOp('bookVar', key, s);
         }
+      }
+      for (var j = 0; j < removed.length; j++) {
+        if (!kept[removed[j]]) syOp('bookVarDel', removed[j], '');
       }
       return v;
     },
@@ -7188,6 +7217,10 @@ const String javaExtensionsJsPrelude = r'''
     if (!ch.__syBigDeleted || !Array.isArray(ch.__syBigDeleted)) {
       ch.__syBigDeleted = [];
     }
+    // 普通变量删除集：drain 回传，宿主按集合 putVariable(k, null)。
+    if (!ch.__syDeleted || !Array.isArray(ch.__syDeleted)) {
+      ch.__syDeleted = [];
+    }
     var big = ch.__syBigVariables;
     function has(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
     function delBig(k) {
@@ -7196,21 +7229,31 @@ const String javaExtensionsJsPrelude = r'''
         ch.__syBigDeleted.push(k);
       }
     }
+    function markDeleted(k) {
+      if (ch.__syDeleted.indexOf(k) < 0) ch.__syDeleted.push(k);
+    }
+    function unmarkDeleted(k) {
+      var i = ch.__syDeleted.indexOf(k);
+      if (i >= 0) ch.__syDeleted.splice(i, 1);
+    }
     // BookChapter.putVariable：null 删键；>=10000 转 big；恒返回 true（覆写基类）。
     ch.putVariable = function (key, value) {
       var k = String(key == null ? '' : key);
       if (value == null) {
         delete ch.variableMap[k];
         delBig(k);
+        markDeleted(k);
         return true;
       }
       var s = String(value);
       if (s.length < 10000) {
         delBig(k);
+        unmarkDeleted(k);
         ch.variableMap[k] = s;
         return true;
       }
       delete ch.variableMap[k];
+      unmarkDeleted(k);
       if (!has(big, k)) ch.__syBigDeleted.push(k);
       big[k] = s;
       return true;

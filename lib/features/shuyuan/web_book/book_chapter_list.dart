@@ -318,6 +318,10 @@ class BookChapterList {
       // 章节变量写入回写（chapter.putVariable / 直改 variableMap）；
       // 须先于回读（回读触发的排空会重填快照通道）。
       final chapterVars = engine.takeJavaChapterVars();
+      // 显式删除集：只遍历快照会把已删除的旧键永久留在章节实体上。
+      for (final k in engine.takeJavaChapterDeleted()) {
+        ch.putVariable(k, null);
+      }
       chapterVars.forEach((k, v) {
         if (ch.variableMap[k] != v) ch.putVariable(k, v);
       });

@@ -511,9 +511,9 @@ class WebBook {
           await analyzeUrl.getStrResponse());
       tocBaseUrl = analyzeUrl.lastFinalUrl ?? analyzeUrl.url;
     }
-    // legado getChapterListAwait：响应体缺失（抓取失败/空页）直接抛错，
-    // 不能伪装成「0 章」的正常目录。
-    if (body.isEmpty) throw TocEmptyException();
+    // legado getChapterListAwait：只有 null body 视为抓取失败；空串仍先
+    // 求 nextTocUrl（JS/常量可生成下一页入口），最终仍无章节才抛空目录。
+    // 早退会把「空首页 + 脚本分页」的合成目录直接判空。
 
     // 对齐 legado WebBook.getChapterListAwait：整页解析的 baseUrl 是请求
     // 时的 tocUrl（未跟随重定向），redirectUrl 才是最终 URL。

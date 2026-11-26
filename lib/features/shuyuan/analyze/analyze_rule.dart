@@ -732,6 +732,11 @@ class AnalyzeRule {
       final chapterVars = _jsEngine!.takeJavaChapterVars();
       final boundChapter = chapter;
       if (boundChapter != null) {
+        // 显式删除集（chapter.putVariable(k, null)）：快照里没有旧键，
+        // 只遍历快照会让宿主旧值残留。
+        for (final k in _jsEngine!.takeJavaChapterDeleted()) {
+          boundChapter.putVariable(k, null);
+        }
         chapterVars.forEach((k, v) {
           if (boundChapter.variableMap[k] != v) {
             boundChapter.putVariable(k, v);
@@ -795,6 +800,19 @@ class AnalyzeRule {
         applyInt('durChapterPos', (v) => target.durChapterPos = v);
         applyBool('reverseToc', (v) => target.reverseToc = v);
         applyBool('canUpdate', (v) => target.canUpdate = v);
+      }
+      // 书变量删除先于写入（legado `Book.variable = json` 是整段替换）：
+      // 删除集来自 `book.putVariable(k, null)` 与 variable setter。
+      if (activeCtx != null) {
+        final deletedBookVars = activeCtx.takeBookVarsDeleted();
+        if (target != null) {
+          for (final k in deletedBookVars) {
+            target.putVariable(k, null);
+            // 规则层变量表里可能残留构造期种下的书变量副本，必须同步移除，
+            // 否则 get 链会从本地表读回已删除的旧值。
+            _variables.remove(k);
+          }
+        }
       }
       // 注入对象 book 变量回写：JS 里 book.putVariable 的写入镜像到当前书
       // （variableMap），规则层 @get/{book.getVariable} 即可读到。

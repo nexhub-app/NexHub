@@ -116,6 +116,18 @@ class ShuyuanSourceContext {
   /// book 变量（XiaoshuoBook.variableMap 的镜像，按当前书回写）。
   final Map<String, String> bookVars = {};
 
+  /// 本轮 `book.putVariable(k, null)` / `book.variable = {...}` 删除的键
+  /// （宿主回写时按此集合真删，不能只按现存键补写）。
+  final Set<String> bookVarsDeleted = <String>{};
+
+  /// 取走并清空书变量删除集。
+  Set<String> takeBookVarsDeleted() {
+    if (bookVarsDeleted.isEmpty) return const {};
+    final taken = Set<String>.from(bookVarsDeleted);
+    bookVarsDeleted.clear();
+    return taken;
+  }
+
   /// 书目字段快照（book.name/author/bookUrl 等直读）。
   final Map<String, String> bookInfo = {};
 
@@ -487,8 +499,16 @@ class ShuyuanSourceContext {
             sourceVars[a] = b;
             sourceVarsDirty = true;
           }
+        case 'sourceVarDel':
+          // `putVariable(key, null)`：显式删除，不能写成空串（空串仍是
+          // 一个存在的值，取值链会命中它并阻断后续层）。
+          if (sourceVars.remove(a) != null) sourceVarsDirty = true;
         case 'bookVar':
           bookVars[a] = b;
+          bookVarsDeleted.remove(a);
+        case 'bookVarDel':
+          bookVars.remove(a);
+          bookVarsDeleted.add(a);
         case 'bookField':
           bookInfo[a] = b;
         case 'concurrentRate':

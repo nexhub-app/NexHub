@@ -2009,11 +2009,18 @@ class ShuyuanNovelResolver
         : (_bookInfoCache[bookId] ?? _seedFor(bookId));
     final cachedChapter = _chapterFor(bookId, chapterUrl);
     final chapterTitle = vars['chapterTitle'] ?? '';
+    // 正文分页停止保护对所有内容类型一致：调用方未传时按缓存目录取下一章。
+    final nextChapterUrl = _resolveNextChapterUrl(
+      vars['nextChapterUrl'] ?? '',
+      bookId,
+      cachedChapter,
+    );
     final result = await _webBook.getContent(
       source: bookSource,
       chapterUrl: chapterUrl,
       originalBook: cachedBook,
       bookChapter: cachedChapter,
+      nextChapterUrl: nextChapterUrl.isEmpty ? null : nextChapterUrl,
       chapterTitle: chapterTitle.isEmpty ? null : chapterTitle,
     );
     final rawText = result.content.trim();
