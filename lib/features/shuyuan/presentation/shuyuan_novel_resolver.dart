@@ -566,10 +566,24 @@ class ShuyuanNovelResolver
               vars['cid'] ??
               '';
           if (imageChapterUrl.isEmpty) return <String>[];
+          // legado 的 Book/BookChapter 跨阶段存在：渲染回灌同样要带真实实体，
+          // 否则 `book.*`、`chapter.variableMap/baseUrl/title` 在图片规则里
+          // 退化成空壳（同一源直连漫画正常、过验证后取图失败）。
+          final imageBookId = vars['id'] ?? '';
+          final imageBook = (imageBookId.isEmpty
+                  ? null
+                  : (_bookInfoCache[imageBookId] ?? _seedFor(imageBookId))) ??
+              XiaoshuoBook(bookUrl: '', name: '');
+          final imageChapter = _chapterFor(imageBookId, imageChapterUrl) ??
+              XiaoshuoBookChapter(
+                bookUrl: imageBook.bookUrl,
+                url: imageChapterUrl,
+                title: vars['chapterTitle'] ?? '',
+              );
           final imageBlocks = BookContent.analyzeContent(
             bookSource: bookSource,
-            book: XiaoshuoBook(bookUrl: '', name: ''),
-            bookChapter: XiaoshuoBookChapter(bookUrl: '', url: imageChapterUrl),
+            book: imageBook,
+            bookChapter: imageChapter,
             baseUrl: imageChapterUrl,
             redirectUrl: imageChapterUrl,
             body: html,
@@ -632,11 +646,21 @@ class ShuyuanNovelResolver
         case 'video':
           // 视频/音频源播放直链：渲染后 HTML 取正文规则里的媒体 URL。
           final videoChapterUrl = vars['url'] ?? vars['chapter'] ?? '';
+          final videoBookId = vars['id'] ?? '';
+          final videoBook = (videoBookId.isEmpty
+                  ? null
+                  : (_bookInfoCache[videoBookId] ?? _seedFor(videoBookId))) ??
+              XiaoshuoBook(bookUrl: '', name: '');
           final videoChapter =
-              XiaoshuoBookChapter(bookUrl: '', url: videoChapterUrl);
+              _chapterFor(videoBookId, videoChapterUrl) ??
+                  XiaoshuoBookChapter(
+                    bookUrl: videoBook.bookUrl,
+                    url: videoChapterUrl,
+                    title: vars['chapterTitle'] ?? '',
+                  );
           final videoBlocks = BookContent.analyzeContent(
             bookSource: bookSource,
-            book: XiaoshuoBook(bookUrl: '', name: ''),
+            book: videoBook,
             bookChapter: videoChapter,
             baseUrl: videoChapterUrl,
             redirectUrl: videoChapterUrl,
@@ -670,6 +694,7 @@ class ShuyuanNovelResolver
               ? await _resolveRenderedLyric(
                   bookSource: bookSource,
                   chapter: videoChapter,
+                  book: videoBook,
                   body: html,
                   baseUrl: videoChapterUrl,
                 )
@@ -1973,9 +1998,20 @@ class ShuyuanNovelResolver
     if (chapterUrl.isEmpty) {
       throw ArgumentError('video requires vars["url"]');
     }
+    final bookId = vars['id'] ?? '';
+    // 实体跨阶段：正文规则里的 `book.*` / `chapter.index|variableMap` 要沿用
+    // 详情/目录阶段的值（直连正文与渲染回灌同口径）。
+    final cachedBook = bookId.isEmpty
+        ? null
+        : (_bookInfoCache[bookId] ?? _seedFor(bookId));
+    final cachedChapter = _chapterFor(bookId, chapterUrl);
+    final chapterTitle = vars['chapterTitle'] ?? '';
     final result = await _webBook.getContent(
       source: bookSource,
       chapterUrl: chapterUrl,
+      originalBook: cachedBook,
+      bookChapter: cachedChapter,
+      chapterTitle: chapterTitle.isEmpty ? null : chapterTitle,
     );
     final rawText = result.content.trim();
     if (rawText.startsWith('<')) {
@@ -2016,6 +2052,7 @@ class ShuyuanNovelResolver
     required XiaoshuoBookChapter chapter,
     required String body,
     required String baseUrl,
+    XiaoshuoBook? book,
   }) async {
     final rule = bookSource.getContentRule().subContent;
     if (rule == null || rule.isEmpty) {
@@ -2024,7 +2061,8 @@ class ShuyuanNovelResolver
     }
     try {
       final analyzeRule = AnalyzeRule(
-          book: XiaoshuoBook(bookUrl: '', name: ''), chapter: chapter)
+          book: book ?? XiaoshuoBook(bookUrl: '', name: ''),
+          chapter: chapter)
         ..setContent(body, baseUrl)
         ..setBaseUrl(baseUrl)
         ..setRedirectUrl(baseUrl);

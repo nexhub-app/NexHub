@@ -22,6 +22,11 @@ class XiaoshuoBookChapter {
   String? variable;
   Map<String, String> variableMap = {};
 
+  /// 章节大变量（legado `RuleBigDataHelp` 的章节级存储）：达到 10000 字符的
+  /// 值不进 [variableMap]（该表会被序列化进 `variable` 入库），只在这里保留，
+  /// 供同一进程内跨规则、跨分页与 formatJs 阶段读取。
+  final Map<String, String> bigVariableMap = {};
+
   // ── legado `BookChapter` 扩展字段（F3）──
   /// 目录层级（EPUB/多级目录用，0 = 一级）。
   int tocLevel;
@@ -119,15 +124,35 @@ class XiaoshuoBookChapter {
   }
 
   /// 写入章节变量（legado `BookChapter.putVariable`）：`null` 删除键，
-  /// 其余写入后立即把 `variable`（唯一入库字段）同步为 JSON 串。
+  /// 达到 [bigVariableThreshold] 的值转大变量存储，其余写入普通表并立即把
+  /// `variable`（唯一入库字段）同步为 JSON 串。
   void putVariable(String key, String? value) {
     if (value == null) {
       variableMap.remove(key);
+      bigVariableMap.remove(key);
+    } else if (value.length >= bigVariableThreshold) {
+      variableMap.remove(key);
+      bigVariableMap[key] = value;
     } else {
+      bigVariableMap.remove(key);
       variableMap[key] = value;
     }
     variable = variableMap.isEmpty ? null : jsonEncode(variableMap);
   }
+
+  /// 写入大变量（legado `putBigVariable`，不参与 `variable` 序列化）。
+  void putBigVariable(String key, String? value) {
+    if (value == null) {
+      bigVariableMap.remove(key);
+    } else {
+      bigVariableMap[key] = value;
+    }
+  }
+
+  String? getBigVariable(String key) => bigVariableMap[key];
+
+  /// legado `RuleDataInterface.putVariable` 的大变量阈值。
+  static const int bigVariableThreshold = 10000;
 
   void _ensureVariableMap() {
     if (variableMap.isNotEmpty) return;
@@ -145,7 +170,8 @@ class XiaoshuoBookChapter {
 
   String getVariable(String key) {
     _ensureVariableMap();
-    return variableMap[key] ?? '';
+    // legado `RuleDataInterface.getVariable`：普通表 → 大变量表 → 空串。
+    return variableMap[key] ?? bigVariableMap[key] ?? '';
   }
 
   /// 章节标题展示形态（对齐 legado `BookChapter.getDisplayTitle` 的清洗段）：

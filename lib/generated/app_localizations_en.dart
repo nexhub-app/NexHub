@@ -10895,6 +10895,15 @@ class AppLocalizationsEn extends AppLocalizations {
   String get bookSourceLoginSubmitted => 'Login script executed';
 
   @override
+  String get bookSourceLoginMissingFunction =>
+      'Login script does not declare a login() function';
+
+  @override
+  String bookSourceLoginScriptError(String error) {
+    return 'Login script failed: $error';
+  }
+
+  @override
   String get mediaChapterAudio => 'Audio chapter';
 
   @override

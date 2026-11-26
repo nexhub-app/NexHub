@@ -33,7 +33,7 @@ abstract final class JavaFeedback {
 /// source/book/cache 的写回）。须用 globalThis——本表达式在顶层求值，
 /// IIFE 内的 `global` 参数不可见。
 const String javaDrainExpr = r'''
-JSON.stringify({t:(globalThis.__javaToasts||[]).splice(0),l:(globalThis.__javaLogs||[]).splice(0),v:globalThis.__javaVars||{},d:(globalThis.__javaDeleted||[]).splice(0),c:(globalThis.chapter&&globalThis.chapter.variableMap)||null})
+JSON.stringify({t:(globalThis.__javaToasts||[]).splice(0),l:(globalThis.__javaLogs||[]).splice(0),v:globalThis.__javaVars||{},d:(globalThis.__javaDeleted||[]).splice(0),c:(globalThis.chapter&&globalThis.chapter.variableMap)||null,bc:(globalThis.chapter&&globalThis.chapter.__syBigVariables)||null,bd:(globalThis.chapter&&globalThis.chapter.__syBigDeleted||[]).splice(0)})
 ''';
 
 /// 注入对象预置脚本（P1-2）：cookie / source / book / cache 四对象，
@@ -656,6 +656,10 @@ const String sourceContextJsPrelude = r'''
       if (e === undefined) { return; }
       global.java.longToast(e);
     };
+    // 标记为兜底实现：登录确认（legado confirm 的 `typeof login=='function'`
+    // 判定）必须区分「源脚本真的声明了 login()」与「这里补的 toast 兜底」，
+    // 否则未声明 login() 的源会被当成登录成功。
+    global.login.__syFallback = true;
   }
   if (typeof global.name === 'undefined') {
     global.name = function (e) {
@@ -7086,23 +7090,39 @@ const String javaExtensionsJsPrelude = r'''
     if (!ch.variableMap || typeof ch.variableMap !== 'object') {
       ch.variableMap = {};
     }
-    var big = {};
+    // 大变量表随快照注入（宿主 XiaoshuoBookChapter.bigVariableMap），本轮
+    // 新增/删除经 `__syBigDeleted` 差异回传——大变量只在 JS 闭包里时，
+    // 下一条规则、下一页正文和 formatJs 都读不到。
+    if (!ch.__syBigVariables || typeof ch.__syBigVariables !== 'object') {
+      ch.__syBigVariables = {};
+    }
+    if (!ch.__syBigDeleted || !Array.isArray(ch.__syBigDeleted)) {
+      ch.__syBigDeleted = [];
+    }
+    var big = ch.__syBigVariables;
     function has(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
+    function delBig(k) {
+      if (has(big, k)) {
+        delete big[k];
+        ch.__syBigDeleted.push(k);
+      }
+    }
     // BookChapter.putVariable：null 删键；>=10000 转 big；恒返回 true（覆写基类）。
     ch.putVariable = function (key, value) {
       var k = String(key == null ? '' : key);
       if (value == null) {
         delete ch.variableMap[k];
-        delete big[k];
+        delBig(k);
         return true;
       }
       var s = String(value);
       if (s.length < 10000) {
-        delete big[k];
+        delBig(k);
         ch.variableMap[k] = s;
         return true;
       }
       delete ch.variableMap[k];
+      if (!has(big, k)) ch.__syBigDeleted.push(k);
       big[k] = s;
       return true;
     };
@@ -7115,7 +7135,7 @@ const String javaExtensionsJsPrelude = r'''
     };
     ch.putBigVariable = function (key, value) {
       var k = String(key == null ? '' : key);
-      if (value == null) delete big[k];
+      if (value == null) delBig(k);
       else big[k] = String(value);
     };
     ch.getBigVariable = function (key) {

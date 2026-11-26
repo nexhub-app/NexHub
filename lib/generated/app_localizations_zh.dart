@@ -10609,6 +10609,14 @@ class AppLocalizationsZh extends AppLocalizations {
   String get bookSourceLoginSubmitted => '登录脚本已执行';
 
   @override
+  String get bookSourceLoginMissingFunction => '登录脚本未声明 login() 函数';
+
+  @override
+  String bookSourceLoginScriptError(String error) {
+    return '登录脚本执行失败：$error';
+  }
+
+  @override
   String get mediaChapterAudio => '音频章节';
 
   @override

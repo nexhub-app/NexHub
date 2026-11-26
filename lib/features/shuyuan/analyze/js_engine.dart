@@ -69,6 +69,13 @@ class JsEngine {
   /// java.put 都会体现；takeJavaChapterVars 取走并清空）。
   Map<String, String> _lastJavaChapterVars = const {};
 
+  /// 上一轮 eval 结束时 JS `chapter.__syBigVariables` 的快照（章节大变量表，
+  /// legado `RuleBigDataHelp` 的章节级存储）。
+  Map<String, String> _lastJavaChapterBigVars = const {};
+
+  /// 上一轮 eval 中从大变量表删除的键（`__syBigDeleted`）。
+  Set<String> _lastJavaChapterBigDeleted = const {};
+
   /// 已预执行的 jsLib 内容（同引擎同内容去重）。
   String? _jsLibApplied;
 
@@ -198,6 +205,15 @@ class JsEngine {
     final taken = _lastJavaChapterVars;
     _lastJavaChapterVars = const {};
     return taken;
+  }
+
+  /// 取走上一轮 eval 的章节大变量表快照与删除集（取后清空）。
+  ({Map<String, String> vars, Set<String> deleted}) takeJavaChapterBigVars() {
+    final vars = _lastJavaChapterBigVars;
+    final deleted = _lastJavaChapterBigDeleted;
+    _lastJavaChapterBigVars = const {};
+    _lastJavaChapterBigDeleted = const {};
+    return (vars: vars, deleted: deleted);
   }
 
   /// 把宿主已抓取、JS 侧还没有的 ajax 响应增量推给全局 `__ajaxCache`。
@@ -770,6 +786,22 @@ class JsEngine {
     } else {
       _lastJavaChapterVars = const {};
     }
+    // 章节大变量：整表快照 + 本轮删除集（删除必须显式回传，否则宿主旧值
+    // 会被下一轮种子重新注入，表现为“删了又回来”）。
+    final chapterBig = payload['bc'];
+    _lastJavaChapterBigVars = chapterBig is Map
+        ? <String, String>{
+            for (final e in chapterBig.entries)
+              if (e.value != null) '${e.key}': '${e.value}',
+          }
+        : const {};
+    final chapterBigDeleted = payload['bd'];
+    _lastJavaChapterBigDeleted = chapterBigDeleted is List
+        ? <String>{
+            for (final k in chapterBigDeleted)
+              if (k != null && '$k'.isNotEmpty) '$k',
+          }
+        : const {};
   }
 
   String evalWithResult(String jsStr, {Map<String, dynamic>? bindings}) {

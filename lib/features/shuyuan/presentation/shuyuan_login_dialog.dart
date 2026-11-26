@@ -386,9 +386,33 @@ class _ShuyuanLoginFormState extends State<ShuyuanLoginForm> {
   }
 }
 
+/// 登录脚本求值结果：是否成功、最后一次失败原因，以及「脚本未声明
+/// `login()`」这一特定失败（legado confirm 用 throw 区分的两类错误）。
+class ShuyuanLoginScriptOutcome {
+  const ShuyuanLoginScriptOutcome({
+    required this.ok,
+    this.error,
+    this.missingLoginFunction = false,
+  });
+
+  final bool ok;
+  final String? error;
+  final bool missingLoginFunction;
+}
+
+/// legado `SourceLoginViewModel.confirm` 的按钮调用尾缀：表单确认后必须
+/// 真正执行 `login()`，函数缺失按 legado 原文抛错。
+///
+/// [ShuyuanSourceContext] 预置的 `login` 兜底（仅 toast）不算实现，故用它
+/// 身上的 `__syFallback` 标记排除。
+const String kShuyuanLoginCallJs =
+    "if (typeof login == 'function' && !login.__syFallback) {"
+    " login.apply(this); } else {"
+    " throw new Error('Function login not implements!!!'); }";
+
 /// 登录脚本求值（mini-settle：脚本内 java.ajax 走确定性重放）。
 /// 供登录提交与行 action 共用；[bindings] 同 [JsEngine.eval]。
-Future<bool> evalShuyuanLoginScript(
+Future<ShuyuanLoginScriptOutcome> evalShuyuanLoginScript(
   ShuyuanSourceContext ctx,
   JsEngine engine,
   XiaoshuoBookSource bookSource,
@@ -398,18 +422,23 @@ Future<bool> evalShuyuanLoginScript(
 }) async {
   return ShuyuanSourceContext.run(ctx, () async {
     var deadline = DateTime.now().add(const Duration(seconds: 120));
+    String? lastError;
     for (var pass = 0; pass < 10; pass++) {
       ctx.ajaxPending.clear();
       ctx.webviewPending.clear();
-      final out = engine.eval(script, bindings: bindings);
+      final outcome = engine.evalChecked(script, bindings: bindings);
+      final out = outcome.value;
+      lastError = outcome.error;
       if (ctx.ajaxPending.isEmpty &&
           ctx.fileOpPending.isEmpty &&
           ctx.webviewPending.isEmpty &&
           !hasPendingInteractive(ctx)) {
         // 有输出，或本轮确实发过请求并重放过，才算执行成功。
-        return pass > 0 || out.isNotEmpty;
+        return _loginOutcome(pass > 0 || out.isNotEmpty, lastError);
       }
-      if (!DateTime.now().isBefore(deadline)) return false;
+      if (!DateTime.now().isBefore(deadline)) {
+        return _loginOutcome(false, lastError);
+      }
       final interactive = await settleShuyuanInteractive(
         ctx,
         bookSource,
@@ -421,10 +450,22 @@ Future<bool> evalShuyuanLoginScript(
           await ShuyuanSourceContext.settleAjax(ctx, bookSource) +
           await ShuyuanSourceContext.settleWebview(ctx);
       // 本轮没有任何新进展：不再空转到预算耗尽。
-      if (fetched == 0) return pass > 0 || out.isNotEmpty;
+      if (fetched == 0) {
+        return _loginOutcome(pass > 0 || out.isNotEmpty, lastError);
+      }
     }
-    return false;
+    return _loginOutcome(false, lastError);
   });
+}
+
+ShuyuanLoginScriptOutcome _loginOutcome(bool ok, String? error) {
+  return ShuyuanLoginScriptOutcome(
+    ok: ok,
+    error: error,
+    // legado 用同一句抛错区分「函数没实现」与普通脚本异常。
+    missingLoginFunction: error != null &&
+        error.contains('Function login not implements'),
+  );
 }
 
 /// 书源登录入口：按 loginUrl 形态分派（应用内浏览器 / 表单脚本）。
@@ -571,13 +612,32 @@ Future<void> _runFormLogin(
   // 否则重试会命中旧响应（典型是上次失败留下的登录页）。
   ctx.clearStageCaches();
   engine.resetReplayCaches();
-  final ok =
-      await evalShuyuanLoginScript(ctx, engine, bookSource, source, js);
+  // legado confirm：先求值 loginJs，再显式 `login.apply(this)`——真正的
+  // 登录请求写在 login() 里，只求值不调用等于没登录。绑定 result（表单值）
+  // 与 isLongClick:false，和 legado 的求值环境一致。
+  final outcome = await evalShuyuanLoginScript(
+    ctx,
+    engine,
+    bookSource,
+    source,
+    js.isEmpty ? kShuyuanLoginCallJs : '$js\n$kShuyuanLoginCallJs',
+    bindings: <String, dynamic>{
+      'result': Map<String, String>.from(ctx.loginInfo),
+      'isLongClick': false,
+    },
+  );
   await ctx.persistIfNeeded();
 
   if (!context.mounted) return;
+  final message = outcome.ok
+      ? l10n.bookSourceLoginSubmitted
+      : outcome.missingLoginFunction
+          ? l10n.bookSourceLoginMissingFunction
+          : outcome.error != null
+              ? l10n.bookSourceLoginScriptError(outcome.error!)
+              : l10n.failed;
   ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(ok ? l10n.bookSourceLoginSubmitted : l10n.failed)),
+    SnackBar(content: Text(message)),
   );
 }
 

@@ -310,6 +310,7 @@ class BookChapterList {
         'reviewImg': ch.reviewImg,
         'variable': ch.variable,
         'variableMap': Map<String, String>.from(ch.variableMap),
+        '__syBigVariables': Map<String, String>.from(ch.bigVariableMap),
       };
       bindings['chapter'] = snapshot;
       bindings['title'] = ch.title;
@@ -321,6 +322,14 @@ class BookChapterList {
       final chapterVars = engine.takeJavaChapterVars();
       chapterVars.forEach((k, v) {
         if (ch.variableMap[k] != v) ch.putVariable(k, v);
+      });
+      // 章节大变量（>=10000 字符）同口径回写：删除集先应用，再落新值。
+      final bigVars = engine.takeJavaChapterBigVars();
+      for (final k in bigVars.deleted) {
+        ch.putBigVariable(k, null);
+      }
+      bigVars.vars.forEach((k, v) {
+        if (ch.bigVariableMap[k] != v) ch.putBigVariable(k, v);
       });
       // 绑定快照在 JS 侧被原地修改（函数型助手不参与 JSON 序列化），
       // 回读整图后只落回脚本实际改动过的字段。
@@ -337,6 +346,7 @@ class BookChapterList {
     }
     // 回读的排空会留下本章变量快照，丢弃避免串到下一次规则求值。
     engine.takeJavaChapterVars();
+    engine.takeJavaChapterBigVars();
   }
 
   /// 按差异把脚本对 chapter 快照的直改写回章节实体：未改字段不触碰

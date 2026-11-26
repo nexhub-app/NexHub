@@ -849,6 +849,27 @@ class AnalyzeUrl {
     return out;
   }
 
+  /// WebView 分支的 POST 预取（legado `executeStrRequest` 的 POST 分支）：
+  /// 先按原 method/body/header 真发一次请求拿到 HTML 与最终地址，再把它交给
+  /// WebView 渲染。预取是**原始**响应：不做 bodyJs/sourceRegex 后处理（legado
+  /// 在 BackstageWebView 里才跑这两个），也不重复过并发限流（外层已 gate）。
+  Future<String> _postPrefetchForWebView({Map<String, String>? headers}) {
+    final savedWebView = useWebView;
+    final savedSkipRateLimit = skipRateLimit;
+    final savedSkipPageCache = skipPageCache;
+    final savedBodyJs = bodyJs;
+    useWebView = false;
+    skipRateLimit = true;
+    skipPageCache = true;
+    bodyJs = null;
+    return getStrResponse(headers: headers).whenComplete(() {
+      useWebView = savedWebView;
+      skipRateLimit = savedSkipRateLimit;
+      skipPageCache = savedSkipPageCache;
+      bodyJs = savedBodyJs;
+    });
+  }
+
   Future<String> getStrResponse({
     String? jsStr,
     String? sourceRegex,
@@ -977,12 +998,27 @@ class AnalyzeUrl {
       if (host.isNotEmpty && ua != null && ua.isNotEmpty) {
         HttpFetcher.instance.registerHostUserAgent(host, ua);
       }
+      // legado `executeStrRequest`：method 为 POST 且要走 WebView 时，先按原
+      // body/header 真发一次 POST，再用响应 HTML 与最终地址渲染。POST 壳页
+      // 常常靠 body 里的参数/令牌决定内容，直接把请求地址交给 WebView 只会
+      // 发成 GET，落到空壳或验证页。
+      var renderUrl = _requestUrl;
+      String? renderHtml;
+      if ((method ?? 'GET').toUpperCase() == 'POST') {
+        renderHtml = await _postPrefetchForWebView(headers: headers);
+        final prefetchUrl = lastFinalUrl;
+        if (prefetchUrl != null && prefetchUrl.isNotEmpty) {
+          renderUrl = prefetchUrl;
+        }
+        if (renderHtml.isEmpty) renderHtml = null;
+      }
       final result = await ShuyuanWebviewFetcher.fetch(
         // WebView 与 HTTP 分支同源取数：GET 用编码后的 query（旧实现编码
         // 直接改写 url，行为等价；raw 非 ASCII 参数在 WebView2/OHOS 上
-        // 可能被丢弃）。POST 的 webview 分支在 legado 里是 GET 取壳再渲染，
-        // 同样不需要 body。
-        url: _requestUrl,
+        // 可能被丢弃）。POST 已在上方预取，这里以预取到的最终地址与 HTML
+        // 渲染（legado BackstageWebView(url = res.url, html = res.body)）。
+        url: renderUrl,
+        html: renderHtml,
         js: webJs ?? jsStr,
         delayMs: webViewDelayTime,
         headers: webHeaders,
@@ -1432,7 +1468,25 @@ class AnalyzeUrl {
       throw ShuyuanLoginRequiredException(
           url: url, sourceName: source?.bookSourceName ?? '');
     }
-    return outcome.body ?? body;
+    // legado：检查脚本返回的 StrResponse 整体替换原响应，后续规则读到的是
+    // 新响应的 url/code/headers——只换正文会让相对链接、bookUrlPattern、
+    // tocUrl 兜底都按首取基址解析，错位到墙页地址。
+    lastStatusCode = outcome.code;
+    final newUrl = outcome.url;
+    if (newUrl != null && newUrl.isNotEmpty) lastFinalUrl = newUrl;
+    final newHeaders = outcome.headers;
+    if (newHeaders != null) {
+      lastResponseHeaders = {
+        for (final e in newHeaders.entries)
+          if (e.value.isNotEmpty) e.key: <String>[e.value],
+      };
+    }
+    final newBody = outcome.body;
+    if (newBody != null) {
+      lastResponseBytes = Uint8List.fromList(utf8.encode(newBody));
+      return newBody;
+    }
+    return body;
   }
 
   /// 阶段缓存键：同 URL 但 method/body/请求头/后处理不同时不能复用。
@@ -2181,6 +2235,8 @@ class AnalyzeUrl {
       final deadline = DateTime.now().add(const Duration(seconds: 60));
       var code = statusCode;
       String? bodyOverride;
+      String? urlOverride;
+      Map<String, String>? headersOverride;
       for (var pass = 0; pass < 4; pass++) {
         final before = activeCtx == null
             ? const <String>{}
@@ -2222,6 +2278,8 @@ class AnalyzeUrl {
             'globalThis.__syLoginBegin(${jsonEncode(seed)});\n'
             'var __lcCode = null;\n'
             'var __lcBodyOut = null;\n'
+            'var __lcUrlOut = null;\n'
+            'var __lcHeadersOut = null;\n'
             'var __lcOut;\n'
             'var __lcSrc = ${jsonEncode(js.trim())};\n'
             'try {\n'
@@ -2247,19 +2305,46 @@ class AnalyzeUrl {
             '    } else if (typeof __lcOut.body === "string") {\n'
             '      __lcBodyOut = __lcOut.body;\n'
             '    }\n'
+            // legado 的 StrResponse 替换是整体替换：url()/headers() 与 body
+            // 必须一起回传，否则新正文仍按首取基址解析。
+            '    if (typeof __lcOut.url === "function") {\n'
+            '      try { __lcUrlOut = String(__lcOut.url()); } catch (e) {}\n'
+            '    } else if (typeof __lcOut.url === "string") {\n'
+            '      __lcUrlOut = __lcOut.url;\n'
+            '    }\n'
+            '    var __lcH = null;\n'
+            '    if (typeof __lcOut.headers === "function") {\n'
+            '      try { __lcH = __lcOut.headers(); } catch (e) {}\n'
+            '    } else if (__lcOut.headers && typeof __lcOut.headers === "object") {\n'
+            '      __lcH = __lcOut.headers;\n'
+            '    }\n'
+            '    if (__lcH && typeof __lcH === "object") {\n'
+            '      var __lcHm = {};\n'
+            '      for (var __lcK in __lcH) {\n'
+            '        var __lcV = __lcH[__lcK];\n'
+            '        if (__lcV === null || __lcV === undefined) continue;\n'
+            '        __lcHm[__lcK] = (typeof __lcV === "string")\n'
+            '          ? __lcV : String(__lcV);\n'
+            '      }\n'
+            '      __lcHeadersOut = __lcHm;\n'
+            '    }\n'
             '  } else if (__lcOut !== undefined) {\n'
             '    __lcCode = __lcOut;\n'
             '  }\n'
             '} finally {\n'
             '  globalThis.__syLoginEnd();\n'
             '}\n'
-            'JSON.stringify({o: __lcCode, b: __lcBodyOut})';
+            'JSON.stringify({o: __lcCode, b: __lcBodyOut, u: __lcUrlOut, h: __lcHeadersOut})';
         final r = engine.eval(wrapped,
             bindings: {'baseUrl': base, 'key': key ?? '', 'page': page});
         final parsed = _parseLoginCheckResult(r, statusCode);
         code = parsed.code;
+        // 重取的响应元数据只在正文可用时一起采用：占位符正文还没被 settle
+        // 抓回来，配它的 url/headers 也是上一轮的。
         if (parsed.body != null && !_hasReplayPlaceholder(parsed.body!)) {
           bodyOverride = parsed.body;
+          urlOverride = parsed.url;
+          headersOverride = parsed.headers;
         }
         if (activeCtx == null) break;
         final after = <String>{
@@ -2276,7 +2361,12 @@ class AnalyzeUrl {
         );
         if (fetched == 0) break;
       }
-      return _LoginCheckOutcome(code, bodyOverride);
+      return _LoginCheckOutcome(
+        code,
+        bodyOverride,
+        url: urlOverride,
+        headers: headersOverride,
+      );
     } catch (_) {
       return _LoginCheckOutcome(statusCode, null);
     }
@@ -2302,18 +2392,36 @@ class AnalyzeUrl {
       return _LoginCheckOutcome(statusCode, null);
     }
     final rawBody = decoded['b'];
+    final rawUrl = decoded['u'];
+    final rawHeaders = decoded['h'];
     return _LoginCheckOutcome(
-        code, rawBody is String ? rawBody : null);
+      code,
+      rawBody is String ? rawBody : null,
+      url: rawUrl is String && rawUrl.isNotEmpty ? rawUrl : null,
+      headers: rawHeaders is Map
+          ? <String, String>{
+              for (final e in rawHeaders.entries)
+                if (e.value != null && '${e.value}'.isNotEmpty)
+                  '${e.key}': '${e.value}',
+            }
+          : null,
+    );
   }
 }
 
-/// loginCheckJs 求值结果：状态码 + 可选的改写响应体（legado 中检查脚本
-/// 返回的 StrResponse 会替换原响应继续参与解析）。
+/// loginCheckJs 求值结果：状态码 + 可选的改写响应体与响应元数据
+/// （legado 中检查脚本返回的 StrResponse 会替换原响应继续参与解析）。
 class _LoginCheckOutcome {
-  const _LoginCheckOutcome(this.code, this.body);
+  const _LoginCheckOutcome(this.code, this.body, {this.url, this.headers});
 
   final int code;
   final String? body;
+
+  /// 新响应的最终地址（`res.url`）；null = 沿用首取地址。
+  final String? url;
+
+  /// 新响应的响应头（`res.headers`，单值口径）；null = 沿用首取响应头。
+  final Map<String, String>? headers;
 }
 
 /// loginCheckJs 判定未登录（legado 语义：code==500）。上层据此引导用户

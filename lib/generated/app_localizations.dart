@@ -20247,6 +20247,18 @@ abstract class AppLocalizations {
   /// **'Login script executed'**
   String get bookSourceLoginSubmitted;
 
+  /// No description provided for @bookSourceLoginMissingFunction.
+  ///
+  /// In en, this message translates to:
+  /// **'Login script does not declare a login() function'**
+  String get bookSourceLoginMissingFunction;
+
+  /// No description provided for @bookSourceLoginScriptError.
+  ///
+  /// In en, this message translates to:
+  /// **'Login script failed: {error}'**
+  String bookSourceLoginScriptError(String error);
+
   /// No description provided for @mediaChapterAudio.
   ///
   /// In en, this message translates to:

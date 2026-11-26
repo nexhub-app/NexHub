@@ -743,10 +743,8 @@ class WebBook {
           '长度=${firstBody.length} 耗时=${fetchWatch.elapsedMilliseconds}ms');
       firstBaseUrl = analyzeUrl.lastFinalUrl ?? analyzeUrl.url;
     }
-    if (firstBody.isEmpty) {
-      return BookContentResult(content: '', error: '正文为空');
-    }
-
+    // legado BookContent：空串 body 照样进页解析——subContent 可以靠 JS 或
+    // 常量给出在线正文，早退会把整章直接判空。最终仍为空才在上层报错。
     // 音频(1)/视频(4)源正文即媒体直链，跳过 HTML 格式化（legado 同款）。
     final mediaSource =
         source.bookSourceType == 1 || source.bookSourceType == 4;
@@ -908,7 +906,10 @@ class WebBook {
     final finalized = assembly.blocks;
     if (finalized.isEmpty) {
       return BookContentResult(
-          content: '', title: assembly.title, error: '解析失败');
+        content: '',
+        title: assembly.title,
+        error: firstBody.isEmpty ? '正文为空' : '解析失败',
+      );
     }
 
     return BookContentResult(

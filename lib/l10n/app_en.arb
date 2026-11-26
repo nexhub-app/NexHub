@@ -6188,6 +6188,15 @@
   "bookSourceLoginNoForm": "This login script takes no form fields. Submit to run it.",
   "bookSourceLoginSubmit": "Login",
   "bookSourceLoginSubmitted": "Login script executed",
+  "bookSourceLoginMissingFunction": "Login script does not declare a login() function",
+  "bookSourceLoginScriptError": "Login script failed: {error}",
+  "@bookSourceLoginScriptError": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
   "mediaChapterAudio": "Audio chapter",
   "mediaChapterVideo": "Video chapter",
   "mediaChapterPlay": "Play",

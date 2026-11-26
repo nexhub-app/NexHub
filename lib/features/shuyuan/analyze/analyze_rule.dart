@@ -723,6 +723,17 @@ class AnalyzeRule {
             boundChapter.putVariable(k, v);
           }
         });
+        // 章节大变量（>=10000 字符）：整表快照 + 显式删除集，落在实体上
+        // 才能让下一条规则、下一页与 formatJs 读到。
+        final bigVars = _jsEngine!.takeJavaChapterBigVars();
+        for (final k in bigVars.deleted) {
+          boundChapter.putBigVariable(k, null);
+        }
+        bigVars.vars.forEach((k, v) {
+          if (boundChapter.bigVariableMap[k] != v) {
+            boundChapter.putBigVariable(k, v);
+          }
+        });
       }
       // JS 里 `book.name = '…'` 等字段写入回写当前书（空值不覆盖——
       // 正文解析阶段 book 是空壳，避免把详情阶段已解析的字段抹掉）。
@@ -1049,6 +1060,9 @@ class AnalyzeRule {
       'isVip': ch.isVip,
       'isPay': ch.isPay,
       'variableMap': Map<String, String>.from(ch.variableMap),
+      // 章节大变量表（legado RuleBigDataHelp）：不随 `variable` 入库，
+      // 但跨规则/跨阶段求值必须可见。
+      '__syBigVariables': Map<String, String>.from(ch.bigVariableMap),
     };
   }
 
