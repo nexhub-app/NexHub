@@ -171,7 +171,9 @@ class ShuyuanSource {
       // legado 扩展字段（P0 导入保真）：运行期引擎可用的前提。
       bookUrlPattern: bookUrlPattern,
       customOrder: customOrder,
-      enabledExplore: enabledExplore ?? enabled,
+      // legado BookSource 构造器缺省 enabledExplore=true，与 enabled 独立：
+      // 只有显式 false 才关闭发现入口，字段缺失不能回退到 enabled。
+      enabledExplore: enabledExplore ?? true,
       jsLib: jsLib,
       enabledCookieJar: enabledCookieJar ?? true,
       concurrentRate: concurrentRate,

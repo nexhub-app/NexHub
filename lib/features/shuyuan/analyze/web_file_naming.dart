@@ -7,6 +7,10 @@
 /// - 全部失败返回 null，由调用方按「书名 作者：xx.后缀」兜底命名。
 library;
 
+import 'dart:convert';
+
+import 'package:fast_gbk/fast_gbk.dart';
+
 import 'analyze_url.dart';
 
 /// md3 `AppPattern.bookFileRegex`：本地书库认可的书籍文件。
@@ -81,18 +85,51 @@ String? webFileNameFromContentDisposition(String? raw) {
             .replaceAll(RegExp('^"'), '')
             .replaceAll(RegExp(r'"$'), '');
     if (part.contains('filename*')) {
-      final int sep = value.indexOf("''");
-      if (sep < 0) return value;
-      final String encoded = value.substring(sep + 2);
-      try {
-        return Uri.decodeComponent(encoded);
-      } catch (_) {
-        return encoded;
-      }
+      // RFC 5987/6266：`charset'lang'percent-encoded`，字符集由参数声明，
+      // 不能固定按 UTF-8 解码（legado `UrlUtil.getFileName` 用参数 charset）。
+      final int firstQuote = value.indexOf("'");
+      final int secondQuote =
+          firstQuote < 0 ? -1 : value.indexOf("'", firstQuote + 1);
+      if (firstQuote < 0 || secondQuote < 0) return value;
+      final String cs = value.substring(0, firstQuote).trim().toLowerCase();
+      final String encoded = value.substring(secondQuote + 1);
+      return _decodeRfc5987(encoded, cs);
     }
     if (value.isNotEmpty) return value;
   }
   return null;
+}
+
+/// 解码 RFC 5987 `ext-value`：按参数声明的字符集解释百分号字节。
+///
+/// 仅覆盖实际会出现的字符集；未知字符集按 UTF-8 容错，保持旧行为。
+String _decodeRfc5987(String encoded, String charset) {
+  final bytes = <int>[];
+  for (var i = 0; i < encoded.length; i++) {
+    final ch = encoded.codeUnitAt(i);
+    if (ch == 0x25 && i + 2 < encoded.length) { // '%'
+      final v = int.tryParse(encoded.substring(i + 1, i + 3), radix: 16);
+      if (v != null) {
+        bytes.add(v);
+        i += 2;
+        continue;
+      }
+    }
+    bytes.add(ch & 0xff);
+  }
+  switch (charset) {
+    case 'iso-8859-1':
+    case 'latin1':
+    case 'us-ascii':
+      return latin1.decode(bytes, allowInvalid: true);
+    case 'gbk':
+    case 'gb2312':
+    case 'gb18030':
+    case 'cp936':
+      return gbk.decode(bytes, allowMalformed: true);
+    default:
+      return utf8.decode(bytes, allowMalformed: true);
+  }
 }
 
 String? _headerValue(Map<String, List<String>>? headers, String key) {

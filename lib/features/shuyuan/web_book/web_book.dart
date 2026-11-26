@@ -409,7 +409,10 @@ class WebBook {
       final ctx = ShuyuanSourceContext.current;
       ctx?.bookInfoRefreshRequested = false;
       try {
-        final preRule = AnalyzeRule(book: book);
+        // legado runPreUpdateJs 用 `AnalyzeRule(book, source, true)`：
+        // 脚本里的 fromBookInfo 必须为 true，否则按详情分支写法的
+        // preUpdateJs 会走错路径。
+        final preRule = AnalyzeRule(book: book, fromBookInfo: true);
         preRule.evalJs(preUpdateJs, null);
         preRule.variables.forEach(book.putVariable);
       } catch (_) {}
@@ -543,15 +546,19 @@ class WebBook {
     // 目录分页跟随（legado 语义：首页 nextTocUrl 命中 1 条 → 串行跟随，
     // 每条后续页继续提取下一条；命中多条 → 并发抓取所有页，不再继续提取）。
     // 首页章节为空时同样跟随——部分源的首页只有分页导航。
-    // 目录分页上限兜底 visited 防死循环（超长书目录可达 70+ 页）。
-    const maxTocPages = 200;
+    // legado 只靠 visited 防循环，没有页数上限；这里保留一个远高于真实目录
+    // 的安全阈值（超长书目录实测 70+ 页），命中时显式告警而不是静默截断。
+    const maxTocPages = 2000;
+    var tocPageLimitHit = false;
     if (firstNextUrls.length == 1) {
       final visited = <String>{tocBaseUrl};
       var nextUrl = firstNextUrls.first;
       var pageCount = 0;
-      while (nextUrl.isNotEmpty &&
-          !visited.contains(nextUrl) &&
-          pageCount < maxTocPages) {
+      while (nextUrl.isNotEmpty && !visited.contains(nextUrl)) {
+        if (pageCount >= maxTocPages) {
+          tocPageLimitHit = true;
+          break;
+        }
         visited.add(nextUrl);
         pageCount++;
 
@@ -587,6 +594,10 @@ class WebBook {
         if (pageChapters.isEmpty && pageNextUrls.isEmpty) break;
         appendBatch(pageChapters);
         nextUrl = pageNextUrls.isNotEmpty ? pageNextUrls.first : '';
+      }
+      if (tocPageLimitHit) {
+        AppLog.instance.w('[书源目录] 分页达到安全上限 $maxTocPages 页，已停止：'
+            '${source.bookSourceName} / ${source.bookSourceUrl}');
       }
     } else if (firstNextUrls.length > 1) {
       final visited = <String>{tocBaseUrl};
@@ -691,7 +702,9 @@ class WebBook {
     // 对照 legado WebBook.getContentAwait：正文规则为空时直接以章节链接
     // 作为正文（音频/视频源播放页章节即靠此返回直链；旧实现直接报
     // 「正文为空」，视频源整条链路在第一步就断掉）。
-    if (contentRule.content == null || contentRule.content!.trim().isEmpty) {
+    // 判空对齐 Kotlin `isNullOrEmpty()`：只含空白的规则在 Legado 仍会
+    // 进入请求与解析，不能按 trim 结果当作空规则。
+    if (contentRule.content == null || contentRule.content!.isEmpty) {
       return BookContentResult(
         content: chapterUrl,
         blocks: <NovelBlock>[NovelTextBlock(chapterUrl)],
@@ -713,6 +726,9 @@ class WebBook {
     // 对照 legado WebBook.getContentAwait：章节地址与书籍详情页相同时
     // （整本一页/详情即正文源），详情响应体已缓存进 tocHtml，直接解析。
     final cachedTocHtml = book.tocHtml;
+    // legado WebBook：请求与页解析都用 `bookChapter.getAbsoluteURL()`
+    // （含 `,{...}` URL 选项段处理），直接 API 传相对地址时也能拼对。
+    final absoluteChapterUrl = chapter.getAbsoluteURL();
     final String firstBody;
     final String firstBaseUrl;
     if (chapterUrl == book.bookUrl &&
@@ -725,7 +741,7 @@ class WebBook {
           ? book.tocUrl!
           : source.bookSourceUrl;
       final analyzeUrl = AnalyzeUrl(
-        url: chapterUrl,
+        url: absoluteChapterUrl,
         baseUrl: tocBase,
         source: source,
         ruleData: book,
@@ -756,7 +772,7 @@ class WebBook {
       book: book,
       bookChapter: chapter,
       // legado：baseUrl=章节原始地址，redirectUrl=响应最终地址。
-      baseUrl: chapterUrl,
+      baseUrl: absoluteChapterUrl,
       redirectUrl: firstBaseUrl,
       body: firstBody,
       nextChapterUrl: nextChapterUrl,
@@ -913,10 +929,32 @@ class WebBook {
     }
 
     return BookContentResult(
+      content: _blocksToCompatText(finalized),
       blocks: finalized,
       title: assembly.title,
       lyric: assembly.lyric,
     );
+  }
+
+  /// 兼容字段 `BookContentResult.content` 的纯文本拼接：按块顺序把文本段与
+  /// 媒体直链以换行连接（legado 门面返回最终 content 字符串；NexHub 新链路
+  /// 以 blocks 为主，但直接 API 消费方仍可能读 content）。
+  static String _blocksToCompatText(List<NovelBlock> blocks) {
+    final buf = StringBuffer();
+    void add(String text) {
+      if (text.isEmpty) return;
+      if (buf.isNotEmpty) buf.write('\n');
+      buf.write(text);
+    }
+
+    for (final block in blocks) {
+      if (block is NovelTextBlock) {
+        add(block.text);
+      } else if (block is NovelMediaBlock) {
+        add(block.url);
+      }
+    }
+    return buf.toString();
   }
 
   /// 从当前页正文中提取"下一页"绝对 URL；无下一页时返回空串。

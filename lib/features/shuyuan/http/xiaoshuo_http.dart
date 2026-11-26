@@ -1,5 +1,8 @@
-/// 书源 HTTP 抓取器：基于 Dio 的字节级抓取，自动识别 GBK/GB18030/Big5 等字符集，
-/// 支持 Referer 与自定义请求头。
+/// 书源 HTTP 抓取器（遗留、未接入现行链路）。
+///
+/// 现行书源请求统一走 [AnalyzeUrl]（共享 cookie / 限流 / 验证判定 / 阶段
+/// 缓存）；本类只保留 `<500` 状态码、固定 UA 与 15/30s 超时的旧语义，全仓
+/// 无调用方。保留仅为避免历史引用编译失败，新代码不得使用。
 library;
 
 import 'dart:io';
@@ -10,6 +13,7 @@ import 'package:dio/io.dart';
 import 'package:html/parser.dart' as html_parser;
 import 'package:html/dom.dart';
 
+@Deprecated('遗留包装层，未被现行书源链路使用；请使用 AnalyzeUrl')
 class XiaoshuoHttp {
   late final Dio _dio;
 

@@ -59,7 +59,8 @@ class ShuyuanExploreKindsStore {
     try {
       final kinds = <ExploreKind>[
         for (final e in list)
-          if (e is Map) ExploreKind.fromJson(Map<String, dynamic>.from(e)),
+          if (e is Map)
+            ExploreKind.fromJson(_normalizeStyleKeys(Map<String, dynamic>.from(e))),
       ];
       // legado 视空白缓存为未命中（重新跑脚本）；历史版本可能把一次网络
       // 抖动产生的空数组固化下来，这里一并按未命中处理以实现自愈。
@@ -85,9 +86,25 @@ class ShuyuanExploreKindsStore {
     all[key] = <String, dynamic>{
       'v': _schemaVersion,
       'url': exploreUrl,
-      'kinds': <Map<String, dynamic>>[for (final k in kinds) k.toJson()],
+      'kinds': <Map<String, dynamic>>[
+        for (final k in kinds) _normalizeStyleKeys(k.toJson())
+      ],
     };
     await _flush(all);
+  }
+
+  /// legado `FlexChildStyle` 的字段名是 `layout_flexBasisPercent`，而宿主
+  /// `ExploreKindStyle.toJson` 写的是 camelCase。缓存往返时统一改回 legado
+  /// 键名，避免重新加载后布局宽度回落默认值（core 模型不在本模块改动范围）。
+  static Map<String, dynamic> _normalizeStyleKeys(Map<String, dynamic> json) {
+    final style = json['style'];
+    if (style is! Map) return json;
+    final normalized = Map<String, dynamic>.from(style);
+    final camel = normalized.remove('layoutFlexBasisPercent');
+    if (camel != null && !normalized.containsKey('layout_flexBasisPercent')) {
+      normalized['layout_flexBasisPercent'] = camel;
+    }
+    return <String, dynamic>{...json, 'style': normalized};
   }
 
   static Future<void> clear(String key) async {

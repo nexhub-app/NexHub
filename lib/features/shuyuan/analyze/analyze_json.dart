@@ -113,18 +113,78 @@ class AnalyzeByJson {
 
   /// 单花括号占位符（`{$.field}`）替换；无占位符时返回 null。
   /// `{{$.field}}` 由规则层内嵌表达式先行处理，这里跳过前置 `{` 的形态。
+  ///
+  /// 用平衡扫描而不是单层正则：内层规则本身可以带 `{...}`（如
+  /// `{$.outer{...}}`），正则的 `[^{}]` 匹配不到会原样透传给 JSONPath。
   String? _replaceInnerRules(String rule) {
     if (!rule.contains(r'{$.')) return null;
+    final out = StringBuffer();
     var replaced = false;
-    final out = rule.replaceAllMapped(
-        RegExp(r'(?<!\{)\{(\$\.[^{}]*)\}'), (m) {
+    var i = 0;
+    while (i < rule.length) {
+      final open = rule.indexOf(r'{$', i);
+      if (open < 0) {
+        out.write(rule.substring(i));
+        break;
+      }
+      // `{{$.x}}` 属于规则层内嵌表达式：前面是 `{` 时整体跳过两个字符。
+      if (open > 0 && rule.codeUnitAt(open - 1) == 0x7B) {
+        out.write(rule.substring(i, open + 2));
+        i = open + 2;
+        continue;
+      }
+      final end = _findInnerRuleEnd(rule, open);
+      if (end < 0) {
+        out.write(rule.substring(i));
+        break;
+      }
+      out.write(rule.substring(i, open));
+      final v = _resolvePath(rule.substring(open + 1, end - 1));
       replaced = true;
-      final v = _resolvePath(m.group(1)!);
-      if (v == null) return '';
-      if (v is List) return v.map((e) => e.toString()).join('\n');
-      return v.toString();
-    });
-    return replaced ? out : null;
+      if (v is List) {
+        out.write(v.map((e) => e.toString()).join('\n'));
+      } else if (v != null) {
+        out.write(v.toString());
+      }
+      i = end;
+    }
+    return replaced ? out.toString() : null;
+  }
+
+  /// 从 [open]（指向 `{`）起找配对的 `}`，返回 `}` 之后的下标；未闭合返回 -1。
+  /// 跳过引号内文本与 `\` 转义，保证 `{$.a["}"]}` 不会被提前截断。
+  static int _findInnerRuleEnd(String src, int open) {
+    var depth = 0;
+    var i = open;
+    var quote = 0;
+    var escaped = false;
+    while (i < src.length) {
+      final c = src.codeUnitAt(i);
+      if (escaped) {
+        escaped = false;
+        i++;
+        continue;
+      }
+      if (quote != 0) {
+        if (c == 0x5C) {
+          escaped = true;
+        } else if (c == quote) {
+          quote = 0;
+        }
+        i++;
+        continue;
+      }
+      if (c == 0x22 || c == 0x27) {
+        quote = c;
+      } else if (c == 0x7B) {
+        depth++;
+      } else if (c == 0x7D) {
+        depth--;
+        if (depth == 0) return i + 1;
+      }
+      i++;
+    }
+    return -1;
   }
 
   List<dynamic> getList(String rule) {
@@ -145,7 +205,12 @@ class AnalyzeByJson {
         if (ra.elementsType == '%%') {
           for (var i = 0; i < results[0].length; i++) {
             for (final temp in results) {
-              if (i < temp.length) result.add(temp[i]);
+              if (i < temp.length) {
+                // legado `temp[i]?.let { result.add(it) }`：null 项跳过，
+                // 不能把 null 塞进列表（后续按索引取值会错位）。
+                final item = temp[i];
+                if (item != null) result.add(item);
+              }
             }
           }
         } else {

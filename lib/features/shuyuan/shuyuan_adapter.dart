@@ -198,9 +198,9 @@ class ShuyuanAdapter {
       filters: filterConfig,
       homeSections: homeSections,
       enabled: source.enabled,
-      // legado 语义：发现页与搜索可独立开关（enabledExplore 缺省回退 enabled，
-      // 与历史行为一致）。
-      enabledExplore: source.enabledExplore ?? source.enabled,
+      // legado 语义：发现页与搜索可独立开关；enabledExplore 缺省 true，
+      // 不从 enabled 回退（字段缺失 ≠ 关闭）。
+      enabledExplore: source.enabledExplore ?? true,
     );
   }
 

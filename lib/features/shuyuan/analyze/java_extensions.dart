@@ -4605,6 +4605,24 @@ const String javaExtensionsJsPrelude = r'''
     return hash(opad.concat(inner));
   }
 
+  // legado `MessageDigest/Mac.getInstance` 对未知算法抛 NoSuchAlgorithmException；
+  // NexHub 旧实现返回 null → 调用方拿到空串继续拼签名，错误被静默放大。
+  function requireDigestBytes(algo, bytes) {
+    var out = digestBytes(algo, bytes);
+    if (out == null) {
+      throw new Error('NoSuchAlgorithmException: ' + String(algo == null ? '' : algo));
+    }
+    return out;
+  }
+
+  function requireHmacBytes(algo, keyBytes, dataBytes) {
+    var out = hmacBytes(algo, keyBytes, dataBytes);
+    if (out == null) {
+      throw new Error('NoSuchAlgorithmException: ' + String(algo == null ? '' : algo));
+    }
+    return out;
+  }
+
   // ── Rhino Java 互操作（Packages / JavaImporter）──
   //
   // legado 用 Rhino 执行书源脚本，脚本可直接 `new JavaImporter()` 导入
@@ -4798,10 +4816,21 @@ const String javaExtensionsJsPrelude = r'''
     }
     return out;
   };
-  JavaArrays.fill = function (arr, v) {
-    if (arr && typeof arr.length === 'number') {
-      for (var i = 0; i < arr.length; i++) arr[i] = v;
+  // Java `Arrays.fill(a, v)` / `Arrays.fill(a, from, to, v)`：按参数个数分派，
+  // 区间写只改 [from, to)，不能把整数组填满。
+  JavaArrays.fill = function (arr) {
+    if (!arr || typeof arr.length !== 'number') return arr;
+    if (arguments.length >= 4) {
+      var from = arguments[1] | 0;
+      var to = arguments[2] | 0;
+      var val = arguments[3];
+      var start = from < 0 ? 0 : from;
+      var end = to > arr.length ? arr.length : to;
+      for (var i = start; i < end; i++) arr[i] = val;
+      return arr;
     }
+    var v = arguments[1];
+    for (var j = 0; j < arr.length; j++) arr[j] = v;
     return arr;
   };
   JavaArrays.equals = function (a, b) {
@@ -4815,10 +4844,31 @@ const String javaExtensionsJsPrelude = r'''
     for (var i = 0; a && i < a.length; i++) arr.push(String(a[i]));
     return '[' + arr.join(', ') + ']';
   };
-  JavaArrays.sort = function (a) {
-    if (a && typeof a.sort === 'function') {
-      a.sort(function (x, y) { return x - y; });
+  // Java `Arrays.sort(a)` / `Arrays.sort(a, cmp)`：Comparator 可以是 JS 函数
+  // 或带 `compare` 的 Java 风格对象；无 Comparator 时按 Java 自然序
+  // （数值升序 / 字符串字典序），不再固定 `x-y`。
+  JavaArrays.sort = function (a, comparator) {
+    if (!a || typeof a.sort !== 'function') return a;
+    var cmp = null;
+    if (typeof comparator === 'function') {
+      cmp = comparator;
+    } else if (comparator && typeof comparator.compare === 'function') {
+      cmp = function (x, y) { return comparator.compare(x, y); };
     }
+    if (cmp != null) {
+      a.sort(function (x, y) {
+        var r = cmp(x, y);
+        return r < 0 ? -1 : (r > 0 ? 1 : 0);
+      });
+      return a;
+    }
+    a.sort(function (x, y) {
+      if (typeof x === 'number' && typeof y === 'number') {
+        return x < y ? -1 : (x > y ? 1 : 0);
+      }
+      var sx = String(x), sy = String(y);
+      return sx < sy ? -1 : (sx > sy ? 1 : 0);
+    });
     return a;
   };
   JavaArrays.asList = function () {
@@ -6424,7 +6474,12 @@ const String javaExtensionsJsPrelude = r'''
     this.__text = '';
     for (var i = 0; i < pairs.length; i++) {
       if (i > 0) this.__text += '&';
-      this.__text += jFormEncode(pairs[i][0]) + '=' + jFormEncode(pairs[i][1]);
+      // addEncoded 的键值已编码：原样输出，不能再 encode 一次（legado
+      // OkHttp FormBody.Builder.addEncoded 语义）。
+      var enc = pairs[i][2] === true;
+      var k = enc ? String(pairs[i][0]) : jFormEncode(pairs[i][0]);
+      var v = enc ? String(pairs[i][1]) : jFormEncode(pairs[i][1]);
+      this.__text += k + '=' + v;
     }
   }
   jmark(OkHttpFormBody, 'okhttp3.FormBody');
@@ -6441,10 +6496,13 @@ const String javaExtensionsJsPrelude = r'''
   jmark(OkHttpFormBodyBuilder, 'okhttp3.FormBody.Builder');
   OkHttpFormBody.Builder = OkHttpFormBodyBuilder;
   OkHttpFormBodyBuilder.prototype.add = function (k, v) {
-    this.__pairs.push([String(k), String(v == null ? '' : v)]);
+    this.__pairs.push([String(k), String(v == null ? '' : v), false]);
     return this;
   };
-  OkHttpFormBodyBuilder.prototype.addEncoded = OkHttpFormBodyBuilder.prototype.add;
+  OkHttpFormBodyBuilder.prototype.addEncoded = function (k, v) {
+    this.__pairs.push([String(k), String(v == null ? '' : v), true]);
+    return this;
+  };
   OkHttpFormBodyBuilder.prototype.build = function () {
     return new OkHttpFormBody(this.__pairs.slice());
   };
@@ -6689,28 +6747,27 @@ const String javaExtensionsJsPrelude = r'''
     md5Encode: function (s) { return bytesToHex(md5Bytes(utf8Encode(String(s == null ? '' : s)))); },
     md5Encode16: function (s) { var h = java.md5Encode(s); return h.length >= 24 ? h.substring(8, 24) : h; },
     // 摘要/HMAC（JsEncodeUtils.digestHex/HMacHex/HMacBase64；算法为 JCE 名：
-    // MD5/SHA-1/SHA-256、HmacMD5/HmacSHA1/HmacSHA256）。未支持的算法返回空。
+    // MD5/SHA-1/SHA-256 等）。legado 走 MessageDigest.getInstance，未知算法
+    // 抛 NoSuchAlgorithmException；这里同样显式报错，不再返回可被误用的空串。
     digestHex: function (data, algorithm) {
-      var out = digestBytes(algorithm, utf8Encode(String(data == null ? '' : data)));
-      return out == null ? '' : bytesToHex(out);
+      var out = requireDigestBytes(algorithm, utf8Encode(String(data == null ? '' : data)));
+      return bytesToHex(out);
     },
     digestBase64Str: function (data, algorithm) {
-      var out = digestBytes(algorithm, utf8Encode(String(data == null ? '' : data)));
-      return out == null ? ''
-          : b64FromBytes(out.map(function (b) { return b & 0xff; }));
+      var out = requireDigestBytes(algorithm, utf8Encode(String(data == null ? '' : data)));
+      return b64FromBytes(out.map(function (b) { return b & 0xff; }));
     },
     HMacHex: function (data, algorithm, key) {
-      var out = hmacBytes(algorithm,
+      var out = requireHmacBytes(algorithm,
           utf8Encode(String(key == null ? '' : key)),
           utf8Encode(String(data == null ? '' : data)));
-      return out == null ? '' : bytesToHex(out);
+      return bytesToHex(out);
     },
     HMacBase64: function (data, algorithm, key) {
-      var out = hmacBytes(algorithm,
+      var out = requireHmacBytes(algorithm,
           utf8Encode(String(key == null ? '' : key)),
           utf8Encode(String(data == null ? '' : data)));
-      return out == null ? ''
-          : b64FromBytes(out.map(function (b) { return b & 0xff; }));
+      return b64FromBytes(out.map(function (b) { return b & 0xff; }));
     },
     // JsExtensions.base64Encode 默认 flags=2（NO_WRAP）；显式传入时按
     // android.util.Base64 标志位处理（NO_PADDING/NO_WRAP/CRLF/URL_SAFE）。

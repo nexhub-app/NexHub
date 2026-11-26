@@ -274,14 +274,18 @@ class AnalyzeUrl {
     // legado 页数备选写法 `<a,b,c>`：按页取第 page 段，超出取最后一段
     // （如分页路径 `/list<,_2,_3>.html` → 第 1 页 /list.html、第 2 页
     // /list_2.html、第 3 页起 /list_3.html）。须在 `<page>` 字面量替换之后，
-    // 否则 `<page>` 会被当作只有一个备选段。未传 page 时按第 1 页取。
-    final pageIndex = (page ?? 1) - 1;
-    url = url.replaceAllMapped(RegExp(r'<(.*?)>'), (m) {
-      final pages = m.group(1)!.split(',');
-      final picked =
-          pageIndex < pages.length ? pages[pageIndex] : pages.last;
-      return picked.trim();
-    });
+    // 否则 `<page>` 会被当作只有一个备选段。
+    // legado 只在 `page?.let` 内替换：非分页模板（page=null）里的尖括号
+    // 片段原样保留，不能被当成第 1 页备选改写。
+    if (page != null) {
+      final pageIndex = page! - 1;
+      url = url.replaceAllMapped(RegExp(r'<(.*?)>'), (m) {
+        final pages = m.group(1)!.split(',');
+        final picked =
+            pageIndex < pages.length ? pages[pageIndex] : pages.last;
+        return picked.trim();
+      });
+    }
   }
 
   /// 展开 URL 模板里的 `{{表达式}}`。
@@ -511,12 +515,12 @@ class AnalyzeUrl {
       final b = body;
       if (b == null || b.isEmpty) return;
       if (_looksLikeStructuredBody(b)) {
-        // JSON/XML 请求体：按原文发送；`{`/`[` 补 legado postJson 的
+        // JSON/XML 请求体：按原文发送；isJson 补 legado postJson 的
         // Content-Type（含 charset），XML 不声明类型。
-        final t = b.trimLeft();
-        if (t.startsWith('{') || t.startsWith('[')) {
-          headerMap.putIfAbsent(
-              'Content-Type', () => 'application/json; charset=UTF-8');
+        if (_looksLikeJsonBody(b) &&
+            _headerValue(headerMap, 'Content-Type') == null) {
+          _putHeader(
+              headerMap, 'Content-Type', 'application/json; charset=UTF-8');
         }
         return;
       }
@@ -532,6 +536,9 @@ class AnalyzeUrl {
     final qIdx = url.indexOf('?');
     if (qIdx < 0) return;
     urlNoQuery = url.substring(0, qIdx);
+    // legado HEAD 分支不做 analyzeQuery：请求时 `get(urlNoQuery, null)`
+    // 会用空 encodedQuery 把 query 清掉，实际目标不带 query。
+    if (m == 'HEAD') return;
     final query = url.substring(qIdx + 1);
     if (query.isEmpty) return;
     if (cs == 'escape') {
@@ -551,9 +558,22 @@ class AnalyzeUrl {
           : urlNoQuery;
 
   /// JSON / XML 请求体判定（这类体不做 form 编码，按原文发送）。
-  bool _looksLikeStructuredBody(String b) {
-    final t = b.trimLeft();
-    return t.startsWith('{') || t.startsWith('[') || t.startsWith('<');
+  ///
+  /// legado `String.isJson()/isXml()`：先 trim，再要求首尾成对
+  /// （`{…}` / `[…]` / `<…>`），不是只看首字符——首字符命中的半截文本
+  /// 仍应走 form 编码。
+  bool _looksLikeStructuredBody(String b) =>
+      _looksLikeJsonBody(b) || _looksLikeXmlBody(b);
+
+  bool _looksLikeJsonBody(String b) {
+    final t = b.trim();
+    return (t.startsWith('{') && t.endsWith('}')) ||
+        (t.startsWith('[') && t.endsWith(']'));
+  }
+
+  bool _looksLikeXmlBody(String b) {
+    final t = b.trim();
+    return t.startsWith('<') && t.endsWith('>');
   }
 
   /// legado `NetworkUtils.encodedQuery`：全部字符为 query 安全字符或合法
@@ -906,20 +926,10 @@ class AnalyzeUrl {
     // 阶段级页面缓存：settle 重放会整段重跑，命中则直接返回上一次的响应
     // （含 jsStr/sourceRegex 后处理结果，故 key 里带上这两项）。
     // 无活动上下文（离线调用/测试）时不缓存。
-    // WebView 分支不拼请求头；HTTP 分支的 key 在请求头组装完成后再算
-    // （源 header 的 @js 结果会影响响应，必须进 key，否则重放拿到错页）。
+    // WebView 与 HTTP 分支的 key 都在请求上下文（源 header / 登录头 /
+    // Cookie / 选项头）组装完成后计算：同一 URL 换 UA/会话不能复用旧页。
     final activeCtx = ShuyuanSourceContext.current;
-    final webviewCacheKey =
-        activeCtx == null ? null : _pageCacheKey(jsStr, sourceRegex);
-    if (useWebView && !typeHex && activeCtx != null && webviewCacheKey != null) {
-      final hit = activeCtx.pageCache[webviewCacheKey];
-      if (hit != null) {
-        // 重放命中：恢复该响应当初的最终地址（legado 重放=重跑，res.url 不变）。
-        lastFinalUrl = activeCtx.pageCacheFinalUrl[webviewCacheKey];
-        AppLog.instance.d('[书源HTTP] 阶段缓存命中 $url');
-        return hit;
-      }
-    }
+    String? webviewCacheKey;
 
     // legado URL 选项 `webView:true`：页面必须经 WebView 渲染——直连拿到的
     // 多半是 JS 壳。渲染成功直接用渲染 HTML；失败/命中挑战页 → 抛 WebView
@@ -985,6 +995,20 @@ class AnalyzeUrl {
               'Cookie',
               _mergeCookieStrings(_headerValue(webHeaders, 'Cookie'),
                   overlay.entries.map((e) => '${e.key}=${e.value}').join('; ')));
+        }
+      }
+      // 请求上下文（UA/登录头/选项头/Cookie）组装完成后再算缓存键：
+      // 同 URL 换会话/UA 必须重新渲染，不能复用旧页。
+      webviewCacheKey = activeCtx == null
+          ? null
+          : _pageCacheKey(jsStr, sourceRegex, webHeaders);
+      if (activeCtx != null && webviewCacheKey != null) {
+        final hit = activeCtx.pageCache[webviewCacheKey];
+        if (hit != null) {
+          // 重放命中：恢复该响应当初的最终地址（legado 重放=重跑，res.url 不变）。
+          lastFinalUrl = activeCtx.pageCacheFinalUrl[webviewCacheKey];
+          AppLog.instance.d('[书源HTTP] 阶段缓存命中 $url');
+          return hit;
         }
       }
       // 与下方 HTTP 分支同款护栏：源 header 的 @js 可能调用 java.ajax，首轮
@@ -1501,7 +1525,12 @@ class AnalyzeUrl {
                 .map((e) => '${e.key.toLowerCase()}:${e.value}')
                 .join('\n'));
     return '$m\n$_requestUrl\n${body ?? ''}\n${jsStr ?? ''}\n${sourceRegex ?? ''}\n'
-        '${followRedirects == false ? 'noredir' : ''}\n$h';
+        '${followRedirects == false ? 'noredir' : ''}\n'
+        // 影响响应的网络/解码选项也必须进 key：重放轮次里 proxy、dnsIp、
+        // retry、webJs、delay、charset 变化时不能复用上一轮的页面。
+        '${proxy ?? ''}\n${dnsIp ?? ''}\n$retry\n'
+        '${useWebView ? 'wv' : ''}\n${webJs ?? ''}\n$webViewDelayTime\n'
+        '${charset ?? ''}\n$h';
   }
 
   /// 响应 Set-Cookie 落库（legado `CookieManager.saveResponse` 对等）。
@@ -2069,8 +2098,8 @@ class AnalyzeUrl {
       }
     }
     final head = buf.toString();
-    if (!head.contains('charset', 0)) return null;
-    // 双引号字符串转义（raw 字符串里 \' 会提前终止字面量）。
+    // 属性名大小写不敏感（legado 走 Jsoup/OkHttp 规范化）：不能先做
+    // 大小写敏感的 contains 预检，否则 `<meta CHARSET=gbk>` 直接漏判。
     final m = RegExp(
       "charset\\s*=\\s*[\"']?\\s*([a-zA-Z0-9_-]+)",
       caseSensitive: false,
@@ -2086,12 +2115,17 @@ class AnalyzeUrl {
   }
 
   /// 从 Content-Type 提取 charset，如 `text/html; charset=gbk` -> `gbk`。
+  ///
+  /// media type 参数允许带引号（`charset="gbk"`），legado/OkHttp 会去掉
+  /// 配对引号；这里必须在字符集标签里排除引号，否则会拿 `"gbk` 去匹配
+  /// 字符集失败并回落 UTF-8。
   String? _extractCharsetFromContentType(String? contentType) {
     if (contentType == null || contentType.isEmpty) {
       return null;
     }
-    final match = RegExp(r'charset\s*=\s*([^\s;]+)', caseSensitive: false)
-        .firstMatch(contentType);
+    final match =
+        RegExp(r'''charset\s*=\s*["']?([^"';\s]+)["']?''', caseSensitive: false)
+            .firstMatch(contentType);
     return match?.group(1)?.trim().toLowerCase();
   }
 

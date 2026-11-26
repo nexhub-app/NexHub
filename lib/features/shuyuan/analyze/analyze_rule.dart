@@ -39,7 +39,11 @@ class AnalyzeRule {
   final Map<String, String> _variables = {};
   final Map<String, List<SourceRule>> _stringRuleCache = {};
 
-  AnalyzeRule({this.book, this.chapter}) {
+  /// 对齐 legado `AnalyzeRule(book, source, fromBookInfo)`：JS 绑定里的
+  /// `fromBookInfo` 标记本次求值是否来自详情页/目录更新脚本。
+  final bool fromBookInfo;
+
+  AnalyzeRule({this.book, this.chapter, this.fromBookInfo = false}) {
     // legado 的规则变量表就是书对象的 variableMap（跨搜索/详情/目录/正文
     // 阶段共享）：以传入书为种子初始化，搜索阶段 `@put:{gid:...}` /
     // java.put 写入的变量，后续阶段 `@get:{gid}` / java.get 才读得到
@@ -154,12 +158,14 @@ class AnalyzeRule {
 
   /// [keepDuplicate] = true 时属性提取保留重复值（段号/赞数这类按序号与
   /// 条目对齐的字段必须保留；默认 false 对齐 legado 的去重语义）。
+  /// [mContent] 对齐 legado `getStringList(rule, mContent, isUrl)`：指定
+  /// 本次求值的根内容，缺省用实例 content。
   List<String> getStringList(String? ruleStr,
-      {bool isUrl = false, bool keepDuplicate = false}) {
+      {bool isUrl = false, bool keepDuplicate = false, dynamic mContent}) {
     if (ruleStr == null || ruleStr.isEmpty) return [];
     final ruleList = _splitSourceRuleCache(ruleStr);
     return _getStringListFromRules(ruleList,
-        isUrl: isUrl, keepDuplicate: keepDuplicate);
+        isUrl: isUrl, keepDuplicate: keepDuplicate, mContent: mContent);
   }
 
   String getString(String? ruleStr, {bool unescape = true, bool isUrl = false, dynamic mContent}) {
@@ -174,10 +180,11 @@ class AnalyzeRule {
     return _getStringFromRules(sourceRules, unescape: unescape, isUrl: isUrl, mContent: mContent);
   }
 
-  List<String> getStringListFromRules(List<dynamic> ruleList, {bool isUrl = false}) {
+  List<String> getStringListFromRules(List<dynamic> ruleList,
+      {bool isUrl = false, dynamic mContent}) {
     if (ruleList.isEmpty) return [];
     final sourceRules = ruleList.whereType<SourceRule>().toList();
-    return _getStringListFromRules(sourceRules, isUrl: isUrl);
+    return _getStringListFromRules(sourceRules, isUrl: isUrl, mContent: mContent);
   }
 
   List<dynamic> getElements(String ruleStr) {
@@ -347,10 +354,11 @@ class AnalyzeRule {
   }
 
   List<String> _getStringListFromRules(List<SourceRule> ruleList,
-      {bool isUrl = false, bool keepDuplicate = false}) {
+      {bool isUrl = false, bool keepDuplicate = false, dynamic mContent}) {
     if (ruleList.isEmpty) return [];
-    var result = content;
-    if (content != null && ruleList.isNotEmpty) {
+    // legado：`val content = mContent ?: this.content`。
+    var result = mContent ?? content;
+    if (result != null) {
       if (result is Map) {
         // legado NativeObject 快捷路径（AnalyzeRule.getStringList）：只执行
         // 第一条规则，按 mode 分派后立即进入列表归一。
@@ -467,6 +475,11 @@ class AnalyzeRule {
 
     if (result == null) return [];
     if (result is List) return result;
+    // legado 此处 `it as List<Any>` 会抛类型异常。保留容错（不把整条源
+    // 打成失效）但不再静默：记录规则与结果类型，便于定位返回非列表的脚本。
+    AppLog.instance.w(
+        '[书源规则] getElements 结果非列表：${result.runtimeType} '
+        'rule=${ruleList.map((r) => r.rule).join(' && ')}');
     return [];
   }
 
@@ -654,9 +667,10 @@ class AnalyzeRule {
         'chapter': _chapterSeed(chapter),
         'nextChapterUrl': nextChapterUrl ?? '',
         // 对照 legado AnalyzeRule bindings：小说源无 RSS 文章对象（md3 为
-        // rssArticle=null），fromBookInfo 标记详情页求值（NexHub 不区分）。
+        // rssArticle=null）；fromBookInfo 由构造参数决定（目录 preUpdateJs
+        // 在 legado 明确构造 fromBookInfo=true）。
         'rssArticle': null,
-        'fromBookInfo': false,
+        'fromBookInfo': fromBookInfo,
         // 每轮都重置变量快照（不能因为当前为空就跳过）：引擎已按源池化，
         // 会跨书/跨章存活；若沿用上一轮的 __javaVars，`java.get` 会读到
         // 别的书的变量。

@@ -52,11 +52,9 @@ class BookChapterList {
         final redirect = redirectUrl ?? baseUrl;
         for (final raw in analyzeRule.getStringList(nextTocRule, isUrl: true)) {
           final url = raw.trim();
-          if (url.isEmpty || url == redirect || url == baseUrl) continue;
-          final lower = url.toLowerCase();
-          if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
-            continue;
-          }
+          // legado BookChapterList：只排除当前页地址（redirectUrl），没有
+          // 额外 scheme 白名单；分页链是否成环由调用方 visited 兜底。
+          if (url.isEmpty || url == redirect) continue;
           if (!nextUrlsOut.contains(url)) nextUrlsOut.add(url);
         }
       } catch (_) {}
