@@ -97,11 +97,15 @@ class AnalyzeRule {
     return this;
   }
 
-  void put(String key, String value) {
+  void put(String key, String? value) {
     // 对照 legado `AnalyzeRule.put`：`chapter?.putVariable ?: book?.putVariable
     // ?: ruleData?.putVariable ?: source?.put`——**没有** `title` 特殊分支。
     // 旧实现遇到 `@put:{title:...}` 会顺带改写章节标题，导致源用
     // title 作中间变量时章节名被覆盖（基准只写变量表）。
+    // value 为 null 时是删除语义（legado `putVariable(key, null)` 移除键）。
+    // 实例级表可能是构造期从书对象种下的副本，删除时一并清理，否则 `get`
+    // 会在 chapter/book 都没命中后回落到这份陈旧种子。
+    if (value == null) _variables.remove(key);
     final ch = chapter;
     if (ch != null) {
       ch.putVariable(key, value);
@@ -114,7 +118,11 @@ class AnalyzeRule {
       b.putVariable(key, value);
       return;
     }
-    _variables[key] = value;
+    if (value == null) {
+      _variables.remove(key);
+    } else {
+      _variables[key] = value;
+    }
   }
 
   String get(String key) {
@@ -699,6 +707,11 @@ class AnalyzeRule {
       javaVars.forEach((k, v) {
         if (seedJavaVars[k] != v) put(k, v);
       });
+      // `java.put(k, null)`（legado `putVariable(key, null)`）的删除语义：
+      // 键不进 __javaVars，需按本轮删除表显式移除。
+      for (final k in _jsEngine!.takeJavaDeletedVars()) {
+        put(k, null);
+      }
       // JS 里直接改 `chapter.variableMap[...]`（legado 绑定的是 BookChapter
       // 实体）同样回写本章；java.put 已随 __javaVars 差量落盘，这里只补齐
       // 快照上的直改，避免脚本改完变量下一段规则读不到。

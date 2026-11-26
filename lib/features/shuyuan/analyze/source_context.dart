@@ -20,6 +20,7 @@ import 'package:meta/meta.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/download/download_settings.dart';
+import '../../../core/novel/reader_config_bridge.dart';
 import '../../../core/scraper/http_fetcher.dart';
 import '../../../core/utils/app_log.dart';
 import 'analyze_url.dart';
@@ -30,7 +31,16 @@ import '../model/book_source.dart';
 import '../shuyuan_variable_store.dart';
 
 class ShuyuanSourceContext {
-  ShuyuanSourceContext(this.sourceId);
+  ShuyuanSourceContext(this.sourceId) {
+    // 宿主实时阅读/主题配置：由阅读器写入 [ReaderConfigBridge]，新建上下文
+    // 自动继承（java.getReadBookConfig 等的数据源）。
+    final read = ReaderConfigBridge.readConfigJson;
+    if (read.isNotEmpty) readConfigJson = read;
+    final theme = ReaderConfigBridge.themeConfigJson;
+    if (theme.isNotEmpty) themeConfigJson = theme;
+    final mode = ReaderConfigBridge.themeMode;
+    if (mode.isNotEmpty) themeMode = mode;
+  }
 
   final String sourceId;
 

@@ -12,16 +12,40 @@ class AnalyzeByJsoup {
   dynamic content;
   final Element _element;
 
-  AnalyzeByJsoup(this.content) : _element = _parse(content);
+  /// `Document` / HTML 字符串解析后的 `<body>`。
+  ///
+  /// jsoup 的 `Document.text()` 只取 `<body>`；旧实现把 `Document` 解成
+  /// `documentElement`（`<html>`）后遍历，无选择器规则（`content: "text"`、
+  /// `intro: "text"`）会把 `<head><title>` 的文本一起带出。
+  final Element? _body;
 
-  static Element _parse(dynamic doc) {
-    if (doc is Element) return doc;
-    if (doc is Document) return doc.documentElement!;
-    if (doc is String) {
-      final document = html_parser.parse(doc);
-      return document.documentElement!;
+  AnalyzeByJsoup._(this.content, this._element, this._body);
+
+  factory AnalyzeByJsoup(dynamic content) {
+    if (content is Element) {
+      return AnalyzeByJsoup._(content, content, content);
     }
-    return html_parser.parse('').documentElement!;
+    if (content is Document) {
+      final root = content.documentElement!;
+      return AnalyzeByJsoup._(content, root, content.body ?? root);
+    }
+    if (content is String) {
+      final document = html_parser.parse(content);
+      final root = document.documentElement!;
+      return AnalyzeByJsoup._(content, root, document.body ?? root);
+    }
+    final document = html_parser.parse('');
+    final root = document.documentElement!;
+    return AnalyzeByJsoup._(content, root, document.body ?? root);
+  }
+
+  /// 文本取值的目标元素：根 `<html>` 换成 `<body>`（其余元素原样）。
+  Element _textTarget(Element el) {
+    final body = _body;
+    if (body != null && identical(el, _element) && !identical(body, _element)) {
+      return body;
+    }
+    return el;
   }
 
   // ---- jsoup 取值语义（legado AnalyzeByJSoup 依赖） ----
@@ -1155,7 +1179,7 @@ class AnalyzeByJsoup {
     switch (lowerMethod) {
       case 'text':
         for (final el in elements) {
-          final text = _jsoupText(el);
+          final text = _jsoupText(_textTarget(el));
           if (text.isNotEmpty) result.add(text);
         }
         break;
@@ -1334,7 +1358,7 @@ class AnalyzeByJsoup {
       final el = elements.first;
       if (el is Element) {
         return {
-          'text': _jsoupText(el),
+          'text': _jsoupText(_textTarget(el)),
           'html': el.innerHtml,
           ...el.attributes,
         };

@@ -36,7 +36,10 @@ class AnalyzeUrl {
   /// 规则求值的根）。由 WebBook 从搜索阶段暂存、详情/目录阶段传入。
   Object? itemContext;
   XiaoshuoBookChapter? chapter;
-  int page;
+  /// 页码。未传 = null（对齐 legado `AnalyzeUrl.page: Int? = null`）：
+  /// 未分页的 URL 模板里 `{{page}}`/`<page>` 求值为空串，旧实现默认 1
+  /// 会凭空多出一个页码段。
+  int? page;
   String? key;
   String? speakText;
   int? speakSpeed;
@@ -157,7 +160,7 @@ class AnalyzeUrl {
     this.ruleData,
     this.itemContext,
     this.chapter,
-    this.page = 1,
+    this.page,
     this.key,
     this.speakText,
     this.speakSpeed,
@@ -258,23 +261,25 @@ class AnalyzeUrl {
           .replaceAll('《searchKey》', key!)
           .replaceAll('《key》', key!);
     }
-    url = url.replaceAll('<page>', page.toString());
-    url = url.replaceAll('《page》', page.toString());
+    url = url.replaceAll('<page>', page?.toString() ?? '');
+    url = url.replaceAll('《page》', page?.toString() ?? '');
 
     // 兜底：确保任何残留的 {{key}}/{{page}} 被替换（极少见，
     // 仅当上面的扫描未覆盖时触发）。
     if (key != null && key!.isNotEmpty) {
       url = url.replaceAll('{{key}}', key!);
     }
-    url = url.replaceAll('{{page}}', page.toString());
+    url = url.replaceAll('{{page}}', page?.toString() ?? '');
 
     // legado 页数备选写法 `<a,b,c>`：按页取第 page 段，超出取最后一段
     // （如分页路径 `/list<,_2,_3>.html` → 第 1 页 /list.html、第 2 页
     // /list_2.html、第 3 页起 /list_3.html）。须在 `<page>` 字面量替换之后，
-    // 否则 `<page>` 会被当作只有一个备选段。
+    // 否则 `<page>` 会被当作只有一个备选段。未传 page 时按第 1 页取。
+    final pageIndex = (page ?? 1) - 1;
     url = url.replaceAllMapped(RegExp(r'<(.*?)>'), (m) {
       final pages = m.group(1)!.split(',');
-      final picked = page - 1 < pages.length ? pages[page - 1] : pages.last;
+      final picked =
+          pageIndex < pages.length ? pages[pageIndex] : pages.last;
       return picked.trim();
     });
   }
@@ -358,7 +363,8 @@ class AnalyzeUrl {
   /// 求值单个 `{{...}}` 内的表达式。
   String _evalBracedExpression(String expr) {
     if (expr == 'page') {
-      return page.toString();
+      // legado：page 为 null 时 `{{page}}` 求值为空串（不是 "null"/"1"）。
+      return page?.toString() ?? '';
     }
     if (expr == 'key') {
       // 占位符替换为「原始关键词」而非预编码值：编码统一延迟到

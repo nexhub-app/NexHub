@@ -1,6 +1,8 @@
 /// 章节模型：承载章节 URL、标题、索引及卷/VIP/付费标记。
 library;
 
+import 'dart:convert';
+
 class XiaoshuoBookChapter {
   String bookUrl;
   String url;
@@ -55,7 +57,7 @@ class XiaoshuoBookChapter {
   });
 
   factory XiaoshuoBookChapter.fromJson(Map<String, dynamic> json) {
-    return XiaoshuoBookChapter(
+    final chapter = XiaoshuoBookChapter(
       bookUrl: json['bookUrl'] as String? ?? '',
       url: json['url'] as String? ?? '',
       title: json['title'] as String? ?? '',
@@ -75,6 +77,9 @@ class XiaoshuoBookChapter {
       startFragmentId: json['startFragmentId'] as String?,
       endFragmentId: json['endFragmentId'] as String?,
     );
+    // 只有 `variable` 串的旧数据：回填变量表（目录期 @put 的签名参数）。
+    chapter._ensureVariableMap();
+    return chapter;
   }
 
   Map<String, dynamic> toJson() => {
@@ -113,21 +118,52 @@ class XiaoshuoBookChapter {
     return '$absolute,${url.substring(match.end)}';
   }
 
-  void putVariable(String key, String value) {
-    variableMap[key] = value;
+  /// 写入章节变量（legado `BookChapter.putVariable`）：`null` 删除键，
+  /// 其余写入后立即把 `variable`（唯一入库字段）同步为 JSON 串。
+  void putVariable(String key, String? value) {
+    if (value == null) {
+      variableMap.remove(key);
+    } else {
+      variableMap[key] = value;
+    }
+    variable = variableMap.isEmpty ? null : jsonEncode(variableMap);
+  }
+
+  void _ensureVariableMap() {
+    if (variableMap.isNotEmpty) return;
+    final raw = variable;
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        decoded.forEach((k, v) {
+          if (v != null) variableMap[k.toString()] = v.toString();
+        });
+      }
+    } catch (_) {}
   }
 
   String getVariable(String key) {
+    _ensureVariableMap();
     return variableMap[key] ?? '';
   }
 
-  String getDisplayTitle() {
-    return title;
-  }
+  /// 章节标题展示形态（对齐 legado `BookChapter.getDisplayTitle` 的清洗段）：
+  /// 去掉 `\r\n` 换行并把连续空白折叠为单个空格；目录/阅读器统一走这里，
+  /// 避免源把标题写成多行时界面出现断行。
+  ///
+  /// 繁简转换与用户替换规则属阅读器偏好，仍在展示层按当前偏好叠加
+  /// （本方法只做与偏好无关的清洗，保持模型层无 UI 依赖）。
+  String getDisplayTitle() => title.replaceAll(_newlinePattern, '').trim();
 
   static final RegExp _paramPattern = RegExp(r'\s*,\s*(?=\{)');
 
-  static final RegExp _dataUriPattern = RegExp(r'^data:.*?;base64,');
+  static final RegExp _newlinePattern = RegExp(r'\r\n|\r|\n');
+
+  /// 任意 `data:` URI 原样保留（不能按相对路径拼接）。
+  /// 旧实现只认 `data:...;base64,`，`data:text/plain,...` 会被 Uri.resolve
+  /// 当相对地址改写。
+  static final RegExp _dataUriPattern = RegExp(r'^data:', caseSensitive: false);
 
   /// 对齐 legado `NetworkUtils.getAbsoluteURL(baseURL, relativePath)`。
   static String resolveAgainst(String base, String relative) {

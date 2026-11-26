@@ -1,6 +1,8 @@
 /// 书籍数据模型：承载书籍详情、目录 URL、变量等运行时状态。
 library;
 
+import 'dart:convert';
+
 class XiaoshuoBook {
   String bookUrl;
   String name;
@@ -104,7 +106,7 @@ class XiaoshuoBook {
   });
 
   factory XiaoshuoBook.fromJson(Map<String, dynamic> json) {
-    return XiaoshuoBook(
+    final book = XiaoshuoBook(
       bookUrl: json['bookUrl'] as String? ?? '',
       name: json['name'] as String? ?? '',
       author: json['author'] as String? ?? '',
@@ -144,6 +146,9 @@ class XiaoshuoBook {
       customCoverUrl: json['customCoverUrl'] as String?,
       canUpdate: json['canUpdate'] as bool? ?? true,
     );
+    // 只有 `variable` 串的旧存档：回填变量表，目录/正文期的 @get 才命中。
+    book._ensureVariableMap();
+    return book;
   }
 
   Map<String, dynamic> toJson() => {
@@ -182,11 +187,46 @@ class XiaoshuoBook {
         if (!canUpdate) 'canUpdate': canUpdate,
       };
 
-  void putVariable(String key, String value) {
-    variableMap[key] = value;
+  /// 写入变量（对齐 legado `RuleDataInterface.putVariable`）：
+  /// - `null` = 删除该键（源用「置空即删除」写法时不再残留旧值）；
+  /// - 其余写入内存表，并把 `variable`（legado 唯一入库字段）同步成 JSON
+  ///   串，保证 variableMap 与序列化形态一致（旧实现只写 map，落盘后丢
+  ///   目录期 `@put` 的签名参数）。
+  ///
+  /// 大变量（≥10000 字符）NexHub 仍驻内存：legado 转存文件是为了避开 JVM
+  /// 单机长驻的内存压力，Flutter 侧同步文件 IO 会阻塞解析所在的 UI
+  /// isolate（真机卡顿），取舍见审计文档。
+  void putVariable(String key, String? value) {
+    if (value == null) {
+      variableMap.remove(key);
+    } else {
+      variableMap[key] = value;
+    }
+    _syncVariableJson();
+  }
+
+  /// `variable` 与 `variableMap` 对齐（空表时清空 `variable`）。
+  void _syncVariableJson() {
+    variable = variableMap.isEmpty ? null : jsonEncode(variableMap);
+  }
+
+  /// 旧存档/备份只有 `variable` JSON：读取时回填内存表。
+  void _ensureVariableMap() {
+    if (variableMap.isNotEmpty) return;
+    final raw = variable;
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        decoded.forEach((k, v) {
+          if (v != null) variableMap[k.toString()] = v.toString();
+        });
+      }
+    } catch (_) {}
   }
 
   String getVariable(String key) {
+    _ensureVariableMap();
     return variableMap[key] ?? '';
   }
 

@@ -51,6 +51,7 @@ import '../model/xiaoshuo_book_chapter.dart';
 import '../analyze/js_engine.dart';
 import '../analyze/analyze_rule.dart';
 import '../analyze/analyze_url.dart';
+import '../analyze/image_decoder.dart';
 import '../analyze/source_context.dart';
 import '../analyze/web_file_naming.dart';
 import '../shuyuan_adapter.dart';
@@ -58,6 +59,7 @@ import '../shuyuan_explore_info_store.dart';
 import '../shuyuan_explore_kinds_store.dart';
 import '../web_book/related_books.dart';
 import '../web_book/web_book.dart';
+import '../web_book/web_book_types.dart';
 import 'shuyuan_interactive.dart';
 
 class ShuyuanNovelResolver
@@ -502,9 +504,15 @@ class ShuyuanNovelResolver
         case 'category':
         case 'latest':
           final isSearch = apiName == 'search';
+          // 列表基址用「渲染页的实际地址」（legado `res.url`）：分类/发现页
+          // 常在子路径（`/book/`、`/list/2.html`）下，按源根拼接会把相对
+          // 详情链接拼错。宿主回灌时经 `__renderedUrl` 透传，未提供才退回源根。
+          final renderBaseUrl = (vars['__renderedUrl'] ?? '').trim();
           final books = BookList.analyzeBookList(
             bookSource: bookSource,
-            baseUrl: bookSource.bookSourceUrl,
+            baseUrl: renderBaseUrl.isNotEmpty
+                ? renderBaseUrl
+                : bookSource.bookSourceUrl,
             body: html,
             isSearch: isSearch,
             searchKey: isSearch ? (vars['keyword'] ?? vars['key'] ?? '') : null,
@@ -578,6 +586,7 @@ class ShuyuanNovelResolver
               ? null
               : (_bookInfoCache[contentBookId] ?? _seedFor(contentBookId));
           final book = cachedBook ?? XiaoshuoBook(bookUrl: '', name: '');
+          ShuyuanImageDecoder.rememberActiveBook(source.id, book);
           final chapter = _chapterFor(contentBookId, chapterUrl) ??
               XiaoshuoBookChapter(
                 bookUrl: book.bookUrl,
@@ -1158,36 +1167,33 @@ class ShuyuanNovelResolver
   ) async {
     final page = int.tryParse(vars['page'] ?? '1') ?? 1;
 
-    // PTCMS 动态筛选：源在 `filters` 中声明 文库(list)/题材(tags)/进度(finish)/
-    // 字数(size)/排序(order) 五个维度。任一被选中即按站点 URL 模板拼装分类页
-    // 并抓取；全空则回退到默认发现页（分类 Tab / 全量）。
+    // 筛选驱动的分类页：URL 结构由源声明（`filters.urlTemplate`），引擎只做
+    // 「占位符替换 + 空值省段」，不假设任何站点的路径形状。
     //
     // 关键：绝不能给未选维度塞默认值（否则会强制「连载 / 30万字以上 / 最新更新」
-    // 等，把用户想看的「全部」也限死）。未选维度直接省略对应路径段，站点即视为
-    // 不限定该维度；用户显式选「全部」(value=`all`/空) 也等同省略。
-    final list = (vars['list']?.trim()) ?? '';
-    final tags = (vars['tags']?.trim()) ?? '';
-    final finish = _ptcmsSeg(vars['finish']);
-    final size = _ptcmsSeg(vars['size']);
-    final order = _ptcmsSeg(vars['order']);
-    if (list.isNotEmpty ||
-        tags.isNotEmpty ||
-        finish != null ||
-        size != null ||
-        order != null) {
-      final buf =
-          StringBuffer('${bookSource.bookSourceUrl}/index.php/book/category');
-      if (list.isNotEmpty) buf.write('/list/$list');
-      if (tags.isNotEmpty) buf.write('/tags/$tags');
-      if (finish != null) buf.write('/finish/$finish');
-      if (size != null) buf.write('/size/$size');
-      if (order != null) buf.write('/order/$order');
-      final books = await _webBook.exploreCategory(
-        source: bookSource,
-        categoryUrl: buf.toString(),
-        page: page,
-      );
-      return _mapAndSeedBooks(books, source);
+    // 等，把用户想看的「全部」也限死）。未选维度由 [applyFilterTemplate] 直接
+    // 省略对应路径段；用户显式选「全部」(`all`/空) 也等同省略。
+    final filterTemplate = source.filters?.urlTemplate.trim() ?? '';
+    if (filterTemplate.isNotEmpty) {
+      final filterVars = <String, String>{
+        for (final entry in vars.entries)
+          entry.key: entry.value.trim() == 'all' ? '' : entry.value,
+      };
+      final filterKeys = _filterParamKeys(source.filters);
+      final hasSelection =
+          filterKeys.any((k) => (filterVars[k] ?? '').isNotEmpty);
+      if (hasSelection) {
+        final filterUrl =
+            applyFilterTemplate(filterTemplate, filterVars);
+        if (filterUrl.isNotEmpty) {
+          final books = await _webBook.exploreCategory(
+            source: bookSource,
+            categoryUrl: filterUrl,
+            page: page,
+          );
+          return _mapAndSeedBooks(books, source);
+        }
+      }
     }
 
     final categoryUrl = vars['category'];
@@ -1232,15 +1238,22 @@ class ShuyuanNovelResolver
     return <MediaItem>[];
   }
 
-  /// PTCMS 筛选段取值：
-  /// - 未选（null）/ 选「全部」(`all`/空) → 返回 null，省略该路径段（站点视为
-  /// 不限定该维度）；
-  /// - 其余 → 原值（如文库 id、题材 id、finish/1|2、size/1..5、order/addtime/shits）。
-  static String? _ptcmsSeg(String? raw) {
-    if (raw == null) return null;
-    final t = raw.trim();
-    if (t.isEmpty || t == 'all') return null;
-    return t;
+  /// 源声明的筛选参数名（`filters.groups[].param` 去重）。
+  ///
+  /// 用于判断「用户是否真的选了某个筛选维度」：只看声明过的参数，
+  /// 避免 `page`/`category` 这类内部变量把模板误判为有筛选。
+  static Set<String> _filterParamKeys(SourceFilterConfig? filters) {
+    if (filters == null) return const <String>{};
+    final keys = <String>{};
+    for (final g in filters.groups) {
+      if (g.param.isNotEmpty) keys.add(g.param);
+    }
+    for (final list in filters.byCategory.values) {
+      for (final g in list) {
+        if (g.param.isNotEmpty) keys.add(g.param);
+      }
+    }
+    return keys;
   }
 
   // ── latest：等同 explore（发现页） ──
@@ -1360,7 +1373,8 @@ class ShuyuanNovelResolver
       for (final c in chapters)
         Episode(
           id: isComic ? c.url : '${c.index}',
-          title: c.title,
+          // 展示形态：标题里的换行不带进目录/阅读器（模型保留原始 title）。
+          title: c.getDisplayTitle(),
           url: c.url,
           isVip: c.isVip,
           isPay: c.isPay,
@@ -1505,6 +1519,9 @@ class ShuyuanNovelResolver
         ? null
         : (_bookInfoCache[bookId] ?? _seedFor(bookId));
     final cachedChapter = _chapterFor(bookId, chapterUrl);
+    // 记下本章书目：展示期图片解码（ruleContent.imageDecode）的 `book`
+    // 绑定取这份快照（旧实现恒 null，脚本按 book.* 分支的解密全部走错）。
+    ShuyuanImageDecoder.rememberActiveBook(source.id, cachedBook);
     final nextChapterUrl = _resolveNextChapterUrl(
       vars['nextChapterUrl'] ?? '',
       bookId,

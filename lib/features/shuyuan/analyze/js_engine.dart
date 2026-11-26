@@ -61,6 +61,10 @@ class JsEngine {
   /// 上一轮 eval 中 `java.put` 写入的变量（takeJavaVars 取走并清空）。
   Map<String, String> _lastJavaVars = const {};
 
+  /// 上一轮 eval 中 `java.put(k, null)` 请求删除的键（legado
+  /// `putVariable(key, null)` 语义；takeJavaDeletedVars 取走并清空）。
+  Set<String> _lastJavaDeletedVars = const {};
+
   /// 上一轮 eval 结束时 JS `chapter.variableMap` 的快照（脚本直改变量或
   /// java.put 都会体现；takeJavaChapterVars 取走并清空）。
   Map<String, String> _lastJavaChapterVars = const {};
@@ -178,6 +182,13 @@ class JsEngine {
   Map<String, String> takeJavaVars() {
     final taken = _lastJavaVars;
     _lastJavaVars = const {};
+    return taken;
+  }
+
+  /// 取走上一轮 eval 中 `java.put(k, null)` 请求删除的键（取后清空）。
+  Set<String> takeJavaDeletedVars() {
+    final taken = _lastJavaDeletedVars;
+    _lastJavaDeletedVars = const {};
     return taken;
   }
 
@@ -654,6 +665,9 @@ class JsEngine {
   /// toast/longToast → [JavaFeedback.onToast]（缺省运行日志）、
   /// log/logType → 运行日志、put → [_lastJavaVars]（由变量表持有方取走）。
   void _drainJavaBridge() {
+    // 每轮排空只反映本轮 eval：删除表先清空，避免上一轮未被取走的键
+    // 落到后面的求值里误删变量。
+    _lastJavaDeletedVars = const {};
     Map<String, dynamic>? payload;
     try {
       final r = runtime.evaluate(javaDrainExpr);
@@ -719,6 +733,15 @@ class JsEngine {
         if (v != null) cleanVars[key] = v.toString();
       });
       _lastJavaVars = cleanVars;
+      final deleted = payload['d'];
+      if (deleted is List) {
+        _lastJavaDeletedVars = <String>{
+          for (final k in deleted)
+            if (k != null && k.toString().isNotEmpty) k.toString(),
+        };
+      } else {
+        _lastJavaDeletedVars = const {};
+      }
       if (hadSyop) {
         // 已读即删：即使本轮没有活动上下文（op 只能丢弃），也必须从 JS 侧
         // __javaVars 清掉。旧实现只在 syops 非空时清理，ctx 为空时 op 残留

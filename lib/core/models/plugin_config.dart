@@ -705,11 +705,20 @@ class SourceFilterConfig {
   /// 剧场/美漫/特摄等「sort/year 本就应为空」的分类）。
   final Map<String, Map<String, String>> defaults;
 
+  /// 筛选驱动的分类页 URL 模板（源自行声明，引擎不做任何站点路径假设）。
+  ///
+  /// 形如 `https://host/index.php/book/category/list/{list}/tags/{tags}`：
+  /// 模板里的 `{参数名}` 用当前筛选值替换；某个 `{参数名}` 取值为空时，
+  /// **整个路径段**一并省略（站点视为不限定该维度）。替代旧实现在引擎里
+  /// 写死某一类站点的固定路径。
+  final String urlTemplate;
+
   const SourceFilterConfig({
     this.route = 'category',
     this.groups = const <FilterGroupConfig>[],
     this.byCategory = const <String, List<FilterGroupConfig>>{},
     this.defaults = const <String, Map<String, String>>{},
+    this.urlTemplate = '',
   });
 
   /// 取某分类的筛选分组；声明了分类覆盖且命中则返回它，否则回退全局 [groups]。
@@ -759,6 +768,9 @@ class SourceFilterConfig {
               ),
             ) ??
             const <String, Map<String, String>>{},
+        urlTemplate: json['urlTemplate'] is String
+            ? json['urlTemplate'] as String
+            : '',
       );
 
   Map<String, dynamic> toJson() => {
@@ -769,6 +781,7 @@ class SourceFilterConfig {
               .map((k, v) => MapEntry(k, v.map((e) => e.toJson()).toList())),
         if (defaults.isNotEmpty)
           'defaults': defaults.map((k, v) => MapEntry(k, Map<String, String>.from(v))),
+        if (urlTemplate.isNotEmpty) 'urlTemplate': urlTemplate,
       };
 }
 

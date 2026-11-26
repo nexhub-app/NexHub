@@ -1116,7 +1116,17 @@ class MediaApiService {
     // 书源（xiaoshuo）回灌：必须用其专属解析器（WebBook 静态分析器）解析渲染后
     // HTML，不能路由到 BuiltinResolver（书源无 selectors 形式规则，否则解析为空）。
     if (source.selectors?['xiaoshuo'] is Map<String, dynamic>) {
-      return registry.resolveRenderedHtml(source, apiName, renderedHtml, vars: vars);
+      // 渲染页的真实地址随 vars 透传：列表类结果里的相对详情链接必须按渲染页
+      // 拼接（legado 用 `res.url` 作列表基址），不能退回源根地址。
+      final renderVars = (url != null && url.isNotEmpty)
+          ? <String, String>{...vars, '__renderedUrl': url}
+          : vars;
+      return registry.resolveRenderedHtml(
+        source,
+        apiName,
+        renderedHtml,
+        vars: renderVars,
+      );
     }
     // 回灌分流：
     // - hybrid + script override → [ScriptResolver.resolveFromHtml]（把渲染后

@@ -53,6 +53,7 @@ import '../../../core/novel/novel_progress_conflict.dart';
 import '../../../core/novel/novel_progress_manager.dart';
 import '../../../core/novel/novel_tts_progress_store.dart';
 import '../../../core/novel/novel_reader_preferences.dart';
+import '../../../core/novel/reader_config_bridge.dart';
 import '../../../core/novel/novel_tts_router.dart' show NovelTtsSystemSlots;
 import '../../../core/novel/novel_pre_download_preferences.dart';
 import '../../../core/novel/novel_pre_downloader.dart';
@@ -979,6 +980,8 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     }
     // 音量键翻页：偏好加载完成后按需挂载原生拦截。
     unawaited(_syncVolumeKey());
+    // 阅读偏好同步给书源引擎（java.getReadBookConfig/getThemeConfig）。
+    _syncShuyuanReaderConfig();
     // 预下载配置加载（静态方法内部 try/catch，失败回落默认）。
     _preDownloadPrefs = await NovelPreDownloadPreferences.load();
     // 重新注册自定义字体文件（正文 / 标题），否则重启后字体不生效。
@@ -5664,6 +5667,23 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     _prefs = next;
   }
 
+  /// 当前阅读偏好 → 书源引擎（`java.getReadBookConfig/getThemeConfig`）。
+  /// 源按阅读背景/字号生成配图、字体参数时拿到的就是用户此刻的设置。
+  void _syncShuyuanReaderConfig() {
+    if (!mounted) return;
+    Color? accent;
+    var appIsDark = false;
+    try {
+      accent = Theme.of(context).colorScheme.primary;
+      appIsDark = Theme.of(context).brightness == Brightness.dark;
+    } catch (_) {}
+    ReaderConfigBridge.updateFromPrefs(
+      _prefs,
+      appIsDark: appIsDark,
+      accent: accent,
+    );
+  }
+
   Future<void> _onPrefsChanged(NovelReaderPreferences next) async {
     final animationChanged = next.pageAnimation != _prefs.pageAnimation;
     final convertChanged = next.chineseConvert != _prefs.chineseConvert;
@@ -5676,6 +5696,7 @@ class _NovelReaderScreenState extends State<NovelReaderScreen>
     // 记录本次真正改动的字段为「本书单独设置」，未动过的字段继续跟随总设置。
     _overrideKeys.addAll(novelPrefsChangedKeys(_prefs, next));
     _prefs = next;
+    _syncShuyuanReaderConfig();
     if (volumeKeyChanged) {
       // 音量键开关即时生效。
       unawaited(_syncVolumeKey());

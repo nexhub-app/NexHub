@@ -108,10 +108,19 @@ class XiaoshuoBookSource {
   String get key => bookSourceUrl;
   String get tag => bookSourceName;
 
+  /// 有效源判据：含任一可解析规则即可。
+  ///
+  /// `ruleBookInfo` 必须计入——文件类源（`bookSourceType=3`）只有
+  /// `ruleBookInfo.downloadUrls`，旧判据会把它整条判为无效，与
+  /// `ShuyuanSource.isValid` 口径分裂（导入可用、运行期被拒）。
   bool get isValid =>
       bookSourceName.isNotEmpty &&
       bookSourceUrl.isNotEmpty &&
-      (ruleSearch != null || ruleToc != null || ruleContent != null || ruleExplore != null);
+      (ruleSearch != null ||
+          ruleBookInfo != null ||
+          ruleToc != null ||
+          ruleContent != null ||
+          ruleExplore != null);
 
   SearchRule getSearchRule() {
     ruleSearch ??= SearchRule();

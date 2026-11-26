@@ -8,7 +8,13 @@ library;
 class ConcurrentRateLimiter {
   ConcurrentRateLimiter._();
 
-  static final Map<String, List<DateTime>> _hits = <String, List<DateTime>>{};
+  /// 固定窗口计数（legado `ConcurrentRateLimiter` 模型）：每个 key 记录
+  /// 窗口起点与窗口内已放行的次数，到 interval 重置。
+  ///
+  /// 旧实现是滑动窗口（移除 interval 前的命中），比基准更平滑、峰值更低；
+  /// 但源的 concurrentRate 是按固定窗口调的（基准在窗口边界允许
+  /// 「上一窗末尾 + 下一窗开头」连续 2×limit 次），对齐后与基准行为一致。
+  static final Map<String, _RateWindow> _windows = <String, _RateWindow>{};
 
   /// 运行时覆盖（legado `BaseSource.putConcurrent` → ConcurrentRateLimiter
   /// 共享记录表）：脚本可在运行期调整本源并发率，覆盖源声明值直到进程结束。
@@ -54,19 +60,34 @@ class ConcurrentRateLimiter {
     }
     if (limit <= 0 || interval.inMilliseconds <= 0) return;
 
-    final now = DateTime.now();
-    final times = _hits.putIfAbsent('$key|$r', () => <DateTime>[]);
-    times.removeWhere((t) => now.difference(t) > interval);
-    if (times.length >= limit) {
-      final wait = interval - now.difference(times.first);
+    var now = DateTime.now();
+    final window = _windows.putIfAbsent('$key|$r', () => _RateWindow(now));
+    if (now.difference(window.start) >= interval) {
+      window.start = now;
+      window.count = 0;
+    }
+    if (window.count >= limit) {
+      // 窗口已满：等到本窗口结束再放行，并开启新窗口（计数器归零）。
+      final wait = interval - now.difference(window.start);
       if (wait > Duration.zero) {
         await Future<void>.delayed(wait);
       }
+      now = DateTime.now();
+      window.start = now;
+      window.count = 0;
     }
-    times.add(DateTime.now());
-    // 防泄漏：key 数量过多时清理无条目的 key。
-    if (_hits.length > 512) {
-      _hits.removeWhere((_, v) => v.isEmpty);
+    window.count++;
+    // 防泄漏：key 数量过多时清理已过期的窗口。
+    if (_windows.length > 512) {
+      _windows.removeWhere((_, w) => now.difference(w.start) > interval * 4);
     }
   }
+}
+
+/// 固定窗口计数：起点时间 + 窗口内放行次数。
+class _RateWindow {
+  _RateWindow(this.start);
+
+  DateTime start;
+  int count = 0;
 }

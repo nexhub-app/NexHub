@@ -10,17 +10,35 @@ import 'rule_analyzer.dart';
 class AnalyzeByJson {
   dynamic content;
 
-  AnalyzeByJson(this.content);
+  AnalyzeByJson(this.content) {
+    _cachedSource = content;
+    _cachedData = _decode(content);
+  }
 
+  /// 解析结果缓存（对齐 legado `AnalyzeByJSonPath` 构造期 `JsonPath.parse`
+  /// 一次、后续 `ctx.read` 复用）。旧实现每次取值都 `json.decode` 整页，
+  /// 列表页逐条取 8 个字段时等于 N×8 次整页解码。
+  dynamic _cachedSource;
+  dynamic _cachedData;
+
+  /// 内容被外部直接改写（`content = ...`）时按引用变化重新解析。
   dynamic get _jsonData {
-    if (content is String) {
+    if (!identical(content, _cachedSource)) {
+      _cachedSource = content;
+      _cachedData = _decode(content);
+    }
+    return _cachedData;
+  }
+
+  static dynamic _decode(dynamic value) {
+    if (value is String) {
       try {
-        return json.decode(content as String);
+        return json.decode(value);
       } catch (_) {
         return null;
       }
     }
-    return content;
+    return value;
   }
 
   String getString(String rule) {

@@ -33,7 +33,7 @@ abstract final class JavaFeedback {
 /// source/book/cache 的写回）。须用 globalThis——本表达式在顶层求值，
 /// IIFE 内的 `global` 参数不可见。
 const String javaDrainExpr = r'''
-JSON.stringify({t:(globalThis.__javaToasts||[]).splice(0),l:(globalThis.__javaLogs||[]).splice(0),v:globalThis.__javaVars||{},c:(globalThis.chapter&&globalThis.chapter.variableMap)||null})
+JSON.stringify({t:(globalThis.__javaToasts||[]).splice(0),l:(globalThis.__javaLogs||[]).splice(0),v:globalThis.__javaVars||{},d:(globalThis.__javaDeleted||[]).splice(0),c:(globalThis.chapter&&globalThis.chapter.variableMap)||null})
 ''';
 
 /// 注入对象预置脚本（P1-2）：cookie / source / book / cache 四对象，
@@ -1268,9 +1268,18 @@ const String sourceContextJsPrelude = r'''
         textAccentColorEInk: '#000000'
       };
       // 宿主可经 ShuyuanSourceContext.readConfigJson 注入实时排版配置
-      //（E9 通道：当前无阅读器设置源，缺省即上面的 legado 默认值）。
+      //（阅读器偏好经 ReaderConfigBridge 写入）。注入值是「部分字段」：
+      // 逐键覆盖到上面的 legado 默认配置上，脚本 JSON.parse 后字段仍齐全。
       var injected = syCtx().readConfigJson;
-      return injected ? String(injected) : JSON.stringify(cfg);
+      if (injected) {
+        try {
+          var o = JSON.parse(String(injected));
+          if (o && typeof o === 'object') {
+            for (var k in o) cfg[k] = o[k];
+          }
+        } catch (e) {}
+      }
+      return JSON.stringify(cfg);
     };
     global.java.getReadBookConfigMap = function () {
       try {
@@ -1291,7 +1300,15 @@ const String sourceContextJsPrelude = r'''
         backgroundImgBlur: 0
       };
       var injected = syCtx().themeConfigJson;
-      return injected ? String(injected) : JSON.stringify(cfg);
+      if (injected) {
+        try {
+          var o = JSON.parse(String(injected));
+          if (o && typeof o === 'object') {
+            for (var k in o) cfg[k] = o[k];
+          }
+        } catch (e) {}
+      }
+      return JSON.stringify(cfg);
     };
     global.java.getThemeConfigMap = function () {
       try {
@@ -6875,17 +6892,36 @@ const String javaExtensionsJsPrelude = r'''
       return v && v[k] != null ? String(v[k]) : '';
     },
     put: function (k, v) {
-      var s = v == null ? '' : String(v);
+      var key = String(k);
+      // legado `putVariable(key, null)` = 删除该键：登记删除表，宿主排空后
+      // 从变量表移除（旧实现把 null 写成空串，"置空即删除"的源读回空值仍
+      // 算命中）。
+      if (v == null) {
+        if (!global.__javaDeleted || !global.__javaDeleted.length) {
+          global.__javaDeleted = [];
+        }
+        global.__javaDeleted.push(key);
+        if (global.__javaVars && typeof global.__javaVars === 'object') {
+          delete global.__javaVars[key];
+        }
+        var chDel = global.chapter;
+        if (chDel != null && chDel.variableMap &&
+            typeof chDel.variableMap === 'object') {
+          delete chDel.variableMap[key];
+        }
+        return null;
+      }
+      var s = String(v);
       // legado AnalyzeRule.put：有章节时先写章节 variableMap，随后
       // java.get 的 chapter 层优先命中新值；无章节由宿主排空写 ruleData。
       var ch = global.chapter;
       if (ch != null && ch.variableMap && typeof ch.variableMap === 'object') {
-        ch.variableMap[String(k)] = s;
+        ch.variableMap[key] = s;
       }
       if (!global.__javaVars || typeof global.__javaVars !== 'object') {
         global.__javaVars = {};
       }
-      global.__javaVars[String(k)] = s;
+      global.__javaVars[key] = s;
       return v;
     },
     // ── 规则求值桥（确定性重放，见 ruleCall 注释）──

@@ -19,6 +19,7 @@ import 'dart:typed_data';
 import '../../../core/models/plugin_config.dart';
 import '../../../core/utils/app_log.dart';
 import '../model/book_source.dart';
+import '../model/xiaoshuo_book.dart';
 import '../shuyuan_adapter.dart';
 import 'js_engine.dart';
 import 'source_context.dart';
@@ -41,6 +42,45 @@ class ShuyuanImageDecoder {
   }
 
   static final Map<String, (Object, XiaoshuoBookSource)> _cache = {};
+
+  /// 源最近一次正文解析用的书目（legado `ImageUtils.decode` 的 `book` 绑定：
+  /// 正文插图路径把当前 Book 传给脚本，脚本按 `book.name`/`book.variable`
+  /// 等分支解密）。
+  ///
+  /// 图片解码发生在展示期，拿不到解析期的书目上下文，故按源记最近一本；
+  /// 同源同时只读多本时可能取到最近打开的一本，仅脚本读 `book.*` 时可见
+  /// （旧实现恒为 null，这类分支必然走错）。
+  static final Map<String, XiaoshuoBook> _activeBooks = {};
+
+  /// 记录某源当前解析的书目（正文解析入口调用）。
+  static void rememberActiveBook(String configId, XiaoshuoBook? book) {
+    if (book == null) return;
+    _activeBooks[configId] = book;
+    if (_activeBooks.length > 16) {
+      _activeBooks.remove(_activeBooks.keys.first);
+    }
+  }
+
+  /// `book` 绑定值：字段镜像对齐 legado Book 实体常用面；无记录返回 null。
+  static Map<String, dynamic>? _bookBinding(PluginConfig config) {
+    final book = _activeBooks[config.id];
+    if (book == null) return null;
+    return <String, dynamic>{
+      'name': book.name,
+      'author': book.author,
+      'bookUrl': book.bookUrl,
+      'intro': book.intro ?? '',
+      'kind': book.kind ?? '',
+      'coverUrl': book.coverUrl ?? '',
+      'lastChapter': book.lastChapter ?? '',
+      'tocUrl': book.tocUrl ?? '',
+      'wordCount': book.wordCount ?? '',
+      'origin': book.origin ?? '',
+      'originName': book.originName ?? '',
+      'type': book.type,
+      'variable': book.variable ?? '',
+    };
+  }
 
   static XiaoshuoBookSource? _bookSourceFor(PluginConfig config) {
     final raw = config.selectors?['xiaoshuo'];
@@ -95,8 +135,8 @@ class ShuyuanImageDecoder {
   }
 
   /// 正文插图字节解码（legado `ContentRule.imageDecode`）：绑定
-  /// `result`（原始字节的 JS 数字数组）/`src`/`book`（图片缓存层拿不到
-  /// 书目上下文，与封面分支一样传 null）；返回字节数组为解码结果，
+  /// `result`（原始字节的 JS 数字数组）/`src`/`book`（源最近一次正文解析
+  /// 的书目快照，见 [rememberActiveBook]）；返回字节数组为解码结果，
   /// 未声明规则原样返回，其余/异常按解码失败返回 null。
   static Uint8List? decodeContent(
     PluginConfig config,
@@ -115,7 +155,8 @@ class ShuyuanImageDecoder {
         return engine.eval(rule, bindings: <String, dynamic>{
           'result': <int>[for (final b in bytes) b],
           'src': url,
-          'book': null,
+          // legado 正文插图路径把当前 Book 传给脚本（封面分支恒 null）。
+          'book': _bookBinding(config),
         });
       });
       final decoded = parseByteResult(out);
