@@ -402,8 +402,11 @@ class AnalyzeByXPath {
     if (tag != null) {
       return node.children.any((e) => e.localName == tag.group(1));
     }
-    // 无法求值的形态：放行（宁可多取，不因谓词整条归零）。
-    return true;
+    // 无法求值的谓词形态**不放行**：旧实现 return true 会把
+    // `[matches(...)]`、`[position()>1]` 一类未支持谓词当成恒真，节点全量
+    // 进宫（多取且无法察觉）。基准（JXDocument/XPath 1.0）会真的按该谓词
+    // 过滤，这里既没有等价求值能力，就按“不匹配”处理并由调用方看到空结果。
+    return false;
   }
 
   static String _stripAllPredicates(String expr) {

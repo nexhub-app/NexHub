@@ -138,6 +138,10 @@ class ShuyuanSourceContext {
   /// cache.get/put/delete（会话级内存）。
   final Map<String, String> cache = {};
 
+  /// `cache.put(key, byte[])` 的二进制条目（base64）：legado CacheManager
+  /// 把 byte[] 与文本分表存储，`getByteArray` 读这里、`get` 读不到。
+  final Map<String, String> cacheBytes = {};
+
   /// cache 条目到期时间（毫秒时间戳；无条目 = 永久）。legado `saveTime`
   /// 语义：0 → 永久，N 秒 → now + N*1000。
   final Map<String, int> cacheDeadlines = {};
@@ -478,6 +482,9 @@ class ShuyuanSourceContext {
           for (final e in cache.entries)
             if (!_cacheExpired(e.key)) e.key: e.value,
         },
+        // 二进制缓存条目：量小（零语料按图片/字体/密钥的用法），随种子下发；
+        // 文本表已是增量通道，这里不做额外推送。
+        'cacheBytes': Map<String, String>.from(cacheBytes),
         // ajaxCache 不进种子：它随 settle 轮次单调增长，若每轮都序列化整个
         // 缓存进 JS 源码，长目录会退化成 O(n²)（几十页正文 = 每次 eval
         // 重建数 MB 字符串）。改由 JsEngine 增量推送进 JS 全局 __ajaxCache。
@@ -550,6 +557,7 @@ class ShuyuanSourceContext {
           // （legado 的桥是同步的，缓存里只会出现真实响应）。
           if (!_hasReplayPlaceholderValue(b)) {
             cache[a] = b;
+            cacheBytes.remove(a);
             final saveTime = int.tryParse(op['c']?.toString() ?? '') ?? 0;
             if (saveTime > 0) {
               cacheDeadlines[a] =
@@ -559,8 +567,18 @@ class ShuyuanSourceContext {
             }
             cacheDirty = true;
           }
+        case 'cachePutBytes':
+          // cache.put(key, byte[])：legado CacheManager 的二进制分支。
+          // 与文本条目同键空间（后写覆盖），存取走 cacheBytes 表。
+          if (!_hasReplayPlaceholderValue(b)) {
+            cacheBytes[a] = b;
+            cache.remove(a);
+            cacheDeadlines.remove(a);
+            cacheDirty = true;
+          }
         case 'cacheDel':
           cache.remove(a);
+          cacheBytes.remove(a);
           cacheDeadlines.remove(a);
           cacheDirty = true;
         case 'refreshJSLib':
@@ -923,6 +941,11 @@ class ShuyuanSourceContext {
           mine.forEach((k, meta) {
             final d = int.tryParse('${meta['d'] ?? 0}') ?? 0;
             if (d > 0 && d <= now) return;
+            final b64 = meta['b']?.toString();
+            if (b64 != null && b64.isNotEmpty) {
+              ctx.cacheBytes[k] = b64;
+              return;
+            }
             ctx.cache[k] = meta['v']?.toString() ?? '';
             if (d > 0) ctx.cacheDeadlines[k] = d;
           });
@@ -1016,7 +1039,10 @@ class ShuyuanSourceContext {
             e.key: <String, dynamic>{
               'v': e.value,
               'd': cacheDeadlines[e.key] ?? 0,
-            }
+            },
+        // 二进制条目：`b` 字段标记（base64），与文本条目同键空间。
+        for (final e in cacheBytes.entries)
+          e.key: <String, dynamic>{'v': '', 'd': 0, 'b': e.value},
       };
       await prefs.setString(_cacheStoreKey, jsonEncode(_cacheStore));
     } catch (_) {}

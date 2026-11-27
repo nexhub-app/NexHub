@@ -146,6 +146,11 @@ class AnalyzeUrl {
   /// 不自动补 Content-Type。
   bool _syRawBody = false;
 
+  /// 内部标记 `_syBodyB64`：okhttp3 垫片的二进制请求体（base64）。
+  /// legado 走真实 OkHttp，`RequestBody.create(mediaType, byte[])` 原样发送
+  /// 字节；本实现只有解析后的文本通道会破坏密文，故单独传原始字节。
+  String? _bodyB64;
+
   /// 跳过 HTTP 阶段缓存（settleAjax 为 java.ajax 发请求时使用）：
   /// legado 桥是同步真实请求，同一 URL 的第二次 java.ajax 必须真的再发
   /// 一次，不能命中阶段缓存被去重。
@@ -522,6 +527,9 @@ class AnalyzeUrl {
         if (option['_syRawBody'] == true) {
           _syRawBody = true;
         }
+        // 内部标记：okhttp3 垫片把二进制 RequestBody 以 base64 送来（见字段注释）。
+        final bodyB64 = option['_syBodyB64']?.toString();
+        if (bodyB64 != null && bodyB64.isNotEmpty) _bodyB64 = bodyB64;
 
         final js = option['js']?.toString();
         if (js != null && js.isNotEmpty) {
@@ -570,6 +578,11 @@ class AnalyzeUrl {
     // data: 内联载荷不是网络地址：`?` 属于 base64/参数内容，不能按 query
     // 切分（切了会把载荷截断成无效 URI）。
     if (url.startsWith('data:')) return;
+
+    // okhttp3 垫片透传的任意方法（PUT/DELETE/PATCH/OPTIONS）：legado 这里
+    // 走真实 OkHttp，不经过 AnalyzeUrl 的 query/form 编码。保持 URL 原文，
+    // 避免已编码 query 被二次编码（`%E4%B8%AD` → `%25E4...`）。
+    if (m != null && m != 'GET' && m != 'POST' && m != 'HEAD') return;
 
     if (m == 'POST') {
       // java.post：原文发送，不编码、不补 Content-Type（legado Jsoup
@@ -1336,7 +1349,8 @@ class AnalyzeUrl {
             ))
           : _dio;
 
-      Options buildOptions() => Options(
+      Options buildOptions({String? httpMethod}) => Options(
+            method: httpMethod,
             headers: requestHeaders,
             responseType: ResponseType.bytes,
             followRedirects: followRedirects ?? true,
@@ -1391,6 +1405,18 @@ class AnalyzeUrl {
             response = await dio.head<List<int>>(
               requestUrl,
               options: buildOptions(),
+            );
+          } else if (m != null && m != 'GET') {
+            // okhttp3 垫片的 PUT/DELETE/PATCH/OPTIONS：legado 用真实 OkHttp
+            // 原样发送方法与请求体（不做表单编码、不降级 GET）。请求体优先
+            // 取二进制通道（`_syBodyB64`），其次按原文发送 body。
+            final payload = _bodyB64 != null
+                ? base64Decode(_bodyB64!)
+                : (this.body == null ? null : utf8.encode(this.body!));
+            response = await dio.request<List<int>>(
+              requestUrl,
+              data: payload,
+              options: buildOptions(httpMethod: m),
             );
           } else {
             response = await dio.get<List<int>>(
@@ -1632,7 +1658,7 @@ class AnalyzeUrl {
                       b.key.toLowerCase())))
                 .map((e) => '${e.key.toLowerCase()}:${e.value}')
                 .join('\n'));
-    return '$m\n$_requestUrl\n${body ?? ''}\n${jsStr ?? ''}\n${sourceRegex ?? ''}\n'
+    return '$m\n$_requestUrl\n${body ?? ''}\n${_bodyB64 ?? ''}\n${jsStr ?? ''}\n${sourceRegex ?? ''}\n'
         '${followRedirects == false ? 'noredir' : ''}\n'
         // 影响响应的网络/解码选项也必须进 key：重放轮次里 proxy、dnsIp、
         // retry、webJs、delay、charset 变化时不能复用上一轮的页面。

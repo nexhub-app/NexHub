@@ -48,7 +48,7 @@ const String sourceContextJsPrelude = r'''
     if (!global.__shuyuanCtx || typeof global.__shuyuanCtx !== 'object') {
       global.__shuyuanCtx = { sourceId: '', sourceVars: {}, sourceMeta: {},
         bookVars: {}, bookInfo: {}, cookies: {}, loginInfo: {}, loginHeader: {},
-        cache: {} };
+        cache: {}, cacheBytes: {} };
     }
     return global.__shuyuanCtx;
   }
@@ -577,8 +577,27 @@ const String sourceContextJsPrelude = r'''
   }
   var cache = {
     put: function (k, v, saveTime) {
+      // legado `CacheManager.put(key, value: Any)`：byte[] 与 String 分表存储。
+      // 二进制走独立的 base64 字节表（宿主 `cacheBytes`），文本表保持
+      // Map<String,String> 契约不变。
+      if (v != null && typeof v === 'object' && typeof v.length === 'number') {
+        // Base64 编码器在第二段预置脚本里（`global.__syB64FromBytes`），
+        // 跨作用域只能走全局；缺省时退化为不缓存（不能抛错中断脚本）。
+        var enc = global.__syB64FromBytes;
+        if (typeof enc !== 'function') return null;
+        var raw = [];
+        for (var bi = 0; bi < v.length; bi++) raw.push(v[bi] & 0xff);
+        var b64 = enc(raw);
+        var cb = syCtx().cacheBytes || (syCtx().cacheBytes = {});
+        cb[String(k)] = b64;
+        // 同键换类型：旧文本值必须同轮失效（legado 单表覆盖）。
+        delete syCtx().cache[String(k)];
+        syOp('cachePutBytes', k, b64);
+        return null;
+      }
       var s = String(v == null ? '' : v);
       syCtx().cache[String(k)] = s;
+      if (syCtx().cacheBytes) delete syCtx().cacheBytes[String(k)];
       // 传字符串快照：宿主 cache 是 Map<String,String>，对象直传会在排空
       // 时类型失配；同时保证占位符守卫看到的就是最终缓存值。
       // saveTime 单位秒（legado CacheManager：0/缺省 = 永久）。
@@ -590,7 +609,9 @@ const String sourceContextJsPrelude = r'''
       // legado CacheManager.get 返回 String?（缺省 null）：源脚本用
       // `obj === undefined` / `JSON.parse(cache.get(...))` 探测缓存，
       // 返回空串会让 JSON.parse('') 抛 SyntaxError 中断整个发现页脚本。
-      return v == null ? null : v;
+      // 字节条目在 legado 里是 ByteArray，`get` 取不到文本 → null。
+      if (v == null) return null;
+      return v;
     },
     // legado CacheManager 数值/内存族（内存层与磁盘层同源：本实现 put 后
     // 两处都写，数值 getter 直接按字符串解析，缺失/非数值返回 null）。
@@ -599,9 +620,18 @@ const String sourceContextJsPrelude = r'''
     getLong: function (k) { return __cacheToInt(cache.get(k)); },
     getDouble: function (k) { return __cacheToDouble(cache.get(k)); },
     getFloat: function (k) { return __cacheToDouble(cache.get(k)); },
-    getByteArray: function (k) { return null; },
+    // legado `CacheManager.getByteArray(key): ByteArray?`：命中返回字节副本
+    // （有符号 byte[]，与 readFile/bodyAsBytes 同口径），否则 null。
+    getByteArray: function (k) {
+      var cb = syCtx().cacheBytes;
+      var b64 = cb ? cb[String(k)] : null;
+      if (b64 == null) return null;
+      return syB64ToBytes(b64);
+    },
     delete: function (k) {
       delete syCtx().cache[String(k)];
+      var cb = syCtx().cacheBytes;
+      if (cb) delete cb[String(k)];
       syOp('cacheDel', k, '');
       return null;
     },
@@ -5101,6 +5131,64 @@ const String javaExtensionsJsPrelude = r'''
     return '[' + this.__a.join(', ') + ']';
   };
 
+  // legado/Rhino 直接暴露真实 java.util.Set（去重语义）。旧实现把
+  // HashSet/Set 映射到 JavaList，`add` 永远追加 —— 依赖 Set 去重的脚本
+  // （关键词合并、URL 池、标签集合）会拿到重复项。
+  function JavaSet(init) {
+    if (!(this instanceof JavaSet)) return new JavaSet(init);
+    this.__a = [];
+    if (init && typeof init.length === 'number') {
+      for (var i = 0; i < init.length; i++) this.add(init[i]);
+    }
+  }
+  jmark(JavaSet, 'java.util.HashSet');
+  JavaSet.prototype.__indexOf = function (v) {
+    for (var i = 0; i < this.__a.length; i++) {
+      if (this.__a[i] === v) return i;
+    }
+    return -1;
+  };
+  JavaSet.prototype.add = function (v) {
+    if (this.__indexOf(v) >= 0) return false;
+    this.__a.push(v);
+    return true;
+  };
+  JavaSet.prototype.addAll = function (coll) {
+    var changed = false;
+    if (coll && typeof coll.length === 'number') {
+      for (var i = 0; i < coll.length; i++) {
+        if (this.add(coll[i])) changed = true;
+      }
+    }
+    return changed;
+  };
+  JavaSet.prototype.contains = function (v) { return this.__indexOf(v) >= 0; };
+  JavaSet.prototype.remove = function (v) {
+    var i = this.__indexOf(v);
+    if (i < 0) return false;
+    this.__a.splice(i, 1);
+    return true;
+  };
+  JavaSet.prototype.size = function () { return this.__a.length; };
+  JavaSet.prototype.isEmpty = function () { return this.__a.length === 0; };
+  JavaSet.prototype.clear = function () { this.__a = []; };
+  JavaSet.prototype.toArray = function () { return this.__a.slice(); };
+  JavaSet.prototype.toJSON = function () { return this.__a.slice(); };
+  JavaSet.prototype.iterator = function () {
+    var a = this.__a;
+    var i = 0;
+    return {
+      hasNext: function () { return i < a.length; },
+      next: function () { return a[i++]; },
+    };
+  };
+  JavaSet.prototype.forEach = function (fn) {
+    for (var i = 0; i < this.__a.length; i++) fn(this.__a[i]);
+  };
+  JavaSet.prototype.toString = function () {
+    return '[' + this.__a.join(', ') + ']';
+  };
+
   // ── java.lang.System / Thread ──
   var JavaSystem = jmark({
     currentTimeMillis: function () { return Date.now(); },
@@ -5960,9 +6048,13 @@ const String javaExtensionsJsPrelude = r'''
     if (!(this instanceof OkHttpRequestBody)) {
       return new OkHttpRequestBody(body, mt);
     }
+    // 二进制体保留原始字节（legado `RequestBody.create(mediaType, byte[])`
+    // 原样发送）：先做 UTF-8 容错解码再回编码会破坏密文/签名载荷。
     if (body && body.length != null && typeof body !== 'string') {
-      this.__text = utf8Decode(juBytes(body));
+      this.__bytes = juBytes(body).map(function (x) { return x & 0xff; });
+      this.__text = null;
     } else {
+      this.__bytes = null;
       this.__text = String(body == null ? '' : body);
     }
     this.__mt = mt;
@@ -5973,7 +6065,10 @@ const String javaExtensionsJsPrelude = r'''
     if (a instanceof OkHttpMediaType) { mt = a; body = b; }
     return new OkHttpRequestBody(body, mt);
   };
-  OkHttpRequestBody.prototype.toString = function () { return this.__text; };
+  OkHttpRequestBody.prototype.toString = function () {
+    if (this.__text == null) this.__text = utf8Decode(this.__bytes || []);
+    return this.__text;
+  };
   OkHttpRequestBody.prototype.contentType = function () {
     return this.__mt || null;
   };
@@ -6064,13 +6159,20 @@ const String javaExtensionsJsPrelude = r'''
     if (!url) throw new Error('okhttp: Request.url must be set');
     var method = String(req.__method || 'GET').toUpperCase();
     var body = null;
+    var bodyB64 = null;
     var bodyType = null;
     if (req.__body != null) {
       var rb = req.__body;
       if (rb && typeof rb.contentType === 'function') {
         bodyType = rb.contentType();
       }
-      body = rb && rb.__text != null ? String(rb.__text) : String(rb);
+      // 二进制 RequestBody 走 base64 通道：文本通道会按 UTF-8 容错解码，
+      // 密文/签名载荷一旦损坏，服务端只回鉴权失败，规则层看不到原因。
+      if (rb && rb.__bytes) {
+        bodyB64 = b64FromBytes(rb.__bytes);
+      } else {
+        body = rb && rb.__text != null ? String(rb.__text) : String(rb);
+      }
     }
     var headers = {};
     var hasHeaders = false;
@@ -6087,9 +6189,11 @@ const String javaExtensionsJsPrelude = r'''
     var opts = {};
     if (hasHeaders) opts.headers = headers;
     if (method !== 'GET') opts.method = method;
-    if (body != null) opts.body = body;
+    if (bodyB64 != null) opts._syBodyB64 = bodyB64;
+    else if (body != null) opts.body = body;
     var merged = jMergeUrlOpts(url, opts);
-    // POST 沿用宿主约定的 `url||POST||body` 组合键（settle 拆分后发 POST）。
+    // POST 沿用宿主约定的 `url||POST||body` 组合键（settle 拆分后发 POST）；
+    // 二进制体已进选项串（`_syBodyB64`），不再拼进键。
     var key = method === 'POST' && body != null
         ? merged + '||POST||' + body : merged;
     var base = global.java && global.java.connect
@@ -6740,8 +6844,9 @@ const String javaExtensionsJsPrelude = r'''
     ArrayList: JavaList,
     LinkedList: JavaList,
     List: JavaList,
-    HashSet: JavaList,
-    Set: JavaList,
+    HashSet: JavaSet,
+    LinkedHashSet: JavaSet,
+    Set: JavaSet,
   }, { zip: P_java_util_zip });
   var P_java_io = jpkg({
     ByteArrayOutputStream: ByteArrayOutputStream,
