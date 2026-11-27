@@ -19,13 +19,21 @@ class ShuyuanWebviewResult {
     required this.html,
     this.finalUrl = '',
     this.cookieHeaders = const <String, String>{},
+    this.matchedUrl,
   });
 
   final String html;
+
+  /// 页面自身的最终地址（导航后的 URL）。资源嗅探命中时**不**替换成本
+  /// 命中地址——legado `BackstageWebView` 返回的 `res.url` 仍是页面 URL，
+  /// 命中 URL 只作为正文。
   final String finalUrl;
 
   /// host → `name=value; ...`（只含该域可回放的 Cookie）。
   final Map<String, String> cookieHeaders;
+
+  /// `sourceRegex`/`overrideUrlRegex` 命中的资源 URL（legado 嗅探正文）。
+  final String? matchedUrl;
 }
 
 class ShuyuanWebviewFetcher {
@@ -247,8 +255,8 @@ class ShuyuanWebviewFetcher {
           await Future<void>.delayed(_jsSettle);
         }
       }
-      final finalUrl =
-          matchedUrl ?? (await c.getUrl())?.toString() ?? startUrl;
+      final pageUrl = (await c.getUrl())?.toString() ?? '';
+      final finalUrl = pageUrl.isNotEmpty ? pageUrl : startUrl;
       final out = matchedUrl ??
           ((evaluated != null && evaluated.isNotEmpty)
               ? evaluated
@@ -263,6 +271,7 @@ class ShuyuanWebviewFetcher {
         html: out,
         finalUrl: finalUrl,
         cookieHeaders: cookieHeaders,
+        matchedUrl: matchedUrl,
       );
     } on Object catch (e) {
       debugPrint('[书源webView] 无头取源失败: $e');

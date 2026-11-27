@@ -15,6 +15,7 @@ import 'package:enough_convert/big5.dart' show Big5Codec;
 import 'package:fast_gbk/fast_gbk.dart';
 import '../../../core/utils/app_log.dart';
 import 'analyze_rule.dart';
+import 'charset_registry.dart';
 import 'js_engine.dart';
 import 'legado_bool.dart';
 import 'webview_fetcher.dart';
@@ -97,6 +98,11 @@ class AnalyzeUrl {
   /// 移除它：legado 的 `java.getStrResponse()` 是真实请求，不能命中首取
   /// 写入的阶段缓存（否则重取原样返回旧墙页）。
   String? _lastCacheKey;
+
+  /// 内部标记 `_sySourceRegex`：loginCheckJs 里
+  /// `java.getStrResponse(jsStr, sourceRegex)` 的 sniff 正则。legado 把它
+  /// 交给 BackstageWebView 在资源层嗅探，本实现沿用同一条 fetcher 通道。
+  String? _injectedSourceRegex;
 
   /// 最近一次 [getStrResponse] 的原始响应字节（未解码）。
   /// `org.jsoup…bodyAsBytes()` 的 settle 重放需要无损二进制
@@ -452,6 +458,18 @@ class AnalyzeUrl {
         webJs = option['webJs']?.toString();
         bodyJs = option['bodyJs']?.toString();
         dnsIp = option['dnsIp']?.toString();
+        // 内部标记：loginCheckJs 重取时的代理快照（legado 在同一 AnalyzeUrl
+        // 实例上重取，proxy 由源 headerMapF 带入，本实现的快照通道沿用同名键）。
+        final optProxy = option['proxy']?.toString();
+        if (optProxy != null && optProxy.trim().isNotEmpty) {
+          proxy = optProxy.trim();
+        }
+        // 内部标记：loginCheckJs 的 `java.getStrResponse(js, regex)` 把
+        // sourceRegex 透传给 fetcher（legado 在 BackstageWebView 资源层嗅探）。
+        final injectedRegex = option['_sySourceRegex']?.toString();
+        if (injectedRegex != null && injectedRegex.trim().isNotEmpty) {
+          _injectedSourceRegex = injectedRegex.trim();
+        }
 
         // 内部标记：JS 垫片（java.connect/get/post/head、Jsoup）声明本次
         // 请求按 legado headerMapF 的替换语义发头。
@@ -703,15 +721,24 @@ class AnalyzeUrl {
     return sb.toString();
   }
 
-  /// 按声明字符集取字节（GBK 系用 GBK，其余 UTF-8；GBK 失败回退 UTF-8）。
+  /// 按声明字符集取字节。
+  ///
+  /// 对齐 Java `Charset.forName`：已知标签（含 Big5 / ISO-8859-x /
+  /// windows-125x / KOI8 / UTF-16 与 GBK 系）按各自编码取字节；**未知标签
+  /// 显式报错**，不再静默回落 UTF-8（旧实现只有 GBK 系，其余一律 UTF-8，
+  /// 非 GBK 站点收到的搜索词/表单就是乱码且无任何提示）。
+  /// 已声明字符集但个别字符编不出来时（Java `getBytes` 会替换成 `?`）按
+  /// UTF-8 回落并留日志，避免一个生僻字打断整条链路。
   List<int> _charsetBytes(String value, String? charsetLower) {
-    final lower = charsetLower?.toLowerCase();
-    if (lower == 'gbk' || lower == 'gb2312' || lower == 'gb18030') {
-      try {
-        return gbk.encode(value);
-      } catch (_) {}
+    try {
+      return ShuyuanCharset.encode(value, charsetLower);
+    } on ShuyuanUnsupportedCharsetException {
+      rethrow;
+    } catch (e) {
+      AppLog.instance
+          .w('[书源URL] 字符集编码失败(charset=$charsetLower)，按 UTF-8 回落：$e');
+      return utf8.encode(value);
     }
-    return utf8.encode(value);
   }
 
   static const String _queryNoEncodeChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -786,34 +813,35 @@ class AnalyzeUrl {
     return idx == -1 ? u : u.substring(0, idx);
   }
 
+  /// URL 模板 / `bodyJs` 的脚本求值。
+  ///
+  /// 异常**原样传播**（对齐 legado `AnalyzeUrl.evalJS`：Rhino 异常不捕获）。
+  /// 旧实现 catch 后返回 `currentResult`，坏脚本会被当成可继续的 URL/正文，
+  /// 最终发出半展开地址或把未处理响应当成功结果——失败必须可见。
   String _evalJs(String jsCode, String currentResult) {
-    try {
-      final analyzeRule = _urlRule ??= AnalyzeRule(book: ruleData, chapter: chapter);
-      // baseUrl 可能在绝对化后被刷新、或 reinitUrl 后变化，每次求值前同步。
-      analyzeRule.setBaseUrl(baseUrl);
-      // URL 内 JS 的宿主绑定（对齐 legado AnalyzeUrl.evalJS）：
-      // 分页偏移（`page-1`）、关键词处理等表达式依赖 page/key。
-      return analyzeRule.evalJs(jsCode, currentResult, extraBindings: {
-        'page': page,
-        'key': key ?? '',
-        'speakText': speakText ?? '',
-        // legado AnalyzeUrl.evalJS 的听书绑定：speakSpeed/音色/发音人/情感。
-        'speakSpeed': speakSpeed ?? 0,
-        'currentToneID': currentToneID ?? '',
-        'currentSpeakerName': currentSpeakerName ?? '',
-        'currentEmotionName': currentEmotionName ?? '',
-        'currentEmotionTag': currentEmotionTag ?? '',
-        // legado 绑定 `java = this`（AnalyzeUrl 实体），URL 模板脚本读
-        // `java.ruleUrl` 拿到的是**当前**规则地址：analyzeJs 期间是原始
-        // 模板，之后是展开结果。沙箱不持有宿主对象，按次注入当前值。
-        '__syRuleUrl': ruleUrl,
-        // 调用方追加占位符（如段评的 `paragraph`）：放在内置绑定之后，
-        // 同名键覆盖内置值（调用方明确知道自己在覆盖什么）。
-        ...extraBindings,
-      });
-    } catch (_) {
-      return currentResult;
-    }
+    final analyzeRule = _urlRule ??= AnalyzeRule(book: ruleData, chapter: chapter);
+    // baseUrl 可能在绝对化后被刷新、或 reinitUrl 后变化，每次求值前同步。
+    analyzeRule.setBaseUrl(baseUrl);
+    // URL 内 JS 的宿主绑定（对齐 legado AnalyzeUrl.evalJS）：
+    // 分页偏移（`page-1`）、关键词处理等表达式依赖 page/key。
+    return analyzeRule.evalJs(jsCode, currentResult, extraBindings: {
+      'page': page,
+      'key': key ?? '',
+      'speakText': speakText ?? '',
+      // legado AnalyzeUrl.evalJS 的听书绑定：speakSpeed/音色/发音人/情感。
+      'speakSpeed': speakSpeed ?? 0,
+      'currentToneID': currentToneID ?? '',
+      'currentSpeakerName': currentSpeakerName ?? '',
+      'currentEmotionName': currentEmotionName ?? '',
+      'currentEmotionTag': currentEmotionTag ?? '',
+      // legado 绑定 `java = this`（AnalyzeUrl 实体），URL 模板脚本读
+      // `java.ruleUrl` 拿到的是**当前**规则地址：analyzeJs 期间是原始
+      // 模板，之后是展开结果。沙箱不持有宿主对象，按次注入当前值。
+      '__syRuleUrl': ruleUrl,
+      // 调用方追加占位符（如段评的 `paragraph`）：放在内置绑定之后，
+      // 同名键覆盖内置值（调用方明确知道自己在覆盖什么）。
+      ...extraBindings,
+    });
   }
 
   bool get _isValidHttpUrl {
@@ -1004,12 +1032,15 @@ class AnalyzeUrl {
       // 同 URL 换会话/UA 必须重新渲染，不能复用旧页。
       webviewCacheKey = activeCtx == null
           ? null
-          : _pageCacheKey(jsStr, sourceRegex, webHeaders);
+          : _pageCacheKey(jsStr, sourceRegex ?? _injectedSourceRegex, webHeaders);
       if (activeCtx != null && webviewCacheKey != null) {
         final hit = activeCtx.pageCache[webviewCacheKey];
         if (hit != null) {
           // 重放命中：恢复该响应当初的最终地址（legado 重放=重跑，res.url 不变）。
           lastFinalUrl = activeCtx.pageCacheFinalUrl[webviewCacheKey];
+          // 与 HTTP 分支同款：记录本次响应对应的缓存键，loginCheck 重取前
+          // 才会被精确撤销（否则重取命中旧墙页/旧登录态）。
+          _lastCacheKey = webviewCacheKey;
           AppLog.instance.d('[书源HTTP] 阶段缓存命中 $url');
           return hit;
         }
@@ -1049,6 +1080,9 @@ class AnalyzeUrl {
         js: webJs ?? jsStr,
         delayMs: webViewDelayTime,
         headers: webHeaders,
+        // legado：sourceRegex 由 BackstageWebView 在资源/导航层整串嗅探，
+        // 命中即返回资源 URL 作为正文（不是对渲染后的 HTML 再做捕获组正则）。
+        sourceRegex: sourceRegex ?? _injectedSourceRegex,
       ).timeout(const Duration(seconds: 60));
       final rendered = result?.html ?? '';
       if (rendered.isEmpty) {
@@ -1087,8 +1121,14 @@ class AnalyzeUrl {
           webJs: webJs,
         );
       }
+      final sniffedUrl = result?.matchedUrl;
       var out = rendered;
-      if (sourceRegex != null && sourceRegex.isNotEmpty) {
+      if (sniffedUrl != null && sniffedUrl.isNotEmpty) {
+        // legado `BackstageWebView`：sourceRegex 命中后正文 = 命中 URL，
+        // 不再对 HTML 做二次正则（旧实现对已命中结果再跑捕获组，可能把
+        // 媒体地址改写成空串/片段）。
+        out = sniffedUrl;
+      } else if (sourceRegex != null && sourceRegex.isNotEmpty) {
         try {
           final regex = RegExp(sourceRegex, dotAll: true);
           final m = regex.firstMatch(out);
@@ -1096,6 +1136,7 @@ class AnalyzeUrl {
         } catch (_) {}
       }
       if (activeCtx != null && webviewCacheKey != null) {
+        _lastCacheKey = webviewCacheKey;
         activeCtx.pageCachePut(webviewCacheKey, out, finalUrl: lastFinalUrl);
       }
       lastResponseBytes = Uint8List.fromList(utf8.encode(out));
@@ -1199,9 +1240,10 @@ class AnalyzeUrl {
 
     // HTTP 分支阶段缓存：请求头（含源 header 的 @js 求值结果）参与 key，
     // 避免 settle 重放时把旧头取到的响应错配给新头请求。
+    final effectiveSourceRegex = sourceRegex ?? _injectedSourceRegex;
     final cacheKey = activeCtx == null
         ? null
-        : _pageCacheKey(jsStr, sourceRegex, requestHeaders);
+        : _pageCacheKey(jsStr, effectiveSourceRegex, requestHeaders);
     if (activeCtx != null && cacheKey != null && !skipPageCache) {
       final hit = activeCtx.pageCache[cacheKey];
       if (hit != null) {
@@ -1222,11 +1264,24 @@ class AnalyzeUrl {
 
       // 代理：源声明的 proxy 字段此前解析但未使用；此处落地——非空时改用带
       // IOHttpClientAdapter(findProxy) 的临时 Dio 发起本次请求，不影响全局默认 Dio。
-      final Dio dio = proxy != null && proxy!.isNotEmpty
+      final hasProxy = proxy != null && proxy!.isNotEmpty;
+      if (hasProxy && dnsIp != null && dnsIp!.trim().isNotEmpty) {
+        // legado 在 proxy client 上继续应用 dnsIp；代理链路由代理端解析域名，
+        // 本实现无法把 dnsIp 叠加到 CONNECT 隧道上——显式记录而不是静默丢弃。
+        AppLog.instance.w(
+            '[书源HTTP] 同时声明 proxy 与 dnsIp：代理链路按代理端解析，dnsIp 不生效 $url');
+      }
+      final Dio dio = hasProxy
           ? (Dio()
+            // 与默认 client 一致的超时：代理慢时不能无限等待，也不能沿用
+            // Dio 默认的 0（无超时）把整条链路挂死。
+            ..options.connectTimeout = _dio.options.connectTimeout
+            ..options.sendTimeout = _dio.options.sendTimeout
+            ..options.receiveTimeout = _dio.options.receiveTimeout
             ..httpClientAdapter = IOHttpClientAdapter(
               createHttpClient: () {
-                final client = HttpClient();
+                final client = HttpClient()
+                  ..connectionTimeout = _dio.options.connectTimeout;
                 client.findProxy = (_) => 'PROXY $proxy';
                 return client;
               },
@@ -1449,9 +1504,11 @@ class AnalyzeUrl {
 
     // legado：jsStr 仅在 WebView 路径作为页内脚本消费（Java 直连分支不处理），
     // 此处保持一致；sourceRegex 在直连分支继续应用（NexHub 既有扩展语义）。
-    if (!typeHex && sourceRegex != null && sourceRegex.isNotEmpty) {
+    if (!typeHex &&
+        effectiveSourceRegex != null &&
+        effectiveSourceRegex.isNotEmpty) {
       try {
-        final regex = RegExp(sourceRegex, dotAll: true);
+        final regex = RegExp(effectiveSourceRegex, dotAll: true);
         final match = regex.firstMatch(body);
         if (match != null) {
           if (match.groupCount > 0) {
@@ -2230,10 +2287,14 @@ class AnalyzeUrl {
   ///   `return '500'` / `result = '500'` 仍可声明登录失效。
   ///
   /// 对齐 legado 把 `java` 绑定为 AnalyzeUrl 的求值环境：脚本可经
-  /// `java.getStrResponse()` 重取当前地址（`java.initUrl()` 提前重解析
-  /// 模板），返回值替换 `result`；重取的响应体同样回传宿主替换原响应。
+  /// `java.getStrResponse()` 重取当前地址（`java.initUrl()` 在**调用点**
+  /// 重解析模板），返回值替换 `result`；重取的响应体同样回传宿主替换原响应。
   /// 重取走沙箱确定性重放（首轮记 op，宿主抓取后重放命中缓存），因此
-  /// 检查被改写为多轮循环——仅当本轮没有新增请求（或抓取无进展）才收敛。
+  /// 检查被改写为多轮循环——每轮都以**上一轮的新响应**为输入，仅当本轮
+  /// 没有新增请求（或抓取无进展）才收敛。
+  ///
+  /// 异常不吞（legado `evalJS` 直接向上抛）：检查脚本失效时必须可见，
+  /// 不能用原响应掩盖（旧实现整段 catch 后返回首响应当登录检查未发生）。
   Future<_LoginCheckOutcome> _runLoginCheck(
     String js,
     int statusCode,
@@ -2241,50 +2302,55 @@ class AnalyzeUrl {
     String? responseUrl,
     Map<String, List<String>>? responseHeaders,
   }) async {
-    try {
-      // 复用 per-source 引擎：loginCheckJs 每次请求都会求值，不能每次新建
-      // QuickJS 运行时。上下文种子由 JsEngine.eval 统一注入。
-      final activeCtx = ShuyuanSourceContext.current;
-      final engine = JsEngine.forSource(activeCtx?.sourceId);
-      // `java.initUrl()`：legado 在调用点同步重解析 URL 模板；同步沙箱
-      // 无法回跳宿主，改为求值前预解析一次（脚本声明即生效）。
-      if (js.contains('initUrl(')) {
-        reinitUrl();
-      }
+    // 复用 per-source 引擎：loginCheckJs 每次请求都会求值，不能每次新建
+    // QuickJS 运行时。上下文种子由 JsEngine.eval 统一注入。
+    final activeCtx = ShuyuanSourceContext.current;
+    final engine = JsEngine.forSource(activeCtx?.sourceId);
+    final base = (source?.bookSourceUrl ?? '').isNotEmpty
+        ? source!.bookSourceUrl
+        : (baseUrl?.isNotEmpty ?? false)
+            ? baseUrl!
+            : url;
+    final deadline = DateTime.now().add(const Duration(seconds: 60));
+
+    // 当前响应状态：每轮推进（legado 每次 evalJS 拿到的都是最新 res）。
+    var code = statusCode;
+    var curBody = body;
+    var curUrl = responseUrl ?? url;
+    var curHeaders = responseHeaders;
+    _LoginCheckOutcome outcome = _LoginCheckOutcome(code, null);
+    // `java.initUrl()` 的副作用按 op 去重：重放轮次里再次执行只跳过，不再
+    // 二次重解析（否则模板里的时间戳/nonce 会一轮一个新值）。
+    var initUrlApplied = false;
+
+    for (var pass = 0; pass < 4; pass++) {
+      // 每轮重建种子：java.ruleUrl/java.url 读当前快照，重取的 URL 选项
+      // （proxy/dnsIp/retry/webView/webJs/bodyJs/type/charset…）随快照透传，
+      // 不再用「url+headers+method+body」五个字段近似重建。
       final seed = jsonEncode(<String, dynamic>{
         'ruleUrl': ruleUrl,
         'url': url,
         'headers': resolveRequestHeaders(),
         'method': method?.toUpperCase() ?? '',
         'body': this.body ?? '',
+        'options': _loginCheckOptionSnapshot(),
       });
       // legado 里检查脚本拿到的是 StrResponse：url() 为重定向后的最终地址，
       // headers() 为真实响应头（多值头取第一条，Java Map.get 同形）。
       final lcHeaders = <String, String>{};
-      responseHeaders?.forEach((k, v) {
+      curHeaders?.forEach((k, v) {
         if (v.isNotEmpty) lcHeaders[k] = v.first;
       });
-      final base = (source?.bookSourceUrl ?? '').isNotEmpty
-          ? source!.bookSourceUrl
-          : (baseUrl?.isNotEmpty ?? false)
-              ? baseUrl!
-              : url;
-      final deadline = DateTime.now().add(const Duration(seconds: 60));
-      var code = statusCode;
-      String? bodyOverride;
-      String? urlOverride;
-      Map<String, String>? headersOverride;
-      for (var pass = 0; pass < 4; pass++) {
-        final before = activeCtx == null
-            ? const <String>{}
-            : <String>{
-                ...activeCtx.ajaxPending,
-                ...activeCtx.ajaxBytesPending,
-              };
-        final wrapped = 'var __lcBody = ${jsonEncode(body)};\n'
-            'var __lcUrl = ${jsonEncode(responseUrl ?? url)};\n'
-            'var result = new String(__lcBody);\n'
-            'result.__code = $statusCode;\n'
+      final before = activeCtx == null
+          ? const <String>{}
+          : <String>{
+              ...activeCtx.ajaxPending,
+              ...activeCtx.ajaxBytesPending,
+            };
+      final wrapped = 'var __lcBody = ${jsonEncode(curBody)};\n'
+          'var __lcUrl = ${jsonEncode(curUrl)};\n'
+          'var result = new String(__lcBody);\n'
+          'result.__code = $code;\n'
             'result.body = (function () {\n'
             '  var f = function () { return __lcBody; };\n'
             '  f.toString = f.valueOf = function () { return __lcBody; };\n'
@@ -2374,16 +2440,62 @@ class AnalyzeUrl {
             'JSON.stringify({o: __lcCode, b: __lcBodyOut, u: __lcUrlOut, h: __lcHeadersOut})';
         final r = engine.eval(wrapped,
             bindings: {'baseUrl': base, 'key': key ?? '', 'page': page});
-        final parsed = _parseLoginCheckResult(r, statusCode);
+        final parsed = _parseLoginCheckResult(r, code);
         code = parsed.code;
         // 重取的响应元数据只在正文可用时一起采用：占位符正文还没被 settle
         // 抓回来，配它的 url/headers 也是上一轮的。
         if (parsed.body != null && !_hasReplayPlaceholder(parsed.body!)) {
-          bodyOverride = parsed.body;
-          urlOverride = parsed.url;
-          headersOverride = parsed.headers;
+          curBody = parsed.body!;
+          if (parsed.url != null && parsed.url!.isNotEmpty) {
+            curUrl = parsed.url!;
+          }
+          if (parsed.headers != null) {
+            curHeaders = <String, List<String>>{
+              for (final e in parsed.headers!.entries)
+                if (e.value.isNotEmpty) e.key: <String>[e.value],
+            };
+          }
+          outcome = _LoginCheckOutcome(
+            code,
+            curBody,
+            url: curUrl,
+            headers: parsed.headers,
+          );
+        } else {
+          outcome = _LoginCheckOutcome(
+            code,
+            outcome.body,
+            url: outcome.url,
+            headers: outcome.headers,
+          );
         }
         if (activeCtx == null) break;
+        // java.initUrl()：脚本执行到调用点才重解析（legado 在调用点同步执行，
+        // 而不是求值前按文本预扫描——注释/未执行分支里的调用不再误触发）。
+        if (activeCtx.initUrlRequested) {
+          activeCtx.initUrlRequested = false;
+          if (initUrlApplied) {
+            // 重放轮：initUrl 已生效，跳过（副作用按 op 去重）。
+          } else {
+            initUrlApplied = true;
+            // 本轮在重解析之前记下的请求基于旧模板，Legado 不会发出它们
+            // （initUrl 在调用点之后才构造新 URL）——丢弃，等重放按新模板重建。
+            final afterInit = <String>{
+              ...activeCtx.ajaxPending,
+              ...activeCtx.ajaxBytesPending,
+            }..removeAll(before);
+            for (final k in afterInit) {
+              activeCtx.ajaxPending.remove(k);
+              activeCtx.ajaxBytesPending.remove(k);
+              activeCtx.ajaxTimeouts.remove(k);
+              activeCtx.ajaxBatch.remove(k);
+              activeCtx.ajaxSkipRateLimit.remove(k);
+            }
+            reinitUrl();
+            if (!DateTime.now().isBefore(deadline)) break;
+            continue;
+          }
+        }
         final after = <String>{
           ...activeCtx.ajaxPending,
           ...activeCtx.ajaxBytesPending,
@@ -2398,15 +2510,32 @@ class AnalyzeUrl {
         );
         if (fetched == 0) break;
       }
-      return _LoginCheckOutcome(
-        code,
-        bodyOverride,
-        url: urlOverride,
-        headers: headersOverride,
-      );
-    } catch (_) {
-      return _LoginCheckOutcome(statusCode, null);
+    return outcome;
+  }
+
+  /// loginCheckJs 重取的 URL 选项快照（legado 在同一 AnalyzeUrl 实例上重取，
+  /// 私有字段全部保留）。只带**声明型**选项，`headers` 由脚本当前 headerMap
+  /// 提供（脚本 put 的头部必须优先于构造期选项头）。
+  Map<String, dynamic> _loginCheckOptionSnapshot() {
+    final opts = <String, dynamic>{};
+    if (method != null && method!.isNotEmpty) opts['method'] = method;
+    if (body != null) opts['body'] = body;
+    if (charset != null && charset!.isNotEmpty) opts['charset'] = charset;
+    if (retry > 0) opts['retry'] = retry;
+    if (useWebView) opts['webView'] = true;
+    if (webJs != null && webJs!.isNotEmpty) opts['webJs'] = webJs;
+    if (bodyJs != null && bodyJs!.isNotEmpty) opts['bodyJs'] = bodyJs;
+    if (dnsIp != null && dnsIp!.isNotEmpty) opts['dnsIp'] = dnsIp;
+    if (proxy != null && proxy!.isNotEmpty) opts['proxy'] = proxy;
+    if (requestType != null && requestType!.isNotEmpty) {
+      opts['type'] = requestType;
     }
+    if (serverID != null) opts['serverID'] = serverID;
+    if (webViewDelayTime > 0) opts['webViewDelayTime'] = webViewDelayTime;
+    if (followRedirects != null) opts['followRedirects'] = followRedirects;
+    if (_syRawBody) opts['_syRawBody'] = true;
+    if (_headerMapReplaced) opts['_syHeaderMode'] = 'replace';
+    return opts;
   }
 
   /// 解析检查脚本的 JSON 结果；非法状态码维持原状态码（避免把正文里
