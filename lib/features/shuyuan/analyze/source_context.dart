@@ -332,6 +332,7 @@ class ShuyuanSourceContext {
     fileOpPending.clear();
     fileOpArgs.clear();
     browserOpened.clear();
+    initUrlRequested = false;
   }
 
   // ── java.webView 的确定性重放（与 java.ajax 同款，只是宿主换成无头 WebView）──
@@ -340,6 +341,11 @@ class ShuyuanSourceContext {
   final Map<String, List<String>> webviewArgs = <String, List<String>>{};
   final List<String> webviewPending = <String>[];
   final Map<String, String> webviewCache = <String, String>{};
+
+  /// loginCheckJs 里 `java.initUrl()` 在**调用点**记的 op：宿主在求值结束后
+  /// 重解析 URL 模板并重放本轮脚本（legado 在调用点同步执行，不从脚本文本
+  /// 预扫描——注释或未执行分支里的调用不会误触发）。
+  bool initUrlRequested = false;
 
   /// 抓取 webviewPending 中的页面，写入 [webviewCache]；失败同样缓存空串，
   /// 让占位符就地解析为 `''`（非 null 即命中），不会重复排队。
@@ -613,6 +619,8 @@ class ShuyuanSourceContext {
           kindRefreshRequested = true;
         case 'refreshTocUrl':
           bookInfoRefreshRequested = true;
+        case 'initUrl':
+          initUrlRequested = true;
         case 'copyText':
           copiedTexts.add(a);
         case 'webview':

@@ -29,10 +29,13 @@ void main() {
       expect(au.url, 'http://x.com/toc?bid=B7');
     });
 
-    test('无 itemContext 时规则形态按 JS 求值（legado 行为，容错为空）', () {
-      final au = AnalyzeUrl(url: 'http://x.com/toc?bid={{\$.bid}}');
-      // JS 求值 \$.bid 抛错 → 引擎容错为空串 → bid=（空）。
-      expect(au.url.contains('{{'), false);
+    test('无 itemContext 时规则形态按 JS 求值：异常向上传播', () {
+      // legado `AnalyzeUrl.evalJS` 不捕获异常：模板里的规则形态表达式在
+      // 没有求值根时抛错即失败（旧实现吞成空串，会发出半展开地址）。
+      expect(
+        () => AnalyzeUrl(url: 'http://x.com/toc?bid={{\$.bid}}'),
+        throwsA(anything),
+      );
     });
 
     test('非规则形态仍走 JS（{{1+2}}）', () {

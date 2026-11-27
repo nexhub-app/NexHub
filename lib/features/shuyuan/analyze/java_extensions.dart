@@ -1796,6 +1796,7 @@ const String sourceContextJsPrelude = r'''
         url: s.url == null ? '' : String(s.url),
         method: s.method == null ? '' : String(s.method),
         body: s.body == null ? '' : String(s.body),
+        options: (s.options && typeof s.options === 'object') ? s.options : null,
         headerMap: hm,
       };
     };
@@ -1819,8 +1820,13 @@ const String sourceContextJsPrelude = r'''
       get: function () { return global.__syLogin ? global.__syLogin.headerMap : {}; },
     });
     global.java.initUrl = function () {
-      // 宿主在求值前已按脚本声明重解析模板（见 AnalyzeUrl._runLoginCheck）。
-      if (global.__syLogin) return null;
+      // legado 在脚本执行到调用点时同步重解析 URL 模板。同步沙箱无法回跳
+      // 宿主，记 op 由 `_runLoginCheck` 在求值结束后重解析并重放本轮（旧实现
+      // 按脚本文本预扫描 `initUrl(`，注释或未执行分支里的调用也会生效）。
+      if (global.__syLogin) {
+        syOp('initUrl', '', '');
+        return null;
+      }
       if (!global.__initUrlLogged) {
         global.__initUrlLogged = true;
         global.java.log('[java.initUrl] 非 loginCheckJs 环境无 URL 可重解析，已忽略');
@@ -1834,13 +1840,33 @@ const String sourceContextJsPrelude = r'''
         return __syGetStrResponseBase
           ? __syGetStrResponseBase.apply(null, arguments) : '';
       }
-      if (jsStr != null && String(jsStr).trim() !== '') {
-        global.java.log('[java.getStrResponse] loginCheckJs 的 jsStr 参数暂不消费，已忽略');
-      }
+      // legado 在同一 AnalyzeUrl 实例上重取：构造期的 URL 选项（proxy/dnsIp/
+      // retry/webView/webJs/bodyJs/type/charset…）全部保留。宿主把快照放进
+      // seed.options，这里原样叠加（headers 由脚本当前 headerMap 提供）。
       var extra = null;
+      if (st.options) {
+        try {
+          extra = JSON.parse(JSON.stringify(st.options));
+        } catch (e) {
+          extra = null;
+        }
+      }
       if (st.method && st.method !== 'GET') {
-        extra = { method: st.method };
+        extra = extra || {};
+        extra.method = st.method;
         if (st.body) extra.body = st.body;
+      }
+      // legado `getStrResponseAwait(jsStr, sourceRegex)`：jsStr 只在 WebView
+      // 分支作为页内脚本执行（等价 URL 选项 webJs）；sourceRegex 交给
+      // BackstageWebView 资源层嗅探（宿主解析 `_sySourceRegex`）。
+      var js = jsStr == null ? '' : String(jsStr);
+      if (js.trim() !== '' && extra && extra.webView) {
+        extra.webJs = js;
+      }
+      var rx = sourceRegex == null ? '' : String(sourceRegex);
+      if (rx.trim() !== '') {
+        extra = extra || {};
+        extra._sySourceRegex = rx;
       }
       var key = syWithHeaders(st.url, st.headerMap, extra);
       return syResp(key, global.java.__ajaxReq(key));
