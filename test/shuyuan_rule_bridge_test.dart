@@ -132,7 +132,7 @@ void main() {
       });
     });
 
-    test('脚本赋值回写当前书（空值不覆盖）', () {
+    test('脚本赋值回写当前书（写入即回写，空值同样生效）', () {
       final book = XiaoshuoBook(bookUrl: 'https://x.test/b', name: '原标题');
       book.author = '原作者';
       final ctx = ShuyuanSourceContext('book-write');
@@ -141,9 +141,10 @@ void main() {
       ShuyuanSourceContext.run(ctx, () {
         r.getString("@js:book.name = '新标题'; book.name");
         expect(book.name, '新标题');
-        // 空串不覆盖已有值（正文阶段的空壳书不能抹掉详情字段）。
+        // 回写依据是「字段被 setter 触碰」而不是值非空：脚本显式清空
+        // 也必须落到实体（legado Book 字段写入语义）。
         expect(r.getString("@js:book.author = ''; book.author"), '');
-        expect(book.author, '原作者');
+        expect(book.author, '');
       });
     });
   });

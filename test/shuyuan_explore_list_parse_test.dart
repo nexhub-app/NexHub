@@ -232,7 +232,8 @@ void main() {
       expect(b.wordCount, '2万字');
       expect(b.coverUrl, 'https://cdn.test/d.jpg');
       expect(b.tocUrl, 'https://list.test/book/1/');
-      expect(b.type, 0);
+      // 书籍类型是 legado BookType 位掩码：文本源 = text(8)。
+      expect(b.type, 8);
     });
   });
 
