@@ -44,6 +44,33 @@ class BookChapterList {
       ..setRedirectUrl(redirectUrl ?? baseUrl);
 
     final nextTocRule = tocRule.nextTocUrl;
+
+    var chapters = <XiaoshuoBookChapter>[];
+
+    var listRule = tocRule.chapterList ?? '';
+    var reverse = false;
+    if (listRule.startsWith('-')) {
+      reverse = true;
+      listRule = listRule.substring(1);
+    }
+    if (listRule.startsWith('+')) {
+      listRule = listRule.substring(1);
+    }
+
+    var elements = <dynamic>[];
+    if (listRule.isEmpty) {
+      AppLog.instance.w('[书源目录] chapterList 规则为空: 源=${bookSource.bookSourceName}');
+    } else {
+      try {
+        elements = analyzeRule.getElements(listRule);
+        AppLog.instance.d('[书源目录] 源=${bookSource.bookSourceName} '
+            '规则=$listRule → ${elements.length}个元素');
+      } catch (_) {}
+    }
+
+    // 下一页目录链接：legado `BookChapterList.getChapterList` 在 getElements
+    // **之后**求值（旧实现放在之前：分页 URL 的变量/脚本副作用顺序与基准
+    // 相反，且相对地址被提前绝对化会改变后续规则的输入）。
     if (getNextUrl &&
         nextUrlsOut != null &&
         nextTocRule != null &&
@@ -60,33 +87,14 @@ class BookChapterList {
       } catch (_) {}
     }
 
-    var chapters = <XiaoshuoBookChapter>[];
-
-    var listRule = tocRule.chapterList ?? '';
-    var reverse = false;
-    if (listRule.startsWith('-')) {
-      reverse = true;
-      listRule = listRule.substring(1);
-    }
-    if (listRule.startsWith('+')) {
-      listRule = listRule.substring(1);
-    }
-
-    if (listRule.isEmpty) {
-      AppLog.instance.w('[书源目录] chapterList 规则为空: 源=${bookSource.bookSourceName}');
+    if (elements.isEmpty) {
+      if (listRule.isNotEmpty) {
+        AppLog.instance.w('[书源目录] 规则未命中任何元素: $listRule 源=${bookSource.bookSourceName}');
+      }
       return chapters;
     }
 
     try {
-      var elements = analyzeRule.getElements(listRule);
-      AppLog.instance.d('[书源目录] 源=${bookSource.bookSourceName} '
-          '规则=$listRule → ${elements.length}个元素');
-
-      if (elements.isEmpty) {
-        AppLog.instance.w('[书源目录] 规则未命中任何元素: $listRule 源=${bookSource.bookSourceName}');
-        return chapters;
-      }
-
       // 排除选择器：在进入逐条解析前，先剔除落在"最新章节预览"/"推荐"等
       // 非正文容器内的元素。比 [chapterScope] URL 前缀过滤更彻底——这些元素
       // 根本不会进入后续的标题提取/URL去重/垃圾标题过滤流程。

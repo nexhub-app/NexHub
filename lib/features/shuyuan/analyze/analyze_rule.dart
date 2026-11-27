@@ -200,16 +200,16 @@ class AnalyzeRule {
     if (result != null && ruleList.isNotEmpty) {
       for (final sourceRule in ruleList) {
         _putAll(sourceRule.putMap);
-        if (result == null) continue;
-        // 对齐 legado getElement：每条规则只 makeUpRule 一次，并把展开后
-        // 的规则文本交给执行器（此前执行器内部会再 makeUp 一次）。
+        // legado `AnalyzeRule.getElement`：put → makeUpRule → `result ?: continue`
+        // → 模式分派 → replacement。makeUpRule 在 null 判断**之前**执行（参数
+        // 里的 @get/JS 副作用即使前段结果为 null 也要发生）；展开为空仍进入
+        // 分派；replacement 对 null 结果按 `toString()` 口径处理。
         final st = _makeUpRule(sourceRule, result);
-        if (st.rule.isNotEmpty) {
-          result = _executeRuleElements(result, sourceRule,
-              single: true, prepared: st);
-        }
-        if (result != null && st.replaceRegex.isNotEmpty) {
-          result = _replaceRegex(result.toString(), st);
+        if (result == null) continue;
+        result = _executeRuleElements(result, sourceRule,
+            single: true, prepared: st);
+        if (st.replaceRegex.isNotEmpty) {
+          result = _replaceRegex(result?.toString() ?? 'null', st);
         }
       }
     }
@@ -467,10 +467,12 @@ class AnalyzeRule {
 
     for (final sourceRule in ruleList) {
       _putAll(sourceRule.putMap);
-      // legado getElements 不执行 makeUpRule：列表规则按原始文本进入各
-      // 模式解析（`$N`/`{{}}` 展开只在 getString/getElement 路径发生）。
-      result = _executeRuleElements(result, sourceRule, makeUp: false);
+      // legado getElements：put → `result ?: continue` → 分派。null 之后不再
+      // 调用解析器（旧顺序先分派再判 null，会对 null 内容再跑一次规则）。
       if (result == null) continue;
+      // 不执行 makeUpRule：列表规则按原始文本进入各模式解析（`$N`/`{{}}`
+      // 展开只在 getString/getElement 路径发生）。
+      result = _executeRuleElements(result, sourceRule, makeUp: false);
     }
 
     if (result == null) return [];

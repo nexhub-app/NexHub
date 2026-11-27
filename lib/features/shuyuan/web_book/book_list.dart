@@ -229,7 +229,7 @@ class BookList {
     // 的 `{{$.field}}`/`{{book.field}}` 读到的是**当前条目**已解析字段
     //（旧实现只在求 bookUrl 时绑定，书名/简介阶段的模板读不到）。
     final itemBook = XiaoshuoBook(bookUrl: '', name: '')
-      ..type = bookSource.bookSourceType;
+      ..type = bookSource.bookTypeMask;
     final prevBook = analyzeRule.book;
     analyzeRule.book = itemBook;
     try {
@@ -354,7 +354,7 @@ class BookList {
         wordCount: wordCount.isEmpty ? null : wordCount,
         bookSourceUrl: bookSource.bookSourceUrl,
         bookSourceName: bookSource.bookSourceName,
-        type: bookSource.bookSourceType,
+        type: bookSource.bookTypeMask,
       );
     } finally {
       analyzeRule.book = prevBook;
@@ -453,7 +453,7 @@ class BookList {
       wordCount: book.wordCount,
       bookSourceUrl: bookSource.bookSourceUrl,
       bookSourceName: bookSource.bookSourceName,
-      type: bookSource.bookSourceType,
+      type: bookSource.bookTypeMask,
     );
   }
 }

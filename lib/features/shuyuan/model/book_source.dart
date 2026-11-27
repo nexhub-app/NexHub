@@ -108,6 +108,26 @@ class XiaoshuoBookSource {
   String get key => bookSourceUrl;
   String get tag => bookSourceName;
 
+  /// legado `BookSource.getBookType()`：书源类型 → 书籍类型**位掩码**。
+  ///
+  /// legado `BookType`：video=4 / text=8 / audio=32 / image=64 / webFile=128；
+  /// 文件类书源是 `text | webFile`（136）。旧实现把 `bookSourceType`（本应用
+  /// 0..4 编号）直接写进 `Book.type`，脚本读 `book.type` 与位判断都和基准不同。
+  int get bookTypeMask {
+    switch (bookSourceType) {
+      case 3:
+        return 8 | 128; // text | webFile
+      case 2:
+        return 64; // image
+      case 1:
+        return 32; // audio
+      case 4:
+        return 4; // video
+      default:
+        return 8; // text
+    }
+  }
+
   /// 有效源判据：含任一可解析规则即可。
   ///
   /// `ruleBookInfo` 必须计入——文件类源（`bookSourceType=3`）只有

@@ -33,18 +33,21 @@ class BookInfo {
       ..setRedirectUrl(redirectUrl ?? baseUrl);
 
     if (bookInfoRule.init != null && bookInfoRule.init!.isNotEmpty) {
-      try {
-        final initContent = analyzeRule.getElement(bookInfoRule.init!);
-        if (initContent != null) {
-          analyzeRule.setContent(initContent);
-          AppLog.instance
-              .d('[书源详情] init规则命中: ${initContent.toString().length}字符');
-        } else {
-          AppLog.instance.w('[书源详情] init规则未命中: ${bookInfoRule.init}');
-        }
-      } catch (e) {
-        AppLog.instance.w('[书源详情] init规则异常: ${bookInfoRule.init} → $e');
+      // legado `BookInfo`：init 是详情解析的**强制前置**——`setContent(
+      // getElement(init))` 在未命中时由 `AnalyzeRule.setContent` 断言失败。
+      // 旧实现未命中/异常只记日志并保留整页，会在错误 DOM 上产出伪书名、
+      // 伪简介与错误 tocUrl，调用方却拿到「成功」。
+      final initContent = analyzeRule.getElement(bookInfoRule.init!);
+      if (initContent == null) {
+        throw SourceResolveException(
+          sourceId: bookSource.bookSourceUrl,
+          apiName: 'bookInfo.init',
+          message: '详情 init 规则未命中：${bookInfoRule.init}',
+        );
       }
+      analyzeRule.setContent(initContent);
+      AppLog.instance
+          .d('[书源详情] init规则命中: ${initContent.toString().length}字符');
     }
 
     // 对照 legado BookInfo：仅当书源声明了 ruleBookInfo.canReName 时才允许

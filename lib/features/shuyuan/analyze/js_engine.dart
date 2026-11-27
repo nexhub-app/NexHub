@@ -429,20 +429,38 @@ class JsEngine {
   ///
   /// [eval] 只回传 `stringResult`，对象数组会被字符串化成
   /// `[object Object],...`，规则层拿不到数组（JS 目录/列表规则全失效）。
-  /// 这里用 `JSON.stringify(eval(...))` 取回 JSON；脚本含顶层 `return`
-  /// （eval 不接受）或结果无法序列化时，退回 [eval] 的字符串结果。
+  /// 这里在**同一次执行**里完成「求值 + 序列化」：脚本只跑一遍，序列化失败
+  /// （循环引用/不可序列化）由脚本自身回落到 `String(v)`，不再回退到第二次
+  /// `eval`——旧实现的 fallback 会把变量写、网络请求、随机序列等副作用全部
+  /// 重放一遍（legado 是单次 eval）。
   dynamic evalStructured(String jsStr, {Map<String, dynamic>? bindings}) {
     try {
-      final wrapped = 'JSON.stringify(eval("${_escapeJs(jsStr)}"))';
+      final src = _escapeJs(jsStr);
+      // 注意：不能在闭包里 eval——脚本里的 `var` 必须留在全局，后续规则
+      // 依赖这些全局变量（legado 顶层 eval 同语义）。
+      final wrapped = 'globalThis.__syStructRaw = eval("$src");\n'
+          'try {\n'
+          '  globalThis.__syStructOut = JSON.stringify('
+          '{k:"j", v: globalThis.__syStructRaw === undefined ? null : globalThis.__syStructRaw});\n'
+          '} catch (e) {\n'
+          '  globalThis.__syStructOut = JSON.stringify('
+          '{k:"s", v: String(globalThis.__syStructRaw)});\n'
+          '}\n'
+          'globalThis.__syStructOut';
       final result = _evaluatePrepared(wrapped, bindings);
-      if (result.isError) return eval(jsStr, bindings: bindings);
+      if (result.isError) {
+        AppLog.instance.w(
+            '[书源JS] 结构化求值失败: ${_brief(jsStr)} → ${result.stringResult}');
+        return '';
+      }
       final s = result.stringResult;
       if (s.isEmpty || s == 'null' || s == 'undefined') return null;
-      try {
-        return jsonDecode(s);
-      } on FormatException {
-        return eval(jsStr, bindings: bindings);
+      final decoded = jsonDecode(s);
+      if (decoded is Map) {
+        if (decoded['k'] == 's') return decoded['v']?.toString() ?? '';
+        return decoded['v'];
       }
+      return decoded;
     } catch (e) {
       AppLog.instance.w('[书源JS] 结构化求值异常: ${_brief(jsStr)} → $e');
       return null;

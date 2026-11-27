@@ -340,6 +340,12 @@ class WebBook {
     final seed = (seedBook != null && seedBook.bookUrl == bookUrl)
         ? seedBook
         : null;
+    // legado `WebBook.getBookInfoAwait`：非 fixedType 时按书源类型重置书籍
+    // 类型位掩码，且必须在 infoHtml 复用与字段解析之前完成——否则文件/目录
+    // 分支按旧 type 走错（downloadUrls 与 tocUrl 判定依赖它）。
+    if (seed != null && seed.fixedType == 0) {
+      seed.type = source.bookTypeMask;
+    }
     // legado WebBook.getBookInfoAwait：搜索/发现阶段已把列表响应体存进
     // book.infoHtml 时直接解析，不再请求同一页面（redirectUrl 取 bookUrl）。
     if (seed != null && (seed.bookInfoHtml ?? '').isNotEmpty) {
@@ -365,7 +371,9 @@ class WebBook {
     var body = await analyzeUrl.getStrResponse();
     body = await analyzeUrl.applyLoginCheck(body);
 
-    final book = seed ?? XiaoshuoBook(bookUrl: bookUrl, name: '');
+    final book = seed ??
+        (XiaoshuoBook(bookUrl: bookUrl, name: '')
+          ..type = source.bookTypeMask);
     BookInfo.analyzeBookInfo(
       bookSource: source,
       book: book,
@@ -403,6 +411,11 @@ class WebBook {
     final stagedVars = ShuyuanSourceContext.current?.bookItemVars[book.bookUrl];
     if (stagedVars != null && stagedVars.isNotEmpty) {
       stagedVars.forEach((k, v) => book.variableMap.putIfAbsent(k, () => v));
+    }
+    // legado `getChapterListAwait` 入口同样按书源类型同步 type（非 fixedType），
+    // 目录规则里的文件/在线文本分支依赖它。
+    if (book.fixedType == 0) {
+      book.type = source.bookTypeMask;
     }
     final tocRule = source.getTocRule();
     // legado WebBook.getChapterListAwait(runPerJs=false)：目录抓取本身不执行
@@ -823,7 +836,9 @@ class WebBook {
               baseUrl: source.bookSourceUrl,
               source: source,
               ruleData: book,
-              chapter: chapter,
+              // legado 并发正文分页：`AnalyzeUrl(mUrl, source, ruleData)`——
+              // **不传 chapter**，与首页请求的基线语义不同（脚本读 chapter
+              // 时得到空值，基准如此）。
             );
             final body = await analyze.getStrResponse();
             if (body.isEmpty) return const <NovelBlock>[];
@@ -882,14 +897,12 @@ class WebBook {
             baseUrl: source.bookSourceUrl,
             source: source,
             ruleData: book,
-            chapter: chapter,
+            // 同并发分支：legado 后续正文页不带 chapter。
           );
           final pageBody = await pageAnalyze.getStrResponse();
-          // legado `BookContent`：`res.body?.let { … }`——空 body 不追加、不
-          // 更新 nextUrl，循环随即结束（旧实现继续对空页求值并再提取下一页，
-          // 白白多发请求）。
-          if (pageBody.isEmpty) break;
-
+          // legado `BookContent`：`res.body?.let { … }`——只有 **null** 视为
+          // 响应缺失；空串照常进入页解析并继续提取下一页（旧实现对空页直接
+          // break，正文被静默截断，与基准相反）。
           final pageContent = BookContent.analyzeContent(
             bookSource: source,
             book: book,
