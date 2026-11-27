@@ -578,6 +578,17 @@ class AnalyzeUrl {
           ? '$urlNoQuery?$encodedQuery'
           : urlNoQuery;
 
+  /// 诊断用只读快照：实际发出的请求地址（编码后的 query 已拼好）。
+  ///
+  /// `url` 字段始终保留模板展开后的原文（`java.ruleUrl`/请求头求值依赖它），
+  /// 排查「源声明的字符集/编码是否符合预期」时看这个值。
+  String get requestUrl => _requestUrl;
+
+  /// 诊断用只读快照：POST 实际发送的载荷（声明了 charset 时为表单编码结果，
+  /// 其余情况与 [body] 相同）。
+  String? get requestBody =>
+      (method?.toUpperCase() == 'POST') ? (encodedForm ?? body) : body;
+
   /// JSON / XML 请求体判定（这类体不做 form 编码，按原文发送）。
   ///
   /// legado `String.isJson()/isXml()`：先 trim，再要求首尾成对

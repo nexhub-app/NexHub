@@ -57,7 +57,7 @@ void main() {
         baseUrl: 'http://h.test/',
       );
       expect(
-        au.url,
+        au.requestUrl,
         'http://h.test/s?q=%E4%B8%AD%E6%96%87%20%E7%A9%BA%E6%A0%BC'
         '&safe=a!b&p=2',
       );
@@ -69,7 +69,7 @@ void main() {
         key: '中文',
         baseUrl: 'http://h.test/',
       );
-      expect(au.url, 'http://h.test/s?q=%D6%D0%CE%C4');
+      expect(au.requestUrl, 'http://h.test/s?q=%D6%D0%CE%C4');
     });
 
     test('整串已编码（合法 %XX）时原样保留', () {
@@ -86,7 +86,7 @@ void main() {
         key: '中文',
         baseUrl: 'http://h.test/',
       );
-      expect(au.url, 'http://h.test/s?q=%u4e2d%u6587');
+      expect(au.requestUrl, 'http://h.test/s?q=%u4e2d%u6587');
     });
   });
 
@@ -97,8 +97,8 @@ void main() {
         key: '中文',
         baseUrl: 'http://h.test/',
       );
-      expect(au.url, 'http://h.test/api');
-      expect(au.body, 'q=%E4%B8%AD%E6%96%87&a+b=c+d');
+      expect(au.requestUrl, 'http://h.test/api');
+      expect(au.requestBody, 'q=%E4%B8%AD%E6%96%87&a+b=c+d');
       expect(au.headerMap['Content-Type'], 'application/x-www-form-urlencoded');
     });
 
@@ -107,7 +107,7 @@ void main() {
         url: 'http://h.test/api,{"method":"POST","body":"q=%E4%B8%AD&a=1"}',
         baseUrl: 'http://h.test/',
       );
-      expect(au.body, 'q=%E4%B8%AD&a=1');
+      expect(au.requestBody, 'q=%E4%B8%AD&a=1');
     });
 
     test('声明 Content-Type 时不做 form 编码（legado analyzeFields 条件）', () {
@@ -180,7 +180,7 @@ void main() {
         key: '中文',
         baseUrl: 'http://h.test/',
       );
-      expect(au.url, 'http://h.test/s?q=%D6%D0%CE%C4');
+      expect(au.requestUrl, 'http://h.test/s?q=%D6%D0%CE%C4');
     });
   });
 
