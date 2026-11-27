@@ -30,7 +30,7 @@ All-in-one media aggregator (Anime / Manga / Novel / Video) — an open-source r
 
 </div>
 
-> Latest release: **v4.0.0-beta.2 (pre-release beta)**. The previous stable release is **v3.6.0** (seamless novel reading and video-driven orientation). This beta is built from the not-yet-merged source-compatibility branch and adds audio playback plus adaptive live streams. The project is under continuous development. Contributions and ideas are welcome via Pull Requests / issues. See [RELEASE_NOTES](./RELEASE_NOTES.md) for the full changelog.
+> Latest release: **v4.0.0-beta.3 (pre-release beta)**. The previous stable release is **v3.6.0** (seamless novel reading and video-driven orientation). This beta is built from the not-yet-merged source-compatibility branch and adds paragraph comments plus fixes for favorites, download covers and TOC positioning. The project is under continuous development. Contributions and ideas are welcome via Pull Requests / issues. See [RELEASE_NOTES](./RELEASE_NOTES.md) for the full changelog.
 >
 > 📱 **HarmonyOS / OpenHarmony is officially supported**: fully usable on arm64 devices; an unsigned iOS build is also provided. See [Platform Support](#2-platform-support) below.
 >

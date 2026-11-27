@@ -1277,7 +1277,11 @@ The app ships a **generic** compatibility layer: rule dialects are detected per 
 - **File sources**: download links and local import are supported; the detail page lists source files and can follow local reading progress (useful when a source has no chapter TOC).
 - **More evaluation**: RSA asymmetric crypto exports via the host with OAEP and strict padding semantics; AES-GCM added; `callBackJs` events and event bits; chapter purchase `payAction`; pure-JS `org.jsoup.Jsoup.parse` with a minimal DOM / CSS selector set; on HTTP 412 the session cookie is fetched from the site root and the request retried.
 - **Media shapes**: `bookSourceType` 1/4 audio / video sources render media chapter cards in the reader, and embedded lyrics from audio sources reach the player; downloaded file sources can be read offline.
-- **Limits**: a small set of Java APIs is uncovered (~2.6% of calls / 3% of sources); unsupported forms degrade explicitly; WebView paths still need on-device verification.
+- **Paragraph comments & inline icons**: content supports per-paragraph comments (view / load / page in a panel), and inline icons render where rules place them and open the matching discussion — evaluation stays on the source rule chain.
+- **Variables & cache**: `putVariable(key, null)` deletes at source / book / chapter levels, whole-block replacement deletes before adding, large variables are routed by threshold, and `cacheBytes` provides a binary cache (`getByteArray` with signed bytes, persisted meta carries a `b` field).
+- **Requests & encoding**: PUT / DELETE / PATCH with binary bodies; a Java charset alias table covering GBK / GB18030 / Big5 etc. with explicit errors for unknown charsets; cache keys include body / charset / webJs / proxy; rate limiting uses fixed windows.
+- **jsoup & WebView**: the `Elements` / `Element` collection and traversal surface, `abs:` resolved against the document base URI, siblings excluding the element; WebView supports POST prefetch before rendering, and `loginCheck` may replace the whole response (url / headers included).
+- **Limits**: a small set of Java APIs is uncovered (~2.6% of calls / 3% of sources), unsupported forms degrade explicitly; `unrar` / `un7z` still only handle the zip path; WebView paths still need on-device verification.
 
 ## 4.6 Testing
 

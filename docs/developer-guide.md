@@ -1296,7 +1296,11 @@ function __processVideo(json, context){ return json.url; }
 - **文件类书源**：支持下载链接与本地导入；详情页目录按源文件列表展示，可跟随本地阅读进度（书源不需要章节目录时也能用）。
 - **更多求值能力**：RSA 非对称加解密改宿主导出，支持 OAEP 与严格填充语义；新增 AES-GCM；`callBackJs` 事件回调与事件位；章节购买动作 `payAction`；纯 JS `org.jsoup.Jsoup.parse` 与最小 DOM / CSS 选择器；HTTP 412 时从站点根域取会话 Cookie 重试。
 - **媒体形态**：`bookSourceType` 1/4 的音频 / 视频源在阅读器里渲染媒体章节播放卡片，音频源内嵌歌词会交给播放器；文件类源下载后可离线阅读。
-- **局限**：少量 Java API 未覆盖（约 2.6% 调用 / 3% 源），未支持形态一律降级；WebView 相关路径需真机验证。
+- **段评与内嵌图标**：正文按规则支持段落评论（面板查看 / 加载 / 翻页），正文内嵌图标按规则位置渲染并可打开对应讨论；求值仍走源规则链。
+- **变量与缓存**：源 / 书 / 章节三级 `putVariable(key, null)` 即删除、整段替换先删后加；大变量按阈值分流；`cacheBytes` 提供二进制缓存（`getByteArray` 有符号字节，持久化 meta 带 `b` 字段）。
+- **请求与编码**：支持 PUT / DELETE / PATCH 与二进制请求体；Java charset 别名表覆盖 GBK / GB18030 / Big5 等，未知字符集明确抛错；缓存键纳入 body / charset / webJs / proxy；限流为固定窗口。
+- **jsoup 与 WebView**：`Elements` / `Element` 集合与遍历面、`abs:` 按文档基址解析、兄弟集合不含自身；WebView 支持 POST 预取后再渲染回灌，`loginCheck` 可整体替换响应（含 url / headers）。
+- **局限**：少量 Java API 未覆盖（约 2.6% 调用 / 3% 源），未支持形态一律降级；`unrar` / `un7z` 仍只解析 zip；WebView 相关路径需真机验证。
 
 ## 4.6 测试
 

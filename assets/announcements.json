@@ -1,5 +1,16 @@
 [
   {
+    "id": "v4.0.0-beta.3-announce",
+    "date": "2026-11-27",
+    "title": "NexHub 4.0.0-beta.3 预发布测试版",
+    "titleEn": "NexHub 4.0.0-beta.3 (pre-release beta)",
+    "body": "4.0 第三个测试版来了！书源引擎继续逐条对齐（变量删除、目录分页、编码表、二进制缓存、jsoup 集合、WebView 预取），并新增段评与正文内嵌图标。同时修掉一批硬伤：收藏重启后丢失、下载内容没封面、目录定位不准、运行日志只能复制一行（现在可导出文件）。现有源与阅读数据不受影响；遇到问题请用「运行日志 → 导出日志文件」反馈。",
+    "bodyEn": "The third 4.0 beta is here! The book-source engine keeps aligning item by item (variable deletion, TOC paging, charset table, binary cache, jsoup collections, WebView prefetch) and adds paragraph comments with inline icons. It also fixes real blockers: favorites lost after restart, downloaded content missing covers, inaccurate TOC positioning, and runtime logs that only copied one line (now exportable to a file). Existing sources and reading data are unaffected; please report with Runtime Log → Export log file.",
+    "url": "",
+    "urlText": "",
+    "urlTextEn": ""
+  },
+  {
     "id": "v4.0.0-beta.2-announce",
     "date": "2026-11-22",
     "title": "NexHub 4.0.0-beta.2 预发布测试版",

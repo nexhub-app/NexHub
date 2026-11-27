@@ -1,10 +1,10 @@
-# NexHub v4.0.0-beta.2
+# NexHub v4.0.0-beta.3
 
 > All-in-one media aggregation client (anime / comics / novels / video) — Source-as-Plugin · co-created community.
 
 This is NexHub's all-in-one media aggregation client (anime / comics / novels / video). NexHub **does not bundle any content sources**; all content comes from "sources" that you import yourself.
 
-> ⚠️ **This is the second public beta of 4.0.0 (still from the `feature/legado-booksource-compat` branch, not yet merged into main)**: 46 commits relative to v4.0.0-beta.1 — a new three-page audio player and adaptive live-stream playback; further book-source compatibility (file sources, RSA/OAEP and AES-GCM, `callBackJs`/`payAction`, pure-JS jsoup DOM, 412 session refetch, HarmonyOS WebView fetching); source-list search and steadier imports; an onboarding disclaimer and a Legado with MD3 credit. Existing sources and user data are unaffected. **Core features are complete and upgrading is safe.**
+> ⚠️ **This is the third public beta of 4.0.0 (still from the `feature/legado-booksource-compat` branch, not yet merged into main)**: 42 commits relative to v4.0.0-beta.2 — item-by-item semantic alignment of the book-source engine (variable deletion / TOC paging / charset table / binary cache / jsoup collections / WebView prefetch), paragraph comments with inline icons, a fix for favorites vanishing after restart, download cover fixes, precise TOC positioning, and exportable runtime logs. **Core features are complete and upgrading is safe.**
 >
 > - **Data compatibility**: Verified by code review, **no breaking data changes** — bookshelf, favorites, progress, bookmarks, history, and groups carry over directly; new book source fields are parsed with lenient semantics, so old source JSON needs no modification; reinstalling over the top works directly with the same signing key.
 > - **Platform artifacts**: Android / Windows / Linux / macOS / iOS / HarmonyOS HAP are all published together in the same pre-release Release; the HarmonyOS HAP is unsigned and must be signed by you before sideloading.
@@ -36,6 +36,24 @@ Apart from the "Special Notes" in each version, **all versions have no breaking 
 **Signing key**: Since v0.3.0 a single fixed signing key has been used (injected via CI Secret, not stored in the repo), so you can reinstall over the top; older random-signed packages must be uninstalled once first. v0.2.12 introduced a fixed signature, and v0.3.1 switched to CI injection (the key itself is identical).
 
 ## 📝 Changelog (reverse order · newest first)
+
+### 📝 Changelog (v4.0.0-beta.2 → v4.0.0-beta.3)
+
+> 🧪 **Pre-release beta.** 42 commits, still from the `feature/legado-booksource-compat` branch; item-by-item engine alignment plus paragraph comments and fixes for favorites, download covers, TOC positioning and logs. No breaking data changes.
+
+- **Paragraph comments & inline icons**: book-source content supports per-paragraph comments (view / load / page in a panel); inline icons render where rules place them and open the matching discussion; evaluation stays on the source rule chain.
+- **Favorites protection**: `FilePrefsBackend` backs up before overwrite, falls back to `.json.bak` on read failure and throws when both fail; `FavoritesManager` tracks `_loadFailed` and **refuses to write**; history loading gained a startup guard; all four favorite entry points wrap `toggleFavorite` with try/catch plus a `favoriteSaveFailed` message.
+- **Download covers**: `_saveCoverImage` now passes the per-source `effectiveFor(source)` profile; `_normalizeRemoteCoverUrl` normalises protocol-relative URLs; `AppCoverImage` treats `//` uniformly; coverKey separator changed to `_`; zero-byte leftovers are deleted and re-downloaded; local group covers fall back across batches to the first non-empty one.
+- **TOC positioning**: `chapter_list_sheet` now uses `scrollable_positioned_list` and item indices (exact first-frame alignment, jumpTo for locate-current, filters cleared before locating, top/bottom by index, list rebuilt on filter changes).
+- **Log export**: new `core/debug/log_export.dart` (log + environment header written to a temp file; HarmonyOS uses FileExporter save-as, others use share_plus); runtime log body is one `SelectableText` block, fixing one-line-only copy; both log pages gained "Export log file".
+- **Book source · rule evaluation**: upward rule arguments evaluated in reverse with results backfilled by index; boundary fixes for parentheseless `@put`, inline `@js:`, selector group splitting, unknown XPath predicates returning false, and balanced scanning for inner `AnalyzeJson` rules.
+- **Book source · variables**: put null now deletes at source / book / chapter levels; whole-block replacement deletes before adding; cross-round write-back aligned via `bookVarsDeleted` / `chapter.__syDeleted`; large variables routed at a 10000 threshold; `getVariable` checks normal table → big variables → empty string.
+- **Book source · TOC & paging**: empty first page still evaluates nextTocUrl; TOC page ceiling raised 200→2000 with a warning; `nextChapterUrl` uses the cached fallback; multi-page list/detail variable propagation; failures fail instead of returning empty results.
+- **Book source · network & encoding**: new `charset_registry` (Java charset aliases plus GBK/GB18030/Big5 etc.); PUT/DELETE/PATCH with binary `_syBodyB64`; cache keys include body / webJs / charset / proxy; rate limiting uses fixed windows and keeps progress; Dio timeouts 15s/60s; `filename*` decoded per RFC 5987.
+- **Book source · jsoup / WebView / login**: `Elements`/`Element` collection and traversal surface, `abs:` against baseUri, sibling collections excluding the element; WebView POST prefetch (`_postPrefetchForWebView`); `loginCheck` replaces the whole response (url/headers) and advances per round; source header `@js:` evaluated by the host; `initUrl`, speed test and cache-key fixes.
+- **Stability**: fixed a duplicate `defineProperty` on `source` in the preset script that aborted it (making `java.ajax` and globals unavailable), recovering book-source tests from 719 to 844 passing; cross-IIFE calls in the `cache` section now use `global.__syB64FromBytes`.
+- **Tests**: the full book-source suite passes 857 / fails 23 (identical to the baseline); new tests for paragraph comments, variable deletion, binary cache, charset and preset-script assertions; `dart analyze lib` reports 0 errors.
+- **Known limits**: unknown charsets still fall back to UTF-8; `unrar` / `un7z` still only handle the zip path; `JavaMap` keys are stringified; WebView paths need on-device verification.
 
 ### 📝 Changelog (v4.0.0-beta.1 → v4.0.0-beta.2)
 

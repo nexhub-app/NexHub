@@ -1,10 +1,10 @@
-# NexHub v4.0.0-beta.2
+# NexHub v4.0.0-beta.3
 
 > 四合一媒体聚合客户端（动漫 / 漫画 / 小说 / 影视）—— 源即插件 · 共创社区。
 
 这是 NexHub 的四合一媒体聚合客户端（动漫 / 漫画 / 小说 / 影视）。NexHub **不内置任何内容源**，所有内容都来自你自行导入的「源」。
 
-> ⚠️ **这是 4.0.0 的第二个公开测试版（仍来自 `feature/legado-booksource-compat` 分支，尚未合并主分支）**：相对 v4.0.0-beta.1 共 46 个提交——新增音频播放三页界面与直播流自适应；书源兼容继续补齐（文件类书源、RSA/OAEP 与 AES-GCM、`callBackJs`/`payAction`、jsoup 纯 JS DOM、412 会话重取、鸿蒙 WebView 取源）；源列表搜索与导入稳定性；引导页免责声明与 Legado with MD3 致谢。现有源与用户数据不受影响。**基础功能完整、可安全升级**。
+> ⚠️ **这是 4.0.0 的第三个公开测试版（仍来自 `feature/legado-booksource-compat` 分支，尚未合并主分支）**：相对 v4.0.0-beta.2 共 42 个提交——书源引擎逐条语义对齐（变量删除 / 目录分页 / 编码表 / 二进制缓存 / jsoup 集合 / WebView 预取）、段评与正文内嵌图标、收藏重启丢失修复、下载封面修复、目录定位精确化、运行日志导出。**基础功能完整、可安全升级**。
 >
 > - **数据兼容**：经代码核查，**无破坏性数据变更**——书架、收藏、进度、书签、历史、分组直接沿用；书源新增字段按宽松语义解析，旧源 JSON 无需修改；沿用同一签名密钥可直接覆盖安装。
 > - **平台产物**：Android / Windows / Linux / macOS / iOS / 鸿蒙 HAP 统一发布在同一个预发布 Release；鸿蒙 HAP 不带签名，需自行签名后侧载。
@@ -36,6 +36,24 @@
 **签名密钥**：自 v0.3.0 起使用同一固定签名密钥（经 CI Secret 注入，不入库），可直接覆盖安装；更早的随机签名旧包需先卸载一次再装。v0.2.12 曾引入固定签名，v0.3.1 起改为 CI 注入（密钥本体一致）。
 
 ## 📝 更新日志（倒序 · 最新在前）
+
+### 📝 更新日志（v4.0.0-beta.2 → v4.0.0-beta.3）
+
+> 🧪 **预发布测试版**。42 个提交，仍是 `feature/legado-booksource-compat` 分支；书源引擎逐条对齐 + 段评 + 收藏 / 下载封面 / 目录 / 日志修复。无破坏性数据变更。
+
+- **段评与内嵌图标**：书源正文支持段落评论（面板内查看 / 加载 / 翻页），正文内嵌图标按规则位置渲染并可打开对应讨论；求值走书源规则链。
+- **收藏防丢**：`FilePrefsBackend` 覆盖前备份旧文件、读失败回退 `.json.bak`、双失败抛异常；`FavoritesManager` 记录 `_loadFailed` 并**拒绝写盘**；历史加载加启动兜底；四处收藏入口 `toggleFavorite` 加 try/catch 与 `favoriteSaveFailed` 提示。
+- **下载封面**：`_saveCoverImage` 改传源级 `effectiveFor(source)` 网络档案；`_normalizeRemoteCoverUrl` 兜底协议相对地址；`AppCoverImage` 统一 `//` 开头归一；coverKey 分隔符改 `_`；0 字节残留判空删除重下；本地分组封面按批次回退取首个非空。
+- **目录定位**：`chapter_list_sheet` 改用 `scrollable_positioned_list` 按条目下标定位（首帧精确对位、定位当前章 jumpTo、筛选先清再定位、置顶置底同走下标、筛选变化重建列表）。
+- **日志导出**：新增 `core/debug/log_export.dart`（日志 + 环境头写临时文件；鸿蒙走 FileExporter 另存为，其余走 share_plus）；运行日志正文改单块 `SelectableText`，修复只能复制一行；两页 AppBar 加「导出日志文件」。
+- **书源 · 规则求值**：上行规则参数按逆序求值、结果按原索引回填；`@put` 无括号、`@js:` 内嵌、选择器分组切分、XPath 未知谓词返回 false、`AnalyzeJson` 内层规则平衡扫描等一批边界收口。
+- **书源 · 变量**：源 / 书 / 章节三级 put null 即删除、整段替换先删后加、跨轮回写与 `bookVarsDeleted` / `chapter.__syDeleted` 对齐；大变量按 10000 阈值分流；`getVariable` 走普通表 → 大变量 → 空串。
+- **书源 · 目录与分页**：空首页仍求 nextTocUrl、目录页上限 200→2000 并告警、`nextChapterUrl` 统一走缓存兜底、列表与详情多页变量贯通、失败即失败。
+- **书源 · 网络与编码**：新增 `charset_registry`（Java charset 别名 + GBK/GB18030/Big5 等）；PUT/DELETE/PATCH 与二进制 `_syBodyB64`；缓存键纳入 body / webJs / charset / proxy 等；限流改固定窗口并保留窗口进度；Dio 超时 15s/60s；`filename*` 按 RFC 5987 解码。
+- **书源 · jsoup / WebView / 登录**：补齐 `Elements`/`Element` 集合与遍历、`abs:` 按 baseUri、兄弟集合不含自身；WebView POST 预取（`_postPrefetchForWebView`）；`loginCheck` 整体替换响应（url/headers）并逐轮推进；源 header 的 `@js:` 宿主求值回填；`initUrl` / 测速 / 缓存键等一批修正。
+- **稳定性**：修复预置脚本 `source` 字段重复 `defineProperty` 导致整段脚本中断（`java.ajax` / 全局对象全失效），书源测试 719→844 通过；`cache` 段跨 IIFE 调用改走 `global.__syB64FromBytes`。
+- **测试**：书源全集 857 通过 / 23 失败（与基线逐条一致）；新增段评、变量删除、二进制缓存、charset、JS 预置脚本断言等；`dart analyze lib` 0 error。
+- **已知限制**：未知 charset 仍按 UTF-8 容错；`unrar` / `un7z` 仍只解析 zip；`JavaMap` 键统一 String 化；WebView 路径需真机验证。
 
 ### 📝 更新日志（v4.0.0-beta.1 → v4.0.0-beta.2）
 
