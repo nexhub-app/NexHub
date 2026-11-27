@@ -282,11 +282,21 @@ class _LocalBookshelf extends StatelessWidget {
         ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
       final lead = group.reduce((a, b) => a.createdAt >= b.createdAt ? a : b);
       final chapterCount = group.fold(0, (s, e) => s + _localChapterCount(e));
+      // 封面从最新批次往旧回退取第一个非空：最新批次封面下载失败时
+      // 不至于整组无封面（分批下载的常见形态，各批次封面落盘独立成败）。
+      String? groupCover;
+      for (final t in group.reversed) {
+        final String? c = t.localCoverPath ?? t.coverUrl;
+        if (c != null && c.isNotEmpty) {
+          groupCover = c;
+          break;
+        }
+      }
       items.add(_BookshelfItem(
         id: lead.contentId,
         title: lead.title,
         sourceType: sourceType,
-        coverUrl: lead.localCoverPath ?? lead.coverUrl,
+        coverUrl: groupCover,
         source: lead.sourceId != null ? repo.getById(lead.sourceId!) : null,
         onTap: () => onItemTap?.call(itemForTask(lead)),
         // 长按/右键弹出「打开 / 删除」操作菜单（与本地导入项一致）。

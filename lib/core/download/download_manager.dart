@@ -1535,7 +1535,9 @@ class DownloadManager extends ChangeNotifier {
     final String content = _safeTaskId(item.id);
     if (content.isEmpty || content == 'item') return null;
     final safeSource = source.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-    return '$safeSource|$content';
+    // 分隔符用 `_` 而非 `|`：coverKey 会兜底拼进文件名（`${coverKey}.jpg`），
+    // `|` 在 Windows 是保留字符，写文件必失败（表现为桌面端无封面）。
+    return '${safeSource}_$content';
   }
 
   /// 从旧数据（无 [DownloadTask.chapterFilePaths]）按类型推导逐章/集路径。
@@ -1609,7 +1611,7 @@ class DownloadManager extends ChangeNotifier {
     final String content = _safeTaskId(t.contentId);
     if (content.isEmpty || content == 'item') return null;
     final safeSource = source.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-    return '$safeSource|$content';
+    return '${safeSource}_$content';
   }
 
   /// 归一化远程封面 URL：协议相对路径（`//host/x.jpg`）补全为 https；

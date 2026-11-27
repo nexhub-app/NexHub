@@ -4,8 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../../../core/download/download_manager.dart';
 import '../../../core/download/download_task.dart';
-import '../../../core/local/local_content_actions.dart'
-    show openDownloadedWorkFolder;
+import '../../../core/local/local_content_actions.dart'    show openDownloadedWorkFolder;
 import '../../../core/local/local_content_manager.dart'
     show
         LocalMediaKind,
@@ -14,6 +13,7 @@ import '../../../core/local/local_content_manager.dart'
         scanComicFolder;
 import '../../../core/local/saf_bridge.dart'
     show safBaseName, listFolderFilesByKindSaf, scanComicFolderSaf;
+import '../../../core/services/source_repository.dart';
 import '../../../core/theme/app_tokens.dart';
 import '../../../core/widgets/app_cover_image.dart';
 import '../../../core/widgets/app_empty_state.dart';
@@ -176,6 +176,11 @@ class _DownloadedGroupScreenState extends State<DownloadedGroupScreen> {
                     width: 110,
                     child: AppCoverImage(
                       coverUrl: lead.localCoverPath ?? lead.coverUrl,
+                      source: (widget.sourceId?.isNotEmpty ?? false)
+                          ? context
+                              .read<SourceRepository>()
+                              .getById(widget.sourceId!)
+                          : null,
                       fit: BoxFit.cover,
                     ),
                   ),

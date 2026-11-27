@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../../../core/download/download_manager.dart';
 import '../../../core/download/download_task.dart';
 import '../../../core/models/plugin_config.dart';
+import '../../../core/services/source_repository.dart';
 import '../../../core/theme/app_tokens.dart';
 import '../../../core/widgets/app_cover_image.dart';
 import '../../../core/widgets/app_empty_state.dart';
@@ -430,6 +431,11 @@ class _DownloadedCard extends StatelessWidget {
     // 全部跟随布局设置（与在线浏览页 ContentCard / ListItem 一致）。
     final LayoutSettings layout = LayoutSettingsStore.instance.settings;
     final double radius = layout.coverRadius;
+    // 源配置：远程封面回退时注入防盗链 headers 与源级网络档案
+    // （ECH/hosts/SNI/代理），否则直连会被部分源 CDN 拒绝（封面占位）。
+    final source = (group.sourceId?.isNotEmpty ?? false)
+        ? context.read<SourceRepository>().getById(group.sourceId!)
+        : null;
 
     final Widget body = listMode
         ? Row(
@@ -442,6 +448,7 @@ class _DownloadedCard extends StatelessWidget {
                   children: <Widget>[
                     AppCoverImage(
                       coverUrl: group.coverUrl,
+                      source: source,
                       fit: BoxFit.cover,
                       radius: radius,
                     ),
@@ -505,6 +512,7 @@ class _DownloadedCard extends StatelessWidget {
                   children: <Widget>[
                     AppCoverImage(
                       coverUrl: group.coverUrl,
+                      source: source,
                       fit: BoxFit.cover,
                       radius: radius,
                     ),
