@@ -1,4 +1,5 @@
 import 'package:material_ui/material_ui.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'app_animations.dart';
 import 'package:nexhub/generated/app_localizations.dart';
 
@@ -53,24 +54,20 @@ class _ChapterListBody extends StatefulWidget {
   State<_ChapterListBody> createState() => _ChapterListBodyState();
 }
 
+/// 当前章在目录视口中的对齐位置：0 = 贴顶，其余给上方留出上下文。
+const double _kLocateAlignment = 0.3;
+
 class _ChapterListBodyState extends State<_ChapterListBody> {
-  late final ScrollController _scrollController;
+  /// 按**条目下标**（而非估算像素偏移）定位：行高可变（带线名/分节头）时
+  /// 估算会随章节数累积漂移，下标定位始终精确。
+  final ItemScrollController _itemScroll = ItemScrollController();
   final TextEditingController _searchController = TextEditingController();
   bool _regex = false;
   String _query = '';
   bool _bookmarksOnly = false;
 
   @override
-  void initState() {
-    super.initState();
-    _scrollController = ScrollController();
-    // 打开后定位到当前阅读章节。
-    WidgetsBinding.instance.addPostFrameCallback((_) => _locateCurrent());
-  }
-
-  @override
   void dispose() {
-    _scrollController.dispose();
     _searchController.dispose();
     super.dispose();
   }
@@ -103,30 +100,54 @@ class _ChapterListBodyState extends State<_ChapterListBody> {
     }
   }
 
+  /// 当前章在可见列表中的行号；被筛选隐藏（或索引越界）时为 null。
+  int? _currentRow(List<int> visible) {
+    final int pos = visible.indexOf(widget.currentIndex);
+    return pos < 0 ? null : pos;
+  }
+
+  /// 定位到当前阅读章。被搜索/书签筛选挡住时先清空筛选再定位，
+  /// 避免出现「点了没反应」。
   void _locateCurrent() {
-    if (!_scrollController.hasClients) return;
-    final idx = widget.currentIndex;
-    if (idx < 0 || idx >= widget.chapters.length) return;
-    // 按估算行高定位到当前章附近（ListTile 约 56 + 可选 subtitle）。
-    const double rowH = 64.0;
-    final offset = (idx * rowH).clamp(
-      0.0,
-      _scrollController.position.maxScrollExtent,
-    );
-    _scrollController.animateTo(
-      offset,
-      duration: AppTokens.durFast,
-      curve: Curves.easeInOut,
-    );
+    final int? row = _currentRow(_visibleIndexes);
+    if (row == null) {
+      if (_query.isEmpty && !_bookmarksOnly) return;
+      setState(() {
+        _query = '';
+        _bookmarksOnly = false;
+        _searchController.clear();
+      });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final int? restored = _currentRow(_visibleIndexes);
+        if (restored != null) _jumpToRow(restored);
+      });
+      return;
+    }
+    _jumpToRow(row);
+  }
+
+  /// 实际跳转：筛选变化会重建列表状态，可能尚未挂载，重试至挂载（最多 3 帧）。
+  void _jumpToRow(int row, {int attempt = 0}) {
+    if (!mounted) return;
+    if (!_itemScroll.isAttached) {
+      if (attempt >= 3) return;
+      WidgetsBinding.instance.addPostFrameCallback(
+        (_) => _jumpToRow(row, attempt: attempt + 1),
+      );
+      return;
+    }
+    _itemScroll.jumpTo(index: row, alignment: row == 0 ? 0 : _kLocateAlignment);
   }
 
   void _scrollToTop() {
-    if (_scrollController.hasClients) _scrollController.jumpTo(0);
+    if (_itemScroll.isAttached) _itemScroll.jumpTo(index: 0);
   }
 
   void _scrollToBottom() {
-    if (_scrollController.hasClients) {
-      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+    final int count = _visibleIndexes.length;
+    // alignment=1 会被最大滚动距离夹到真正的底部。
+    if (_itemScroll.isAttached && count > 0) {
+      _itemScroll.jumpTo(index: count - 1, alignment: 1);
     }
   }
 
@@ -136,6 +157,7 @@ class _ChapterListBodyState extends State<_ChapterListBody> {
     final theme = Theme.of(context);
     final maxHeight = MediaQuery.of(context).size.height * 0.7;
     final visible = _visibleIndexes;
+    final int? currentRow = _currentRow(visible);
 
     return AppSheetBody(
       child: SafeArea(
@@ -160,10 +182,17 @@ class _ChapterListBodyState extends State<_ChapterListBody> {
             Expanded(
               child: visible.isEmpty
                   ? Center(child: Text(l10n.noSearchResults))
-                  : ListView.builder(
-                      controller: _scrollController,
-                      shrinkWrap: true,
+                  : ScrollablePositionedList.builder(
+                      // 筛选条件变化时重建列表状态：新结果从头展示，
+                      // 也避免条目数骤减后停留在越界下标。
+                      key: ValueKey<String>('$_query|$_bookmarksOnly|$_regex'),
                       itemCount: visible.length,
+                      itemScrollController: _itemScroll,
+                      // 首帧即按条目下标精确对位当前章，不再靠行高估算。
+                      initialScrollIndex: currentRow ?? 0,
+                      initialAlignment: (currentRow ?? 0) == 0
+                          ? 0
+                          : _kLocateAlignment,
                       itemBuilder: (BuildContext ctx, int i) {
                         final idx = visible[i];
                         final chapter = widget.chapters[idx];
