@@ -51,4 +51,20 @@ void main() {
     final ar = AnalyzeRule()..setContent(item, 'https://x.com/');
     expect(ar.getString('@js:"plain"'), 'plain');
   });
+
+  test('makeUpRule 参数从右向左求值（legado 前插语义）', () {
+    // legado 先求值右侧 {{java.get}}（此时 k 未写入 → 空串），再求值左侧
+    // put；左→右求值会得到 'aa'。
+    final ar = AnalyzeRule()..setContent('<div id="c">x</div>', 'https://x.com/');
+    expect(ar.getString("{{java.put('k','a')}}{{java.get('k')}}"), 'a');
+
+    // 三段写入的副作用顺序：legado 为 3→2→1，最终变量值是 '321'；
+    // 左→右求值则是 '123'。
+    final ar2 = AnalyzeRule()
+      ..setContent('<div id="c">x</div>', 'https://x.com/');
+    ar2.getString("{{java.put('seq', java.get('seq') + '1')}}"
+        "{{java.put('seq', java.get('seq') + '2')}}"
+        "{{java.put('seq', java.get('seq') + '3')}}");
+    expect(ar2.get('seq'), '321');
+  });
 }

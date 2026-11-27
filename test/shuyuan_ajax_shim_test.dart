@@ -267,4 +267,63 @@ void main() {
       expect(ctx.ajaxPending, isEmpty);
     });
   });
+
+  group('java.ajax 串行 / ajaxAll 并发（legado 同步桥语义）', () {
+    test('普通 ajax/get/post/connect 登记为串行，不进并发批', () {
+      final ctx = ShuyuanSourceContext('serial_flag');
+      ShuyuanSourceContext.run(ctx, () {
+        final e = JsEngine();
+        e.eval("java.ajax('https://x.com/a');"
+            "java.get('https://x.com/g', {'X':'1'});"
+            "java.post('https://x.com/p','a=1');"
+            "java.connect('https://x.com/c')");
+        expect(ctx.ajaxPending.length, 4);
+        expect(ctx.ajaxBatch, isEmpty, reason: '普通请求必须串行');
+        expect(ctx.ajaxSkipRateLimit, isEmpty);
+      });
+    });
+
+    test('ajaxAll 登记为并发批，skipRateLimit 逐键透传', () {
+      final ctx = ShuyuanSourceContext('batch_flag');
+      ShuyuanSourceContext.run(ctx, () {
+        final e = JsEngine();
+        e.eval("java.ajaxAll(['https://x.com/1','https://x.com/2'], true)");
+        expect(ctx.ajaxBatch, {'https://x.com/1', 'https://x.com/2'});
+        expect(ctx.ajaxSkipRateLimit, {'https://x.com/1', 'https://x.com/2'});
+      });
+    });
+
+    test('settleAjax：按登记顺序推进，ajaxAll 整批先于其后串行请求', () async {
+      final hits = <String>[];
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      server.listen((req) {
+        hits.add(req.uri.path);
+        req.response
+          ..statusCode = 200
+          ..headers.contentType = ContentType.html
+          ..write('B${hits.length}');
+        req.response.close();
+      });
+      final origin = 'http://${server.address.host}:${server.port}';
+      final source = XiaoshuoBookSource.fromJson(<String, dynamic>{
+        'bookSourceUrl': origin,
+        'bookSourceName': 'batch-settle',
+      });
+      final ctx = ShuyuanSourceContext('batch-settle')..bindSource(source);
+      try {
+        await ShuyuanSourceContext.run(ctx, () async {
+          JsEngine().eval("java.ajax('$origin/a');"
+              "java.ajaxAll(['$origin/x','$origin/y']);"
+              "java.ajax('$origin/z')");
+          // 只有显式 ajaxAll 的键进并发批；前后普通 ajax 保持串行。
+          expect(ctx.ajaxBatch, {'$origin/x', '$origin/y'});
+          expect(await ShuyuanSourceContext.settleAjax(ctx, source), 4);
+        });
+        expect(hits, ['/a', '/x', '/y', '/z'],
+            reason: '同 host 由请求闸门串行，登记顺序即发出顺序');
+      } finally {
+        await server.close(force: true);
+      }
+    });
+  });
 }

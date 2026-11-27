@@ -664,7 +664,12 @@ const String sourceContextJsPrelude = r'''
    'coverDecodeJs', 'concurrentRate', 'searchUrl', 'exploreUrl',
    'bookUrlPattern', 'ruleReview', 'customOrder', 'weight',
    'lastUpdateTime'].forEach(function (f) {
+    // `configurable: true`：下面还有一轮数值字段（bookSourceType /
+    // customOrder / weight / lastUpdateTime）会覆盖同名属性。缺省
+    // configurable=false 时第二次 defineProperty 抛 TypeError，整段预置
+    // 脚本中断 → java.ajax / global.source / global.book 全部不注入。
     Object.defineProperty(source, f, {
+      configurable: true,
       get: function () {
         var m = syCtx().sourceMeta || {};
         return m[f] == null ? '' : String(m[f]);
@@ -674,6 +679,7 @@ const String sourceContextJsPrelude = r'''
   ['bookSourceType', 'customOrder', 'lastUpdateTime', 'weight']
       .forEach(function (f) {
     Object.defineProperty(source, f, {
+      configurable: true,
       get: function () {
         var m = syCtx().sourceMeta || {};
         var v = m[f];
@@ -1022,7 +1028,7 @@ const String sourceContextJsPrelude = r'''
     // 多次 java.ajax 是多次真实请求。这里按「每次顶层求值内的同键调用
     // 序号」拆键：第 1 次用原始键、第 n 次追加 `||DUP||n`，宿主 settle
     // 对每个键各抓一次；重放轮计数器复位 → 同脚本仍生成同一组键命中缓存。
-    global.java.__ajaxReq = function (url, timeoutMs, skipRateLimit) {
+    global.java.__ajaxReq = function (url, timeoutMs, batch, skipRateLimit) {
       var raw = String(url == null ? '' : url);
       var seq = global.__ajaxCallSeq;
       if (!seq) seq = global.__ajaxCallSeq = Object.create(null);
@@ -1037,15 +1043,20 @@ const String sourceContextJsPrelude = r'''
       // settle 时按该键的超时发起真实请求（缺省用宿主默认）。
       var to = (timeoutMs === undefined || timeoutMs === null)
         ? '' : String(timeoutMs);
-      // legado ajaxAll 的批请求标记随 op 透传给宿主 settle：
-      // `b`=批（并发抓取，保序），`b1`=批且 skipRateLimit（跳过 concurrentRate
-      // 门，legado getStrResponseAwait(skipRateLimit = true)）。
-      syOp('ajax', key, to, skipRateLimit ? 'b1' : 'b');
+      // 批请求标记随 op 透传给宿主 settle：`b`=批（并发抓取，保序），
+      // `b1`=批且跳过 concurrentRate 限流（legado ajaxAll 的
+      // `getStrResponseAwait(skipRateLimit = true)`），`s`=串行（普通
+      // java.ajax/get/post/head/connect：legado 每次调用阻塞完成后才继续，
+      // 后一个请求依赖前一个写入的 cookie/token，不能并发）。
+      syOp('ajax', key, to,
+          batch ? (skipRateLimit ? 'b1' : 'b') : 's');
       global.__ajaxN = (global.__ajaxN || 0) + 1;
       return '__AJAX_' + global.__ajaxN + '__';
     };
     global.java.ajax = function (url, callTimeout) {
-      return global.java.__ajaxReq(url, callTimeout);
+      // legado `JsExtensions.ajax` 是同步阻塞调用，脚本内的多次 ajax 严格
+      // 串行；只有显式 ajaxAll 才并发（batch=true）。
+      return global.java.__ajaxReq(url, callTimeout, false);
     };
     global.java.ajaxAll = function (urlList, skipRateLimit) {
       var arr = urlList;
@@ -1053,7 +1064,7 @@ const String sourceContextJsPrelude = r'''
       var out = [];
       for (var i = 0; arr && i < arr.length; i++) {
         out.push(syResp(arr[i],
-            global.java.__ajaxReq(arr[i], undefined, skipRateLimit)));
+            global.java.__ajaxReq(arr[i], undefined, true, skipRateLimit)));
       }
       return out;
     };

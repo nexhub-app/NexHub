@@ -1182,32 +1182,38 @@ class AnalyzeRule {
         sourceRule.templateMode,
       );
     }
-    final buf = StringBuffer();
-    for (final param in sourceRule.params) {
+    // 对齐 legado `AnalyzeRule.makeUpRule`（`while (index-- > 0)` +
+    // `insert(0, …)`）：参数**从右向左**求值、结果前插。拼接后的文本左右
+    // 顺序不变，但内嵌 JS / `@get:` 的副作用顺序与 legado 一致——右侧参数
+    // 可读到左侧参数刚写入的变量（反之在 legado 里读不到）。
+    final params = sourceRule.params;
+    final pieces = List<String>.filled(params.length, '');
+    for (var i = params.length - 1; i >= 0; i--) {
+      final param = params[i];
       final type = param.type;
       if (type > 0) {
         // legado：(result as? List)?.let { this[regType] } ?: 字面量
         if (result is List) {
           if (result.length > type) {
-            buf.write(result[type]?.toString() ?? '');
+            pieces[i] = result[type]?.toString() ?? '';
           }
         } else {
-          buf.write(param.text);
+          pieces[i] = param.text;
         }
       } else if (type == RuleParam.innerType) {
         final expr = param.text.trim();
         if (_isRuleExpr(expr)) {
-          buf.write(getString(expr));
+          pieces[i] = getString(expr);
         } else {
-          buf.write(_formatJsNumberText(_evalJs(expr, result)));
+          pieces[i] = _formatJsNumberText(_evalJs(expr, result));
         }
       } else if (type == RuleParam.getType) {
-        buf.write(get(param.text));
+        pieces[i] = get(param.text);
       } else {
-        buf.write(param.text);
+        pieces[i] = param.text;
       }
     }
-    final parts = buf.toString().split('##');
+    final parts = pieces.join().split('##');
     return _RuleState(
       parts[0].trim(),
       parts.length > 1 ? parts[1] : '',

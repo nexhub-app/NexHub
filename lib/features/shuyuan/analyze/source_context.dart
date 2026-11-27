@@ -561,6 +561,7 @@ class ShuyuanSourceContext {
             ajaxTimeouts[a] = timeoutMs;
           }
           final flags = op['c']?.toString() ?? '';
+          // `b`/`b1` 只在显式 ajaxAll 时出现；普通 java.ajax 记 `s`（串行）。
           if (flags.startsWith('b')) ajaxBatch.add(a);
           if (flags == 'b1') ajaxSkipRateLimit.add(a);
         case 'ajaxBytes':
@@ -1274,24 +1275,37 @@ class ShuyuanSourceContext {
       }
     }
 
-    for (final key in keys) {
-      if (!batch.contains(key)) await fetch(key);
-    }
-    final parallel = <String>[
-      for (final key in keys)
-        if (batch.contains(key)) key,
-    ];
-    if (parallel.isNotEmpty) {
+    // 按脚本登记顺序推进：普通 java.ajax/get/post/head/connect 逐条串行
+    // （legado 是同步阻塞调用，后一个请求依赖前一个写入的 cookie/token）；
+    // 只有显式 ajaxAll 的**连续**批键做一次有界并发
+    // （legado `mapAsync(threadCount)`，整批完成后再继续后面的语句）。
+    var cursor = 0;
+    while (cursor < keys.length) {
+      final key = keys[cursor];
+      if (!batch.contains(key)) {
+        await fetch(key);
+        cursor++;
+        continue;
+      }
+      final group = <String>[];
+      while (cursor < keys.length && batch.contains(keys[cursor])) {
+        group.add(keys[cursor]);
+        cursor++;
+      }
+      if (group.length == 1) {
+        await fetch(group.first);
+        continue;
+      }
       final threadCount = await _ajaxThreadCount();
       var next = 0;
       Future<void> worker() async {
-        while (next < parallel.length) {
-          await fetch(parallel[next++]);
+        while (next < group.length) {
+          await fetch(group[next++]);
         }
       }
 
       await Future.wait(<Future<void>>[
-        for (var i = 0; i < threadCount && i < parallel.length; i++) worker(),
+        for (var i = 0; i < threadCount && i < group.length; i++) worker(),
       ]);
     }
     ctx.ajaxPending.clear();
