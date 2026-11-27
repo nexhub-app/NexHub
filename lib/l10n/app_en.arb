@@ -669,6 +669,7 @@
   "alreadyDownloaded": "Already downloaded",
   "favoriteAdded": "Added to favorites",
   "favoriteRemoved": "Removed from favorites",
+  "favoriteSaveFailed": "Failed to save favorite. Please try again.",
   "aboutApp": "About App",
   "appVersion": "Version",
   "privacySettings": "Privacy Settings",

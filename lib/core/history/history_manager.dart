@@ -194,34 +194,44 @@ class HistoryManager extends ChangeNotifier {
   List<HistoryEntry>? _bucket(SourceType type) => _cache[type.mediaBucket];
 
   /// 加载持久化数据。
+  ///
+  /// 外层兜底捕获：文件后端读失败（含备份回退后仍失败）会抛异常，
+  /// 这里按「本次无数据」继续启动，不让启动流程崩掉。
   Future<void> init() async {
-    String? raw = await _backend.get(_key);
-    if (raw == null && _backend is FilePrefsBackend) {
-      // 一次性迁移：旧版本历史存于 shared_preferences，其底层「轻量级
-      // 偏好存储」对数百 KB 的大字符串值落盘不可靠（鸿蒙 dataPreferences
-      // 失败静默），历史因此重启丢失。文件后端不存在而旧值还在时搬过来，
-      // 之后以文件为准（旧键保留不动，作兜底）。
-      try {
-        raw = await const SharedPrefsBackend().get(_key);
-        if (raw != null) {
-          await _backend.set(_key, raw);
-          AppLog.instance.i('[历史] 已从偏好存储迁移到独立文件（${raw.length} 字节）');
+    try {
+      String? raw = await _backend.get(_key);
+      if (raw == null && _backend is FilePrefsBackend) {
+        // 一次性迁移：旧版本历史存于 shared_preferences，其底层「轻量级
+        // 偏好存储」对数百 KB 的大字符串值落盘不可靠（鸿蒙 dataPreferences
+        // 失败静默），历史因此重启丢失。文件后端不存在而旧值还在时搬过来，
+        // 之后以文件为准（旧键保留不动，作兜底）。
+        try {
+          raw = await const SharedPrefsBackend().get(_key);
+          if (raw != null) {
+            await _backend.set(_key, raw);
+            AppLog.instance.i('[历史] 已从偏好存储迁移到独立文件（${raw.length} 字节）');
+          }
+        } on Object catch (e) {
+          AppLog.instance.w('[历史] 迁移旧偏好存储失败: $e');
         }
-      } on Object catch (e) {
-        AppLog.instance.w('[历史] 迁移旧偏好存储失败: $e');
       }
-    }
-    if (raw != null) {
-      try {
-        final list = jsonDecode(raw) as List<dynamic>;
-        for (final item in list) {
-          final entry = HistoryEntry.fromJson(item as Map<String, dynamic>);
-          _cache.putIfAbsent(entry.sourceType, () => <HistoryEntry>[]).add(entry);
+      if (raw != null) {
+        try {
+          final list = jsonDecode(raw) as List<dynamic>;
+          for (final item in list) {
+            final entry = HistoryEntry.fromJson(item as Map<String, dynamic>);
+            _cache
+                .putIfAbsent(entry.sourceType, () => <HistoryEntry>[])
+                .add(entry);
+          }
+          AppLog.instance.i('[历史] 加载 ${list.length} 条');
+        } on Object catch (e) {
+          // 损坏数据忽略（后端已尽力回退备份），记录便于定位。
+          AppLog.instance.w('[历史] 数据解析失败（已忽略）: $e');
         }
-        AppLog.instance.i('[历史] 加载 ${list.length} 条');
-      } catch (_) {
-        // 损坏数据忽略
       }
+    } on Object catch (e) {
+      AppLog.instance.e('[历史] 启动加载失败，本次按无数据继续: $e');
     }
     notifyListeners();
     // 回填缺封面条目的本地缓存，确保离线可见。

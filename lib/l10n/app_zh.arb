@@ -656,6 +656,7 @@
   "alreadyDownloaded": "已下载",
   "favoriteAdded": "已收藏",
   "favoriteRemoved": "已取消收藏",
+  "favoriteSaveFailed": "收藏保存失败，请重试",
   "aboutApp": "关于应用",
   "appVersion": "版本",
   "privacySettings": "隐私设置",

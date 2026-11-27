@@ -3912,7 +3912,18 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen>
     );
     // MD3「Toggle」：收藏开关切换 → tick。
     wasFavorite ? AppHaptics.toggleOff() : AppHaptics.toggleOn();
-    await fav.toggleFavorite(item);
+    try {
+      await fav.toggleFavorite(item);
+    } on Object {
+      // 落盘失败（部分 ROM 落盘不可靠）：内存态仍生效，但重启会丢，
+      // 必须让用户知道而不是静默假装成功。
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(l10n.favoriteSaveFailed)),
+        );
+      }
+      return;
+    }
     if (mounted) {
       setState(() => _isFav = !wasFavorite);
       ScaffoldMessenger.of(context).showSnackBar(

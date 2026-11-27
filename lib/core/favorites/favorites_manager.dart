@@ -345,6 +345,13 @@ class FavoritesManager extends ChangeNotifier {
 
   final Map<SourceType, List<FavoriteEntry>> _cache = {};
 
+  /// 本次启动是否加载失败。失败时内存状态不完整（其他模块桶为空），
+  /// 任何全量覆盖写盘都会把磁盘上的好数据冲掉——「收藏后清后台重进
+  /// 收藏消失」的典型链条正是「启动读失败当空 → 随后回写空列表」。
+  /// 因此加载失败期间 [_persist]/[_persistGroups] 拒绝写盘，
+  /// 宁可本次会话改动不落盘（重启后磁盘数据仍可恢复）。
+  bool _loadFailed = false;
+
   /// 持久化桶：视频/音频源与影视源共用媒体桶（见 [SourceType.mediaBucket]），
   /// 保证媒体书架/分组能查到它们，条目不会落进无人查询的孤儿桶。
   List<FavoriteEntry>? _bucket(SourceType type) => _cache[type.mediaBucket];
@@ -369,69 +376,85 @@ class FavoritesManager extends ChangeNotifier {
   }
 
   /// 加载持久化数据（收藏 + 分组）。
+  ///
+  /// 任何加载失败（读取异常 / 数据损坏）都置 [_loadFailed] 并跳过解析，
+  /// 本次运行暂停写盘防覆盖；磁盘数据保住，下次启动仍可恢复。
   Future<void> init() async {
-    String? raw = await _backend.get(_key);
-    if (raw == null && _backend is FilePrefsBackend) {
-      await _migrateLegacy(_key);
-      raw = await _backend.get(_key);
-    }
-    if (raw != null) {
-      try {
-        final list = jsonDecode(raw) as List<dynamic>;
-        for (final item in list) {
-          final entry = FavoriteEntry.fromJson(item as Map<String, dynamic>);
-          _cache.putIfAbsent(entry.sourceType, () => <FavoriteEntry>[]).add(entry);
-        }
-      } catch (_) {
-        // 损坏数据忽略
+    try {
+      String? raw = await _backend.get(_key);
+      if (raw == null && _backend is FilePrefsBackend) {
+        await _migrateLegacy(_key);
+        raw = await _backend.get(_key);
       }
-    }
-    String? rawGroups = await _backend.get(_groupsKey);
-    if (rawGroups == null && _backend is FilePrefsBackend) {
-      await _migrateLegacy(_groupsKey);
-      rawGroups = await _backend.get(_groupsKey);
-    }
-    if (rawGroups != null) {
-      try {
-        final list = jsonDecode(rawGroups) as List<dynamic>;
-        final maps = list.cast<Map<String, dynamic>>();
-        // 统计每个分组在各模块下的条目数，用于旧数据（无 sourceType）的智能归类。
-        final Map<String, Map<SourceType, int>> groupTypeCounts =
-            <String, Map<SourceType, int>>{};
-        for (final entries in _cache.values) {
-          for (final entry in entries) {
-            for (final gid in entry.groupIds) {
-              (groupTypeCounts[gid] ??= <SourceType, int>{})
-                  .update(entry.sourceType, (c) => c + 1, ifAbsent: () => 1);
+      if (raw != null) {
+        try {
+          final list = jsonDecode(raw) as List<dynamic>;
+          for (final item in list) {
+            final entry = FavoriteEntry.fromJson(item as Map<String, dynamic>);
+            _cache
+                .putIfAbsent(entry.sourceType, () => <FavoriteEntry>[])
+                .add(entry);
+          }
+          AppLog.instance.i('[收藏] 加载 ${list.length} 条');
+        } on Object catch (e) {
+          // 损坏数据：视为加载失败（后端已尽力回退备份），拒绝后续写盘。
+          AppLog.instance.e('[收藏] 数据解析失败，按加载失败处理: $e');
+          rethrow;
+        }
+      }
+      String? rawGroups = await _backend.get(_groupsKey);
+      if (rawGroups == null && _backend is FilePrefsBackend) {
+        await _migrateLegacy(_groupsKey);
+        rawGroups = await _backend.get(_groupsKey);
+      }
+      if (rawGroups != null) {
+        try {
+          final list = jsonDecode(rawGroups) as List<dynamic>;
+          final maps = list.cast<Map<String, dynamic>>();
+          // 统计每个分组在各模块下的条目数，用于旧数据（无 sourceType）的智能归类。
+          final Map<String, Map<SourceType, int>> groupTypeCounts =
+              <String, Map<SourceType, int>>{};
+          for (final entries in _cache.values) {
+            for (final entry in entries) {
+              for (final gid in entry.groupIds) {
+                (groupTypeCounts[gid] ??= <SourceType, int>{})
+                    .update(entry.sourceType, (c) => c + 1, ifAbsent: () => 1);
+              }
             }
           }
-        }
-        _groups
-          ..clear()
-          ..addAll(maps.map((Map<String, dynamic> m) {
-            final FavoriteGroup g = FavoriteGroup.fromJson(m);
-            // 旧分组数据无 sourceType：按条目归属智能判定所属模块。
-            // 跨模块共享的分组归到条目最多的模块；无条目归属则默认影视。
-            if (!m.containsKey('sourceType')) {
-              final Map<SourceType, int>? counts = groupTypeCounts[g.id];
-              SourceType resolved = SourceType.animeSource;
-              int best = -1;
-              if (counts != null) {
-                for (final MapEntry<SourceType, int> e in counts.entries) {
-                  if (e.value > best) {
-                    best = e.value;
-                    resolved = e.key;
+          _groups
+            ..clear()
+            ..addAll(maps.map((Map<String, dynamic> m) {
+              final FavoriteGroup g = FavoriteGroup.fromJson(m);
+              // 旧分组数据无 sourceType：按条目归属智能判定所属模块。
+              // 跨模块共享的分组归到条目最多的模块；无条目归属则默认影视。
+              if (!m.containsKey('sourceType')) {
+                final Map<SourceType, int>? counts = groupTypeCounts[g.id];
+                SourceType resolved = SourceType.animeSource;
+                int best = -1;
+                if (counts != null) {
+                  for (final MapEntry<SourceType, int> e in counts.entries) {
+                    if (e.value > best) {
+                      best = e.value;
+                      resolved = e.key;
+                    }
                   }
                 }
+                return g.copyWith(sourceType: resolved);
               }
-              return g.copyWith(sourceType: resolved);
-            }
-            return g;
-          }));
-        _groups.sortByOrder();
-      } catch (_) {
-        // 损坏数据忽略
+              return g;
+            }));
+          _groups.sortByOrder();
+          AppLog.instance.i('[收藏] 分组加载 ${maps.length} 个');
+        } on Object catch (e) {
+          AppLog.instance.e('[收藏] 分组数据解析失败，按加载失败处理: $e');
+          rethrow;
+        }
       }
+      _loadFailed = false;
+    } on Object catch (e) {
+      _loadFailed = true;
+      AppLog.instance.e('[收藏] 启动加载失败，本次运行暂停写盘以防覆盖磁盘数据: $e');
     }
     notifyListeners();
   }
@@ -594,11 +617,21 @@ class FavoritesManager extends ChangeNotifier {
   }
 
   Future<void> _persist() async {
+    if (_loadFailed) {
+      // 内存列表不完整（部分桶未加载），全量覆盖会把磁盘好数据冲掉。
+      AppLog.instance.e('[收藏] 跳过写盘：本次启动加载失败，防覆盖保护生效');
+      return;
+    }
     final all = <Map<String, dynamic>>[];
     for (final list in _cache.values) {
       all.addAll(list.map((e) => e.toJson()));
     }
-    await _backend.set(_key, jsonEncode(all));
+    try {
+      await _backend.set(_key, jsonEncode(all));
+    } on Object catch (e) {
+      AppLog.instance.e('[收藏] 写盘失败（${all.length} 条）: $e');
+      rethrow;
+    }
   }
 
   /// Export all favorites as a JSON-serializable list.
@@ -793,8 +826,17 @@ class FavoritesManager extends ChangeNotifier {
   }
 
   Future<void> _persistGroups() async {
-    await _backend.set(
-        _groupsKey, jsonEncode(_groups.map((g) => g.toJson()).toList()));
+    if (_loadFailed) {
+      AppLog.instance.e('[收藏] 跳过分组写盘：本次启动加载失败，防覆盖保护生效');
+      return;
+    }
+    try {
+      await _backend.set(
+          _groupsKey, jsonEncode(_groups.map((g) => g.toJson()).toList()));
+    } on Object catch (e) {
+      AppLog.instance.e('[收藏] 分组写盘失败（${_groups.length} 个）: $e');
+      rethrow;
+    }
   }
 
   /// Export all groups as a JSON-serializable list.
