@@ -4671,6 +4671,18 @@
   "@logCopied": {
     "description": "Runtime log copy done toast"
   },
+  "logExportFile": "Export log file",
+  "@logExportFile": {
+    "description": "Crash/runtime log export button: pack as a file and share or save"
+  },
+  "logExportDone": "Log exported. Send it to the developer via the share sheet",
+  "@logExportDone": {
+    "description": "Log export done toast"
+  },
+  "logExportFailed": "Export failed. Please try again",
+  "@logExportFailed": {
+    "description": "Log export failure toast"
+  },
   "advancedCleanGroup": "Data Cleanup",
   "@advancedCleanGroup": {
     "description": "Advanced page data cleanup group title"

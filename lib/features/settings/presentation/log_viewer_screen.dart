@@ -2,7 +2,10 @@
 ///
 /// 展示 [AppLog] 本次运行期的滚动日志：详细日志开关开启时的网络请求/响应
 /// （`[HTTP] ...`）、Flutter 错误等。1 秒轮询刷新（[AppLog] 非 ChangeNotifier）。
-/// 支持复制全部 / 清空。与「崩溃日志」（持久化）互补。
+/// 支持复制全部 / 导出文件（发给开发者）/ 清空。与「崩溃日志」（持久化）互补。
+///
+/// 正文必须为**单个可选中文本块**：此前每行一个 `SelectableText`（ListView.builder），
+/// 长按选择跨不过 widget 边界，一次只能复制一行。
 library;
 
 import 'dart:async';
@@ -12,6 +15,8 @@ import 'package:flutter/services.dart';
 import 'package:nexhub/generated/app_localizations.dart';
 
 import '../../../core/widgets/app_alert_dialog.dart';
+import '../../../core/widgets/app_animations.dart';
+import '../../../core/debug/log_export.dart';
 import '../../../core/theme/app_tokens.dart';
 import '../../../core/utils/app_log.dart';
 import '../../../core/widgets/app_empty_state.dart';
@@ -67,6 +72,19 @@ class _LogViewerScreenState extends State<LogViewerScreen> {
     }
   }
 
+  /// 导出日志文件：打包为带环境信息头的 txt，经系统分享 / 另存为发出。
+  Future<void> _export(AppLocalizations l10n) async {
+    if (_entries.isEmpty) return;
+    final bool ok = await LogExport.export(
+      kind: 'runtime',
+      content: _entries.join('\n'),
+    );
+    if (!ok || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(l10n.logExportDone)),
+    );
+  }
+
   Future<void> _clear(AppLocalizations l10n) async {
     final bool ok = await showDialog<bool>(
           context: context,
@@ -104,6 +122,11 @@ class _LogViewerScreenState extends State<LogViewerScreen> {
             onPressed: () => _copyAll(l10n),
           ),
           IconButton(
+            tooltip: l10n.logExportFile,
+            icon: const Icon(Icons.ios_share_rounded),
+            onPressed: _entries.isEmpty ? null : () => _export(l10n),
+          ),
+          IconButton(
             tooltip: l10n.crashLogClear,
             icon: const Icon(Icons.delete_sweep_rounded),
             onPressed: () => _clear(l10n),
@@ -115,13 +138,13 @@ class _LogViewerScreenState extends State<LogViewerScreen> {
               icon: Icons.article_rounded,
               message: l10n.logEmpty,
             )
-          : ListView.builder(
+          : SingleChildScrollView(
               padding: context.pageInset(AppTokens.spaceMd),
-              itemCount: _entries.length,
-              itemBuilder: (context, i) => Padding(
-                padding: const EdgeInsets.only(bottom: AppTokens.spaceXs),
+              child: AppSheetBody(
+                // 单个可选中文本块：长按选择 / 拖动手柄可跨行选中任意
+                // 连续内容，复制不再被限制在单行内。
                 child: SelectableText(
-                  _entries[i],
+                  _entries.join('\n'),
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         fontFamily: 'monospace',
                         height: 1.4,

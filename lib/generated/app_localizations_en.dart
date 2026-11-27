@@ -1354,6 +1354,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get favoriteRemoved => 'Removed from favorites';
 
   @override
+  String get favoriteSaveFailed => 'Failed to save favorite. Please try again.';
+
+  @override
   String get aboutApp => 'About App';
 
   @override
@@ -8583,6 +8586,16 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get logCopied => 'Log copied to clipboard';
+
+  @override
+  String get logExportFile => 'Export log file';
+
+  @override
+  String get logExportDone =>
+      'Log exported. Send it to the developer via the share sheet';
+
+  @override
+  String get logExportFailed => 'Export failed. Please try again';
 
   @override
   String get advancedCleanGroup => 'Data Cleanup';

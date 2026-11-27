@@ -2648,6 +2648,12 @@ abstract class AppLocalizations {
   /// **'Removed from favorites'**
   String get favoriteRemoved;
 
+  /// No description provided for @favoriteSaveFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to save favorite. Please try again.'**
+  String get favoriteSaveFailed;
+
   /// No description provided for @aboutApp.
   ///
   /// In en, this message translates to:
@@ -16063,6 +16069,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Log copied to clipboard'**
   String get logCopied;
+
+  /// Crash/runtime log export button: pack as a file and share or save
+  ///
+  /// In en, this message translates to:
+  /// **'Export log file'**
+  String get logExportFile;
+
+  /// Log export done toast
+  ///
+  /// In en, this message translates to:
+  /// **'Log exported. Send it to the developer via the share sheet'**
+  String get logExportDone;
+
+  /// Log export failure toast
+  ///
+  /// In en, this message translates to:
+  /// **'Export failed. Please try again'**
+  String get logExportFailed;
 
   /// Advanced page data cleanup group title
   ///

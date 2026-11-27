@@ -1323,6 +1323,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get favoriteRemoved => '已取消收藏';
 
   @override
+  String get favoriteSaveFailed => '收藏保存失败，请重试';
+
+  @override
   String get aboutApp => '关于应用';
 
   @override
@@ -8367,6 +8370,15 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get logCopied => '日志已复制到剪贴板';
+
+  @override
+  String get logExportFile => '导出日志文件';
+
+  @override
+  String get logExportDone => '日志已导出，可通过分享面板发送给开发者';
+
+  @override
+  String get logExportFailed => '导出失败，请重试';
 
   @override
   String get advancedCleanGroup => '数据清理';

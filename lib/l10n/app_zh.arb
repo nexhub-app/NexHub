@@ -4630,6 +4630,18 @@
   "@logCopied": {
     "description": "运行日志复制完成提示"
   },
+  "logExportFile": "导出日志文件",
+  "@logExportFile": {
+    "description": "崩溃/运行日志页导出按钮：打包为文件经系统分享或另存为发出"
+  },
+  "logExportDone": "日志已导出，可通过分享面板发送给开发者",
+  "@logExportDone": {
+    "description": "日志导出完成提示"
+  },
+  "logExportFailed": "导出失败，请重试",
+  "@logExportFailed": {
+    "description": "日志导出失败提示"
+  },
   "advancedCleanGroup": "数据清理",
   "@advancedCleanGroup": {
     "description": "高级页数据清理分组标题"
