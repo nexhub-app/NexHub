@@ -105,9 +105,22 @@ class WebBook {
       body: body,
       isSearch: true,
       searchKey: key,
+      // legado：URL 阶段与列表解析共用同一个 RuleData——searchUrl 里
+      // `<js>`/`{{}}` 的 `java.put` 变量，列表规则 `@get` 要能读到。
+      ruleData: analyzeUrl.urlVariables,
+      detailBookUrl: _detailBookUrl(analyzeUrl),
       filter: filter,
       shouldBreak: shouldBreak,
     );
+  }
+
+  /// legado `BookList.getInfoItem` 的书籍地址：重定向响应用最终地址，
+  /// 否则用 `getAbsoluteURL(analyzeUrl.url, analyzeUrl.ruleUrl)`（规则 URL）。
+  static String _detailBookUrl(AnalyzeUrl analyzeUrl) {
+    if (analyzeUrl.isRedirect) {
+      return analyzeUrl.lastFinalUrl ?? analyzeUrl.url;
+    }
+    return AnalyzeRule.absoluteUrl(analyzeUrl.url, analyzeUrl.ruleUrl);
   }
 
   /// 解析书源的发现选项列表（含分类 / 输入框 / 按钮 / 开关 / 下拉）。
@@ -276,6 +289,9 @@ class WebBook {
       baseUrl: analyzeUrl.lastFinalUrl ?? analyzeUrl.url,
       body: body,
       isSearch: false,
+      // legado：发现 URL 阶段与列表解析共用同一 RuleData。
+      ruleData: analyzeUrl.urlVariables,
+      detailBookUrl: _detailBookUrl(analyzeUrl),
     );
 
     return searchBooks.map(_fromSearchBook).toList();
@@ -309,6 +325,8 @@ class WebBook {
       baseUrl: resolvedUrl,
       body: body,
       isSearch: false,
+      ruleData: analyzeUrl.urlVariables,
+      detailBookUrl: _detailBookUrl(analyzeUrl),
     );
     return (resolvedUrl, searchBooks.map(_fromSearchBook).toList());
   }
@@ -324,8 +342,9 @@ class WebBook {
         tocUrl: sb.tocUrl,
         wordCount: sb.wordCount,
         bookInfoHtml: sb.infoHtml,
+        tocHtml: sb.tocHtml,
         type: sb.type,
-      );
+      )..variableMap.addAll(sb.variableMap);
 
   /// 获取书籍详情：抓取 `bookUrl` 并通过 `ruleBookInfo` 解析。
   ///
@@ -430,16 +449,15 @@ class WebBook {
     if (runPerJs && preUpdateJs != null && preUpdateJs.isNotEmpty) {
       final ctx = ShuyuanSourceContext.current;
       ctx?.bookInfoRefreshRequested = false;
-      try {
-        // legado runPreUpdateJs 用 `AnalyzeRule(book, source, true)`：
-        // 脚本里的 fromBookInfo 必须为 true，否则按详情分支写法的
-        // preUpdateJs 会走错路径。
-        final preRule = AnalyzeRule(book: book, fromBookInfo: true);
-        preRule.evalJs(preUpdateJs, null);
-        preRule.variables.forEach(book.putVariable);
-      } catch (_) {}
+      // legado WebBook.getChapterListAwait：`runPerJs` 失败经 getOrThrow()
+      // 向上传播，目录中止。旧实现 catch 后继续用旧 tocUrl，脚本配置错误
+      // 会被伪装成「旧目录仍可用」，用户看到的是过期章节。
+      final preRule = AnalyzeRule(book: book, fromBookInfo: true);
+      preRule.evalJs(preUpdateJs, null);
+      preRule.variables.forEach(book.putVariable);
       // legado AnalyzeRule.refreshTocUrl：preUpdateJs 内调用时重新解析详情页，
       // 更新 book.tocUrl（「目录地址定期更新」的源靠它在抓目录前换新地址）。
+      // 仅刷新失败降级（保留原 tocUrl 继续），脚本本身异常已在上面抛出。
       if (ctx != null && ctx.bookInfoRefreshRequested) {
         ctx.bookInfoRefreshRequested = false;
         try {
@@ -448,8 +466,9 @@ class WebBook {
             bookUrl: book.bookUrl,
             seedBook: book,
           );
-        } catch (_) {
-          // 刷新失败保留原 tocUrl，不阻断目录流程（legado 同样仅记日志）。
+        } catch (e) {
+          AppLog.instance.w('[书源目录] refreshTocUrl 详情刷新失败，沿用原目录地址：'
+              '${source.bookSourceName} / $e');
         }
       }
     }
@@ -492,8 +511,11 @@ class WebBook {
           book.coverUrl = detailBook.coverUrl;
         }
         // 详情阶段 @put/java.put 的变量随书回填（@get 跨阶段依赖）。
+        // 用 putIfAbsent：补抓发生在目录入口，不能覆盖目录书已有的同名键
+        //（legado 正常流程里详情先于目录，详情变量本就已在书对象上）。
         if (detailBook.variableMap.isNotEmpty) {
-          book.variableMap.addAll(detailBook.variableMap);
+          detailBook.variableMap
+              .forEach((k, v) => book.variableMap.putIfAbsent(k, () => v));
         }
       } catch (_) {
         // 详情页解析失败时维持原行为（用 bookUrl 当 tocUrl），
@@ -584,22 +606,17 @@ class WebBook {
         visited.add(nextUrl);
         pageCount++;
 
-        // 分页抓取失败时仅停止翻页，保留已解析的首页/前几页章节，
-        // 不让单页异常拖垮整个目录。
-        final String pageBody;
-        final AnalyzeUrl pageAnalyze;
-        try {
-          pageAnalyze = AnalyzeUrl(
-            url: nextUrl,
-            baseUrl: source.bookSourceUrl,
-            source: source,
-            ruleData: book,
-          );
-          pageBody = await pageAnalyze.getStrResponse();
-        } catch (_) {
-          break;
-        }
-        if (pageBody.isEmpty) break;
+        // legado BookChapterList：串行分页的任一页请求失败直接抛出（
+        // `getStrResponseAwait` 不捕获），目录整体失败而不是静默返回前缀页。
+        // 空 body 不算失败：仍进入页解析（nextTocUrl 可由 JS/常量生成），
+        // 只有本页既无章节又无下一页时才结束。
+        final pageAnalyze = AnalyzeUrl(
+          url: nextUrl,
+          baseUrl: source.bookSourceUrl,
+          source: source,
+          ruleData: book,
+        );
+        final pageBody = await pageAnalyze.getStrResponse();
 
         final pageNextUrls = <String>[];
         final pageChapters = BookChapterList.analyzeChapterList(
@@ -783,9 +800,13 @@ class WebBook {
     }
     // legado BookContent：空串 body 照样进页解析——subContent 可以靠 JS 或
     // 常量给出在线正文，早退会把整章直接判空。最终仍为空才在上层报错。
-    // 音频(1)/视频(4)源正文即媒体直链，跳过 HTML 格式化（legado 同款）。
-    final mediaSource =
-        source.bookSourceType == 1 || source.bookSourceType == 4;
+    // 音频/视频源正文即媒体直链，跳过 HTML 格式化（legado 同款）。
+    // 判据以同步后的 book 类型位为准（legado BookContent 只看 book.isAudio/
+    // isVideo）；书对象类型未定（type 0，历史编号）时才用书源类型兜底。
+    final mediaSource = book.isAudioBook ||
+        book.isVideoBook ||
+        (book.type == 0 &&
+            (source.bookSourceType == 1 || source.bookSourceType == 4));
 
     final List<NovelBlock> blocks = <NovelBlock>[];
     final analyzeWatch = Stopwatch()..start();

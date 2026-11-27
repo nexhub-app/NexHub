@@ -45,7 +45,7 @@ class AnalyzeByJson {
     if (rule.isEmpty) return '';
     // legado AnalyzeByJSonPath：先用平衡切分处理 `&&`/`||`（`||` 短路、
     // `&&` 换行合并），再对单段做 `{$.rule}` 内嵌替换或 JsonPath 取值。
-    final ra = RuleAnalyzer(rule);
+    final ra = RuleAnalyzer(rule, code: true);
     final rules = ra.splitRule(const <String>['&&', '||']);
     if (rules.length > 1) {
       final parts = <String>[];
@@ -73,7 +73,7 @@ class AnalyzeByJson {
 
   List<String> getStringList(String rule) {
     if (rule.isEmpty) return [];
-    final ra = RuleAnalyzer(rule);
+    final ra = RuleAnalyzer(rule, code: true);
     final rules = ra.splitRule(const <String>['&&', '||', '%%']);
     if (rules.length > 1) {
       final results = <List<String>>[];
@@ -189,7 +189,7 @@ class AnalyzeByJson {
 
   List<dynamic> getList(String rule) {
     if (rule.isEmpty) return [];
-    final ra = RuleAnalyzer(rule);
+    final ra = RuleAnalyzer(rule, code: true);
     final rules = ra.splitRule(const <String>['&&', '||', '%%']);
     if (rules.length > 1) {
       final results = <List<dynamic>>[];

@@ -71,6 +71,44 @@ const String jsoupDomJsPrelude = r'''
     return String(s).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
   }
 
+  // jsoup `abs:` 属性：按文档 baseUri 解析相对地址（RFC 3986 简化实现）。
+  function resolveUrl(base, url) {
+    var u = String(url == null ? "" : url);
+    if (!u) return "";
+    if (/^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(u)) return u;
+    var b = String(base == null ? "" : base);
+    if (!b) return u;
+    var schemeMatch = b.match(/^([a-zA-Z][a-zA-Z0-9+.\-]*:)/);
+    if (!schemeMatch) return u;
+    var scheme = schemeMatch[1];
+    if (u.indexOf("//") === 0) return scheme + u;
+    var hostStart = b.indexOf("://");
+    if (hostStart < 0) return u;
+    if (u.charAt(0) === "/") {
+      var hostEnd = b.indexOf("/", hostStart + 3);
+      return (hostEnd < 0 ? b : b.substring(0, hostEnd)) + u;
+    }
+    var cut = b.length;
+    var q = b.indexOf("?");
+    var h = b.indexOf("#");
+    if (q >= 0 && q < cut) cut = q;
+    if (h >= 0 && h < cut) cut = h;
+    var dir = b.substring(0, cut);
+    dir = dir.substring(0, dir.lastIndexOf("/") + 1);
+    if (!dir) return u;
+    var parts = (dir + u).split("/");
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      if (p === ".") continue;
+      // 保留 scheme 后的空段（https:// 不能被压成 https:/）；只向上消掉
+      // 路径段的 ".."，不允许吃掉 scheme/host。
+      if (p === "..") { if (out.length > 3) out.pop(); continue; }
+      out.push(p);
+    }
+    return out.join("/");
+  }
+
   // ── 节点 ──
   var orderSeq = 0;
 
@@ -189,9 +227,10 @@ const String jsoupDomJsPrelude = r'''
     }
   }
 
-  function parseHtml(html) {
+  function parseHtml(html, baseUri) {
     var src = String(html == null ? "" : html);
     var doc = new SyNode("doc", "#document", {});
+    doc.__baseUri = String(baseUri == null ? "" : baseUri);
     var stack = [doc];
 
     function top() { return stack[stack.length - 1]; }
@@ -801,14 +840,18 @@ const String jsoupDomJsPrelude = r'''
     text: function () { return textOf(this); },
     ownText: function () { return ownTextOf(this); },
     attr: function (key, value) {
-      var k = String(key == null ? "" : key).toLowerCase();
-      if (k.indexOf("abs:") === 0) k = k.substring(4);
+      var raw = String(key == null ? "" : key);
+      var abs = raw.toLowerCase().indexOf("abs:") === 0;
+      var k = abs ? raw.substring(4).toLowerCase() : raw.toLowerCase();
       if (arguments.length >= 2) {
         this.__attrs[k] = String(value == null ? "" : value);
         return this;
       }
       var v = this.__attrs[k];
-      return v == null ? "" : String(v);
+      if (v == null) return "";
+      if (!abs) return String(v);
+      var doc = docOf(this);
+      return resolveUrl(doc ? doc.__baseUri : "", String(v));
     },
     hasAttr: function (key) {
       return Object.prototype.hasOwnProperty.call(
@@ -878,13 +921,13 @@ const String jsoupDomJsPrelude = r'''
     nextElementSibling: function () { return nextEl(this); },
     previousElementSibling: function () { return prevEl(this); },
     nextElementSiblings: function () {
-      var out = [this];
+      var out = [];
       var n = nextEl(this);
       while (n) { out.push(n); n = nextEl(n); }
       return elements(out);
     },
     previousElementSiblings: function () {
-      var out = [this];
+      var out = [];
       var n = prevEl(this);
       while (n) { out.push(n); n = prevEl(n); }
       return elements(out);
@@ -1229,10 +1272,13 @@ const String jsoupDomJsPrelude = r'''
 
   // ── 入口 ──
   Jsoup.parse = function (html, baseUri) {
-    return attachProto(parseHtml(html));
+    var doc = attachProto(parseHtml(html, baseUri));
+    doc.__baseUri = String(baseUri == null ? "" : baseUri);
+    return doc;
   };
   Jsoup.parseBodyFragment = function (html, baseUri) {
     return Jsoup.parse(html, baseUri);
   };
+
 })(globalThis);
 ''';

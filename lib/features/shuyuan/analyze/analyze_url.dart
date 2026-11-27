@@ -116,6 +116,25 @@ class AnalyzeUrl {
   Map<String, List<String>>? lastResponseHeaders;
   String? lastFinalUrl;
 
+  /// legado `StrResponse.isRedirect`：响应最终地址与请求地址不同即视为重定向。
+  /// 整页详情回退的书籍地址按它分支（重定向取最终地址，否则取规则 URL）。
+  bool get isRedirect => lastFinalUrl != null && lastFinalUrl != url;
+
+  /// URL 阶段（模板/`<js>`/`{{}}` 求值）写入的变量快照。
+  ///
+  /// legado 把同一个 RuleData 传给 AnalyzeUrl 与 BookList，URL 脚本
+  /// `java.put` 的签名参数在列表规则里可直接 `@get`。沙箱里 URL 求值发生在
+  /// [_urlRule] 上，列表解析是另一个 AnalyzeRule 实例，必须显式传递。
+  Map<String, String> get urlVariables => _urlRule?.variables ?? const {};
+
+  /// 源 header 的求值结果（构造期一次，请求期复用）。
+  ///
+  /// legado `BaseSource.getHeaderMap`：源 header 为 JS/JSON 时在构造
+  /// AnalyzeUrl 时求值，**早于** URL 模板展开；同一实例的每次请求复用同一份
+  /// 结果（不重复触发脚副作用）。旧实现直到发请求才求值，URL 模板里刚写入
+  /// 的变量读不到，header 脚本的副作用也随重试次数叠加。
+  Map<String, String>? _sourceHeaderCache;
+
   /// URL 选项 `followRedirects`：`java.get/post/head` 对齐 legado 的
   /// Jsoup `followRedirects(false)`（302 响应头 Location 是搜索 URL 的
   /// 常见来源）；`java.connect`/`java.ajax` 走默认跟随（重定向后的最终
@@ -201,7 +220,30 @@ class AnalyzeUrl {
       }
     }
 
+    // legado AnalyzeUrl init：源 header 先于 URL 模板求值（同一实例只算一次），
+    // 随后才展开 searchUrl/categoryUrl 里的 `<js>`/`{{}}`。
+    _sourceHeaders();
     _initUrl();
+  }
+
+  /// 当前实例的源 header（含 `@js:`/`<js>` 表达式求值）。
+  ///
+  /// 只读语义：返回的 Map 不可被调用方修改（需要剔除/改写首部时先 copy）。
+  Map<String, String> _sourceHeaders() {
+    final cached = _sourceHeaderCache;
+    if (cached != null) return cached;
+    if (_headerMapReplaced) {
+      return _sourceHeaderCache = const <String, String>{};
+    }
+    final header = source?.header;
+    if (header == null || header.isEmpty) {
+      return _sourceHeaderCache = const <String, String>{};
+    }
+    try {
+      return _sourceHeaderCache = _parseHeader(header);
+    } catch (_) {
+      return _sourceHeaderCache = const <String, String>{};
+    }
   }
 
   void _initUrl() {
@@ -872,13 +914,8 @@ class AnalyzeUrl {
   /// 同一套 Referer/UA/Cookie，否则 CDN 403 全程黑屏。
   Map<String, String> resolveRequestHeaders() {
     final out = <String, String>{};
-    if (!_headerMapReplaced &&
-        source?.header != null &&
-        source!.header!.isNotEmpty) {
-      try {
-        _parseHeader(source!.header!)
-            .forEach((k, v) => _putHeader(out, k, v));
-      } catch (_) {}
+    if (!_headerMapReplaced && source?.header != null && source!.header!.isNotEmpty) {
+      _sourceHeaders().forEach((k, v) => _putHeader(out, k, v));
     }
     final activeCtx = ShuyuanSourceContext.current;
     // 登录头先于 URL 选项头合并（legado BaseSource.getHeaderMap 把
@@ -999,7 +1036,7 @@ class AnalyzeUrl {
         final rawHeader = source?.header ?? '';
         if (rawHeader.isNotEmpty) {
           try {
-            final sourceHeader = _parseHeader(rawHeader);
+            final sourceHeader = Map<String, String>.from(_sourceHeaders());
             // 与下方 HTTP 分支同款语义：源 header 的 User-Agent 必须生效，
             // 且要大小写不敏感地覆盖宿主 UA（源常写成 `user-agent`）。
             // 直接 addAll 会让两个大小写不同的键并存 → WebView 用哪个不确定，
@@ -1174,7 +1211,7 @@ class AnalyzeUrl {
 
       if (source?.header != null && source!.header!.isNotEmpty) {
         try {
-          final sourceHeader = _parseHeader(source!.header!);
+          final sourceHeader = Map<String, String>.from(_sourceHeaders());
           // 源 header 的 User-Agent 必须生效（尊重「源即插件」：源作者配的
           // UA 即意图）。提取后按 host 注册到 HttpFetcher，使 WebView 验证
           // 复用同一 UA。

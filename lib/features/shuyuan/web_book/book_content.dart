@@ -471,17 +471,18 @@ class BookContent {
         subContent = await subAnalyze.getStrResponse();
       }
       if (subContent.isNotEmpty) {
-        // legado BookContent：`isOnLineTxt` → 追加正文；`isAudio` → 写 lyric
-        // 变量；图片/文件/视频源忽略。判据走 BookType 位语义（兼容本应用
-        // 0..4 编号），组合类型（text|audio）两边都要执行。
-        if (book.isOnLineTxtBook || bookSource.bookSourceType == 0) {
+        // 判据走 BookType 位语义（兼容本应用 0..4 编号），组合类型（text|audio）
+        // 两边都要执行；只有书对象类型未定（type 0）时才用书源类型兜底。
+        if (book.isOnLineTxtBook ||
+            (book.type == 0 && bookSource.bookSourceType == 0)) {
           blocks.addAll(extractAppendedBlocks(
             content: subContent,
             baseUrl: baseUrl,
             redirectUrl: redirectUrl,
           ));
         }
-        if (book.isAudioBook || bookSource.bookSourceType == 1) {
+        if (book.isAudioBook ||
+            (book.type == 0 && bookSource.bookSourceType == 1)) {
           bookChapter.putVariable('lyric', subContent);
         }
       }
@@ -607,25 +608,38 @@ class BookContent {
     final rawLines = content.split('\n');
     final blocks = <NovelBlock>[];
     for (final rawLine in rawLines) {
-      // 1) 提取本块内插图（懒加载属性优先，回退 src）。
-      final imgs =
-          _extractImages(rawLine, baseUrl, redirectUrl, rawOptions: rawOptions);
-      // 2) 文本化：剥离标签 + 解码实体。行内空白保持原样（legado 只折叠
-      //    换行两侧的空白，不压缩行内连续空格）。
-      var text = rawLine.replaceAll(_htmlTagRegex, '');
-      text = _decodeEntities(text);
-      text = text
-          .replaceAll(_crlfRegex, '\n')
-          .replaceAll(_crRegex, '\n')
-          .trim();
-      if (text.isNotEmpty) {
-        blocks.add(NovelTextBlock(text));
+      // 按 `<img>` 在行内的出现位置**顺序**产出文本段与插图块：
+      // legado 以字符串保留 `<img>` 的原位置，这里若先追加整行文本再统一
+      // 追加图片，`<img>文字` 会变成「文字→图片」，图文顺序被改。
+      var cursor = 0;
+      for (final match in _formatImagePattern.allMatches(rawLine)) {
+        if (match.start > cursor) {
+          _appendTextBlock(blocks, rawLine.substring(cursor, match.start));
+        }
+        final img = _imageBlockFromMatch(match, baseUrl, redirectUrl,
+            rawOptions: rawOptions);
+        if (img != null) blocks.add(img);
+        cursor = match.end;
       }
-      for (final img in imgs) {
-        blocks.add(img);
+      if (cursor < rawLine.length) {
+        _appendTextBlock(blocks, rawLine.substring(cursor));
       }
     }
     return blocks;
+  }
+
+  /// 文本段入块：剥离标签 + 解码实体，行内空白保持原样（legado 只折叠
+  /// 换行两侧的空白，不压缩行内连续空格）。
+  static void _appendTextBlock(List<NovelBlock> blocks, String raw) {
+    var text = raw.replaceAll(_htmlTagRegex, '');
+    text = _decodeEntities(text);
+    text = text
+        .replaceAll(_crlfRegex, '\n')
+        .replaceAll(_crRegex, '\n')
+        .trim();
+    if (text.isNotEmpty) {
+      blocks.add(NovelTextBlock(text));
+    }
   }
 
   /// legado `HtmlFormatter.formatImagePattern` 的逐字移植，三档按序：
@@ -644,61 +658,56 @@ class BookContent {
   ///
   /// 选项串必须**剥离**：带 `,{"style":...}` 的地址直接当图片下载会 404 /
   /// 解码失败（源里常见的段评气泡图标就是这种形态，表现为正文裂图）。
-  static List<NovelImageBlock> _extractImages(
-    String block,
+  /// 单个 `<img>` 命中 → 插图块（选项串剥离、相对地址绝对化、占位图过滤）。
+  static NovelImageBlock? _imageBlockFromMatch(
+    RegExpMatch m,
     String baseUrl,
     String redirectUrl, {
     Map<String, _ImageUrlOptions> rawOptions = const <String, _ImageUrlOptions>{},
   }) {
-    final out = <NovelImageBlock>[];
-    for (final m in _formatImagePattern.allMatches(block)) {
-      final src = m.group(1) ?? m.group(2) ?? m.group(3) ?? '';
-      if (src.isEmpty) continue;
-      // legado formatKeepImg 之后整段执行 unescapeHtml4，图片地址中的
-      // `&amp;` 等实体会还原；图块提前抽取，这里补同一次解码。
-      var rawSrc = AnalyzeRule.unescapeHtml(src);
-      String? click;
-      var inline = false;
-      final optMatch = _urlOptionPattern.firstMatch(rawSrc);
-      if (optMatch != null) {
-        final option =
-            AnalyzeUrl.parseJsonLenient(rawSrc.substring(optMatch.start + 1));
-        if (option != null) {
-          rawSrc = rawSrc.substring(0, optMatch.start);
-          final c = option['click'];
-          if (c != null && c.toString().trim().isNotEmpty) {
-            click = c.toString().trim();
-          }
-          final style = (option['style'] ?? '').toString().trim().toLowerCase();
-          inline = style == 'text' || style == 'inline';
+    final src = m.group(1) ?? m.group(2) ?? m.group(3) ?? '';
+    if (src.isEmpty) return null;
+    // legado formatKeepImg 之后整段执行 unescapeHtml4，图片地址中的
+    // `&amp;` 等实体会还原；图块提前抽取，这里补同一次解码。
+    var rawSrc = AnalyzeRule.unescapeHtml(src);
+    String? click;
+    var inline = false;
+    final optMatch = _urlOptionPattern.firstMatch(rawSrc);
+    if (optMatch != null) {
+      final option =
+          AnalyzeUrl.parseJsonLenient(rawSrc.substring(optMatch.start + 1));
+      if (option != null) {
+        rawSrc = rawSrc.substring(0, optMatch.start);
+        final c = option['click'];
+        if (c != null && c.toString().trim().isNotEmpty) {
+          click = c.toString().trim();
         }
+        final style = (option['style'] ?? '').toString().trim().toLowerCase();
+        inline = style == 'text' || style == 'inline';
       }
-      var abs = _toAbsoluteUrl(rawSrc, baseUrl, redirectUrl);
-      // DOM 往返（`@html` 规则）会把 `src` 里的选项 JSON 拆成多个属性：
-      // `src="data:...,{"style":"TEXT",...}"` 经解析/再序列化后变成
-      // `src="data:...,{" style":"text"...`（小写、插空格、丢引号）。
-      // 因此选项统一从**原始响应**里扫出来按 URL 前缀回填。
-      if (abs.isNotEmpty && rawOptions.isNotEmpty) {
-        final match = _matchRawOptions(abs, rawOptions);
-        if (match != null) {
-          // 原始 HTML 的解析结果优先：DOM 往返后的选项是被拆坏的版本
-          //（小写 + 插空格），只能用作兜底。
-          abs = match.url;
-          click = match.click ?? click;
-          inline = match.inline;
-        }
-      }
-      if (!_looksLikeImage(abs)) continue;
-      final NovelImageBlock block =
-          NovelImageBlock(abs, clickScript: click, inline: inline);
-      // 联调日志（少量）：确认「源内嵌图标」是否被识别为行内可点击图标。
-      if (click != null || abs.startsWith('data:image/svg')) {
-        AppLog.instance.i('[正文图] 图标 inline=$inline click=${click != null} '
-            'url=${abs.length > 40 ? '${abs.substring(0, 40)}…' : abs}');
-      }
-      out.add(block);
     }
-    return out;
+    var abs = _toAbsoluteUrl(rawSrc, baseUrl, redirectUrl);
+    // DOM 往返（`@html` 规则）会把 `src` 里的选项 JSON 拆成多个属性：
+    // `src="data:...,{"style":"TEXT",...}"` 经解析/再序列化后变成
+    // `src="data:...,{" style":"text"...`（小写、插空格、丢引号）。
+    // 因此选项统一从**原始响应**里扫出来按 URL 前缀回填。
+    if (abs.isNotEmpty && rawOptions.isNotEmpty) {
+      final match = _matchRawOptions(abs, rawOptions);
+      if (match != null) {
+        // 原始 HTML 的解析结果优先：DOM 往返后的选项是被拆坏的版本
+        //（小写 + 插空格），只能用作兜底。
+        abs = match.url;
+        click = match.click ?? click;
+        inline = match.inline;
+      }
+    }
+    if (!_looksLikeImage(abs)) return null;
+    // 联调日志（少量）：确认「源内嵌图标」是否被识别为行内可点击图标。
+    if (click != null || abs.startsWith('data:image/svg')) {
+      AppLog.instance.i('[正文图] 图标 inline=$inline click=${click != null} '
+          'url=${abs.length > 40 ? '${abs.substring(0, 40)}…' : abs}');
+    }
+    return NovelImageBlock(abs, clickScript: click, inline: inline);
   }
 
   /// 原始 HTML 里的插图 URL 选项（按**纯地址**建索引）。

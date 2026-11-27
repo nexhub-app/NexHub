@@ -56,23 +56,22 @@ class BookInfo {
         canReName && (bookInfoRule.canReName?.isNotEmpty ?? false);
 
     if (bookInfoRule.name != null && bookInfoRule.name!.isNotEmpty) {
-      try {
-        final name =
-            StringUtils.formatBookName(analyzeRule.getString(bookInfoRule.name!));
-        if (name.isNotEmpty && (canReNameFlag || book.name.isEmpty)) {
-          book.name = name;
-        }
-      } catch (_) {}
+      // legado BookInfo.getName：name 规则**不包 try/catch**——脚本异常令
+      // 整次详情解析失败，不能吞成「成功但缺书名」。
+      final name =
+          StringUtils.formatBookName(analyzeRule.getString(bookInfoRule.name!));
+      if (name.isNotEmpty && (canReNameFlag || book.name.isEmpty)) {
+        book.name = name;
+      }
     }
 
     if (bookInfoRule.author != null && bookInfoRule.author!.isNotEmpty) {
-      try {
-        final author = StringUtils.formatBookAuthor(
-            analyzeRule.getString(bookInfoRule.author!));
-        if (author.isNotEmpty && (canReNameFlag || book.author.isEmpty)) {
-          book.author = author;
-        }
-      } catch (_) {}
+      // 同 name：author 规则异常向上传播（legado 同口径）。
+      final author = StringUtils.formatBookAuthor(
+          analyzeRule.getString(bookInfoRule.author!));
+      if (author.isNotEmpty && (canReNameFlag || book.author.isEmpty)) {
+        book.author = author;
+      }
     }
 
     if (bookInfoRule.kind != null && bookInfoRule.kind!.isNotEmpty) {
@@ -167,11 +166,8 @@ class BookInfo {
       //（`book.tocUrl = getString(infoRule.tocUrl, isUrl = true)`）——
       // 规则为空/未命中时得到空串，随后回退 baseUrl。旧实现「规则为空就
       // 保留搜索阶段旧值」，搜索给了错误 tocUrl 时会一路用错地址。
-      try {
-        book.tocUrl = analyzeRule.getString(bookInfoRule.tocUrl ?? '', isUrl: true);
-      } catch (_) {
-        book.tocUrl = '';
-      }
+      // 规则异常同样不吞（legado getString 不包 try）：错误地址比失败更危险。
+      book.tocUrl = analyzeRule.getString(bookInfoRule.tocUrl ?? '', isUrl: true);
 
       // 对照 legado BookInfo：目录地址回落到详情页**原始** URL（baseUrl）；
       // 回落到详情页自身时，详情响应体即目录页 HTML，缓存进 tocHtml 供目录

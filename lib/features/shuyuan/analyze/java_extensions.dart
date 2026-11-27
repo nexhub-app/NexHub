@@ -1231,7 +1231,7 @@ const String sourceContextJsPrelude = r'''
     // 在 settleWebview 里分别按 args[5]/args[6] 解读；cacheFirst 是 legado 的
     // Android WebView cacheMode 开关，重放宿主无缓存层，接受但不参与。
     function syWebviewReplay(prefix, html, url, js, delayTime, sourceRegex,
-        overrideUrlRegex, sp, op) {
+        overrideUrlRegex, sp, op, cacheFirst) {
       var h = html == null ? '' : String(html);
       var u = url == null ? '' : String(url);
       var j = js == null ? '' : String(js);
@@ -1242,9 +1242,12 @@ const String sourceContextJsPrelude = r'''
       if (!h && !u) return '';
       // 键用内容哈希：html/js 可能很长，不能直接当键存放/传输。嗅探正则
       // 参与键，避免同页面不同嗅探目标（或与整页 HTML 结果）互相命中。
-      var key = prefix + syHash(h + '\u0001' + u + '\u0001' + j + '\u0001' +
-          src + '\u0001' + ovr) + ':' +
-          (h.length + u.length + j.length + src.length + ovr.length);
+      // delayTime/cacheFirst 同样影响 WebView 实际返回（等待时长、缓存
+      // 策略），必须进键，否则参数不同的调用会互相命中旧结果。
+      var cf = cacheFirst ? 1 : 0;
+      var sig = h + '\u0001' + u + '\u0001' + j + '\u0001' +
+          src + '\u0001' + ovr + '\u0001' + String(delay) + '\u0001' + cf;
+      var key = prefix + syHash(sig) + ':' + sig.length;
       var c = global.__webviewCache;
       if (c && c[key] != null) return c[key];
       syOp('webview', key, JSON.stringify(
@@ -1253,21 +1256,21 @@ const String sourceContextJsPrelude = r'''
       return sp + (global.__wvN) + op;
     }
     global.java.webView = function (html, url, js) {
-      return syWebviewReplay('wv:', html, url, js, 0, '', '', '__WEBVIEW_', '__');
+      return syWebviewReplay('wv:', html, url, js, 0, '', '', '__WEBVIEW_', '__', false);
     };
     // webViewGetSource(html, url, js, sourceRegex, cacheFirst, delayTime)：
     // 返回 WebView 内嗅探到的资源 URL（如视频真实地址）。
     global.java.webViewGetSource = function (html, url, js, sourceRegex,
         cacheFirst, delayTime) {
       return syWebviewReplay('wvs:', html, url, js, delayTime, sourceRegex,
-          '', '__WEBVIEW_SRC_', '__');
+          '', '__WEBVIEW_SRC_', '__', cacheFirst);
     };
     // webViewGetOverrideUrl(html, url, js, overrideUrlRegex, cacheFirst, delayTime)：
     // 返回被 shouldOverrideUrlLoading 拦截的跳转 URL。
     global.java.webViewGetOverrideUrl = function (html, url, js,
         overrideUrlRegex, cacheFirst, delayTime) {
       return syWebviewReplay('wvo:', html, url, js, delayTime, '',
-          overrideUrlRegex, '__WEBVIEW_OVR_', '__');
+          overrideUrlRegex, '__WEBVIEW_OVR_', '__', cacheFirst);
     };
     // java.getReadBookConfig()/getThemeConfig()：legado 返回当前阅读/主题
     // 配置的 GSON JSON 串。宿主未注入实时配置（E9 能力面）时返回 legado
@@ -4359,6 +4362,38 @@ const String javaExtensionsJsPrelude = r'''
     return { k: 's', v: String(x) };
   }
 
+  // 规则桥缓存键的「可变状态」部分：变量表 + 章节变量 + 当前书籍身份。
+  // legado 的 java 就是 AnalyzeRule 实体，同一脚本内 put 后再 getString
+  // 会真实重新求值；只按 rule/content 建键会把旧值当本轮结果返回。
+  function ruleStateSig() {
+    var parts = [];
+    var v = global.__javaVars;
+    if (v && typeof v === 'object') {
+      var keys = [];
+      for (var k in v) {
+        if (Object.prototype.hasOwnProperty.call(v, k)) keys.push(k);
+        }
+      keys.sort();
+      for (var i = 0; i < keys.length; i++) {
+        parts.push('v' + keys[i] + '=' + String(v[keys[i]]));
+      }
+    }
+    var ch = global.chapter;
+    if (ch != null && ch.variableMap && typeof ch.variableMap === 'object') {
+      var ck = [];
+      for (var c in ch.variableMap) {
+        if (Object.prototype.hasOwnProperty.call(ch.variableMap, c)) ck.push(c);
+      }
+      ck.sort();
+      for (var j = 0; j < ck.length; j++) {
+        parts.push('c' + ck[j] + '=' + String(ch.variableMap[ck[j]]));
+      }
+    }
+    var bk = global.book;
+    if (bk != null && bk.bookUrl != null) parts.push('b=' + String(bk.bookUrl));
+    return parts.length ? ruleHash(parts.join('\u0003')) : '0';
+  }
+
   function ruleCall(kind, rule, content, isUrl) {
     rule = rule == null ? '' : String(rule);
     var cArg = ruleContentArg(content);
@@ -4372,7 +4407,8 @@ const String javaExtensionsJsPrelude = r'''
     } else {
       cKey = 'j' + ruleHash(JSON.stringify(cArg.v));
     }
-    var key = kind + '|' + (isUrl ? 1 : 0) + '|' + cKey + '|' + rule;
+    var key = kind + '|' + (isUrl ? 1 : 0) + '|' + ruleStateSig() + '|' +
+      cKey + '|' + rule;
     var cache = global.__javaRuleCache;
     if (cache && cache[key] !== undefined) {
       var v = cache[key];

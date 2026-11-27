@@ -314,6 +314,14 @@ class BookChapterList {
         'bookUrl': ch.bookUrl,
         'wordCount': ch.wordCount,
         'reviewImg': ch.reviewImg,
+        // legado 绑定的是真实 BookChapter 实体：媒体资源地址、EPUB 偏移与
+        // 目录层级都必须可读可写，否则源对它们的修正会被静默丢弃。
+        'resourceUrl': ch.resourceUrl ?? '',
+        'tocLevel': ch.tocLevel,
+        'start': ch.start,
+        'end': ch.end,
+        'startFragmentId': ch.startFragmentId ?? '',
+        'endFragmentId': ch.endFragmentId ?? '',
         'variable': ch.variable,
         'variableMap': Map<String, String>.from(ch.variableMap),
         '__syBigVariables': Map<String, String>.from(ch.bigVariableMap),
@@ -437,6 +445,22 @@ class BookChapterList {
     applyFlag('isVolume', (v) => ch.isVolume = v);
     applyFlag('isVip', (v) => ch.isVip = v);
     applyFlag('isPay', (v) => ch.isPay = v);
+
+    applyText('resourceUrl', (v) => ch.resourceUrl = v);
+    applyText('startFragmentId', (v) => ch.startFragmentId = v);
+    applyText('endFragmentId', (v) => ch.endFragmentId = v);
+    void applyInt(String key, void Function(int value) setter) {
+      if (!changed(key)) return;
+      final raw = mutated[key];
+      final parsed = raw is num
+          ? raw.toInt()
+          : (raw is String ? int.tryParse(raw.trim()) : null);
+      if (parsed != null) setter(parsed);
+    }
+
+    applyInt('tocLevel', (v) => ch.tocLevel = v);
+    applyInt('start', (v) => ch.start = v);
+    applyInt('end', (v) => ch.end = v);
   }
 
   /// 计算目录页 URL 所属书籍目录前缀（不含结尾斜杠）。

@@ -10,7 +10,11 @@ class RuleAnalyzer {
   int _step = 0;
   String elementsType = '';
 
-  RuleAnalyzer(String data, {bool code = false}) : _queue = data;
+  /// legado `RuleAnalyzer(data, code)`：JSON/JS 风格规则用 code 平衡模式
+  ///（`[`/`]` 单独记深度，转义始终生效），普通规则用 rule 模式。
+  final bool code;
+
+  RuleAnalyzer(String data, {this.code = false}) : _queue = data;
 
   /// 跳过起始的 `@` 与空白字符。
   void trim() {
@@ -101,6 +105,53 @@ class RuleAnalyzer {
     return true;
   }
 
+  /// legado `chompCodeBalanced`：非内嵌代码平衡组。
+  ///
+  /// 与 rule 模式的区别：转义字符在引号内外都生效；`[`/`]` 单独累计一层
+  /// 深度，默认括号只在 `[]` 深度归零后才参与平衡。
+  bool _chompCodeBalanced(String open, String close) {
+    var pos = _pos;
+    var depth = 0;
+    var otherDepth = 0;
+    var inSingleQuote = false;
+    var inDoubleQuote = false;
+
+    do {
+      if (pos >= _queue.length) break;
+      final c = _queue[pos++];
+      if (c != '\\') {
+        if (c == "'" && !inDoubleQuote) {
+          inSingleQuote = !inSingleQuote;
+        } else if (c == '"' && !inSingleQuote) {
+          inDoubleQuote = !inDoubleQuote;
+        }
+
+        if (inSingleQuote || inDoubleQuote) continue;
+
+        if (c == '[') {
+          depth++;
+        } else if (c == ']') {
+          depth--;
+        } else if (depth == 0) {
+          if (c == open) {
+            otherDepth++;
+          } else if (c == close) {
+            otherDepth--;
+          }
+        }
+      } else {
+        pos++;
+      }
+    } while (depth > 0 || otherDepth > 0);
+
+    if (depth > 0 || otherDepth > 0) return false;
+    _pos = pos;
+    return true;
+  }
+
+  bool _chompBalanced(String open, String close) =>
+      code ? _chompCodeBalanced(open, close) : _chompRuleBalanced(open, close);
+
   /// 切分规则：支持 `&&`、`||`、`%%` 等。
   List<String> splitRule([List<String>? split]) {
     if (split == null || split.isEmpty) {
@@ -156,7 +207,7 @@ class RuleAnalyzer {
 
       _pos = st;
       final next = _queue[_pos] == '[' ? ']' : ')';
-      if (!_chompRuleBalanced(_queue[_pos], next)) {
+      if (!_chompBalanced(_queue[_pos], next)) {
         throw Exception('${_queue.substring(0, _start)} 后未平衡');
       }
     } while (end > _pos);
@@ -200,7 +251,7 @@ class RuleAnalyzer {
 
       _pos = st;
       final next = _queue[_pos] == '[' ? ']' : ')';
-      if (!_chompRuleBalanced(_queue[_pos], next)) {
+      if (!_chompBalanced(_queue[_pos], next)) {
         throw Exception('${_queue.substring(0, _start)} 后未平衡');
       }
     } while (end > _pos);
@@ -217,7 +268,7 @@ class RuleAnalyzer {
     final st = StringBuffer();
     while (_consumeTo(inner)) {
       final posPre = _pos;
-      if (_chompRuleBalanced('{', '}')) {
+      if (_chompCodeBalanced('{', '}')) {
         final frv = fr(_queue.substring(posPre + startStep, _pos - endStep));
         if (frv != null && frv.isNotEmpty) {
           st.write(_queue.substring(_startX, posPre) + frv);

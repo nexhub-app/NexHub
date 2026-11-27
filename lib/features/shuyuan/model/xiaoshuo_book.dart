@@ -248,4 +248,7 @@ class XiaoshuoBook {
 
   /// 有声书（legado `Book.isAudio`）。
   bool get isAudioBook => type == 1 || _hasBit(32);
+
+  /// 视频书（legado `Book.isVideo`）。
+  bool get isVideoBook => type == 4 || _hasBit(4);
 }

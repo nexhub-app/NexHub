@@ -190,8 +190,12 @@ class ShuyuanNovelResolver
       // legado BookList：搜索/发现响应体在 baseUrl 即书籍地址时存入
       // infoHtml，详情阶段据此免抓取复用（见 WebBook.getBookInfo）。
       bookInfoHtml: sb.infoHtml,
+      // legado SearchBook.toBook：目录响应体（整页即书时）随书携带，
+      // 目录阶段免二次请求。
+      tocHtml: sb.tocHtml,
       type: sb.type,
-    );
+      // legado：列表阶段写入的变量随书进入详情/目录（@get/java.get 续命）。
+    )..variableMap.addAll(sb.variableMap);
   }
 
   /// 发现/搜索列表 → MediaItem，同时暂存解析种子供详情阶段复用。
@@ -749,10 +753,18 @@ class ShuyuanNovelResolver
     }
     final infoKey = _exploreInfoKey(source, bookSource);
     final infoMap = await ShuyuanExploreInfoStore.load(infoKey);
+    final beforeInfo = Map<String, String>.from(infoMap);
     // 静态声明（文本 / JSON）不需要 JS 运行时，直接同步解析。
     if (!_exploreNeedsJs(exploreUrl)) {
-      return _toCategoryEntries(
-          _webBook.getExploreCategories(bookSource, infoMap: infoMap));
+      try {
+        return _toCategoryEntries(
+            _webBook.getExploreCategories(bookSource, infoMap: infoMap));
+      } finally {
+        // legado InfoMap：分类脚本对 text/toggle/select 的写入随源持久化。
+        // 首页 fallback 与完整选项栏必须共用同一份落盘策略，否则脚本改了
+        // 状态下一轮又读到旧值。
+        await _saveInfoIfChanged(infoKey, beforeInfo, infoMap);
+      }
     }
     final ctx = await _contextFor(source);
     ctx.bindSource(bookSource);
@@ -781,8 +793,29 @@ class ShuyuanNovelResolver
             .toList(growable: false);
       } finally {
         ctx.flushDeferredToasts();
+        await _saveInfoIfChanged(infoKey, beforeInfo, infoMap);
       }
     });
+  }
+
+  /// infoMap 有净变化时才落盘（legado `InfoMap.save` 只标脏，写盘发生在
+  /// 显式 `saveNow()` 或流程成功结束）；无变化重复写会放大 IO。
+  Future<void> _saveInfoIfChanged(
+    String infoKey,
+    Map<String, String> before,
+    Map<String, String> after,
+  ) async {
+    if (before.length == after.length) {
+      var same = true;
+      for (final e in after.entries) {
+        if (before[e.key] != e.value) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return;
+    }
+    await ShuyuanExploreInfoStore.save(infoKey, after);
   }
 
   /// 解析发现页完整选项栏（legado ExploreKind）：url/text/button/toggle/
@@ -806,6 +839,11 @@ class ShuyuanNovelResolver
     }
     final infoKey = _exploreInfoKey(source, bookSource);
     final infoMap = await ShuyuanExploreInfoStore.load(infoKey);
+    final beforeInfo = Map<String, String>.from(infoMap);
+    // infoMap 的落盘时机对齐 legado `InfoMap`：只有流程成功且确有净变化时
+    // 才写；失败/部分写入不落盘（旧实现在 finally 无条件 save，失败请求
+    // 也会污染持久状态）。
+    var infoCommitted = false;
     if (refresh) await ShuyuanExploreKindsStore.clear(infoKey);
     final cached = await ShuyuanExploreKindsStore.load(
       infoKey,
@@ -819,6 +857,7 @@ class ShuyuanNovelResolver
         if (cached != null) {
           final items =
               await _materializeKinds(source, bookSource, cached, infoMap);
+          infoCommitted = true;
           return ExploreKindsResult(items: items, infoMap: infoMap);
         }
         JsEngine.resetReplayCachesFor(source.id);
@@ -837,6 +876,7 @@ class ShuyuanNovelResolver
               if (built.result.error == null) {
                 await ShuyuanExploreKindsStore.save(
                     infoKey, exploreUrl, built.kinds);
+                infoCommitted = true;
               }
               return built.result;
             }
@@ -856,7 +896,9 @@ class ShuyuanNovelResolver
       return ExploreKindsResult(infoMap: infoMap, error: '$e');
     } finally {
       // toggle/select 默认值与 viewName/action 的 infoMap 变化落盘。
-      await ShuyuanExploreInfoStore.save(infoKey, infoMap);
+      if (infoCommitted) {
+        await _saveInfoIfChanged(infoKey, beforeInfo, infoMap);
+      }
     }
   }
 

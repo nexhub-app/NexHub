@@ -22,6 +22,14 @@ class SearchBook {
   /// 不参与序列化。
   String? infoHtml;
 
+  /// 目录页响应体（legado `SearchBook.tocHtml`）：整页详情被判定为书籍时，
+  /// 详情响应体同时是目录页，随书携带供目录阶段免二次请求。瞬态字段。
+  String? tocHtml;
+
+  /// 列表阶段写入的变量（legado `SearchBook.variableMap`）：`@put`/`java.put`
+  /// 的签名参数随书走，详情/目录阶段 `@get`/`java.get` 才能读到。
+  final Map<String, String> variableMap;
+
   SearchBook({
     required this.bookUrl,
     required this.name,
@@ -36,7 +44,9 @@ class SearchBook {
     this.bookSourceName,
     this.type = 0,
     this.infoHtml,
-  });
+    this.tocHtml,
+    Map<String, String>? variableMap,
+  }) : variableMap = variableMap ?? <String, String>{};
 
   factory SearchBook.fromJson(Map<String, dynamic> json) {
     return SearchBook(
@@ -52,6 +62,9 @@ class SearchBook {
       bookSourceUrl: json['bookSourceUrl'] as String?,
       bookSourceName: json['bookSourceName'] as String?,
       type: json['type'] as int? ?? 0,
+      variableMap: (json['variableMap'] as Map?)?.map(
+        (k, v) => MapEntry(k.toString(), v?.toString() ?? ''),
+      ),
     );
   }
 
@@ -68,6 +81,7 @@ class SearchBook {
         if (bookSourceUrl != null) 'bookSourceUrl': bookSourceUrl,
         if (bookSourceName != null) 'bookSourceName': bookSourceName,
         'type': type,
+        if (variableMap.isNotEmpty) 'variableMap': variableMap,
       };
 
   /// 值相等：对齐 legado `SearchBook` 的自定义 equals——**仅按 bookUrl**
@@ -92,6 +106,7 @@ class SearchBook {
       wordCount: wordCount,
       type: type,
       bookInfoHtml: infoHtml,
-    );
+      tocHtml: tocHtml,
+    )..variableMap.addAll(variableMap);
   }
 }
