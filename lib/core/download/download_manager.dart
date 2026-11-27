@@ -23,6 +23,7 @@ import '../models/media_item.dart';
 import '../models/plugin_config.dart';
 import '../scraper/http_fetcher.dart';
 import '../scraper/media_api_service.dart';
+import '../network/network_config_service.dart';
 import '../services/source_repository.dart';
 import '../services/cloud_sync_service.dart';
 import '../services/novel_export_upload_service.dart';
@@ -1311,16 +1312,24 @@ class DownloadManager extends ChangeNotifier {
         return;
       }
 
-      // 保存封面（同作品复用已有封面，避免重复下载；落盘于作品目录内 cover.jpg）
+      // 保存封面（同作品复用已有封面，避免重复下载；落盘于作品目录内 cover.jpg）。
+      // 源返回的封面可能是协议相对路径（`//cdn.xxx/cover.jpg`），补全协议后再
+      // 判断/下载；否则既不会落盘、显示端也会把它误判成本地路径渲染占位图。
+      final String? coverUrl = _normalizeRemoteCoverUrl(item.coverUrl);
       String? localCoverPath;
-      if (item.coverUrl != null && item.coverUrl!.startsWith('http')) {
+      if (coverUrl != null) {
         localCoverPath = await _saveCoverImage(
           task.id,
           task.coverKey,
-          item.coverUrl!,
+          coverUrl,
           source: source,
           workDir: task.localPath,
         );
+        if (localCoverPath == null) {
+          AppLog.instance.w('[下载封面] 封面下载/落盘失败（无本地封面）: $coverUrl');
+        }
+      } else if (item.coverUrl != null && item.coverUrl!.isNotEmpty) {
+        AppLog.instance.w('[下载封面] 封面地址非远程 URL，跳过保存: ${item.coverUrl}');
       }
 
       // 暂停检查：若用户在下载过程中暂停，保留已下载文件但状态保持 paused。
@@ -1334,7 +1343,7 @@ class DownloadManager extends ChangeNotifier {
           chapterIds: chapterIdsForRun,
           completedAt: DateTime.now().millisecondsSinceEpoch,
           localCoverPath: localCoverPath,
-          coverUrl: localCoverPath ?? item.coverUrl,
+          coverUrl: localCoverPath ?? coverUrl ?? item.coverUrl,
         );
         _updateTaskRaw(pausedTask);
         await _writeMetaJson(pausedTask);
@@ -1351,7 +1360,7 @@ class DownloadManager extends ChangeNotifier {
         chapterIds: chapterIdsForRun,
         completedAt: DateTime.now().millisecondsSinceEpoch,
         localCoverPath: localCoverPath,
-        coverUrl: localCoverPath ?? item.coverUrl,
+        coverUrl: localCoverPath ?? coverUrl ?? item.coverUrl,
       );
 
       // 封面保存期间又被取消（取消竞态最后一帧）→ 按取消处理，
@@ -1603,6 +1612,16 @@ class DownloadManager extends ChangeNotifier {
     return '$safeSource|$content';
   }
 
+  /// 归一化远程封面 URL：协议相对路径（`//host/x.jpg`）补全为 https；
+  /// 非 http(s) 远程地址（本地路径 / data URI / 空串）返回 null 表示无法下载。
+  static String? _normalizeRemoteCoverUrl(String? raw) {
+    final String url = raw?.trim() ?? '';
+    if (url.isEmpty) return null;
+    if (url.startsWith('//')) return 'https:$url';
+    if (url.startsWith('http://') || url.startsWith('https://')) return url;
+    return null;
+  }
+
   /// 保存封面：先查同作品已有封面文件，命中则直接复用（不重复下载）。
   ///
   /// [taskId] 用于回退：当 [coverKey] 为空（旧数据 / 无法计算）时仍按原
@@ -1612,6 +1631,11 @@ class DownloadManager extends ChangeNotifier {
   /// 封面落盘位置：优先 [workDir]（作品目录，下载完成后在 `cover.jpg`，
   /// 同作品多批次共享该目录 → 天然复用去重）；[workDir] 为空（下载前 /
   /// 旧兼容）回退根目录 `${coverKey}.jpg`。
+  ///
+  /// 网络档案与 [SourceImage] 同策略：封面与页面同源，必须走源级
+  /// `effectiveFor(source)`（ECH / hosts / SNI / 代理与源声明一致）。
+  /// 走全局档案直连时，源级 ECH/代理源会出现「内容下载成功、封面被 CDN
+  /// 按 TLS 指纹 / 通道拒绝」的割裂（表现为本地下载内容无封面）。
   Future<String?> _saveCoverImage(
     String taskId,
     String? coverKey,
@@ -1635,11 +1659,22 @@ class DownloadManager extends ChangeNotifier {
         ...?source?.fetchHeadersFor(url),
         'Accept': 'image/jpeg,image/png,image/webp,image/gif,*/*;q=0.8',
       };
-      final bytes = await HttpFetcher.instance.getBytes(url, headers: headers);
-      if (bytes.isEmpty) return null;
+      final net = source != null
+          ? NetworkConfigService.instance.effectiveFor(source)
+          : NetworkConfigService.instance.globalProfile;
+      final bytes = await HttpFetcher.instance.getBytes(
+        url,
+        headers: headers,
+        net: net,
+      );
+      if (bytes.isEmpty) {
+        AppLog.instance.w('[下载封面] 封面响应为空: $url');
+        return null;
+      }
       await fs.writeBytes(existing, Uint8List.fromList(bytes));
       return existing;
-    } catch (_) {
+    } on Object catch (e) {
+      AppLog.instance.w('[下载封面] 保存失败: $url -> $e');
       return null;
     }
   }

@@ -34,17 +34,32 @@ class AppCoverImage extends StatelessWidget {
     this.title,
   });
 
-  bool get _isFile => coverUrl != null && !coverUrl!.startsWith('http');
+  /// 归一化后的封面地址：
+  /// - 协议相对路径（`//cdn.xxx/cover.jpg`，部分源 cover 字段原样返回）补全
+  ///   为 https，避免被误判成本地路径交给 `Image.file`（必然渲染失败占位）。
+  /// - 空串归 null，走首字占位图分支。
+  String? get _effectiveUrl {
+    final String raw = coverUrl?.trim() ?? '';
+    if (raw.isEmpty) return null;
+    if (raw.startsWith('//')) return 'https:$raw';
+    return raw;
+  }
+
+  bool get _isFile {
+    final String? url = _effectiveUrl;
+    return url != null && !url.startsWith('http');
+  }
 
   @override
   Widget build(BuildContext context) {
     final ColorScheme scheme = Theme.of(context).colorScheme;
     final double r = radius ?? AppTokens.coverRadius;
+    final String? effectiveUrl = _effectiveUrl;
 
     // 有源配置的远程图：直接委托 SourceImage（内部处理防盗链/圆角/Hero/占位），避免双重装饰。
-    if (source != null && coverUrl != null && coverUrl!.isNotEmpty && !_isFile) {
+    if (source != null && effectiveUrl != null && !_isFile) {
       return SourceImage(
-        url: coverUrl,
+        url: effectiveUrl,
         source: source,
         isCover: true,
         width: width,
@@ -66,10 +81,10 @@ class AppCoverImage extends StatelessWidget {
     );
 
     final Widget image;
-    if (coverUrl == null || coverUrl!.isEmpty) {
+    if (effectiveUrl == null) {
       image = _letterPlaceholder(context);
     } else if (_isFile) {
-      final String path = coverUrl!;
+      final String path = effectiveUrl;
       // SAF 编码路径（content://…␟…）无法被 dart:io 直读，须先 resolveSafUri
       // 落缓存再显示（否则 FileImage 抛 PathNotFoundException 崩溃）。
       if (isDocUri(path) || path.contains('␟')) {
@@ -104,7 +119,7 @@ class AppCoverImage extends StatelessWidget {
     } else {
       // 无源配置的远程图：用 SourceImage 但不传 radius/hero（由外层 AppCoverImage 装饰）。
       image = SourceImage(
-        url: coverUrl,
+        url: effectiveUrl,
         source: null,
         width: width,
         height: height,
