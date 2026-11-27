@@ -1653,8 +1653,17 @@ class DownloadManager extends ChangeNotifier {
     final String existing = fs.join(dir, fileName);
     try {
       // 同作品已有封面：直接复用，不再拉取网络（省流量、避免重复下载）。
+      // 0 字节残留（上次写入中断 / 失败半截）会让后续批次永久复用坏文件
+      // → 永远无封面：判空即删，重新下载。
       if (await fs.exists(existing)) {
-        return existing;
+        try {
+          final existingBytes = await fs.readBytes(existing);
+          if (existingBytes.isNotEmpty) return existing;
+          await fs.delete(existing);
+        } on Object {
+          // 读取失败（通道异常等）保守返回原路径，交给显示端占位兜底。
+          return existing;
+        }
       }
       // 封面与在线 / 章节图同防盗链策略：缺失 Referer 时源 CDN 间歇性 403。
       final Map<String, String> headers = <String, String>{
