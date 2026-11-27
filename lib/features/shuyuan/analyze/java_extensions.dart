@@ -503,12 +503,18 @@ const String sourceContextJsPrelude = r'''
       },
     });
   });
-  // legado Book.type 是 Int（0 文本 / 1 音频 / 2 图片），脚本常做数值比较。
+  // legado Book.type 是 Int（位掩码：4 视频 / 8 文本 / 32 音频 / 64 图片 /
+  // 128 文件），脚本常做位比较；脚本也可写（`book.type = 8|128`）。
   Object.defineProperty(book, 'type', {
     get: function () {
       var v = syCtx().bookInfo.type;
       var n = parseInt(v, 10);
       return isNaN(n) ? 0 : n;
+    },
+    set: function (v) {
+      var s = String(parseInt(v, 10) || 0);
+      syCtx().bookInfo.type = s;
+      syOp('bookField', 'type', s);
     },
   });
   // legado Book.durChapterIndex 也是 Int（阅读进度章序号）；规则里参与

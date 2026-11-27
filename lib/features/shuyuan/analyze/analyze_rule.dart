@@ -127,6 +127,19 @@ class AnalyzeRule {
     } else {
       _variables[key] = value;
     }
+    // legado 链尾 `source?.put(key, value)`：没有 chapter/book 实体时
+    // `@put` 落到**源级**变量表（BaseSource 的 `v_` 命名空间）。旧实现只写
+    // 实例级 `_variables`，URL/列表阶段是两个 AnalyzeRule 实例，前一阶段
+    // `@put` 的变量在下一阶段直接消失（API 型源的 gid/sign 断链）。
+    final ctx = ShuyuanSourceContext.current;
+    if (ctx != null) {
+      if (value == null) {
+        if (ctx.sourceVars.remove(key) != null) ctx.sourceVarsDirty = true;
+      } else if (ctx.sourceVars[key] != value) {
+        ctx.sourceVars[key] = value;
+        ctx.sourceVarsDirty = true;
+      }
+    }
   }
 
   String get(String key) {
@@ -756,12 +769,15 @@ class AnalyzeRule {
           }
         });
       }
-      // JS 里 `book.name = '…'` 等字段写入回写当前书（空值不覆盖——
-      // 正文解析阶段 book 是空壳，避免把详情阶段已解析的字段抹掉）。
+      // JS 里 `book.name = '…'` 等字段写入回写当前书。
+      // legado 回写依据是「字段是否被 setter 触碰」，而不是值是否非空：
+      // 脚本显式清空字段（`book.intro = ''`）也必须落到实体，否则调用方
+      // 分不清「没写」和「写成空」。
       if (activeCtx != null && target != null) {
+        final touched = activeCtx.bookInfoTouched;
         void apply(String key, void Function(String value) setter) {
-          final value = activeCtx.bookInfo[key];
-          if (value != null && value.isNotEmpty) setter(value);
+          if (!touched.contains(key)) return;
+          setter(activeCtx.bookInfo[key] ?? '');
         }
 
         apply('name', (v) => target.name = v);
@@ -773,6 +789,8 @@ class AnalyzeRule {
         apply('lastChapter', (v) => target.lastChapter = v);
         apply('tocUrl', (v) => target.tocUrl = v);
         apply('wordCount', (v) => target.wordCount = v);
+        // 来源字段：脚本可改 `book.origin`/`originName`，旧回写漏了 origin。
+        apply('origin', (v) => target.origin = v);
         // F2/E8：其余可写字段（与预置脚本的属性表对齐）。
         apply('originName', (v) => target.originName = v);
         apply('latestChapterTitle', (v) => target.latestChapterTitle = v);
@@ -784,16 +802,17 @@ class AnalyzeRule {
         apply('customIntro', (v) => target.customIntro = v);
         apply('customCoverUrl', (v) => target.customCoverUrl = v);
         void applyInt(String key, void Function(int value) setter) {
+          if (!touched.contains(key)) return;
           final v = int.tryParse(activeCtx.bookInfo[key] ?? '');
           if (v != null) setter(v);
         }
 
         void applyBool(String key, void Function(bool value) setter) {
-          final v = activeCtx.bookInfo[key];
-          if (v == null || v.isEmpty) return;
-          setter(v == 'true');
+          if (!touched.contains(key)) return;
+          setter(activeCtx.bookInfo[key] == 'true');
         }
 
+        applyInt('type', (v) => target.type = v);
         applyInt('originOrder', (v) => target.originOrder = v);
         applyInt('fixedType', (v) => target.fixedType = v);
         applyInt('totalChapterNum', (v) => target.totalChapterNum = v);
@@ -802,6 +821,8 @@ class AnalyzeRule {
         applyInt('durChapterPos', (v) => target.durChapterPos = v);
         applyBool('reverseToc', (v) => target.reverseToc = v);
         applyBool('canUpdate', (v) => target.canUpdate = v);
+        // 本轮写入已落库：清空触碰表，避免下一次求值把旧值重复回写。
+        activeCtx.bookInfoTouched.clear();
       }
       // 书变量删除先于写入（legado `Book.variable = json` 是整段替换）：
       // 删除集来自 `book.putVariable(k, null)` 与 variable setter。

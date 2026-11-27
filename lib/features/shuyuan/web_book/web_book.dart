@@ -363,6 +363,10 @@ class WebBook {
       url: bookUrl,
       baseUrl: source.bookSourceUrl,
       source: source,
+      // legado WebBook.getBookInfoAwait：`ruleData = book`——详情 URL 模板
+      // 里的 `{{book.name}}`、`book.getVariable()`、`java.get()` 读的是同一
+      // 本书的变量表（旧实现只带 itemContext，书变量在这里断链）。
+      ruleData: seed ?? XiaoshuoBook(bookUrl: bookUrl, name: ''),
       // ruleData 贯通：API 返回的 URL 字段含 {{\$.field}} 模板时，
       // 以搜索阶段暂存的条目为求值根。
       itemContext: _bookItemContext(bookUrl),

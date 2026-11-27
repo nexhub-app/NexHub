@@ -131,6 +131,10 @@ class ShuyuanSourceContext {
   /// 书目字段快照（book.name/author/bookUrl 等直读）。
   final Map<String, String> bookInfo = {};
 
+  /// 本轮脚本显式写过的书字段（legado：回写按「字段是否被 setter 触碰」判定，
+  /// 不是按值是否非空——脚本把字段显式清空也必须落到实体上）。
+  final Set<String> bookInfoTouched = <String>{};
+
   /// cache.get/put/delete（会话级内存）。
   final Map<String, String> cache = {};
 
@@ -333,6 +337,7 @@ class ShuyuanSourceContext {
     fileOpArgs.clear();
     browserOpened.clear();
     initUrlRequested = false;
+    bookInfoTouched.clear();
   }
 
   // ── java.webView 的确定性重放（与 java.ajax 同款，只是宿主换成无头 WebView）──
@@ -517,6 +522,7 @@ class ShuyuanSourceContext {
           bookVarsDeleted.add(a);
         case 'bookField':
           bookInfo[a] = b;
+          bookInfoTouched.add(a);
         case 'concurrentRate':
           // source.putConcurrent / java.putConcurrent：运行期调整并发率。
           ConcurrentRateLimiter.updateConcurrentRate(

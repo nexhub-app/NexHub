@@ -1246,14 +1246,18 @@ class ShuyuanNovelResolver
     // NexHub 无分类入口时取首个可浏览分类。首个分类失效（断链/拦截）或为空时
     // 继续尝试后续分类，避免首页直接呈现空列表；尝试数有上限，不做全量串行
     // 抓取（同 host 限流下可达数十秒）。拿到首个非空结果即停。
-    final categories = _webBook.getExploreCategories(bookSource);
+    //
+    // 分类列表走 [resolveExploreCategories]（而不是直接调引擎）：动态
+    // exploreUrl 需要持久化 infoMap，并在脚本改动后回写——旧实现在这里传
+    // 空 Map 且不保存，分类脚本写入的 text/toggle 状态直接丢失。
+    final categories = await resolveExploreCategories(source);
     if (categories.isEmpty) return <MediaItem>[];
     Object? firstError;
     for (final category in categories.take(_exploreHomeFallbackLimit)) {
       try {
         final books = await _webBook.exploreCategory(
           source: bookSource,
-          categoryUrl: category.url,
+          categoryUrl: category.id,
           page: page,
         );
         if (books.isNotEmpty) return _mapAndSeedBooks(books, source);
