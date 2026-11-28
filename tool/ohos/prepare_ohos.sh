@@ -20,14 +20,17 @@ PY=python3
 command -v python3 >/dev/null 2>&1 || PY=python
 "$PY" - <<'PYEOF'
 import io
+import re
 
 p = "pubspec.yaml"
 d = io.open(p, encoding="utf-8").read()
-if "media_kit_libs_ohos" not in d:
+# 注释里也写了这两个包名，不能用全文件字符串判断（曾因此漏加依赖 →
+# GeneratedPluginRegistrant 缺 FlutterSecureStorageOhosPlugin → 启动 MissingPluginException）。
+if not re.search(r"^  media_kit_libs_ohos:", d, re.M):
     d = d.replace(
         "  media_kit_libs_video: ^1.0.7\n",
         "  media_kit_libs_video: ^1.0.7\n  media_kit_libs_ohos: ^1.0.0\n", 1)
-if "flutter_secure_storage_ohos" not in d:
+if not re.search(r"^  flutter_secure_storage_ohos:", d, re.M):
     d = d.replace(
         "  flutter_secure_storage: ^9.0.0\n",
         "  flutter_secure_storage: ^9.0.0\n"
