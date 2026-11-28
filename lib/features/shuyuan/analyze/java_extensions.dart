@@ -992,6 +992,13 @@ const String sourceContextJsPrelude = r'''
       : (bodyText ? 200 : 0);
     var finalUrl = meta && meta.url ? String(meta.url) : '';
     var headers = (meta && meta.headers) || {};
+    // legado StrResponse：`callTime` 既是公开字段也是同名方法。用一个可调用值
+    // 同时满足两种写法（`res.callTime()` 返回数字，`res.callTime > 0` 经
+    // valueOf 参与比较）。isTest 失败时为负的错误码。
+    var callTime = meta && meta.ct != null ? Number(meta.ct) : 0;
+    var callTimeValue = function () { return callTime; };
+    callTimeValue.valueOf = function () { return callTime; };
+    callTimeValue.toString = function () { return String(callTime); };
     var resp = {
       body: syStringCallable(bodyText),
       bodyAsBytes: function () {
@@ -1005,6 +1012,7 @@ const String sourceContextJsPrelude = r'''
       },
       code: function () { return code; },
       statusCode: function () { return code; },
+      callTime: callTimeValue,
       message: function () { return code >= 200 && code < 300 ? 'OK' : String(code); },
       statusMessage: function () { return code >= 200 && code < 300 ? 'OK' : ''; },
       headers: function () { return syHeadersMap(headers); },
@@ -1070,17 +1078,38 @@ const String sourceContextJsPrelude = r'''
       }
     });
     global.java.getSource = function () { return global.source; };
+    // 批请求编号：legado 每次 ajaxAll/ajaxTestAll 都是一次独立的
+    // `mapAsync(threadCount)` 批次，批与批之间串行（前一批的 cookie/会话
+    // 结果可能被后一批依赖）。编号随 op 透传，宿主按编号分组结算。
+    global.java.__syNextBatchId = function () {
+      var s = (global.__ajaxBatchSeq || 0) + 1;
+      global.__ajaxBatchSeq = s;
+      return String(s);
+    };
+    // 失败项异常：legado ajaxAll 任一项抛错即整批抛出，脚本可 try/catch。
+    function syAjaxFailure(meta, url) {
+      var msg = meta && meta.em ? String(meta.em) : 'java.lang.Exception';
+      var err = new Error(msg);
+      err.name = 'java.lang.Exception';
+      err.url = String(url == null ? '' : url);
+      return err;
+    }
     // 确定性重放的会话语义：legado 桥同步执行，同一脚本内对同一 URL 的
     // 多次 java.ajax 是多次真实请求。这里按「每次顶层求值内的同键调用
     // 序号」拆键：第 1 次用原始键、第 n 次追加 `||DUP||n`，宿主 settle
     // 对每个键各抓一次；重放轮计数器复位 → 同脚本仍生成同一组键命中缓存。
-    global.java.__ajaxReq = function (url, timeoutMs, batch, skipRateLimit) {
+    // [flags]：`s`=串行（默认）、`b<id>`=批（并发抓取，保序）、
+    // `b1<id>`=批且跳过 concurrentRate 限流、`t<id>`/`t1<id>`=测速批
+    // （isTest：失败项不抛错，返回负 callTime 的响应）。
+    global.java.__ajaxReq = function (url, timeoutMs, flags, out) {
       var raw = String(url == null ? '' : url);
       var seq = global.__ajaxCallSeq;
       if (!seq) seq = global.__ajaxCallSeq = Object.create(null);
       var n = (seq[raw] || 0) + 1;
       seq[raw] = n;
       var key = n === 1 ? raw : raw + '||DUP||' + n;
+      // 调用方（ajaxAll/ajaxTestAll/Jsoup.execute）需要按请求键读响应元数据。
+      if (out) out.key = key;
       var c = global.__ajaxCache;
       if (c && c[key] != null) {
         return c[key];
@@ -1089,28 +1118,48 @@ const String sourceContextJsPrelude = r'''
       // settle 时按该键的超时发起真实请求（缺省用宿主默认）。
       var to = (timeoutMs === undefined || timeoutMs === null)
         ? '' : String(timeoutMs);
-      // 批请求标记随 op 透传给宿主 settle：`b`=批（并发抓取，保序），
-      // `b1`=批且跳过 concurrentRate 限流（legado ajaxAll 的
-      // `getStrResponseAwait(skipRateLimit = true)`），`s`=串行（普通
-      // java.ajax/get/post/head/connect：legado 每次调用阻塞完成后才继续，
-      // 后一个请求依赖前一个写入的 cookie/token，不能并发）。
-      syOp('ajax', key, to,
-          batch ? (skipRateLimit ? 'b1' : 'b') : 's');
+      syOp('ajax', key, to, flags ? String(flags) : 's');
       global.__ajaxN = (global.__ajaxN || 0) + 1;
       return '__AJAX_' + global.__ajaxN + '__';
     };
     global.java.ajax = function (url, callTimeout) {
-      // legado `JsExtensions.ajax` 是同步阻塞调用，脚本内的多次 ajax 严格
-      // 串行；只有显式 ajaxAll 才并发（batch=true）。
-      return global.java.__ajaxReq(url, callTimeout, false);
+      // legado `ajax(url: Any)`：List 入参取首元素（`firstOrNull()`），
+      // 不是把整个列表拼成字符串。其余类型按 toString 当 URL。
+      var u = url;
+      if (url && typeof url === 'object' && typeof url !== 'string' &&
+          typeof url.length === 'number') {
+        u = url.length > 0 ? url[0] : '';
+      }
+      // 同步阻塞调用，脚本内的多次 ajax 严格串行；只有显式 ajaxAll 才并发。
+      return global.java.__ajaxReq(u, callTimeout, 's');
     };
     global.java.ajaxAll = function (urlList, skipRateLimit) {
-      var arr = urlList;
-      if (typeof urlList === 'string') arr = [urlList];
+      // legado ajaxAll：整批并发，任一项失败使整批抛错（不返回部分结果）。
+      var arr = typeof urlList === 'string' ? [urlList] : urlList;
+      var flags = (skipRateLimit ? 'b1' : 'b') + global.java.__syNextBatchId();
       var out = [];
       for (var i = 0; arr && i < arr.length; i++) {
-        out.push(syResp(arr[i],
-            global.java.__ajaxReq(arr[i], undefined, true, skipRateLimit)));
+        var u = String(arr[i]);
+        var rec = {};
+        var body = global.java.__ajaxReq(u, undefined, flags, rec);
+        var meta = syMetaOf(rec.key);
+        if (meta && meta.e) throw syAjaxFailure(meta, u);
+        out.push(syResp(rec.key, body));
+      }
+      return out;
+    };
+    global.java.ajaxTestAll = function (urlList, timeout, skipRateLimit) {
+      // legado ajaxTestAll(urls, timeout, skipRateLimit)：每项按 timeout 的
+      // callTimeout 并发测速；失败项以 isTest 口径返回（body=异常消息、
+      // code=200、callTime=负错误码），不抛错。
+      var arr = typeof urlList === 'string' ? [urlList] : urlList;
+      var flags = (skipRateLimit ? 't1' : 't') + global.java.__syNextBatchId();
+      var out = [];
+      for (var i = 0; arr && i < arr.length; i++) {
+        var u = String(arr[i]);
+        var rec = {};
+        var body = global.java.__ajaxReq(u, timeout, flags, rec);
+        out.push(syResp(rec.key, body));
       }
       return out;
     };
@@ -1190,27 +1239,56 @@ const String sourceContextJsPrelude = r'''
     };
     // ── org.jsoup.Jsoup（legado 脚本直接调 Java 库的高频写法） ──
     // 只实现书源里实际用到的 connect 链：ignoreContentType/ignoreHttpErrors/
-    // timeout/header(s)/cookie/userAgent/referrer/method/data 全部返回自身，
+    // timeout/header(s)/cookie/userAgent/referrer/method/data 返回自身，
     // execute() 经 __ajaxReq 走与 java.ajax 相同的确定性重放（POST 用
     // `url||POST||body` 组合键，settle 拆分后发起真实表单请求）。
     // bodyAsBytes() 走二进制重放 __ajaxBytesCache（base64），避免密文被
     // 文本解码破坏；首轮返回空数组并记录待抓取。
+    // 与 jsoup 对齐的选项：timeout 进请求 callTimeout，followRedirects(false)
+    // 进 URL 选项，maxBodySize 截断响应体（0=不限），ignoreHttpErrors(false)
+    // 时状态码 ≥400 抛 HttpStatusException（jsoup 默认口径）。
     global.org = {
       jsoup: {
         Jsoup: {
           connect: function (url) {
             var u = String(url == null ? '' : url);
+            // jsoup form 编码：URLEncoder.encode（空格 → `+`）。
+            function syFormEnc(v) {
+              try {
+                return encodeURIComponent(String(v)).replace(/%20/g, '+');
+              } catch (e) {
+                return String(v);
+              }
+            }
             var req = {
               _headers: Object.create(null),
               _data: [],
               _method: '',
               _url: u,
+              _timeout: null,
+              _follow: null,
+              _maxBody: -1,
+              _ignoreHttpErrors: false,
               ignoreContentType: function () { return req; },
-              ignoreHttpErrors: function () { return req; },
+              ignoreHttpErrors: function (b) {
+                req._ignoreHttpErrors = (b === undefined) ? true : !!b;
+                return req;
+              },
               validateTLSCertificates: function () { return req; },
-              followRedirects: function () { return req; },
-              maxBodySize: function () { return req; },
-              timeout: function () { return req; },
+              followRedirects: function (b) {
+                req._follow = (b === undefined) ? true : !!b;
+                return req;
+              },
+              maxBodySize: function (n) {
+                var v = parseInt(n, 10);
+                req._maxBody = isNaN(v) ? -1 : v;
+                return req;
+              },
+              timeout: function (ms) {
+                var v = parseInt(ms, 10);
+                if (!isNaN(v) && v > 0) req._timeout = v;
+                return req;
+              },
               postDataCharset: function () { return req; },
               parser: function () { return req; },
               header: function (k, v) { req._headers[String(k)] = String(v); return req; },
@@ -1230,9 +1308,11 @@ const String sourceContextJsPrelude = r'''
               method: function (m) { req._method = String(m || '').toUpperCase(); return req; },
               data: function (a, b) {
                 if (a && typeof a === 'object') {
-                  for (var k in a) req._data.push(k + '=' + a[k]);
+                  for (var k in a) {
+                    req._data.push(syFormEnc(k) + '=' + syFormEnc(a[k]));
+                  }
                 } else {
-                  req._data.push(String(a) + '=' + String(b));
+                  req._data.push(syFormEnc(a) + '=' + syFormEnc(b));
                 }
                 return req;
               },
@@ -1246,11 +1326,38 @@ const String sourceContextJsPrelude = r'''
                 if (isPost && !form) opts.method = 'POST';
                 // legado Jsoup 直连只发显式设置的头（不叠加源 header/默认头）。
                 opts._syHeaderMode = 'replace';
+                if (req._follow != null) opts.followRedirects = req._follow;
                 var finalUrl = syWithHeaders(req._url, null, opts);
                 var key = isPost && form
                     ? finalUrl + '||POST||' + form
                     : finalUrl;
-                return syResp(key, global.java.__ajaxReq(key));
+                var rec = {};
+                var body = global.java.__ajaxReq(key, req._timeout, 's', rec);
+                var meta = syMetaOf(rec.key);
+                var code = meta && meta.code != null ? Number(meta.code) : 0;
+                var failed = !!(meta && meta.e);
+                // jsoup 默认 ignoreHttpErrors=false：≥400 抛 HttpStatusException；
+                // 连接层失败（code 0）对应 IOException，同样不让脚本拿到假响应。
+                if (!req._ignoreHttpErrors && (code >= 400 || failed)) {
+                  var err;
+                  if (code >= 400) {
+                    err = new Error('HTTP error fetching URL. Status=' + code +
+                        ', URL=' + String(req._url));
+                    err.name = 'org.jsoup.HttpStatusException';
+                    err.status = code;
+                  } else {
+                    err = new Error(meta && meta.em ? String(meta.em)
+                        : 'java.io.IOException');
+                    err.name = 'java.io.IOException';
+                  }
+                  err.url = String(req._url);
+                  throw err;
+                }
+                if (req._maxBody > 0 && typeof body === 'string' &&
+                    body.length > req._maxBody) {
+                  body = body.substring(0, req._maxBody);
+                }
+                return syResp(rec.key, body);
               },
               // jsoup Connection 的快捷方法：执行后直接把响应体解析成
               // Document（`Jsoup.connect(url).get().select(...)`）。
@@ -7850,7 +7957,8 @@ const String javaExtensionsJsPrelude = r'''
     getWebViewUA: function () { return WEBVIEW_UA; },
     getUserAgent: function () { return WEBVIEW_UA; },
     webview: function (html, url, js) { return java.webView(html, url, js); },
-    ajaxTestAll: function (urlList, timeout) { return java.ajaxAll(urlList); },
+    // ajax/ajaxAll/ajaxTestAll 由注入对象预置脚本挂到同一 java 对象上
+    // （需要 __ajaxReq 与 __ajaxMetaCache），此处不再提供转发桩。
     sleep: function (ms) { return null; },
     toURL: function (url, baseUrl) {
       try { return makeJsUrl(url, baseUrl); } catch (e) { return null; }

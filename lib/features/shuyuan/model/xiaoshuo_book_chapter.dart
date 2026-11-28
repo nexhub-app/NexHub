@@ -102,27 +102,32 @@ class XiaoshuoBookChapter {
     return chapter;
   }
 
-  Map<String, dynamic> toJson() => {
-        'bookUrl': bookUrl,
-        'url': url,
-        'title': title,
-        'index': index,
-        'isVolume': isVolume,
-        'isVip': isVip,
-        'isPay': isPay,
-        if (tag != null) 'tag': tag,
-        if (wordCount != null) 'wordCount': wordCount,
-        if (reviewImg != null) 'reviewImg': reviewImg,
-        if (baseUrl != null) 'baseUrl': baseUrl,
-        if (variable != null) 'variable': variable,
-        if (tocLevel != 0) 'tocLevel': tocLevel,
-        if (resourceUrl != null) 'resourceUrl': resourceUrl,
-        if (titleMD5 != null) 'titleMD5': titleMD5,
-        if (start != 0) 'start': start,
-        if (end != 0) 'end': end,
-        if (startFragmentId != null) 'startFragmentId': startFragmentId,
-        if (endFragmentId != null) 'endFragmentId': endFragmentId,
-      };
+  Map<String, dynamic> toJson() {
+    // 脚本直改 `chapter.variableMap`（不经 putVariable）时 `variable` 会滞旧；
+    // 序列化前对齐，避免往返后丢掉新增变量。
+    variable = variableMap.isEmpty ? null : jsonEncode(variableMap);
+    return {
+      'bookUrl': bookUrl,
+      'url': url,
+      'title': title,
+      'index': index,
+      'isVolume': isVolume,
+      'isVip': isVip,
+      'isPay': isPay,
+      if (tag != null) 'tag': tag,
+      if (wordCount != null) 'wordCount': wordCount,
+      if (reviewImg != null) 'reviewImg': reviewImg,
+      if (baseUrl != null) 'baseUrl': baseUrl,
+      if (variable != null) 'variable': variable,
+      if (tocLevel != 0) 'tocLevel': tocLevel,
+      if (resourceUrl != null) 'resourceUrl': resourceUrl,
+      if (titleMD5 != null) 'titleMD5': titleMD5,
+      if (start != 0) 'start': start,
+      if (end != 0) 'end': end,
+      if (startFragmentId != null) 'startFragmentId': startFragmentId,
+      if (endFragmentId != null) 'endFragmentId': endFragmentId,
+    };
+  }
 
   /// 对齐 legado `BookChapter.getAbsoluteURL()`：
   /// `,{...}` 选项段不参与地址拼接，拼接后原样接回。

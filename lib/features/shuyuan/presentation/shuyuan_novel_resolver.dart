@@ -1043,8 +1043,15 @@ class ShuyuanNovelResolver
     final literal = _literalViewName(viewName);
     if (literal != null) return literal;
     final engine = JsEngine.forSource(source.id);
+    // legado 的 viewName 与 action 共用同一个 live InfoMap；NexHub 旧实现把
+    // 副本传进脚本，脚本里的 `infoMap.put(...)` 副作用直接丢失。这里同时
+    // 回传求值结果与脚本改过的 map，由宿主合并回 [infoMap]。
     final wrapped = '(function () {\n$_infoMapCompatJs'
-        '  return eval(${jsonEncode(viewName)});\n'
+        '  var __r = eval(${jsonEncode(viewName)});\n'
+        '  return JSON.stringify({\n'
+        '    r: __r == null ? "" : String(__r),\n'
+        '    m: infoMap\n'
+        '  });\n'
         '})()';
     final out = engine.eval(
       wrapped,
@@ -1054,6 +1061,18 @@ class ShuyuanNovelResolver
       },
     );
     engine.takeJavaVars();
+    try {
+      final decoded = jsonDecode(out);
+      if (decoded is Map) {
+        final m = decoded['m'];
+        if (m is Map) {
+          m.forEach((k, v) {
+            if (v != null) infoMap[k.toString()] = v.toString();
+          });
+        }
+        return '${decoded['r'] ?? ''}';
+      }
+    } catch (_) {}
     return out;
   }
 

@@ -56,4 +56,15 @@ void main() {
     expect(result.error, isNull);
     expect(result.items.single.displayName, '有');
   });
+
+  test('viewName 对 infoMap 的写入回写宿主并落盘', () async {
+    final result = await ShuyuanNovelResolver().resolveExploreKinds(
+      _config("infoMap.put('touched', '1'); '标签'"),
+    );
+    expect(result.error, isNull);
+    expect(result.items.single.displayName, '标签');
+    final saved = await ShuyuanExploreInfoStore.load(_baseUrl);
+    expect(saved['touched'], '1',
+        reason: 'legado 的 viewName 与 action 共用同一个 live InfoMap');
+  });
 }

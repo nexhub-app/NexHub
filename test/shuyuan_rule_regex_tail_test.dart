@@ -58,4 +58,28 @@ void main() {
       expect(out, '/book/246813/');
     });
   });
+
+  group('非法替换模板（Java Matcher 口径）', () {
+    const html = '<div id="x">abc123</div>';
+
+    test('越界组号 → 整条回退字面量替换（原文不含该正则串时原样返回）', () {
+      final out = _rule(html).getString(r'#x@text##(\d+)##$9');
+      expect(out, 'abc123');
+    });
+
+    test('未知命名分组同样回退字面量替换', () {
+      final out = _rule(html).getString(r'#x@text##(\d+)##${nope}');
+      expect(out, 'abc123');
+    });
+
+    test('replaceFirst 形态编译失败时返回替换模板本身', () {
+      final out = _rule(html).getString(r'#x@text##[##IMG###');
+      expect(out, 'IMG');
+    });
+
+    test(r'`$10` 有 ≥1 组时按 group1 + "0" 展开（Java 组号增长规则）', () {
+      final out = _rule(html).getString(r'#x@text##(\d+)##$10');
+      expect(out, 'abc1230');
+    });
+  });
 }

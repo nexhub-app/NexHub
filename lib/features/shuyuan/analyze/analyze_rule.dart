@@ -1381,9 +1381,10 @@ class AnalyzeRule {
     } catch (_) {
       try {
         if (st.replaceFirst) {
-          // 与 legado 一致：正则编译失败时直接返回替换模板本身。
-          final index = result.indexOf(st.replaceRegex);
-          return finish(index >= 0 ? st.replacement : '');
+          // 与 legado 一致：正则编译失败或替换模板非法时，直接返回替换
+          // 模板本身（`runCatching` 失败后 `return replacement`），不看
+          // 原文里是否真的出现过该正则字面量。
+          return finish(st.replacement);
         }
         return finish(result.replaceAll(st.replaceRegex, st.replacement));
       } catch (_) {
@@ -1393,10 +1394,14 @@ class AnalyzeRule {
   }
 
   /// 展开 `##` 正则替换中的分组引用，对齐 Java `Matcher.replaceAll`：
-  /// - `$N`（多位数字，`$10` 取第 10 组；组号超出时回退到能命中的更短数字）
+  /// - `$N`（多位数字按 Java 规则增长：超过组数就停止增长，只剩首位仍
+  ///   越界时抛错）
   /// - `${name}` 命名分组（`(?<name>…)`）
   /// - `\$` / `\\` 反斜杠转义（其余反斜杠序列原样保留，避免破坏
   ///   `C:\path` 这类替换文本）
+  ///
+  /// 组号真正越界时按 Java `Matcher` 抛错，由调用方回退到「整条按字面量
+  /// 替换」——旧实现把越界组号吞成空串，输出既不是模板也不是原文。
   ///
   /// Dart 的字符串替换不展开 `$N`，须显式映射。
   static String _expandReplacement(Match m, String replacement) {
@@ -1406,7 +1411,7 @@ class AnalyzeRule {
     String groupAt(int idx) {
       if (idx == 0) return m.group(0) ?? '';
       if (idx <= m.groupCount) return m.group(idx) ?? '';
-      return '';
+      throw ArgumentError('No group $idx');
     }
 
     final out = StringBuffer();
@@ -1432,25 +1437,30 @@ class AnalyzeRule {
           final end = replacement.indexOf('}', i + 2);
           if (end > i + 2) {
             final name = replacement.substring(i + 2, end);
-            String? named;
+            final asIndex = int.tryParse(name);
             if (RegExp(r'^[A-Za-z][A-Za-z0-9]*$').hasMatch(name)) {
+              String? named;
               try {
                 // 命名分组只存在于 RegExpMatch（Dart 的 Match 接口无此方法）。
                 named = m is RegExpMatch ? m.namedGroup(name) : null;
               } catch (_) {
                 named = null;
               }
-            }
-            final asIndex = int.tryParse(name);
-            if (named != null || asIndex != null) {
-              out.write(named ?? groupAt(asIndex!));
+              // Java：未知命名分组直接抛 IllegalArgumentException，整条
+              // 替换回退成字面量；不再把 token 原样留在输出里。
+              if (named == null) throw ArgumentError('No group with name $name');
+              out.write(named);
               i = end + 1;
               continue;
             }
-            out.write(replacement.substring(i, end + 1));
-            i = end + 1;
-            continue;
+            if (asIndex != null) {
+              out.write(groupAt(asIndex));
+              i = end + 1;
+              continue;
+            }
+            throw ArgumentError('invalid group name $name');
           }
+          throw ArgumentError('named capturing group is missing trailing }');
         }
         if (next.codeUnitAt(0) >= 0x30 && next.codeUnitAt(0) <= 0x39) {
           var j = i + 1;
@@ -1460,10 +1470,9 @@ class AnalyzeRule {
             j++;
           }
           var digits = replacement.substring(i + 1, j);
-          // 组号不存在时按 Java 行为抛错；此处改为回退到可命中的更短组号，
-          // 保证 `$10`（只有 2 组）不退化成长度为 10 的乱码输出。
-          while (digits.length > 1 &&
-              int.parse(digits) > m.groupCount) {
+          // Java Matcher 的组号增长规则：数字继续增长会超过组数时停止，
+          // 只有首位本身越界才抛错（`$10` 有 ≥1 组时 = group1 + "0"）。
+          while (digits.length > 1 && int.parse(digits) > m.groupCount) {
             digits = digits.substring(0, digits.length - 1);
             j--;
           }
@@ -1471,6 +1480,12 @@ class AnalyzeRule {
           i = j;
           continue;
         }
+        // Java：`$` 后既不是数字也不是 `{` → Illegal group reference。
+        throw ArgumentError('Illegal group reference');
+      }
+      if (ch == r'$') {
+        // 末尾孤立的 `$`：Java 抛「group index is missing」。
+        throw ArgumentError('Illegal group reference: group index is missing');
       }
       out.write(ch);
       i++;

@@ -2562,6 +2562,8 @@ class AnalyzeUrl {
               activeCtx.ajaxBytesPending.remove(k);
               activeCtx.ajaxTimeouts.remove(k);
               activeCtx.ajaxBatch.remove(k);
+              activeCtx.ajaxBatchIds.remove(k);
+              activeCtx.ajaxTestKeys.remove(k);
               activeCtx.ajaxSkipRateLimit.remove(k);
             }
             reinitUrl();

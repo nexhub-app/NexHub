@@ -207,6 +207,15 @@ class ShuyuanSourceContext {
   /// 其余 `java.ajax` 保持注册顺序串行（同步桥语义）。
   final Set<String> ajaxBatch = <String>{};
 
+  /// 批请求编号：请求键 → `ajaxAll/ajaxTestAll` 调用序号。legado 每次
+  /// 批量调用是一次独立的 `mapAsync(threadCount)` 批次，批与批之间串行；
+  /// 只有同编号的连续键才合并到同一个并发窗口。
+  final Map<String, String> ajaxBatchIds = <String, String>{};
+
+  /// `java.ajaxTestAll` 的测速键：失败项按 isTest 口径返回负 callTime，
+  /// 不像普通批请求那样整批抛错。
+  final Set<String> ajaxTestKeys = <String>{};
+
   /// `org.jsoup.Jsoup.connect(...).execute().bodyAsBytes()` 的重放缓存：
   /// 完整请求键 → 原始响应的 base64（不按文本解码，保留二进制密文）。
   /// 与 [ajaxCache] 同款增量推送（不进种子，防长目录 O(n²)）。
@@ -337,6 +346,8 @@ class ShuyuanSourceContext {
     ajaxTimeouts.clear();
     ajaxSkipRateLimit.clear();
     ajaxBatch.clear();
+    ajaxBatchIds.clear();
+    ajaxTestKeys.clear();
     ajaxBytesCache.clear();
     ajaxBytesPending.clear();
     ajaxMetaCache.clear();
@@ -622,10 +633,18 @@ class ShuyuanSourceContext {
           if (timeoutMs != null && timeoutMs > 0) {
             ajaxTimeouts[a] = timeoutMs;
           }
+          // 标记：[s] 串行；`b<id>` 批；`b1<id>` 批且跳过限流；`t<id>` /
+          // `t1<id>` 测速批（isTest）。普通 java.ajax/get/post/head/connect
+          // 记 `s`（legado 每次调用阻塞完成后才继续，后一个请求可能依赖
+          // 前一个写入的 cookie/token，不能并发）。
           final flags = op['c']?.toString() ?? '';
-          // `b`/`b1` 只在显式 ajaxAll 时出现；普通 java.ajax 记 `s`（串行）。
-          if (flags.startsWith('b')) ajaxBatch.add(a);
-          if (flags == 'b1') ajaxSkipRateLimit.add(a);
+          final m = RegExp(r'^([bt])(1?)(.*)$').firstMatch(flags);
+          if (m != null) {
+            ajaxBatch.add(a);
+            ajaxBatchIds[a] = m.group(3) ?? '';
+            if ((m.group(2) ?? '').isNotEmpty) ajaxSkipRateLimit.add(a);
+            if (m.group(1) == 't') ajaxTestKeys.add(a);
+          }
         case 'ajaxBytes':
           // bodyAsBytes 的二进制重放请求（同一 URL 可能同时被记录为
           // 'ajax'，settle 按并集抓取一次、双缓存填充）。
@@ -1271,9 +1290,12 @@ class ShuyuanSourceContext {
     // java.ajaxAll 批请求按下载线程数并发抓取（legado `mapAsync(threadCount)`）；
     // 普通 java.ajax 保持串行（同步桥的 cookie/会话顺序依赖逐条完成）。
     final skipRateLimit = Set<String>.from(ctx.ajaxSkipRateLimit);
-    final batch = Set<String>.from(ctx.ajaxBatch);
+    final batchIds = Map<String, String>.from(ctx.ajaxBatchIds);
+    final testKeys = Set<String>.from(ctx.ajaxTestKeys);
     ctx.ajaxSkipRateLimit.clear();
     ctx.ajaxBatch.clear();
+    ctx.ajaxBatchIds.clear();
+    ctx.ajaxTestKeys.clear();
 
     Future<void> fetch(String key) async {
       final wantBody = ctx.ajaxPending.contains(key);
@@ -1282,13 +1304,10 @@ class ShuyuanSourceContext {
       if (wantBytes && ctx.ajaxBytesCache.containsKey(key)) return;
       fetched++;
       if (deadline != null && !DateTime.now().isBefore(deadline)) {
-        if (wantBody) ctx.ajaxCache[key] = _ajaxFailureText('请求超时');
-        if (wantBytes) ctx.ajaxBytesCache[key] = '';
-        ctx.ajaxMetaCache[key] = jsonEncode(<String, dynamic>{
-          'code': 0,
-          'url': key,
-          'headers': const <String, List<String>>{},
-        });
+        _recordAjaxFailure(ctx, key, key, '请求超时',
+            isTest: testKeys.contains(key),
+            wantBody: wantBody,
+            wantBytes: wantBytes);
         return;
       }
       var url = _stripAjaxDupSuffix(key);
@@ -1348,30 +1367,29 @@ class ShuyuanSourceContext {
           'headers': analyzeUrl.lastResponseHeaders ?? const <String, List<String>>{},
         });
       } catch (e) {
-        if (wantBody) ctx.ajaxCache[key] = _ajaxFailureText(e);
-        if (wantBytes) ctx.ajaxBytesCache[key] = '';
-        ctx.ajaxMetaCache[key] = jsonEncode(<String, dynamic>{
-          'code': 0,
-          'url': url,
-          'headers': const <String, List<String>>{},
-        });
+        _recordAjaxFailure(ctx, key, url, e,
+            isTest: testKeys.contains(key),
+            wantBody: wantBody,
+            wantBytes: wantBytes);
       }
     }
 
     // 按脚本登记顺序推进：普通 java.ajax/get/post/head/connect 逐条串行
     // （legado 是同步阻塞调用，后一个请求依赖前一个写入的 cookie/token）；
-    // 只有显式 ajaxAll 的**连续**批键做一次有界并发
+    // 只有显式 ajaxAll 的**同批连续**键做一次有界并发
     // （legado `mapAsync(threadCount)`，整批完成后再继续后面的语句）。
     var cursor = 0;
     while (cursor < keys.length) {
       final key = keys[cursor];
-      if (!batch.contains(key)) {
+      final batchId = batchIds[key] ?? '';
+      if (batchId.isEmpty) {
         await fetch(key);
         cursor++;
         continue;
       }
       final group = <String>[];
-      while (cursor < keys.length && batch.contains(keys[cursor])) {
+      while (cursor < keys.length &&
+          (batchIds[keys[cursor]] ?? '') == batchId) {
         group.add(keys[cursor]);
         cursor++;
       }
@@ -1422,6 +1440,70 @@ class ShuyuanSourceContext {
     final msg = error.toString();
     return '$ajaxFailurePrefix$msg\n'
         '\tat io.legado.app.model.analyzeRule.AnalyzeUrl.getStrResponseAwait(AnalyzeUrl.kt)';
+  }
+
+  /// 失败结果落缓存（普通请求与 `ajaxTestAll` 两种口径）。
+  ///
+  /// - 普通：legado `ajax` 的 catch 口径（异常栈文本）；元数据带 `e` 标记，
+  ///   `java.ajaxAll` 命中失败项即整批抛错（legado mapAsync 任一项失败即
+  ///   抛，不返回部分结果）。
+  /// - isTest（`ajaxTestAll`）：legado 把异常转成响应——`body()` 是异常
+  ///   消息、`code()` 仍是 200、`callTime()` 为负错误码，且不抛错。
+  static void _recordAjaxFailure(
+    ShuyuanSourceContext ctx,
+    String key,
+    String url,
+    Object error, {
+    required bool isTest,
+    required bool wantBody,
+    required bool wantBytes,
+  }) {
+    if (wantBytes) ctx.ajaxBytesCache[key] = '';
+    if (isTest) {
+      if (wantBody) ctx.ajaxCache[key] = _briefError(error);
+      ctx.ajaxMetaCache[key] = jsonEncode(<String, dynamic>{
+        'code': 200,
+        'url': url,
+        'headers': const <String, List<String>>{},
+        'ct': _testErrorCode(error),
+      });
+      return;
+    }
+    if (wantBody) ctx.ajaxCache[key] = _ajaxFailureText(error);
+    ctx.ajaxMetaCache[key] = jsonEncode(<String, dynamic>{
+      'code': 0,
+      'url': url,
+      'headers': const <String, List<String>>{},
+      'e': true,
+      'em': _briefError(error),
+    });
+  }
+
+  static String _briefError(Object error) {
+    final s = error.toString();
+    return s.length > 300 ? s.substring(0, 300) : s;
+  }
+
+  /// legado `AnalyzeUrl.getStrResponseAwait(isTest = true)` 的负 callTime
+  /// 映射：-1 超时（InterruptedIOException timeout）/ -2 SocketTimeout /
+  /// -3 域名不存在 / -4 连接被拒 / -5 Socket 错误 / -6 SSL / -7 其它。
+  static int _testErrorCode(Object error) {
+    if (error is TimeoutException) return -1;
+    final s = error.toString().toLowerCase();
+    if (s.contains('failed host lookup') ||
+        s.contains('unknownhost') ||
+        s.contains('name or service not known')) {
+      return -3;
+    }
+    if (s.contains('connection refused')) return -4;
+    if (s.contains('handshake') ||
+        s.contains('certificate') ||
+        s.contains('ssl')) {
+      return -6;
+    }
+    if (s.contains('timeout') || s.contains('timed out')) return -2;
+    if (s.contains('socket') || s.contains('connection reset')) return -5;
+    return -7;
   }
 
   static Future<int> _settleFileOps(ShuyuanSourceContext ctx) async {

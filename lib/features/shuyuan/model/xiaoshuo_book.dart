@@ -147,45 +147,53 @@ class XiaoshuoBook {
       canUpdate: json['canUpdate'] as bool? ?? true,
     );
     // 只有 `variable` 串的旧存档：回填变量表，目录/正文期的 @get 才命中。
-    book._ensureVariableMap();
+    // 只有 `variableMap` 的早期存档同样接受（variable 缺省时才用）。
+    book._ensureVariableMap(json['variableMap']);
     return book;
   }
 
-  Map<String, dynamic> toJson() => {
-        'bookUrl': bookUrl,
-        'name': name,
-        'author': author,
-        if (coverUrl != null) 'coverUrl': coverUrl,
-        if (intro != null) 'intro': intro,
-        if (kind != null) 'kind': kind,
-        'type': type,
-        if (tocUrl != null) 'tocUrl': tocUrl,
-        if (wordCount != null) 'wordCount': wordCount,
-        if (lastChapter != null) 'lastChapter': lastChapter,
-        if (variableMap.isNotEmpty) 'variableMap': variableMap,
-        'isFavorite': isFavorite,
-        if (bookStatus != null) 'bookStatus': bookStatus,
-        if (updateTime != null) 'updateTime': updateTime,
-        if (recommendations != null) 'recommendations': recommendations,
-        if (downloadUrls != null) 'downloadUrls': downloadUrls,
-        if (reverseToc) 'reverseToc': reverseToc,
-        if (origin != null) 'origin': origin,
-        if (originName != null) 'originName': originName,
-        if (originOrder != 0) 'originOrder': originOrder,
-        if (variable != null) 'variable': variable,
-        if (fixedType != 0) 'fixedType': fixedType,
-        if (totalChapterNum != 0) 'totalChapterNum': totalChapterNum,
-        if (latestChapterTitle != null) 'latestChapterTitle': latestChapterTitle,
-        if (latestChapterTime != 0) 'latestChapterTime': latestChapterTime,
-        if (durChapterIndex != 0) 'durChapterIndex': durChapterIndex,
-        if (durChapterTitle.isNotEmpty) 'durChapterTitle': durChapterTitle,
-        if (durChapterPos != 0) 'durChapterPos': durChapterPos,
-        if (group != null) 'group': group,
-        if (customTag != null) 'customTag': customTag,
-        if (customIntro != null) 'customIntro': customIntro,
-        if (customCoverUrl != null) 'customCoverUrl': customCoverUrl,
-        if (!canUpdate) 'canUpdate': canUpdate,
-      };
+  Map<String, dynamic> toJson() {
+    // 直接改 `variableMap` 的调用点（WebBook 的 putIfAbsent/addAll、BookInfo
+    // 的变量回填）不走 putVariable；序列化前统一对齐，否则 JSON 里
+    // `variable` 是旧值、`variableMap` 是新值，而 fromJson 以 `variable`
+    // 为准 → 新写入的变量在往返后丢失。
+    _syncVariableJson();
+    return {
+      'bookUrl': bookUrl,
+      'name': name,
+      'author': author,
+      if (coverUrl != null) 'coverUrl': coverUrl,
+      if (intro != null) 'intro': intro,
+      if (kind != null) 'kind': kind,
+      'type': type,
+      if (tocUrl != null) 'tocUrl': tocUrl,
+      if (wordCount != null) 'wordCount': wordCount,
+      if (lastChapter != null) 'lastChapter': lastChapter,
+      if (variableMap.isNotEmpty) 'variableMap': variableMap,
+      'isFavorite': isFavorite,
+      if (bookStatus != null) 'bookStatus': bookStatus,
+      if (updateTime != null) 'updateTime': updateTime,
+      if (recommendations != null) 'recommendations': recommendations,
+      if (downloadUrls != null) 'downloadUrls': downloadUrls,
+      if (reverseToc) 'reverseToc': reverseToc,
+      if (origin != null) 'origin': origin,
+      if (originName != null) 'originName': originName,
+      if (originOrder != 0) 'originOrder': originOrder,
+      if (variable != null) 'variable': variable,
+      if (fixedType != 0) 'fixedType': fixedType,
+      if (totalChapterNum != 0) 'totalChapterNum': totalChapterNum,
+      if (latestChapterTitle != null) 'latestChapterTitle': latestChapterTitle,
+      if (latestChapterTime != 0) 'latestChapterTime': latestChapterTime,
+      if (durChapterIndex != 0) 'durChapterIndex': durChapterIndex,
+      if (durChapterTitle.isNotEmpty) 'durChapterTitle': durChapterTitle,
+      if (durChapterPos != 0) 'durChapterPos': durChapterPos,
+      if (group != null) 'group': group,
+      if (customTag != null) 'customTag': customTag,
+      if (customIntro != null) 'customIntro': customIntro,
+      if (customCoverUrl != null) 'customCoverUrl': customCoverUrl,
+      if (!canUpdate) 'canUpdate': canUpdate,
+    };
+  }
 
   /// 写入变量（对齐 legado `RuleDataInterface.putVariable`）：
   /// - `null` = 删除该键（源用「置空即删除」写法时不再残留旧值）；
@@ -211,10 +219,20 @@ class XiaoshuoBook {
   }
 
   /// 旧存档/备份只有 `variable` JSON：读取时回填内存表。
-  void _ensureVariableMap() {
+  ///
+  /// [fallbackMap] 供同时/仅带 `variableMap` 的载荷使用：`variable` 是
+  /// legado 的权威序列化字段，只在它缺失时采用 map 形态。
+  void _ensureVariableMap([Object? fallbackMap]) {
     if (variableMap.isNotEmpty) return;
     final raw = variable;
-    if (raw == null || raw.isEmpty) return;
+    if (raw == null || raw.isEmpty) {
+      if (fallbackMap is Map) {
+        fallbackMap.forEach((k, v) {
+          if (v != null) variableMap[k.toString()] = v.toString();
+        });
+      }
+      return;
+    }
     try {
       final decoded = jsonDecode(raw);
       if (decoded is Map) {
