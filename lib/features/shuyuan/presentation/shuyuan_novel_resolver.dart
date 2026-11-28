@@ -59,7 +59,6 @@ import '../shuyuan_explore_info_store.dart';
 import '../shuyuan_explore_kinds_store.dart';
 import '../web_book/related_books.dart';
 import '../web_book/web_book.dart';
-import '../web_book/web_book_types.dart';
 import 'shuyuan_interactive.dart';
 
 class ShuyuanNovelResolver
@@ -185,6 +184,7 @@ class ShuyuanNovelResolver
       intro: sb.intro,
       kind: sb.kind,
       lastChapter: sb.lastChapter,
+      latestChapterTitle: sb.latestChapterTitle,
       tocUrl: sb.tocUrl,
       wordCount: sb.wordCount,
       // legado BookList：搜索/发现响应体在 baseUrl 即书籍地址时存入
@@ -538,27 +538,35 @@ class ShuyuanNovelResolver
         case 'toc':
         case 'chapters':
         case 'episodes':
-          // 目录：用 [BookChapterList] 解析渲染后 HTML（与 [WebBook.getChapterList]
-          // 首页批次同口径，逐章连续编号以支持上下章导航）。
+          // 目录：用 [BookChapterList] 解析渲染后 HTML，随后走与直连
+          // [WebBook.getChapterList] **同一合并层**（审计 M13：去重 →
+          // reverseToc 终序 → 全局重编号 → formatJs 单次执行；此前回灌只做
+          // 单页 formatJs，卷章占位与「最新章节预览」重复项会混进目录）。
+          // 分页跟随/preUpdateJs 属网络获取阶段，回灌（已取得渲染体）不适用。
           final id = vars['id'] ?? vars['detailUrl'] ?? '';
           final book = _seedFor(id) ??
               _bookInfoCache[id] ??
               XiaoshuoBook(bookUrl: id, name: '');
-          final chapters = BookChapterList.analyzeChapterList(
+          final pageChapters = BookChapterList.analyzeChapterList(
             bookSource: bookSource,
             book: book,
             baseUrl: id,
             redirectUrl: id,
             body: html,
           );
-          if (chapters.isEmpty) throw TocEmptyException();
-          // 与 WebBook.getChapterList 同口径：formatJs 单次全局执行。
-          BookChapterList.applyFormatJs(
-              chapters, bookSource.getTocRule().formatJs);
+          if (pageChapters.isEmpty) throw TocEmptyException();
+          final listReversed =
+              (bookSource.getTocRule().chapterList ?? '').startsWith('-');
+          final chapters = _webBook.mergeChapterList(
+              bookSource, book, pageChapters,
+              listReversed: listReversed);
           _rememberChapters(id, chapters);
+          // 卷章占位过滤与直连同一层（volume 条目不进 Episodes，全卷目录
+          // 返回空列表，与直连语义一致）。
+          final visible = chapters.where((c) => !c.isVolume).toList();
           // 漫画阅读器以 chapterId=Episode.id 回传图片请求，id 须为章节 URL。
           return episodesFromChapters(
-            chapters,
+            visible,
             isComic: source.type == SourceType.mangaSource,
           );
         case 'images':
@@ -1228,6 +1236,33 @@ class ShuyuanNovelResolver
 
   // ── 发现：按分类 URL 抓取 ──
   Future<List<MediaItem>> _handleExplore(
+    PluginConfig source,
+    XiaoshuoBookSource bookSource,
+    Map<String, String> vars,
+  ) async {
+    // legado ExploreBooksUseCase（审计 M18）：首页模块 args 以
+    // setTemporaryVariable 进入发现请求——`source.getVariable()` 优先读到
+    // args，请求结束后丢弃、不写持久源变量。NexHub 的首页板块 params
+    // （除 page/__route/category 等路由保留键外）桥接为同一层临时变量。
+    const reserved = {'page', '__route', 'category'};
+    final moduleArgs = <String, String>{
+      for (final e in vars.entries)
+        if (!reserved.contains(e.key) && e.value.isNotEmpty) e.key: e.value,
+    };
+    final ctx = ShuyuanSourceContext.current;
+    if (ctx != null && moduleArgs.isNotEmpty) {
+      ctx.beginTemporaryVars(moduleArgs);
+    }
+    try {
+      return await _handleExploreInner(source, bookSource, vars);
+    } finally {
+      if (ctx != null && moduleArgs.isNotEmpty) {
+        ctx.endTemporaryVars();
+      }
+    }
+  }
+
+  Future<List<MediaItem>> _handleExploreInner(
     PluginConfig source,
     XiaoshuoBookSource bookSource,
     Map<String, String> vars,

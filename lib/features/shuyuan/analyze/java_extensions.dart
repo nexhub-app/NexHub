@@ -47,6 +47,7 @@ const String sourceContextJsPrelude = r'''
   function syCtx() {
     if (!global.__shuyuanCtx || typeof global.__shuyuanCtx !== 'object') {
       global.__shuyuanCtx = { sourceId: '', sourceVars: {}, sourceMeta: {},
+        temporaryVars: {},
         bookVars: {}, bookInfo: {}, cookies: {}, loginInfo: {}, loginHeader: {},
         cache: {}, cacheBytes: {} };
     }
@@ -231,8 +232,17 @@ const String sourceContextJsPrelude = r'''
     },
     getVariable: function (k) {
       var c = syCtx();
-      if (k == null || k === '') return c.sourceVars['__variable'] || '';
-      return c.sourceVars[String(k)] || '';
+      // legado BaseSource.getVariable：temporaryVariable 优先于持久源变量
+      //（审计 M18：首页模块 args 以临时变量进入发现请求）。
+      var t = c.temporaryVars;
+      if (k == null || k === '') {
+        return (t && t['__variable'] != null)
+            ? t['__variable']
+            : (c.sourceVars['__variable'] || '');
+      }
+      return (t && t[String(k)] != null)
+          ? t[String(k)]
+          : (c.sourceVars[String(k)] || '');
     },
     putVariable: function (k, v) {
       // legado BaseSource.putVariable(variable) 是单参：写入整段源变量，
@@ -1782,6 +1792,18 @@ const String sourceContextJsPrelude = r'''
     // 宿主在 preUpdateJs 结束后按需重取详情。
     global.java.refreshTocUrl = function () {
       syOp('refreshTocUrl', '', '');
+      return null;
+    };
+    // legado AnalyzeRule.reGetBook（审计 T3）：preUpdateJs 内按书名/作者
+    // 重新精确搜索并改写 bookUrl，再重取详情（书名换源/换签名的源靠它）。
+    // 宿主在目录阶段消费该 op；其他阶段调用无人消费（legado 抛
+    // IllegalStateException，此处按 no-op 记录偏差，不在已完成的脚本上回溯抛错）。
+    global.java.reGetBook = function () {
+      var book = global.book;
+      syOp('reGetBook', JSON.stringify({
+        name: book && book.name != null ? String(book.name) : '',
+        author: book && book.author != null ? String(book.author) : '',
+      }), '');
       return null;
     };
     // ── loginCheckJs 的 AnalyzeUrl 面 ──
@@ -4231,6 +4253,51 @@ const String javaExtensionsJsPrelude = r'''
 
   function asymKeyHex(v) { return v ? bytesToHex(v) : ''; }
 
+  // ── DER 编码（生成密钥对的 X.509 SPKI / PKCS#1 导出）──
+  // legado 的 crypto.publicKey.encoded 是 X.509 SubjectPublicKeyInfo；
+  // 私钥按两素数 PKCS#1 RSAPrivateKey 编码（dp/dq/qinv 为可选成员，
+  // 缺省合法），Java KeyFactory 可直接消费。
+  function derLen(n) {
+    if (n < 0x80) return [n];
+    var out = [];
+    var v = n;
+    while (v > 0) { out.unshift(v & 0xff); v = Math.floor(v / 256); }
+    return [0x80 | out.length].concat(out);
+  }
+  function derTlv(tag, content) {
+    return [tag].concat(derLen(content.length), content);
+  }
+  function derUint(bytes) {
+    var i = 0;
+    while (i < bytes.length && (bytes[i] & 0xff) === 0) i++;
+    var b = bytes.slice(i);
+    if (b.length === 0) b = [0];
+    if ((b[0] & 0x80) !== 0) b = [0].concat(b);
+    return derTlv(0x02, b);
+  }
+  function derSeqOf(parts) {
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+      out = out.concat(parts[i]);
+    }
+    return derTlv(0x30, out);
+  }
+  var RSA_OID = [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01];
+  function rsaSpkiDer(key) {
+    var pkcs1 = derSeqOf([derUint(key.n), derUint(key.e)]);
+    return derSeqOf([
+      derSeqOf([derTlv(0x06, RSA_OID), derTlv(0x05, [])]),
+      derTlv(0x03, [0x00].concat(pkcs1)),
+    ]);
+  }
+  function rsaPkcs1PrivateDer(key) {
+    return derSeqOf([
+      derUint([0]),
+      derUint(key.n), derUint(key.e), derUint(key.d),
+      derUint(key.p), derUint(key.q),
+    ]);
+  }
+
   function makeAsymmetricCrypto(transformation) {
     var name = String(transformation == null || transformation === ''
         ? 'RSA' : transformation);
@@ -4259,12 +4326,51 @@ const String javaExtensionsJsPrelude = r'''
 
     var publicKey = null;
     var privateKey = null;
+    var genPending = false;
+    var genCacheKey = null;
+
+    // legado（AsymmetricCrypto.kt:26-30）：构造即 `KeyPairGenerator
+    // .generateKeyPair()`，setPublicKey/setPrivateKey 只是替换。生成走宿主
+    // op（pointycastle RSAKeyGenerator）：首轮按调用序号登记 genkey，
+    // 宿主生成后回填 __asymCache，重放轮命中同一把密钥（审计 R38）。
+    (function () {
+      var cache = global.__asymCache;
+      if (!cache) cache = global.__asymCache = Object.create(null);
+      var seq = global.__asymGenSeq || 0;
+      global.__asymGenSeq = seq + 1;
+      genCacheKey = name + '|genkey|' + seq;
+      var hit = cache[genCacheKey];
+      if (hit) {
+        if (hit.e) throw new Error(hit.e);
+        var kp = JSON.parse(utf8Decode(hexToBytes(hit.v)));
+        publicKey = {
+          n: hexToBytes(kp.n), e: hexToBytes(kp.e),
+        };
+        privateKey = {
+          n: hexToBytes(kp.n), e: hexToBytes(kp.e), d: hexToBytes(kp.d),
+          p: hexToBytes(kp.p), q: hexToBytes(kp.q),
+        };
+        return;
+      }
+      var seen = global.__asymSeen;
+      if (!seen) seen = global.__asymSeen = Object.create(null);
+      if (!seen[genCacheKey]) {
+        seen[genCacheKey] = true;
+        var pend = global.__asymPending;
+        if (!pend) pend = global.__asymPending = [];
+        pend.push({ k: genCacheKey, gen: 1, t: name });
+      }
+      genPending = true;
+    })();
 
     // 命中宿主结果；未命中则按（变换/方向/密钥/数据）登记待办并返回 null。
     // 随机填充（PKCS#1 PS / OAEP seed）只在宿主算一次，重放轮稳定。
     function run(op, usePublicKey, data) {
       var key = usePublicKey ? publicKey : privateKey;
       if (!key) {
+        // 构造期自动密钥尚未回填：按待结算占位（重放轮取真值），与
+        // ajax/webjs 占位协议一致；无自动密钥时才是真实异常。
+        if (genPending) return null;
         throw new Error('InvalidKeyException: RSA '
             + (usePublicKey ? 'public' : 'private') + ' key not set');
       }
@@ -4325,6 +4431,20 @@ const String javaExtensionsJsPrelude = r'''
     }
 
     var api = {
+      // legado PublicKey/PrivateKey 对象：encoded = DER 字节（X.509 SPKI /
+      // PKCS#1 私钥），脚本可把公钥上送服务端做协商。
+      getPublicKey: function () {
+        return publicKey
+            ? { algorithm: 'RSA', format: 'X.509',
+                encoded: rsaSpkiDer(publicKey) }
+            : null;
+      },
+      getPrivateKey: function () {
+        return privateKey
+            ? { algorithm: 'RSA', format: 'PKCS#1',
+                encoded: rsaPkcs1PrivateDer(privateKey) }
+            : null;
+      },
       setPublicKey: function (key) {
         publicKey = rsaParsePublicKey(anyToBytes(key));
         if (!publicKey) throw new Error('InvalidKeySpecException: invalid RSA public key');
@@ -4365,6 +4485,15 @@ const String javaExtensionsJsPrelude = r'''
             ? '' : b64FromBytes(out.map(function (b) { return b & 0xff; }));
       },
     };
+    // legado Kotlin 属性形态：crypto.publicKey / crypto.privateKey。
+    Object.defineProperty(api, 'publicKey', {
+      get: function () { return api.getPublicKey(); },
+      configurable: true,
+    });
+    Object.defineProperty(api, 'privateKey', {
+      get: function () { return api.getPrivateKey(); },
+      configurable: true,
+    });
     return api;
   }
 
@@ -4548,6 +4677,17 @@ const String javaExtensionsJsPrelude = r'''
   ];
 
   function sha256Bytes(bytes) {
+    return sha256Core(bytes, [0x6a09e667, 0xbb67ae85, 0x3c6ef372,
+      0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19], 8);
+  }
+
+  // SHA-224：SHA-256 换初值 + 截断 28 字节（FIPS 180-4）。
+  function sha224Bytes(bytes) {
+    return sha256Core(bytes, [0xc1059ed8, 0x367cd507, 0x3070dd17, 0xf70e5939,
+      0xffc00b31, 0x68581511, 0x64f98fa7, 0xbefa4fa4], 7);
+  }
+
+  function sha256Core(bytes, initH, outWords) {
     var ml = bytes.length * 8;
     var msg = bytes.slice();
     msg.push(0x80);
@@ -4555,8 +4695,7 @@ const String javaExtensionsJsPrelude = r'''
     var hi = Math.floor(ml / 0x100000000);
     msg.push((hi >>> 24) & 0xff, (hi >>> 16) & 0xff, (hi >>> 8) & 0xff, hi & 0xff);
     msg.push((ml >>> 24) & 0xff, (ml >>> 16) & 0xff, (ml >>> 8) & 0xff, ml & 0xff);
-    var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-             0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    var H = initH.slice();
     var w = new Array(64);
     for (var i = 0; i < msg.length; i += 64) {
       var t;
@@ -4591,7 +4730,7 @@ const String javaExtensionsJsPrelude = r'''
       H[6] = (H[6] + g) >>> 0; H[7] = (H[7] + h) >>> 0;
     }
     var out = [];
-    for (var j = 0; j < 8; j++) {
+    for (var j = 0; j < outWords; j++) {
       out.push((H[j] >>> 24) & 0xff, (H[j] >>> 16) & 0xff,
           (H[j] >>> 8) & 0xff, H[j] & 0xff);
     }
@@ -4746,6 +4885,7 @@ const String javaExtensionsJsPrelude = r'''
     var a = String(algo == null ? '' : algo).toUpperCase().replace(/-/g, '');
     if (a === 'MD5') return md5Bytes(bytes);
     if (a === 'SHA1') return sha1Bytes(bytes);
+    if (a === 'SHA224') return sha224Bytes(bytes);
     if (a === 'SHA256') return sha256Bytes(bytes);
     if (a === 'SHA384') return sha384Bytes(bytes);
     if (a === 'SHA512') return sha512Bytes(bytes);
@@ -4758,6 +4898,7 @@ const String javaExtensionsJsPrelude = r'''
     if (a.indexOf('HMAC') === 0) a = a.substring(4);
     if (a === 'MD5') hash = md5Bytes;
     else if (a === 'SHA1') hash = sha1Bytes;
+    else if (a === 'SHA224') hash = sha224Bytes;
     else if (a === 'SHA256') hash = sha256Bytes;
     else if (a === 'SHA384') hash = sha384Bytes;
     else if (a === 'SHA512') hash = sha512Bytes;
@@ -5056,60 +5197,115 @@ const String javaExtensionsJsPrelude = r'''
   JavaUUID.prototype.toString = function () { return this.__u; };
   JavaUUID.prototype.valueOf = function () { return this.__u; };
 
+  // Java Map 键身份对齐 java.util（Rhino 直连真实集合）：**严格相等**——
+  // Integer 1 与 String '1' 是两个键，对象键按引用身份。旧实现把键全部
+  // String 化，数字键与对象键互相坍缩（审计 R41）。插入序保留
+  // （LinkedHashMap 语义）。
   function JavaMap(init) {
     if (!(this instanceof JavaMap)) return new JavaMap(init);
-    this.__m = {};
+    this.__e = [];
     if (init && typeof init === 'object') {
       if (init instanceof JavaMap) {
-        for (var k in init.__m) this.__m[k] = init.__m[k];
+        for (var i = 0; i < init.__e.length; i++) {
+          this.__e.push({ k: init.__e[i].k, v: init.__e[i].v });
+        }
       } else if (typeof init.length !== 'number') {
-        for (var j in init) this.__m[j] = init[j];
+        for (var j in init) this.__e.push({ k: j, v: init[j] });
       }
     }
   }
   jmark(JavaMap, 'java.util.LinkedHashMap');
-  JavaMap.prototype.put = function (k, v) { this.__m[String(k)] = v; return v; };
+  JavaMap.prototype.__find = function (k) {
+    for (var i = 0; i < this.__e.length; i++) {
+      if (this.__e[i].k === k) return i;
+    }
+    return -1;
+  };
+  JavaMap.prototype.put = function (k, v) {
+    var i = this.__find(k);
+    if (i >= 0) {
+      var old = this.__e[i].v;
+      this.__e[i].v = v;
+      return old == null ? null : old;
+    }
+    this.__e.push({ k: k, v: v });
+    return null;
+  };
+  JavaMap.prototype.putAll = function (m) {
+    if (m instanceof JavaMap) {
+      for (var i = 0; i < m.__e.length; i++) {
+        this.put(m.__e[i].k, m.__e[i].v);
+      }
+    } else if (m && typeof m === 'object') {
+      for (var k in m) this.put(k, m[k]);
+    }
+    return null;
+  };
   JavaMap.prototype.get = function (k) {
-    var v = this.__m[String(k)];
-    return v == null ? null : v;
+    var i = this.__find(k);
+    return i >= 0 ? (this.__e[i].v == null ? null : this.__e[i].v) : null;
   };
   JavaMap.prototype.getOrDefault = function (k, d) {
-    var v = this.__m[String(k)];
-    return v == null ? d : v;
+    var i = this.__find(k);
+    return i >= 0 && this.__e[i].v != null ? this.__e[i].v : d;
   };
   JavaMap.prototype.containsKey = function (k) {
-    return Object.prototype.hasOwnProperty.call(this.__m, String(k));
+    return this.__find(k) >= 0;
+  };
+  JavaMap.prototype.containsValue = function (v) {
+    for (var i = 0; i < this.__e.length; i++) {
+      if (this.__e[i].v === v) return true;
+    }
+    return false;
   };
   JavaMap.prototype.remove = function (k) {
-    var v = this.__m[String(k)];
-    delete this.__m[String(k)];
+    var i = this.__find(k);
+    if (i < 0) return null;
+    var v = this.__e[i].v;
+    this.__e.splice(i, 1);
     return v == null ? null : v;
   };
-  JavaMap.prototype.clear = function () { this.__m = {}; };
-  JavaMap.prototype.size = function () { return Object.keys(this.__m).length; };
-  JavaMap.prototype.isEmpty = function () {
-    return Object.keys(this.__m).length === 0;
+  JavaMap.prototype.clear = function () { this.__e = []; };
+  JavaMap.prototype.size = function () { return this.__e.length; };
+  JavaMap.prototype.isEmpty = function () { return this.__e.length === 0; };
+  JavaMap.prototype.keySet = function () {
+    var ks = [];
+    for (var i = 0; i < this.__e.length; i++) ks.push(this.__e[i].k);
+    return ks;
   };
-  JavaMap.prototype.keySet = function () { return Object.keys(this.__m); };
   JavaMap.prototype.values = function () {
-    return Object.keys(this.__m).map(function (k) {
-      return this.__m[k];
-    }, this);
+    var vs = [];
+    for (var i = 0; i < this.__e.length; i++) vs.push(this.__e[i].v);
+    return vs;
+  };
+  JavaMap.prototype.forEach = function (fn) {
+    for (var i = 0; i < this.__e.length; i++) {
+      fn(this.__e[i].k, this.__e[i].v);
+    }
+    return null;
   };
   JavaMap.prototype.entrySet = function () {
-    var m = this.__m;
-    return Object.keys(m).map(function (k) {
-      return { getKey: function () { return k; }, getValue: function () { return m[k]; } };
+    var entries = this.__e;
+    return entries.map(function (e) {
+      return {
+        getKey: function () { return e.k; },
+        getValue: function () { return e.v; },
+        toString: function () { return e.k + '=' + e.v; },
+      };
     });
   };
   JavaMap.prototype.toString = function () {
     var parts = [];
-    for (var k in this.__m) parts.push(k + '=' + this.__m[k]);
+    for (var i = 0; i < this.__e.length; i++) {
+      parts.push(String(this.__e[i].k) + '=' + this.__e[i].v);
+    }
     return '{' + parts.join(', ') + '}';
   };
   JavaMap.prototype.toJSON = function () {
     var o = {};
-    for (var k in this.__m) o[k] = this.__m[k];
+    for (var i = 0; i < this.__e.length; i++) {
+      o[String(this.__e[i].k)] = this.__e[i].v;
+    }
     return o;
   };
 
@@ -5851,6 +6047,23 @@ const String javaExtensionsJsPrelude = r'''
       prefix: [0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48,
         0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20],
       hash: sha256Bytes,
+    },
+    // JCE 摘要族补齐（审计 R48）：SHA-224/384/512withRSA 的 DigestInfo
+    // 前缀按 RFC 8017 §9.2 注 1。
+    SHA224WITHRSA: {
+      prefix: [0x30, 0x2d, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48,
+        0x01, 0x65, 0x03, 0x04, 0x02, 0x04, 0x05, 0x00, 0x04, 0x1c],
+      hash: sha224Bytes,
+    },
+    SHA384WITHRSA: {
+      prefix: [0x30, 0x41, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48,
+        0x01, 0x65, 0x03, 0x04, 0x02, 0x02, 0x05, 0x00, 0x04, 0x30],
+      hash: sha384Bytes,
+    },
+    SHA512WITHRSA: {
+      prefix: [0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48,
+        0x01, 0x65, 0x03, 0x04, 0x02, 0x03, 0x05, 0x00, 0x04, 0x40],
+      hash: sha512Bytes,
     },
   };
 
@@ -6826,6 +7039,372 @@ const String javaExtensionsJsPrelude = r'''
     return new OkHttpMultipartBody(this.__parts.slice(), this.__type);
   };
 
+  // ── java.math.BigInteger（审计 R47：书源 RSA/ID 编码常用）──
+  // 16 位 limb 小端数组复用 RSA 预置的 bn* 运算；符号单独保存。
+  function bigAddMag(a, b) {
+    var r = [];
+    var carry = 0;
+    var n = Math.max(a.length, b.length);
+    for (var i = 0; i < n; i++) {
+      var v = (i < a.length ? a[i] : 0) + (i < b.length ? b[i] : 0) + carry;
+      r.push(v & 0xffff);
+      carry = v >>> 16;
+    }
+    if (carry > 0) r.push(carry);
+    return bnTrim(r);
+  }
+  function bigMulMag(a, b) {
+    if ((a.length === 1 && a[0] === 0) || (b.length === 1 && b[0] === 0)) {
+      return [0];
+    }
+    var r = new Array(a.length + b.length);
+    for (var i = 0; i < r.length; i++) r[i] = 0;
+    for (var x = 0; x < a.length; x++) {
+      var carry = 0;
+      for (var y = 0; y < b.length; y++) {
+        var t = r[x + y] + a[x] * b[y] + carry;
+        r[x + y] = t & 0xffff;
+        carry = Math.floor(t / 65536);
+      }
+      var z = x + b.length;
+      while (carry > 0) {
+        var t2 = r[z] + carry;
+        r[z] = t2 & 0xffff;
+        carry = Math.floor(t2 / 65536);
+        z++;
+      }
+    }
+    return bnTrim(r);
+  }
+  // 长除法：二进制移位减（脚本量级足够；a、b 均非负）。
+  function bigDivRemMag(a, b) {
+    if (bnCmp(b, [0]) === 0) {
+      throw new Error('ArithmeticException: / by zero');
+    }
+    if (bnCmp(a, b) < 0) return [[0], a.slice()];
+    var rem = a.slice();
+    var shift = bnBitLength(a) - bnBitLength(b);
+    var quo = [];
+    var shifted = b.slice();
+    while (shift-- > 0) shifted = bigShl1(shifted);
+    for (var i = bnBitLength(a) - bnBitLength(b); i >= 0; i--) {
+      if (bnCmp(rem, shifted) >= 0) {
+        rem = bnSub(rem, shifted);
+        quo[Math.floor(i / 16)] = (quo[Math.floor(i / 16)] || 0)
+            | (1 << (i % 16));
+      }
+      shifted = bigShr1(shifted);
+    }
+    if (quo.length === 0) quo.push(0);
+    return [bnTrim(quo), bnTrim(rem)];
+  }
+  function bigShl1(a) {
+    var r = [];
+    var carry = 0;
+    for (var i = 0; i < a.length; i++) {
+      var v = ((a[i] << 1) | carry) & 0xffff;
+      carry = (a[i] >>> 15) & 1;
+      r.push(v);
+    }
+    if (carry > 0) r.push(carry);
+    return bnTrim(r);
+  }
+  function bigShr1(a) {
+    var r = [];
+    for (var i = 0; i < a.length; i++) {
+      var hi = i + 1 < a.length ? a[i + 1] : 0;
+      r.push(((a[i] >>> 1) | ((hi & 1) << 15)) & 0xffff);
+    }
+    return bnTrim(r);
+  }
+  function bigToStringMag(a, radix) {
+    if (bnCmp(a, [0]) === 0) return '0';
+    var digits = '0123456789abcdefghijklmnopqrstuvwxyz';
+    var out = [];
+    var cur = a.slice();
+    while (bnCmp(cur, [0]) !== 0) {
+      var parts = bigDivRemMag(cur, [radix]);
+      out.push(digits[parts[1][0] % radix]);
+      cur = parts[0];
+    }
+    return out.reverse().join('');
+  }
+  function bigFromStringMag(s, radix) {
+    var a = [0];
+    var rad = [radix];
+    for (var i = 0; i < s.length; i++) {
+      var d = digitsOf(s.charAt(i), radix);
+      if (d < 0) throw new Error('NumberFormatException: ' + s);
+      a = bigAddMag(bigMulMag(a, rad), [d]);
+    }
+    return a;
+  }
+  function digitsOf(c, radix) {
+    var digits = '0123456789abcdefghijklmnopqrstuvwxyz';
+    var i = digits.indexOf(String(c).toLowerCase());
+    return i >= 0 && i < radix ? i : -1;
+  }
+
+  var JavaBigInteger = jmark(function BigInteger(v, radix) {
+    if (!(this instanceof JavaBigInteger)) {
+      return new JavaBigInteger(v, radix);
+    }
+    this.__neg = false;
+    this.__a = [0];
+    if (v instanceof JavaBigInteger) {
+      this.__neg = v.__neg;
+      this.__a = v.__a.slice();
+      return;
+    }
+    if (typeof v === 'number') {
+      if (v < 0) { this.__neg = true; v = -v; }
+      this.__a = bnFromBytes(bnToBytes([v & 0xffff, Math.floor(v / 65536) & 0xffff], 4));
+      return;
+    }
+    if (v && typeof v.length === 'number' && typeof v !== 'string') {
+      this.__a = bnFromBytes(juBytes(v));
+      return;
+    }
+    var s = String(v == null ? '0' : v).trim();
+    if (s.charAt(0) === '-') { this.__neg = true; s = s.substring(1); }
+    else if (s.charAt(0) === '+') s = s.substring(1);
+    var rad = radix == null ? 10 : (typeof radix === 'number' ? radix : parseInt(radix, 10) || 10);
+    if (rad === 16 && s.substring(0, 2).toLowerCase() === '0x') s = s.substring(2);
+    this.__a = bigFromStringMag(s, rad);
+    if (bnCmp(this.__a, [0]) === 0) this.__neg = false;
+  }, 'java.math.BigInteger');
+  JavaBigInteger.prototype.__with = function (neg, mag) {
+    var o = new JavaBigInteger(0);
+    o.__a = mag;
+    o.__neg = neg && bnCmp(mag, [0]) !== 0;
+    return o;
+  };
+  JavaBigInteger.prototype.abs = function () {
+    return this.__with(false, this.__a);
+  };
+  JavaBigInteger.prototype.negate = function () {
+    return this.__with(!this.__neg, this.__a);
+  };
+  JavaBigInteger.prototype.add = function (v) {
+    var b = new JavaBigInteger(v == null ? '0' : v);
+    if (this.__neg === b.__neg) return this.__with(this.__neg, bigAddMag(this.__a, b.__a));
+    var c = bnCmp(this.__a, b.__a);
+    if (c === 0) return new JavaBigInteger(0);
+    if (c > 0) return this.__with(this.__neg, bnSub(this.__a, b.__a));
+    return this.__with(b.__neg, bnSub(b.__a, this.__a));
+  };
+  JavaBigInteger.prototype.subtract = function (v) {
+    return this.add(new JavaBigInteger(v == null ? '0' : v).negate());
+  };
+  JavaBigInteger.prototype.multiply = function (v) {
+    var b = new JavaBigInteger(v == null ? '0' : v);
+    return this.__with(this.__neg !== b.__neg, bigMulMag(this.__a, b.__a));
+  };
+  JavaBigInteger.prototype.divide = function (v) {
+    var b = new JavaBigInteger(v == null ? '0' : v);
+    var q = bigDivRemMag(this.__a, b.__a)[0];
+    return this.__with(this.__neg !== b.__neg && bnCmp(q, [0]) !== 0, q);
+  };
+  JavaBigInteger.prototype.remainder = function (v) {
+    var b = new JavaBigInteger(v == null ? '0' : v);
+    var r = bigDivRemMag(this.__a, b.__a)[1];
+    return this.__with(this.__neg, r);
+  };
+  JavaBigInteger.prototype.mod = function (v) {
+    var b = new JavaBigInteger(v == null ? '0' : v);
+    if (b.__neg) throw new Error('ArithmeticException: modulus not positive');
+    var r = bigDivRemMag(this.__a, b.__a)[1];
+    if (this.__neg && bnCmp(r, [0]) !== 0) r = bnSub(b.__a, r);
+    return this.__with(false, r);
+  };
+  JavaBigInteger.prototype.modPow = function (exp, m) {
+    var e = new JavaBigInteger(exp == null ? '0' : exp);
+    var mod = new JavaBigInteger(m == null ? '0' : m);
+    if (mod.__neg) throw new Error('ArithmeticException: modulus not positive');
+    if (e.__neg) throw new Error('ArithmeticException: negative exponent');
+    // 通用平方-乘取模（Montgomery 形态要求奇模数；java.math.BigInteger
+    // 对偶模数同样支持）。
+    if (bnCmp(mod.__a, [1]) === 0) return this.__with(false, [0]);
+    var out = new JavaBigInteger(1);
+    var base = this.mod(mod);
+    var expLimbs = e.__a.slice();
+    var bits = bnBitLength(expLimbs);
+    for (var i = 0; i < bits; i++) {
+      if ((expLimbs[Math.floor(i / 16)] >>> (i % 16)) & 1) {
+        out = out.multiply(base).mod(mod);
+      }
+      base = base.multiply(base).mod(mod);
+    }
+    return out;
+  };
+  JavaBigInteger.prototype.compareTo = function (v) {
+    var b = new JavaBigInteger(v == null ? '0' : v);
+    if (this.__neg !== b.__neg) return this.__neg ? -1 : 1;
+    var c = bnCmp(this.__a, b.__a);
+    return this.__neg ? -c : c;
+  };
+  JavaBigInteger.prototype.equals = function (v) {
+    if (!(v instanceof JavaBigInteger)) return false;
+    return v.__neg === this.__neg && bnCmp(this.__a, v.__a) === 0;
+  };
+  JavaBigInteger.prototype.intValue = function () {
+    var v = this.__a[0] + this.__a[1] * 65536;
+    return this.__neg ? -v : v;
+  };
+  JavaBigInteger.prototype.longValue = function () { return this.intValue(); };
+  JavaBigInteger.prototype.toByteArray = function () {
+    var bytes = bnToBytes(this.__a);
+    if (this.__neg) {
+      // 负数：简单按补码近似（书源场景基本无负数），最高位若为 0 补 0xff。
+      for (var i = 0; i < bytes.length; i++) bytes[i] = (~bytes[i] + 1) & 0xff;
+    }
+    return bytes.map(signedByte);
+  };
+  JavaBigInteger.prototype.toString = function (radix) {
+    var rad = radix == null ? 10 : (typeof radix === 'number' ? radix : parseInt(radix, 10) || 10);
+    var s = bigToStringMag(this.__a, rad);
+    return (this.__neg ? '-' : '') + s;
+  };
+  JavaBigInteger.prototype.toJSON = function () { return this.toString(); };
+
+  // ── java.util.Date / java.text.SimpleDateFormat（时间戳格式化）──
+  var JavaDate = jmark(function Date(v) {
+    if (!(this instanceof JavaDate)) return new JavaDate(v);
+    if (v == null) this.__t = Date.now();
+    else if (typeof v === 'number') this.__t = Math.floor(v);
+    else this.__t = Date.parse(String(v)) || Date.now();
+  }, 'java.util.Date');
+  JavaDate.prototype.getTime = function () { return this.__t; };
+  JavaDate.prototype.setTime = function (t) { this.__t = Math.floor(Number(t) || 0); };
+  JavaDate.prototype.before = function (o) {
+    return this.__t < (o && o.__t != null ? o.__t : 0);
+  };
+  JavaDate.prototype.after = function (o) {
+    return this.__t > (o && o.__t != null ? o.__t : 0);
+  };
+  JavaDate.prototype.toString = function () {
+    return new Date(this.__t).toISOString()
+        .replace('T', ' ').replace('Z', ' GMT');
+  };
+
+  // 仅支持数字字段组合（yyyy yy MM dd HH hh mm ss SSS），按 Java
+  // SimpleDateFormat 的字母连续段解析；引号段按字面量。
+  var JavaSimpleDateFormat = jmark(function SimpleDateFormat(pattern) {
+    if (!(this instanceof JavaSimpleDateFormat)) {
+      return new SimpleDateFormat(pattern);
+    }
+    this.__p = String(pattern == null ? '' : pattern);
+  }, 'java.text.SimpleDateFormat');
+  JavaSimpleDateFormat.prototype.format = function (v) {
+    var t = v instanceof JavaDate ? v.__t
+        : (typeof v === 'number' ? Math.floor(v) : Date.parse(String(v)) || Date.now());
+    var d = new Date(t);
+    var map = {
+      yyyy: d.getFullYear(),
+      yy: ('' + d.getFullYear()).substring(2),
+      MM: pad2(d.getMonth() + 1),
+      dd: pad2(d.getDate()),
+      HH: pad2(d.getHours()),
+      hh: pad2((d.getHours() % 12) === 0 ? 12 : d.getHours() % 12),
+      mm: pad2(d.getMinutes()),
+      ss: pad2(d.getSeconds()),
+      SSS: ('00' + d.getMilliseconds()).slice(-3),
+    };
+    var out = '';
+    var i = 0;
+    var p = this.__p;
+    while (i < p.length) {
+      var c = p.charAt(i);
+      if (c === "'") {
+        var end = p.indexOf("'", i + 1);
+        if (end < 0) { out += p.substring(i + 1); break; }
+        out += p.substring(i + 1, end);
+        i = end + 1;
+        continue;
+      }
+      var run = '';
+      while (i < p.length && p.charAt(i) === c) { run += c; i++; }
+      if (map[run] !== undefined) {
+        out += String(map[run]);
+      } else if (run.length === 1 && 'yMdHhmsS'.indexOf(c) >= 0) {
+        out += String(map[pad2KeyOf(c, run)]);
+      } else {
+        out += run;
+      }
+    }
+    return out;
+  };
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function pad2KeyOf(c, run) {
+    var names = { y: 'yyyy', M: 'MM', d: 'dd', H: 'HH', h: 'hh',
+      m: 'mm', s: 'ss', S: 'SSS' };
+    return names[c];
+  }
+
+  // ── javax.crypto.Mac（HMAC 实例，审计 R47）──
+  var JavaMac = jmark(function Mac() {}, 'javax.crypto.Mac');
+  JavaMac.getInstance = function (algo) {
+    var a = String(algo == null ? '' : algo);
+    var norm = a.toUpperCase().replace(/-/g, '');
+    if (norm.indexOf('HMAC') !== 0) {
+      throw new Error('NoSuchAlgorithmException: '
+          + 'Cannot find any provider supporting ' + a);
+    }
+    var keyBytes = null;
+    var mac = {
+      init: function (keySpec) {
+        var k = keySpec instanceof SecretKeySpec
+            ? keySpec.__k : juBytes(keySpec);
+        if (k == null) {
+          throw new Error('InvalidKeyException: no key');
+        }
+        keyBytes = k.map(function (x) { return x & 0xff; });
+        return null;
+      },
+      doFinal: function (data) {
+        if (keyBytes == null) {
+          throw new Error('InvalidKeyException: MAC not initialized');
+        }
+        var bytes = data == null ? [] : juBytes(data);
+        var out = hmacBytes(norm, keyBytes, bytes);
+        if (out == null) {
+          throw new Error('NoSuchAlgorithmException: '
+              + 'Cannot find any provider supporting ' + a);
+        }
+        return out.map(signedByte);
+      },
+      getAlgorithm: function () { return a; },
+      reset: function () { return null; },
+    };
+    return mac;
+  };
+
+  // ── java.net.URLEncoder / URLDecoder ──
+  var JavaURLEncoder = jmark(function URLEncoder() {}, 'java.net.URLEncoder');
+  JavaURLEncoder.encode = function (s, charset) {
+    var cs = String(charset == null ? 'UTF-8' : charset).toUpperCase();
+    if (cs !== 'UTF-8' && cs !== 'UTF8') {
+      throw new Error('UnsupportedEncodingException: ' + charset);
+    }
+    return encoderEncode(s);
+  };
+  var JavaURLDecoder = jmark(function URLDecoder() {}, 'java.net.URLDecoder');
+  JavaURLDecoder.decode = function (s, charset) {
+    var cs = String(charset == null ? 'UTF-8' : charset).toUpperCase();
+    if (cs !== 'UTF-8' && cs !== 'UTF8') {
+      throw new Error('UnsupportedEncodingException: ' + charset);
+    }
+    var src = String(s == null ? '' : s).replace(/\+/g, ' ');
+    try {
+      return decodeURIComponent(src);
+    } catch (_) {
+      // 非法 % 序列按字面量保留（与 Java URLDecoder 宽容路径一致）。
+      return src.replace(/%([0-9a-fA-F]{2})/g, function (m, h) {
+        try { return decodeURIComponent(m); } catch (_) { return m; }
+      });
+    }
+  };
+
   // ── 包树 ──
   var P_java_util_zip = jpkg({ GZIPInputStream: GZIPInputStream });
   var P_java_lang = jpkg({
@@ -6834,10 +7413,13 @@ const String javaExtensionsJsPrelude = r'''
     Thread: JavaThread,
     Class: JavaClass,
   });
+  var P_java_math = jpkg({ BigInteger: JavaBigInteger });
+  var P_java_text = jpkg({ SimpleDateFormat: JavaSimpleDateFormat });
   var P_java_util = jpkg({
     Base64: JavaBase64,
     Arrays: JavaArrays,
     UUID: JavaUUID,
+    Date: JavaDate,
     LinkedHashMap: JavaMap,
     HashMap: JavaMap,
     Map: JavaMap,
@@ -6861,13 +7443,17 @@ const String javaExtensionsJsPrelude = r'''
     Signature: JavaSignature,
     MessageDigest: JavaMessageDigest,
   }, { spec: P_java_security_spec });
-  var P_java_net = jpkg({ URL: JavaNetURL });
+  var P_java_net = jpkg({
+    URL: JavaNetURL,
+    URLEncoder: JavaURLEncoder,
+    URLDecoder: JavaURLDecoder,
+  });
   var P_javax_crypto_spec = jpkg({
     SecretKeySpec: SecretKeySpec,
     IvParameterSpec: IvParameterSpec,
     GCMParameterSpec: GCMParameterSpec,
   });
-  var P_javax_crypto = jpkg({ Cipher: Cipher },
+  var P_javax_crypto = jpkg({ Cipher: Cipher, Mac: JavaMac },
       { spec: P_javax_crypto_spec });
   var P_android_os = jpkg({ Build: AndroidBuild });
   var P_android_text = jpkg({ TextUtils: AndroidTextUtils });
@@ -6909,6 +7495,8 @@ const String javaExtensionsJsPrelude = r'''
     java: {
       lang: P_java_lang,
       util: P_java_util,
+      math: P_java_math,
+      text: P_java_text,
       io: P_java_io,
       security: P_java_security,
       net: P_java_net,

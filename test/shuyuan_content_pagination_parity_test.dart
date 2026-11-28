@@ -105,7 +105,8 @@ void main() {
     expect(_texts(blocks).last, '　　第31页');
   });
 
-  test('并发模式中间页失败令整章失败，但后续页仍被并发拉取（不截断）', () async {
+  test('并发模式 HTTP 错误状态页按空内容并入，后续页仍被并发拉取（不截断）',
+      () async {
     final requested = <String>[];
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((req) {
@@ -125,9 +126,13 @@ void main() {
       req.response.close();
     });
     final origin = 'http://${server.address.address}:${server.port}';
-    // md3 BookContent 并发分支用 mapAsync 展开，任一页异常（404/空 body!!）
-    // 直接令整章失败，不会静默跳过；同时页列表先整体展开，后续页不做前缀截断。
-    await expectLater(fetch('$origin/c1.html'), throwsA(anything));
+    // U11 对齐后：HTTP 错误状态是「响应」而非异常（legado OkHttpUtils
+    // 原样交规则层）——404 页贡献空内容，整章不失败；同时页列表先整体
+    // 展开，后续页不做前缀截断。mapAsync 的异常传播由
+    // web_book_content_pool_test 直接锁定（本机代理会对拒绝连接伪造
+    // 400 响应，无法在本地模拟网络级失败）。
+    final blocks = await fetch('$origin/c1.html');
+    expect(_texts(blocks), ['　　第一页', '　　第三页', '　　第四页']);
     expect(requested,
         containsAll(<String>['/c2.html', '/c3.html', '/c4.html']));
   });

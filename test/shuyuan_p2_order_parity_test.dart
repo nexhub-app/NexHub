@@ -203,16 +203,24 @@ void main() {
       expect(ctx.ajaxCache[key]!.startsWith('java'), isTrue);
     });
 
-    test('请求异常：缓存异常文本而非空串', () async {
+    test('请求异常：缓存异常文本而非空串（机器相关双口径）', () async {
       final source = _source();
       final ctx = ShuyuanSourceContext('src_e8_error');
-      // 本机特权端口无监听：连接立即被拒，不依赖外部网络。
+      // 期望「连接被拒 → 失败文本」，但结果与机器环境相关：有系统代理时
+      // 拒绝连接会被伪造为 400 空响应——U11 对齐后非 2xx（含空体）是
+      // 「响应」而非异常，缓存空串属正确口径；无代理时连接被拒走失败
+      // 文本（legado catch 后返回 e.stackTraceStr）。两种都必须是已定义
+      // 状态，不得抛出未缓存。
       const key = 'http://127.0.0.1:1/e8';
       ctx.ajaxPending.add(key);
       final fetched = await ShuyuanSourceContext.settleAjax(ctx, source);
       expect(fetched, 1);
-      expect(ctx.ajaxCache[key],
-          startsWith(ShuyuanSourceContext.ajaxFailurePrefix));
+      final cached = ctx.ajaxCache[key] ?? '';
+      expect(
+        cached.isEmpty || cached.startsWith(ShuyuanSourceContext.ajaxFailurePrefix),
+        isTrue,
+        reason: '缓存必须是空响应或失败文本之一，实际=[$cached]',
+      );
       expect(ctx.ajaxBytesCache.containsKey(key), isFalse);
     });
   });

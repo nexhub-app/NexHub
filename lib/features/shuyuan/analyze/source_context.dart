@@ -14,8 +14,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:archive/archive.dart';
 import 'package:fast_gbk/fast_gbk.dart';
+import 'package:koni_archive/io.dart';
 import 'package:meta/meta.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -24,6 +24,7 @@ import '../../../core/novel/reader_config_bridge.dart';
 import '../../../core/scraper/http_fetcher.dart';
 import '../../../core/utils/app_log.dart';
 import 'analyze_url.dart';
+import 'charset_registry.dart';
 import 'concurrent_rate_limiter.dart';
 import 'java_extensions.dart';
 import 'webview_fetcher.dart';
@@ -112,6 +113,13 @@ class ShuyuanSourceContext {
 
   /// source 变量（ShuyuanVariableStore 的内存镜像，排空时持久化）。
   final Map<String, String> sourceVars = {};
+
+  /// 请求级临时源变量（legado `BaseSource.setTemporaryVariable`，审计 M18）：
+  /// 首页模块 args 在进入发现请求前覆盖到这层、`getVariable()` 优先读它、
+  /// 请求结束由宿主恢复——不落持久源变量存储。键为 null 值的条目表示
+  /// 「屏蔽持久值」（legado 临时值为空串时 getVariable 返回空串）。
+  final Map<String, String> temporaryVars = {};
+  Map<String, String>? _temporaryVarsBackup;
 
   /// book 变量（XiaoshuoBook.variableMap 的镜像，按当前书回写）。
   final Map<String, String> bookVars = {};
@@ -245,6 +253,11 @@ class ShuyuanSourceContext {
   /// 目录抓取前的 preUpdateJs 请求重新解析详情页以更新 tocUrl
   /// （legado AnalyzeRule.refreshTocUrl；目录地址定期更新的源依赖）。
   bool bookInfoRefreshRequested = false;
+
+  /// `java.reGetBook()`（审计 T3）：preUpdateJs 内按书名/作者重新精确搜索
+  /// 并改写 bookUrl 后重取详情。payload 携带脚本视角的书名/作者。
+  bool reGetBookRequested = false;
+  Map<String, dynamic>? reGetBookArgs;
 
   /// 发现页选项 action 请求复制文本（java.copyText）。
   final List<String> copiedTexts = <String>[];
@@ -461,10 +474,29 @@ class ShuyuanSourceContext {
 
   // ── 种子：注入 JS 的快照（必须深拷贝——若传活引用，JS 直改原表，
   // 排空 diff 恒为零差异，dirty/持久化标志永不触发） ──
+  /// 进入作用域：备份并覆盖临时源变量（审计 M18 的「进入请求前设置」）。
+  void beginTemporaryVars(Map<String, String> vars) {
+    _temporaryVarsBackup ??= Map<String, String>.from(temporaryVars);
+    temporaryVars
+      ..clear()
+      ..addAll(vars);
+  }
+
+  /// 离开作用域：恢复进入前的临时源变量（finally 恢复，不写持久存储）。
+  void endTemporaryVars() {
+    final backup = _temporaryVarsBackup;
+    if (backup == null) return;
+    temporaryVars
+      ..clear()
+      ..addAll(backup);
+    _temporaryVarsBackup = null;
+  }
+
   Map<String, dynamic> toSeed() => <String, dynamic>{
         'sourceId': sourceId,
         'sourceKey': bookSourceUrl.isNotEmpty ? bookSourceUrl : sourceId,
         'sourceVars': Map<String, String>.from(sourceVars),
+        'temporaryVars': Map<String, String>.from(temporaryVars),
         'sourceMeta': Map<String, dynamic>.from(sourceMeta),
         'bookVars': Map<String, String>.from(bookVars),
         'bookInfo': Map<String, String>.from(bookInfo),
@@ -643,6 +675,17 @@ class ShuyuanSourceContext {
           kindRefreshRequested = true;
         case 'refreshTocUrl':
           bookInfoRefreshRequested = true;
+        case 'reGetBook':
+          // preUpdateJs 专属：宿主按书名/作者精确搜索改写 bookUrl 后重取详情。
+          // 非目录阶段的调用无人消费（legado 直接抛 IllegalStateException，
+          // 沙箱侧无法回溯已完成的脚本，按无害 no-op 记录偏差）。
+          reGetBookRequested = true;
+          try {
+            final decoded = jsonDecode(a);
+            if (decoded is Map<String, dynamic>) reGetBookArgs = decoded;
+          } catch (_) {
+            reGetBookArgs = null;
+          }
         case 'initUrl':
           initUrlRequested = true;
         case 'copyText':
@@ -1352,7 +1395,7 @@ class ShuyuanSourceContext {
     ctx.ajaxBytesPending.clear();
     // 文件/归档族本地运算（解压/取包内条目/文本解码）：纯本地同步，
     // 不占网络预算；计入 fetched 让调用方的重放循环继续一轮。
-    fetched += _settleFileOps(ctx);
+    fetched += await _settleFileOps(ctx);
     return fetched;
   }
 
@@ -1381,13 +1424,13 @@ class ShuyuanSourceContext {
         '\tat io.legado.app.model.analyzeRule.AnalyzeUrl.getStrResponseAwait(AnalyzeUrl.kt)';
   }
 
-  static int _settleFileOps(ShuyuanSourceContext ctx) {
+  static Future<int> _settleFileOps(ShuyuanSourceContext ctx) async {
     if (ctx.fileOpPending.isEmpty) return 0;
     final keys = List<String>.from(ctx.fileOpPending);
     ctx.fileOpPending.clear();
     for (final key in keys) {
       final raw = ctx.fileOpArgs.remove(key) ?? '';
-      ctx.fileOpResults[key] = _runFileOp(key, raw);
+      ctx.fileOpResults[key] = await _runFileOp(key, raw);
     }
     return keys.length;
   }
@@ -1403,40 +1446,36 @@ class ShuyuanSourceContext {
     return _textExtensions.contains(name.substring(dot + 1).toLowerCase());
   }
 
-  /// 文本解码（legado readTxtFile/EncodingDetect 的实用近似）：显式 GBK 系
-  /// → GBK；显式其他 → UTF-8 容错；未显式 → 严格 UTF-8 成功即用，失败回落
-  /// GBK，再失败按 UTF-8 容错（替换不可解码字节，不抛错）。
+  /// 文本解码（审计 R40）：显式声明 charset → 与请求编码（U13）共用
+  /// [ShuyuanCharset] 注册表（GBK/Big5/Shift-JIS 缺位的 latin/cp/koi8 系
+  /// 都能正确解码；未知标签显式抛错，不再静默按 UTF-8 解出乱码）；未声明
+  /// → 严格 UTF-8 成功即用，失败回落 GBK，再失败按 UTF-8 容错。
   static String _decodeTextFile(List<int> bytes, String? charsetName) {
-    final lower = (charsetName ?? '').toLowerCase().replaceAll('_', '-');
-    if (lower == 'gbk' ||
-        lower == 'gb-2312' ||
-        lower == 'gb2312' ||
-        lower == 'gb18030') {
+    final label = (charsetName ?? '').trim();
+    if (label.isEmpty) {
       try {
-        return gbk.decode(bytes);
-      } catch (_) {}
-      return utf8.decode(bytes, allowMalformed: true);
-    }
-    if (lower.isNotEmpty && lower != 'utf-8' && lower != 'utf8') {
-      return utf8.decode(bytes, allowMalformed: true);
-    }
-    try {
-      return utf8.decode(bytes);
-    } on FormatException {
-      try {
-        return gbk.decode(bytes);
-      } catch (_) {
-        return utf8.decode(bytes, allowMalformed: true);
+        return utf8.decode(bytes);
+      } on FormatException {
+        try {
+          return gbk.decode(bytes);
+        } catch (_) {
+          return utf8.decode(bytes, allowMalformed: true);
+        }
       }
     }
+    return ShuyuanCharset.decode(bytes, label);
   }
 
   /// 执行一条文件族运算。键前缀约定：
-  /// - `uz:<folder>:<contentHash>`：载荷 `[zipBase64]` → `{条目名: {b,t}}`；
-  /// - `zc:<contentHash>:<entry>|<charset>`：载荷 `[zipBase64, entry, charset]`
+  /// - `uz:<folder>:<contentHash>`：载荷 `[归档Base64]` → `{条目名: {b,t}}`；
+  /// - `zc:<contentHash>:<entry>|<charset>`：载荷 `[归档Base64, entry, charset]`
   ///   → `{b,t}`（未命中条目 → `{}`）；
   /// - `tx:<contentHash>|<charset>`：载荷 `[bytesBase64, charset]` → `{t}`。
-  static String _runFileOp(String key, String raw) {
+  ///
+  /// 归档解压走 [koni_archive]（审计 R40：unrar/un7z 此前是 zip 别名，
+  /// RAR/7z 载荷静默返回空；koni 纯 Dart 支持 ZIP/TAR/7z/RAR 含 RAR5），
+  /// 格式按内容自动识别。
+  static Future<String> _runFileOp(String key, String raw) async {
     var payload = const <dynamic>[];
     try {
       final decoded = jsonDecode(raw);
@@ -1445,33 +1484,34 @@ class ShuyuanSourceContext {
     String arg(int i) =>
         i < payload.length ? '${payload[i] ?? ''}' : '';
     try {
-      if (key.startsWith('uz:')) {
+      if (key.startsWith('uz:') || key.startsWith('zc:')) {
         final bytes = base64Decode(arg(0));
-        final archive = ZipDecoder().decodeBytes(bytes, verify: false);
-        final entries = <String, Map<String, String>>{};
-        for (final f in archive) {
-          if (!f.isFile) continue;
-          final data = f.content as List<int>;
-          entries[f.name] = <String, String>{
-            'b': base64Encode(data),
-            if (_looksLikeText(f.name)) 't': _decodeTextFile(data, null),
-          };
+        final archive = await Archive.openBytes(bytes);
+        try {
+          if (key.startsWith('uz:')) {
+            final entries = <String, Map<String, String>>{};
+            for (final f in archive.files) {
+              final data = await archive.readBytes(f);
+              entries[f.path] = <String, String>{
+                'b': base64Encode(data),
+                if (_looksLikeText(f.path)) 't': _decodeTextFile(data, null),
+              };
+            }
+            return jsonEncode(entries);
+          }
+          final entry = arg(1);
+          for (final f in archive.files) {
+            if (f.path != entry) continue;
+            final data = await archive.readBytes(f);
+            return jsonEncode(<String, String>{
+              'b': base64Encode(data),
+              't': _decodeTextFile(data, arg(2)),
+            });
+          }
+          return '{}';
+        } finally {
+          await archive.close();
         }
-        return jsonEncode(entries);
-      }
-      if (key.startsWith('zc:')) {
-        final bytes = base64Decode(arg(0));
-        final entry = arg(1);
-        final archive = ZipDecoder().decodeBytes(bytes, verify: false);
-        for (final f in archive) {
-          if (!f.isFile || f.name != entry) continue;
-          final data = f.content as List<int>;
-          return jsonEncode(<String, String>{
-            'b': base64Encode(data),
-            't': _decodeTextFile(data, arg(2)),
-          });
-        }
-        return '{}';
       }
       if (key.startsWith('tx:')) {
         final bytes = base64Decode(arg(0));

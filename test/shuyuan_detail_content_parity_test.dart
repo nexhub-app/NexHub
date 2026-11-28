@@ -420,16 +420,11 @@ void main() {
       expect(result.lyric, isNull);
     });
 
-    test('并发正文分页失败令整章失败（legado mapAsync 不静默丢页）', () async {
+    test('并发正文分页 HTTP 错误状态页按空内容并入（U11：非异常）', () async {
       final paths = <String>[];
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       server.listen((req) {
         paths.add(req.uri.path);
-        if (req.uri.path == '/b3.html') {
-          req.response.statusCode = 500;
-          req.response.close();
-          return;
-        }
         final body = switch (req.uri.path) {
           '/b1.html' => '<div id="c">第一页</div>'
               '<a class="n" href="/b2.html">N</a>'
@@ -450,14 +445,17 @@ void main() {
         'content': '#c@html',
         'nextContentUrl': 'a.n@href',
       });
-      await expectLater(
-        WebBook().getContent(
-          source: source,
-          chapterUrl: '$origin/b1.html',
-          originalBook: _book('$origin/book.html'),
-        ),
-        throwsA(anything),
+      // U11 对齐后：HTTP 错误状态是「响应」而非异常（legado OkHttpUtils
+      // 原样交规则层）——b3 为 404 空页贡献空内容，整章不失败。mapAsync
+      // 的异常传播由 web_book_content_pool_test 直接锁定。
+      final result = await WebBook().getContent(
+        source: source,
+        chapterUrl: '$origin/b1.html',
+        originalBook: _book('$origin/book.html'),
       );
+      final text = result.content;
+      expect(text, contains('第一页'));
+      expect(text, contains('第二页'));
       expect(paths, containsAll(<String>['/b1.html', '/b2.html', '/b3.html']));
     });
   });

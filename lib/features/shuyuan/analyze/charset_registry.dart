@@ -174,6 +174,92 @@ class ShuyuanCharset {
     }
   }
 
+  /// 按标签解码字节；未知标签抛 [ShuyuanUnsupportedCharsetException]
+  /// （审计 R40：文件读取此前只认 GBK 系，其余声明静默按 UTF-8 容错解出
+  /// 乱码——与请求编码（U13）共用同一注册表后，声明即生效）。
+  ///
+  /// 解码对非法字节序列容错（Java `new String(bytes, cs)` 以 U+FFFD 替换
+  /// 非法输入而非抛错）；GB18030 仍按 GBK 子集近似（与 encode 同一口径）。
+  static String decode(List<int> bytes, String? label) {
+    final cs = normalize(label);
+    if (cs == null || cs == 'utf-8') {
+      return utf8.decode(bytes, allowMalformed: true);
+    }
+    switch (cs) {
+      case 'us-ascii':
+        // ASCII 解码：>0x7F 按 U+FFFD 替换（Java US_ASCII 解码器口径）。
+        return ascii.decode(bytes, allowInvalid: true);
+      case 'gbk':
+      case 'gb18030':
+        return gbk.decode(bytes);
+      case 'big5':
+        return const Big5Codec(allowInvalid: true).decode(bytes);
+      case 'iso-8859-1':
+        return latin1.decode(bytes, allowInvalid: true);
+      case 'iso-8859-2':
+        return const Latin2Codec(allowInvalid: true).decode(bytes);
+      case 'iso-8859-3':
+        return const Latin3Codec(allowInvalid: true).decode(bytes);
+      case 'iso-8859-4':
+        return const Latin4Codec(allowInvalid: true).decode(bytes);
+      case 'iso-8859-9':
+        return const Latin5Codec(allowInvalid: true).decode(bytes);
+      case 'iso-8859-10':
+        return const Latin6Codec(allowInvalid: true).decode(bytes);
+      case 'iso-8859-13':
+        return const Latin7Codec(allowInvalid: true).decode(bytes);
+      case 'iso-8859-14':
+        return const Latin8Codec(allowInvalid: true).decode(bytes);
+      case 'iso-8859-15':
+        return const Latin9Codec(allowInvalid: true).decode(bytes);
+      case 'iso-8859-16':
+        return const Latin10Codec(allowInvalid: true).decode(bytes);
+      case 'windows-1250':
+        return const Windows1250Codec(allowInvalid: true).decode(bytes);
+      case 'windows-1251':
+        return const Windows1251Codec(allowInvalid: true).decode(bytes);
+      case 'windows-1252':
+        return const Windows1252Codec(allowInvalid: true).decode(bytes);
+      case 'windows-1253':
+        return const Windows1253Codec(allowInvalid: true).decode(bytes);
+      case 'windows-1254':
+        return const Windows1254Codec(allowInvalid: true).decode(bytes);
+      case 'windows-1255':
+        return const Windows1255Codec(allowInvalid: true).decode(bytes);
+      case 'windows-1256':
+        return const Windows1256Codec(allowInvalid: true).decode(bytes);
+      case 'koi8-r':
+        return const Koi8rCodec(allowInvalid: true).decode(bytes);
+      case 'koi8-u':
+        return const Koi8uCodec(allowInvalid: true).decode(bytes);
+      case 'utf-16':
+      case 'utf-16le':
+        return _utf16Decode(bytes, littleEndian: true);
+      case 'utf-16be':
+        return _utf16Decode(bytes, littleEndian: false);
+    }
+    throw ShuyuanUnsupportedCharsetException(label ?? cs);
+  }
+
+  static String _utf16Decode(List<int> bytes, {required bool littleEndian}) {
+    var start = 0;
+    // BOM 优先决定端序（与 Java `new String(bytes, UTF_16)` 一致）。
+    if (bytes.length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF) {
+      littleEndian = false;
+      start = 2;
+    } else if (bytes.length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE) {
+      littleEndian = true;
+      start = 2;
+    }
+    final out = StringBuffer();
+    for (var i = start; i + 1 < bytes.length; i += 2) {
+      final hi = littleEndian ? bytes[i] : bytes[i + 1];
+      final lo = littleEndian ? bytes[i + 1] : bytes[i];
+      out.writeCharCode(((hi & 0xff) << 8) | (lo & 0xff));
+    }
+    return out.toString();
+  }
+
   static List<int> _utf16Bytes(
     String value, {
     required bool littleEndian,

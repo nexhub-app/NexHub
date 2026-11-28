@@ -261,7 +261,11 @@ class ShuyuanLoginForm extends StatefulWidget {
 
   final List<ShuyuanLoginRow> rows;
   final Map<String, String> values;
-  final Future<void> Function(ShuyuanLoginRow row)? onAction;
+
+  /// 行动作回调（legado `runRowAction`）：[isLongClick] 透传给脚本的
+  /// `isLongClick` 绑定（按钮行长按为 true）。
+  final Future<void> Function(ShuyuanLoginRow row, bool isLongClick)?
+      onAction;
 
   @override
   State<ShuyuanLoginForm> createState() => _ShuyuanLoginFormState();
@@ -270,6 +274,11 @@ class ShuyuanLoginForm extends StatefulWidget {
 class _ShuyuanLoginFormState extends State<ShuyuanLoginForm> {
   final Map<String, TextEditingController> _controllers =
       <String, TextEditingController>{};
+  final Map<String, FocusNode> _focusNodes = <String, FocusNode>{};
+  final Set<String> _focusWired = <String>{};
+
+  /// 文本行获得焦点时的值：失焦时对比决定是否提交（有改动才触发 action）。
+  final Map<String, String> _focusEnterValues = <String, String>{};
 
   @override
   void initState() {
@@ -322,8 +331,10 @@ class _ShuyuanLoginFormState extends State<ShuyuanLoginForm> {
   Widget _buildRow(BuildContext context, ShuyuanLoginRow row) {
     final current = widget.values[row.name] ?? '';
     if (row.type == 'button') {
+      // legado（审计 U28）：按钮行支持长按——action 以 isLongClick=true 执行。
       return FilledButton.tonal(
-        onPressed: () => widget.onAction?.call(row),
+        onPressed: () => widget.onAction?.call(row, false),
+        onLongPress: () => widget.onAction?.call(row, true),
         child: Text(row.title),
       );
     }
@@ -335,8 +346,9 @@ class _ShuyuanLoginFormState extends State<ShuyuanLoginForm> {
         onPressed: () {
           final next = shuyuanLoginToggleNext(current, row.chars);
           setState(() => widget.values[row.name] = next);
-          widget.onAction?.call(row);
+          widget.onAction?.call(row, false);
         },
+        onLongPress: () => widget.onAction?.call(row, true),
         child: Text(text, overflow: TextOverflow.ellipsis),
       );
     }
@@ -347,7 +359,7 @@ class _ShuyuanLoginFormState extends State<ShuyuanLoginForm> {
         onSelected: (value) {
           if (value == current) return;
           setState(() => widget.values[row.name] = value);
-          widget.onAction?.call(row);
+          widget.onAction?.call(row, false);
         },
         itemBuilder: (_) => <PopupMenuEntry<String>>[
           for (final option in options)
@@ -376,11 +388,29 @@ class _ShuyuanLoginFormState extends State<ShuyuanLoginForm> {
     }
     final controller = _controllers[row.name];
     if (controller == null) return const SizedBox.shrink();
+    // legado（审计 U28）：文本行在「失焦且内容有改动」时也提交 action
+    //（SourceLoginSheets 的 onFocusChanged → ValueCommitted），不只回车。
+    // Focus 的 onFocusChanged 在 material_ui fork 缺失，用 FocusNode 监听等价实现。
+    final node = _focusNodes.putIfAbsent(row.name, FocusNode.new);
+    if (!_focusWired.contains(row.name)) {
+      _focusWired.add(row.name);
+      node.addListener(() {
+        if (node.hasFocus) {
+          _focusEnterValues[row.name] = controller.text;
+          return;
+        }
+        final entered = _focusEnterValues[row.name];
+        if (entered != null && controller.text != entered) {
+          widget.onAction?.call(row, false);
+        }
+      });
+    }
     return TextField(
       controller: controller,
+      focusNode: node,
       obscureText: row.type == 'password',
       onChanged: (value) => widget.values[row.name] = value,
-      onSubmitted: (_) => widget.onAction?.call(row),
+      onSubmitted: (_) => widget.onAction?.call(row, false),
       decoration: InputDecoration(isDense: true, labelText: row.title),
     );
   }
@@ -569,7 +599,7 @@ Future<void> _runFormLogin(
               ShuyuanLoginForm(
                 rows: rows,
                 values: values,
-                onAction: (row) => _runRowAction(
+                onAction: (row, isLongClick) => _runRowAction(
                   context,
                   ctx,
                   engine,
@@ -578,6 +608,7 @@ Future<void> _runFormLogin(
                   js,
                   row,
                   values,
+                  isLongClick: isLongClick,
                 ),
               ),
             ],
@@ -643,7 +674,8 @@ Future<void> _runFormLogin(
 
 /// 执行 loginUi 行 action（legado `SourceLoginViewModel.runRowAction`）：
 /// http(s) 绝对地址 → 系统浏览器打开；否则执行 `loginJs + "\n" + action`，
-/// 绑定 result（当前表单值）与 isLongClick，脚本内 java.ajax 走 mini-settle。
+/// 绑定 result（当前表单值）与 isLongClick（[isLongClick] 来自按钮行长按），
+/// 脚本内 java.ajax 走 mini-settle。
 Future<void> _runRowAction(
   BuildContext context,
   ShuyuanSourceContext ctx,
@@ -652,8 +684,9 @@ Future<void> _runRowAction(
   PluginConfig source,
   String loginJs,
   ShuyuanLoginRow row,
-  Map<String, String> values,
-) async {
+  Map<String, String> values, {
+  bool isLongClick = false,
+}) async {
   final action = row.action?.trim();
   if (action == null || action.isEmpty) return;
   // legado isAbsUrl 仅认 http(s)：绝对地址交给系统浏览器。
@@ -674,7 +707,7 @@ Future<void> _runRowAction(
     script,
     bindings: <String, dynamic>{
       'result': Map<String, String>.from(values),
-      'isLongClick': false,
+      'isLongClick': isLongClick,
     },
   );
   await ctx.persistIfNeeded();

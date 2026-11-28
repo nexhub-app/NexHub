@@ -3,6 +3,8 @@ library;
 
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart';
+
 class XiaoshuoBookChapter {
   String bookUrl;
   String url;
@@ -34,11 +36,22 @@ class XiaoshuoBookChapter {
   /// 章节真实资源地址（音频/文件类书源；legado `BookChapter.resourceUrl`）。
   String? resourceUrl;
 
+  /// 标题 MD5 前 16 位（legado `BookChapter.titleMD5`：`MD5Utils
+  /// .md5Encode16(title)`，getFileName 用；脚本可显式覆写）。
+  String? titleMD5;
+
   /// 正文在源文件中的起止偏移（EPUB/本地文件续读定位）。
   int start;
   int end;
   String? startFragmentId;
   String? endFragmentId;
+
+  /// 惰性派生的标题 MD5（legado getTitleMD5 口径：title MD5 hex 截 [8,24)）。
+  String effectiveTitleMD5() {
+    final stored = titleMD5;
+    if (stored != null && stored.isNotEmpty) return stored;
+    return md5.convert(utf8.encode(title)).toString().substring(8, 24);
+  }
 
   XiaoshuoBookChapter({
     required this.bookUrl,
@@ -55,6 +68,7 @@ class XiaoshuoBookChapter {
     this.variable,
     this.tocLevel = 0,
     this.resourceUrl,
+    this.titleMD5,
     this.start = 0,
     this.end = 0,
     this.startFragmentId,
@@ -77,6 +91,7 @@ class XiaoshuoBookChapter {
       variable: json['variable'] as String?,
       tocLevel: json['tocLevel'] as int? ?? 0,
       resourceUrl: json['resourceUrl'] as String?,
+      titleMD5: json['titleMD5'] as String?,
       start: json['start'] as int? ?? 0,
       end: json['end'] as int? ?? 0,
       startFragmentId: json['startFragmentId'] as String?,
@@ -102,6 +117,7 @@ class XiaoshuoBookChapter {
         if (variable != null) 'variable': variable,
         if (tocLevel != 0) 'tocLevel': tocLevel,
         if (resourceUrl != null) 'resourceUrl': resourceUrl,
+        if (titleMD5 != null) 'titleMD5': titleMD5,
         if (start != 0) 'start': start,
         if (end != 0) 'end': end,
         if (startFragmentId != null) 'startFragmentId': startFragmentId,

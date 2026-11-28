@@ -14,21 +14,30 @@
 /// - 分块宽度同 legado AsymmetricCrypto：加密 k-11 / k-2h-2 / k，解密 k。
 library;
 
+import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:pointycastle/api.dart';
+import 'package:pointycastle/asymmetric/api.dart';
 import 'package:pointycastle/digests/sha1.dart';
 import 'package:pointycastle/digests/sha224.dart';
 import 'package:pointycastle/digests/sha256.dart';
 import 'package:pointycastle/digests/sha384.dart';
 import 'package:pointycastle/digests/sha512.dart';
+import 'package:pointycastle/key_generators/api.dart';
+import 'package:pointycastle/key_generators/rsa_key_generator.dart';
+import 'package:pointycastle/random/fortuna_random.dart';
 
 class AsymmetricCryptoHost {
   static final Random _random = Random.secure();
 
+  /// 自动生成密钥的位数。Java 无 `initialize()` 时的提供者默认即 2048
+  /// （Conscrypt），脚本侧的自动密钥是临时协商用途，与之一致。
+  static const int _generatedKeySize = 2048;
+
   /// [op] 字段：`t` 变换名、`o` encrypt/decrypt、`u` 1=用公钥、
-  /// `n/e/d/p/q` 密钥参数 hex、`data` 输入 hex。
+  /// `n/e/d/p/q` 密钥参数 hex、`data` 输入 hex；`gen=1` 为密钥对生成。
   ///
   /// 返回 `{'v': 输出 hex}` 或 `{'e': 异常文本}`；脚本重放时按 `e` 抛出，
   /// 供 try/catch 感知与 JCE 同名的异常语义。
@@ -43,6 +52,8 @@ class AsymmetricCryptoHost {
   }
 
   static Uint8List _execute(Map<String, dynamic> op) {
+    // genkey：生成密钥对，分量以 JSON{n,e,d,p,q}（hex 文本）回填 JS 缓存。
+    if (op['gen']?.toString() == '1') return _generateKeyPair();
     final transform = (op['t']?.toString() ?? '').trim();
     final name = transform.isEmpty ? 'RSA' : transform;
     final parts = name.toUpperCase().split('/');
@@ -300,6 +311,46 @@ class AsymmetricCryptoHost {
   static BigInt _bigFromBytes(Uint8List bytes) {
     if (bytes.isEmpty) return BigInt.zero;
     return BigInt.parse(_hex(bytes), radix: 16);
+  }
+
+  /// 大整数 → 最小字节序列（去除前导零，供密钥分量回填 JS 侧）。
+  static Uint8List _bigToBytes(BigInt value) {
+    if (value <= BigInt.zero) return Uint8List(1);
+    var x = value;
+    final out = <int>[];
+    final mask = BigInt.from(0xff);
+    while (x > BigInt.zero) {
+      out.insert(0, (x & mask).toInt());
+      x = x >> 8;
+    }
+    return Uint8List.fromList(out);
+  }
+
+  /// 生成 RSA 密钥对（审计 R38：legado 构造即 KeyPairGenerator
+  /// .generateKeyPair()）。输出 JSON `{n,e,d,p,q}`（hex 文本），JS 侧
+  /// 还原为字节分量并派生 X.509/PKCS#1 encoded。
+  static Uint8List _generateKeyPair() {
+    final seed =
+        Uint8List.fromList(List.generate(32, (_) => _random.nextInt(256)));
+    final secureRandom = FortunaRandom()..seed(KeyParameter(seed));
+    final gen = RSAKeyGenerator()
+      ..init(ParametersWithRandom(
+        RSAKeyGeneratorParameters(
+            BigInt.from(0x10001), _generatedKeySize, 64),
+        secureRandom,
+      ));
+    final pair = gen.generateKeyPair();
+    final pub = pair.publicKey as RSAPublicKey;
+    final priv = pair.privateKey as RSAPrivateKey;
+    String hexOf(BigInt? v) => _hex(_bigToBytes(v ?? BigInt.zero));
+    final json = jsonEncode(<String, String>{
+      'n': hexOf(pub.modulus),
+      'e': hexOf(pub.exponent),
+      'd': hexOf(priv.privateExponent),
+      'p': hexOf(priv.p),
+      'q': hexOf(priv.q),
+    });
+    return Uint8List.fromList(utf8.encode(json));
   }
 
   static Uint8List _fixedBytes(BigInt value, int len) {

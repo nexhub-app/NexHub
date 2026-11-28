@@ -7,6 +7,7 @@ import 'package:html/parser.dart' as html_parser;
 import 'rule_analyzer.dart';
 import 'source_rule.dart';
 import 'string_utils.dart';
+import 'xml_dom.dart';
 
 class AnalyzeByJsoup {
   dynamic content;
@@ -30,6 +31,14 @@ class AnalyzeByJsoup {
       return AnalyzeByJsoup._(content, root, content.body ?? root);
     }
     if (content is String) {
+      // legado AnalyzeByJSoup.parse（审计 R26）：`<?xml` 开头（原文判定，
+      // 不 trim）走 xmlParser——标签/属性大小写保留、CDATA/自闭合/命名
+      // 空间前缀按 XML 语义；xmlParser 解析失败回落 HTML（runCatching）。
+      final xmlDoc = tryParseXmlDocument(content);
+      if (xmlDoc != null) {
+        final root = xmlDocumentRootElement(xmlDoc)!;
+        return AnalyzeByJsoup._(content, root, xmlDoc.body ?? root);
+      }
       final document = html_parser.parse(content);
       final root = document.documentElement!;
       return AnalyzeByJsoup._(content, root, document.body ?? root);
@@ -290,8 +299,10 @@ class AnalyzeByJsoup {
   }
 
   /// 元素自身是否命中 CSS 选择器（jsoup `Element.select` 含自身，
-  /// package:html `querySelectorAll` 不含）。借父节点查询后按身份比对，
-  /// 无父节点（解析根）时无从判断，按不命中处理。
+  /// package:html `querySelectorAll` 不含）。借父节点查询后按身份比对；
+  /// 解析根（父节点是 Document，`Node.parent` 只认元素父节点故为 null）
+  /// 时借**文档级**查询比对——legado 的 select 从 jsoup Document 发起，
+  /// 根元素自身可命中（HTML 的 `<html>` 根、XML 的业务根均适用）。
   static bool _matchesSelf(Element el, String selector) {
     final s = selector.trim();
     if (s.isEmpty) return false;
@@ -299,12 +310,29 @@ class AnalyzeByJsoup {
       return _matchesSelector(el, s);
     }
     final parent = el.parent;
-    if (parent == null) return false;
+    if (parent != null) {
+      try {
+        return parent.querySelectorAll(s).any((e) => identical(e, el));
+      } catch (_) {
+        return false;
+      }
+    }
+    final doc = _ownerDocument(el);
+    if (doc == null) return false;
     try {
-      return parent.querySelectorAll(s).any((e) => identical(e, el));
+      return doc.querySelectorAll(s).any((e) => identical(e, el));
     } catch (_) {
       return false;
     }
+  }
+
+  /// 向上取元素所属 Document（游离节点返回 null）。
+  static Document? _ownerDocument(Element el) {
+    Node? cur = el.parentNode;
+    while (cur != null && cur is! Document) {
+      cur = cur.parentNode;
+    }
+    return cur is Document ? cur : null;
   }
 
   /// 给选择器中「无引号属性值」补引号：

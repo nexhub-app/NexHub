@@ -140,12 +140,19 @@ class AnalyzeByJson {
       }
       out.write(rule.substring(i, open));
       final v = _resolvePath(rule.substring(open + 1, end - 1));
-      replaced = true;
-      if (v is List) {
-        out.write(v.map((e) => e.toString()).join('\n'));
-      } else if (v != null) {
-        out.write(v.toString());
+      // legado innerRule（RuleAnalyzer.kt:308-337）：内层求值成功（非空）
+      // 才替换；失败时占位符按字面量保留，从 `{$.` 标记之后继续找下一个
+      // 占位符——不得静默替换成空串（审计 R34）。
+      final text = v is List
+          ? v.map((e) => e.toString()).join('\n')
+          : v?.toString() ?? '';
+      if (text.isEmpty) {
+        out.write(rule.substring(open, open + 3));
+        i = open + 3;
+        continue;
       }
+      out.write(text);
+      replaced = true;
       i = end;
     }
     return replaced ? out.toString() : null;
@@ -223,8 +230,11 @@ class AnalyzeByJson {
     }
     final result = _resolvePath(rules.isEmpty ? rule : rules[0]);
     if (result == null) return [];
+    // legado：单段强制 `read<ArrayList<Any>>`——定路标量/Map 映射失败被
+    // catch 后落空列表，**不包装成单项**（审计 R34）。多段合并路径在
+    // 上方已按 List 逐段处理。
     if (result is List) return result;
-    return [result];
+    return [];
   }
 
   dynamic getObject(String rule) {
@@ -237,12 +247,19 @@ class AnalyzeByJson {
     if (data == null) return null;
 
     final tokens = _tokenize(path);
+    if (tokens == null) return null;
     if (tokens.isEmpty) return data;
     return _navigate(data, tokens);
   }
 
-  /// 路径分词：`.field`、`['key']`、`["key"]`、`[index]`、`[*]`、`..`（深扫）。
-  static List<_JsonPathToken> _tokenize(String path) {
+  /// 路径分词：`.field`、`['key']`、`["key"]`、`[index]`、`[*]`、`[a,b]`
+  /// （并集）、`..`（深扫）。
+  ///
+  /// 返回 null 表示遇到无法识别的语法（顶层 `@`/`,`、括号不闭合等）：
+  /// legado 走 jayway 会直接抛异常 → 调用方 catch 后得空结果；这里同样
+  /// 不得按已知前缀静默部分求值（审计 R34：部分解析产出的是错误数据，
+  /// 与「空结果」可被规则层区分）。
+  static List<_JsonPathToken>? _tokenize(String path) {
     final tokens = <_JsonPathToken>[];
     var i = 0;
     final s = path;
@@ -260,7 +277,7 @@ class AnalyzeByJson {
         }
       } else if (c == '[') {
         final end = _findBracketEnd(s, i);
-        if (end < 0) break;
+        if (end < 0) return null;
         var inner = s.substring(i + 1, end).trim();
         // 过滤器 [?(@.a==1)]：剥掉 ?( ) 外壳，保留表达式（求值期对当前
         // 列表逐项判定）。
@@ -281,22 +298,31 @@ class AnalyzeByJson {
           tokens.add(_JsonPathToken(_JsonTokenType.slice, inner));
         } else if (inner == '*' || inner.isEmpty) {
           tokens.add(const _JsonPathToken(_JsonTokenType.wildcard, ''));
-        } else if ((inner.startsWith("'") && inner.endsWith("'")) ||
-            (inner.startsWith('"') && inner.endsWith('"'))) {
-          tokens.add(_JsonPathToken(
-              _JsonTokenType.key, inner.substring(1, inner.length - 1)));
         } else {
-          final idx = int.tryParse(inner);
-          if (idx != null) {
-            tokens.add(_JsonPathToken(_JsonTokenType.arrayIndex, inner));
+          // 并集 [0,2] / ['a','b'] / [0,'b']（jayway union，保序）。
+          // 注意在「带引号键」判定之前：`['a','b']` 整体也满足首尾引号，
+          // 但顶层逗号表明它是并集（引号内逗号不会误切）。
+          final union = _parseUnion(inner);
+          if (union != null) {
+            tokens.add(_JsonPathToken(_JsonTokenType.union, inner, union));
+          } else if ((inner.startsWith("'") && inner.endsWith("'")) ||
+              (inner.startsWith('"') && inner.endsWith('"'))) {
+            tokens.add(_JsonPathToken(
+                _JsonTokenType.key, inner.substring(1, inner.length - 1)));
           } else {
-            tokens.add(_JsonPathToken(_JsonTokenType.key, inner));
+            final idx = int.tryParse(inner);
+            if (idx != null) {
+              tokens.add(_JsonPathToken(_JsonTokenType.arrayIndex, inner));
+            } else {
+              tokens.add(_JsonPathToken(_JsonTokenType.key, inner));
+            }
           }
         }
         i = end + 1;
       } else if (c == '@' || c == ',') {
-        // 过滤器表达式（[?(@...)]）等不支持的语法：终止分词，按已知前缀求值。
-        break;
+        // 顶层 `@`/`,`：jayway 不支持（`@` 只存在于过滤器内）→ 抛异常得
+        // 空结果。这里同样终止并视为不支持，不按前缀部分求值。
+        return null;
       } else {
         var j = i;
         while (j < s.length && s[j] != '.' && s[j] != '[') {
@@ -326,6 +352,57 @@ class AnalyzeByJson {
     return tokens;
   }
 
+  /// 并集解析：逗号分隔的整数下标与引号键（`0, 2` / `'a', "b"`）。
+  /// 不是合法并集形态时返回 null（调用方退回单值判定）。
+  static List<(bool, String)>? _parseUnion(String inner) {
+    final parts = _splitUnionParts(inner);
+    if (parts.length < 2) return null;
+    final entries = <(bool, String)>[];
+    for (final raw in parts) {
+      final t = raw.trim();
+      if (t.isEmpty) return null;
+      if ((t.startsWith("'") && t.endsWith("'") && t.length >= 2) ||
+          (t.startsWith('"') && t.endsWith('"') && t.length >= 2)) {
+        entries.add((true, t.substring(1, t.length - 1)));
+        continue;
+      }
+      if (int.tryParse(t) != null) {
+        entries.add((false, t));
+        continue;
+      }
+      return null;
+    }
+    return entries;
+  }
+
+  /// 顶层逗号切分（跳过引号内文本）。
+  static List<String> _splitUnionParts(String s) {
+    final parts = <String>[];
+    final buf = StringBuffer();
+    var quote = 0;
+    for (var i = 0; i < s.length; i++) {
+      final c = s.codeUnitAt(i);
+      if (quote != 0) {
+        buf.writeCharCode(c);
+        if (c == quote) quote = 0;
+        continue;
+      }
+      if (c == 0x22 || c == 0x27) {
+        quote = c;
+        buf.writeCharCode(c);
+        continue;
+      }
+      if (c == 0x2C) {
+        parts.add(buf.toString());
+        buf.clear();
+        continue;
+      }
+      buf.writeCharCode(c);
+    }
+    parts.add(buf.toString());
+    return parts;
+  }
+
   /// 括号闭合位置（跳过引号内的 `]`）。
   static int _findBracketEnd(String s, int start) {
     var quote = false;
@@ -346,9 +423,26 @@ class AnalyzeByJson {
 
   /// 逐 token 导航：通配符把当前节点集合展开为全部子元素，后续 token 逐个
   /// 作用于每个元素（`$.rows[*].name` → 所有 rows 元素的 name 列表）。
+  ///
+  /// jayway 语义：路径一旦含有不定段（`[*]`/`[..]`/`[?]`/并集/切片），
+  /// 整条路径按 collect 求值——**结果恒为列表**（单元素也不折叠成标量）；
+  /// 纯定路径才是标量语义。定/不定的区分决定 `getList` 的 `read<ArrayList>`
+  /// 映射成败（审计 R34）。
   dynamic _navigate(dynamic root, List<_JsonPathToken> tokens) {
     var current = <dynamic>[root];
+    var hasIndefinite = false;
     for (final token in tokens) {
+      switch (token.type) {
+        case _JsonTokenType.wildcard:
+        case _JsonTokenType.deepScan:
+        case _JsonTokenType.slice:
+        case _JsonTokenType.filter:
+        case _JsonTokenType.union:
+          hasIndefinite = true;
+          break;
+        default:
+          break;
+      }
       final next = <dynamic>[];
       for (final node in current) {
         switch (token.type) {
@@ -385,12 +479,26 @@ class AnalyzeByJson {
             }
           case _JsonTokenType.function:
             _applyFunction(node, token.name, next);
+          case _JsonTokenType.union:
+            // jayway 并集：按成员顺序逐个取值（保序，允许命中失败）。
+            for (final (isKey, value)
+                in token.entries ?? const <(bool, String)>[]) {
+              if (isKey) {
+                _applyKey(node, value, next);
+              } else if (node is List) {
+                final raw = int.tryParse(value);
+                if (raw != null) {
+                  final idx = raw < 0 ? node.length + raw : raw;
+                  if (idx >= 0 && idx < node.length) next.add(node[idx]);
+                }
+              }
+            }
         }
       }
       current = next;
     }
     if (current.isEmpty) return null;
-    if (current.length == 1) return current.first;
+    if (!hasIndefinite && current.length == 1) return current.first;
     return current;
   }
 
@@ -519,11 +627,14 @@ class AnalyzeByJson {
   }
 
   /// 过滤路径求值：`@.a.b` / `@['a']` / `@.length` → 以 item 为根导航。
+  /// 内层路径同样不支持部分求值：无法识别的形态按无命中处理（null）。
   dynamic _resolveInner(dynamic item, String path) {
     var p = path.trim();
     if (p.startsWith('@')) p = p.substring(1);
     if (p.isEmpty) return item;
-    return _navigate(item, _tokenize(p));
+    final tokens = _tokenize(p);
+    if (tokens == null) return null;
+    return _navigate(item, tokens);
   }
 
   static bool _compare(dynamic left, String op, String rightRaw) {
@@ -616,7 +727,16 @@ class AnalyzeByJson {
   }
 }
 
-enum _JsonTokenType { key, arrayIndex, wildcard, deepScan, slice, filter, function }
+enum _JsonTokenType {
+  key,
+  arrayIndex,
+  wildcard,
+  deepScan,
+  slice,
+  filter,
+  function,
+  union,
+}
 
 /// jayway 风格内建函数名（`$.a.length()` 等）。
 const _jsonPathFunctions = {'length', 'size', 'min', 'max', 'sum', 'avg'};
@@ -625,5 +745,8 @@ class _JsonPathToken {
   final _JsonTokenType type;
   final String name;
 
-  const _JsonPathToken(this.type, this.name);
+  /// 并集成员（[union] 专用）：(是否键名, 键名或下标文本)。
+  final List<(bool, String)>? entries;
+
+  const _JsonPathToken(this.type, this.name, [this.entries]);
 }

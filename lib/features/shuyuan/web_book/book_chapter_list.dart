@@ -317,6 +317,9 @@ class BookChapterList {
         // legado 绑定的是真实 BookChapter 实体：媒体资源地址、EPUB 偏移与
         // 目录层级都必须可读可写，否则源对它们的修正会被静默丢弃。
         'resourceUrl': ch.resourceUrl ?? '',
+        // legado BookChapter.titleMD5 惰性派生（getTitleMD5）：读取时未存
+        // 即按 title 计算（审计 R50 剩余：此前脚本读该字段得 undefined）。
+        'titleMD5': ch.titleMD5 ?? ch.effectiveTitleMD5(),
         'tocLevel': ch.tocLevel,
         'start': ch.start,
         'end': ch.end,
@@ -447,6 +450,13 @@ class BookChapterList {
     applyFlag('isPay', (v) => ch.isPay = v);
 
     applyText('resourceUrl', (v) => ch.resourceUrl = v);
+    applyText('titleMD5', (v) => ch.titleMD5 = v);
+    // bookUrl 非空字段：空串/占位写回不落（快照占位为 ''）。
+    void applyBookUrl(String? v) {
+      if (v != null && v.isNotEmpty) ch.bookUrl = v;
+    }
+
+    applyText('bookUrl', applyBookUrl);
     applyText('startFragmentId', (v) => ch.startFragmentId = v);
     applyText('endFragmentId', (v) => ch.endFragmentId = v);
     void applyInt(String key, void Function(int value) setter) {

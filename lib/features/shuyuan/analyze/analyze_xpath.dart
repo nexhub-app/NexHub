@@ -16,6 +16,7 @@ import 'package:xpath_selector_html_parser/xpath_selector_html_parser.dart';
 
 import 'rule_analyzer.dart';
 import 'string_utils.dart';
+import 'xml_dom.dart';
 
 class AnalyzeByXPath {
   dynamic content;
@@ -50,6 +51,10 @@ class AnalyzeByXPath {
     if (html.endsWith('</tr>') || html.endsWith('</tbody>')) {
       html = '<table>$html</table>';
     }
+    // legado：trim 后以 `<?xml` 开头走 xmlParser（审计 R26）；解析失败
+    // 回落 HTML parser。
+    final xmlDoc = tryParseXmlDocument(html, trimLeading: true);
+    if (xmlDoc != null) return xmlDoc;
     return html_parser.parse(html);
   }
 

@@ -361,6 +361,10 @@ class JsEngine {
   /// 链式调用（解密结果再当输入）按依赖深度逐轮收敛。
   static const int _asymReplayRounds = 8;
 
+  /// 重放中间轮丢弃的一次性副作用 op（审计 X10）：最终轮会重新产生，
+  /// 与 legado 的恰好一次提交对齐。
+  static const Set<String> _oneShotOps = {'open', 'copyText'};
+
   /// 取走本轮脚本登记的 createAsymmetricCrypto 待办（按调用顺序）。
   List<Map<String, dynamic>> _takeAsymOps() {
     if (_runtime == null) return const [];
@@ -645,8 +649,11 @@ class JsEngine {
     final needDrain = jsStr.contains('java.') ||
         ShuyuanSourceContext.current != null ||
         (bindings?.containsKey('chapter') ?? false);
+    // 审计 X10：密码学 op 未结算时脚本会整段重放——中间轮的一次性副作用
+    //（toast/log/copyText/open）不能重复提交，最终轮才是 legado 的
+    // 「脚本执行时刻」。
     if (needDrain) {
-      _drainJavaBridge();
+      _drainJavaBridge(suppressOneShot: _hasPendingAsymOps());
     }
     // createAsymmetricCrypto：脚本首轮登记的操作在宿主用 Dart BigInt 计算
     // （毫秒级）并回填 __asymCache，重跑脚本命中缓存得真值；每轮重放前
@@ -664,18 +671,34 @@ class JsEngine {
       _seedDeterministicRandom(jsStr);
       result = _evalTopLevel(jsStr);
       if (needDrain) {
-        _drainJavaBridge();
+        _drainJavaBridge(suppressOneShot: _hasPendingAsymOps());
       }
     }
     return result;
   }
 
-  /// 顶层 eval：先重置 `java.ajax` 同键计数再执行脚本。
+  /// 是否还有未结算的密码学 op（只窥探不排空：真正的排空由
+  /// [_takeAsymOps] 在下一轮完成）。
+  bool _hasPendingAsymOps() {
+    try {
+      final r = runtime.evaluate(
+          'globalThis.__asymPending && globalThis.__asymPending.length');
+      if (r.isError) return false;
+      final v = int.tryParse(r.stringResult.trim());
+      return v != null && v > 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 顶层 eval：先重置 `java.ajax` 同键计数与 genkey 调用序号再执行脚本。
   /// 重放轮（asym/规则/网络排空）共享同一份 ajax 缓存，同一脚本每轮按
-  /// 相同顺序拼出的第 n 个重复请求必须得到相同缓存键，才能逐轮收敛。
+  /// 相同顺序拼出的第 n 个重复请求必须得到相同缓存键，才能逐轮收敛；
+  /// genkey 的调用序号同理（同一调用点跨轮必须命中同一把生成密钥）。
   NexJsEvalResult _evalTopLevel(String jsStr) {
     try {
-      runtime.evaluate('globalThis.__ajaxCallSeq = Object.create(null);');
+      runtime.evaluate('globalThis.__ajaxCallSeq = Object.create(null);'
+          'globalThis.__asymGenSeq = 0;');
     } catch (_) {}
     return runtime.evaluate('eval(${jsonEncode(jsStr)})');
   }
@@ -728,7 +751,12 @@ class JsEngine {
   /// eval 成功后统一排空 java.* 桥的三类宿主交互：
   /// toast/longToast → [JavaFeedback.onToast]（缺省运行日志）、
   /// log/logType → 运行日志、put → [_lastJavaVars]（由变量表持有方取走）。
-  void _drainJavaBridge() {
+  ///
+  /// [suppressOneShot]（审计 X10）：本轮之后脚本还会因未结算的密码学 op
+  /// 整段重放时，一次性副作用（toast/log/copyText/open）在中间轮丢弃——
+  /// 最终轮会重新产生并提交，与 legado「脚本执行时刻恰好一次」对齐。
+  /// 状态类 op（cookie/变量/缓存）幂等，照常回放以保持收敛。
+  void _drainJavaBridge({bool suppressOneShot = false}) {
     // 每轮排空只反映本轮 eval：删除表先清空，避免上一轮未被取走的键
     // 落到后面的求值里误删变量。
     _lastJavaDeletedVars = const {};
@@ -744,7 +772,7 @@ class JsEngine {
     }
     if (payload == null) return;
     final toasts = payload['t'];
-    if (toasts is List) {
+    if (toasts is List && !suppressOneShot) {
       final activeCtx = ShuyuanSourceContext.current;
       for (final t in toasts) {
         if (t is Map) {
@@ -765,7 +793,7 @@ class JsEngine {
       }
     }
     final logs = payload['l'];
-    if (logs is List) {
+    if (logs is List && !suppressOneShot) {
       for (final l in logs) {
         final msg = l?.toString() ?? '';
         if (msg.isEmpty) continue;
@@ -790,7 +818,13 @@ class JsEngine {
           hadSyop = true;
           try {
             final decoded = jsonDecode(v?.toString() ?? '');
-            if (decoded is Map<String, dynamic>) syops.add(decoded);
+            if (decoded is Map<String, dynamic>) {
+              // 一次性副作用在中间轮丢弃（最终轮重放时会重新入队）。
+              if (!suppressOneShot ||
+                  !_oneShotOps.contains(decoded['op']?.toString())) {
+                syops.add(decoded);
+              }
+            }
           } catch (_) {}
           return;
         }

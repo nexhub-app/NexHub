@@ -290,7 +290,9 @@ class BookList {
       try {
         if (ruleLastChapter.isNotEmpty) {
           lastChapter = analyzeRule.getStringFromRules(ruleLastChapter);
-          // legado SearchBook.init：最新章标题截断 200。
+          // legado（审计 M21）：构造后直接赋 latestChapterTitle（全量），
+          // 构造器内的 lastChapter 才截 200。
+          itemBook.latestChapterTitle = lastChapter;
           if (lastChapter.length > 200) {
             lastChapter = lastChapter.substring(0, 200);
           }

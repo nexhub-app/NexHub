@@ -471,6 +471,36 @@ class WebBook {
               '${source.bookSourceName} / $e');
         }
       }
+      // legado AnalyzeRule.reGetBook（审计 T3）：按书名/作者精确搜索，命中
+      // 即改写 bookUrl 并把搜索结果的变量并入书，再重取详情。搜索/详情失败
+      // 随 preUpdateJs 一并失败（legado getOrThrow 传播），不再静默沿用旧址。
+      if (ctx != null && ctx.reGetBookRequested) {
+        ctx.reGetBookRequested = false;
+        final args = ctx.reGetBookArgs;
+        final name = args?['name']?.toString() ?? book.name;
+        final author = args?['author']?.toString() ?? book.author;
+        final results = await searchBook(source: source, key: name);
+        SearchBook? hit;
+        for (final sb in results) {
+          final authorMatch =
+              author.isEmpty || sb.author == author || sb.author.isEmpty;
+          if (sb.name == name && authorMatch) {
+            hit = sb;
+            break;
+          }
+        }
+        if (hit == null) {
+          throw Exception(
+              'reGetBook 未搜索到同书（name=$name author=$author）');
+        }
+        book.bookUrl = hit.bookUrl;
+        hit.variableMap.forEach(book.putVariable);
+        await getBookInfo(
+          source: source,
+          bookUrl: book.bookUrl,
+          seedBook: book,
+        );
+      }
     }
     // legado：`-` 前缀表示 `reverse` 标记，控制"去重前是否反转"与
     // "去重后是否再反转"，由本方法在合并后统一处理，分页解析本身不再翻转。
@@ -676,32 +706,42 @@ class WebBook {
     }
 
     if (allChapters.isNotEmpty) {
-      // 对齐 legado：去重前先按 `-` 前缀决定工作顺序（无前缀则整列反转），
-      // 再去重（LinkedHashSet 保留工作顺序中的首个同名 URL），最后按
-      // `book.reverseToc` 决定是否再反转。两者异或决定最终顺序。
-      final working = listReversed ? allChapters : allChapters.reversed;
-      final seen = <String>{};
-      final deduped = <XiaoshuoBookChapter>[];
-      for (final chapter in working) {
-        // legado BookChapter equals/hashCode 仅以 url 判等。
-        if (seen.add(chapter.url)) {
-          deduped.add(chapter);
-        }
-      }
-      final ordered =
-          book.reverseToc ? deduped : deduped.reversed.toList();
-      for (var i = 0; i < ordered.length; i++) {
-        ordered[i].index = i;
-      }
-      // legado：formatJs 在整份目录合并/去重/倒序/重编号后单次执行，
-      // gInt 整轮初始化一次（不随章节重置）。
-      BookChapterList.applyFormatJs(ordered, source.getTocRule().formatJs);
-      return ordered;
+      return mergeChapterList(source, book, allChapters,
+          listReversed: listReversed);
     }
 
     // legado BookChapterList：合并所有分页后仍为空 → TocEmptyException，
     // 上层据此提示/回退缓存，而不是当作正常空目录。
     throw TocEmptyException();
+  }
+
+  /// 目录合并层（审计 M13）：去重前按 `-` 前缀决定工作顺序（无前缀则整列
+  /// 反转）→ 去重（按 URL，保留工作序首现）→ `book.reverseToc` 终序 →
+  /// 全局重编号 → formatJs 单次执行（gInt 整轮初始化一次）。直连目录与
+  /// WebView 渲染回灌共用同一层，仅网络获取方式不同。
+  List<XiaoshuoBookChapter> mergeChapterList(
+    XiaoshuoBookSource source,
+    XiaoshuoBook book,
+    List<XiaoshuoBookChapter> allChapters, {
+    required bool listReversed,
+  }) {
+    final working = listReversed ? allChapters : allChapters.reversed;
+    final seen = <String>{};
+    final deduped = <XiaoshuoBookChapter>[];
+    for (final chapter in working) {
+      // legado BookChapter equals/hashCode 仅以 url 判等。
+      if (seen.add(chapter.url)) {
+        deduped.add(chapter);
+      }
+    }
+    final ordered = book.reverseToc ? deduped : deduped.reversed.toList();
+    for (var i = 0; i < ordered.length; i++) {
+      ordered[i].index = i;
+    }
+    // legado：formatJs 在整份目录合并/去重/倒序/重编号后单次执行，
+    // gInt 整轮初始化一次（不随章节重置）。
+    BookChapterList.applyFormatJs(ordered, source.getTocRule().formatJs);
+    return ordered;
   }
 
   /// 获取章节正文：抓取 `chapterUrl` 并通过 `ruleContent` 解析。

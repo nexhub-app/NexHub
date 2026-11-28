@@ -1436,21 +1436,20 @@ class AnalyzeUrl {
             cookiePrimed = true;
             continue;
           }
-          // legado OkHttpUtils 不按状态码抛错：非 2xx 的响应体原样交给
-          // 解析（404 正文页、500 提示页都可能被规则读取）。401/403 是
-          // 验证/鉴权例外，空体无解析价值——两者仍走下方异常路径。
+          // legado OkHttpUtils 不按状态码抛错：非 2xx 的响应（含空体
+          // 404/500——审计 U11 最小对齐口径，规则层拿空串而非「网络请求
+          // 失败」）原样交给解析。401/403 是验证/鉴权例外，空体无解析
+          // 价值——两者仍走下方异常路径（登录墙检测为有意超集，保留）。
           final errStatus = e.response?.statusCode;
           final errData = e.response?.data;
           if (errStatus != null &&
               errStatus >= 400 &&
               errStatus != 401 &&
-              errStatus != 403 &&
-              errData is List<int> &&
-              errData.isNotEmpty) {
+              errStatus != 403) {
             final errResponse = e.response!;
             response = Response<List<int>>(
               requestOptions: errResponse.requestOptions,
-              data: errData,
+              data: errData is List<int> ? errData : const <int>[],
               statusCode: errStatus,
               statusMessage: errResponse.statusMessage,
               headers: errResponse.headers,

@@ -356,7 +356,7 @@ void main() {
       }
     });
 
-    test('空体 500 仍抛出（无正文可用）', () async {
+    test('空体 500 按空响应交规则层（U11 最小对齐：legado 空体不抛）', () async {
       final server = await _startServer((req) async {
         req.response
           ..statusCode = 500
@@ -366,7 +366,10 @@ void main() {
       try {
         final origin = _origin(server);
         final au = AnalyzeUrl(url: '$origin/err', baseUrl: origin);
-        await expectLater(au.getStrResponse(), throwsA(isA<Exception>()));
+        // legado OkHttpUtils：非 2xx（含空体）返回最后响应给规则层，
+        // 空体 → 空串；401/403 仍走验证例外（有意超集保留）。
+        final body = await au.getStrResponse();
+        expect(body, isEmpty);
       } finally {
         await server.close(force: true);
       }

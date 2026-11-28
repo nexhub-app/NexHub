@@ -10,6 +10,10 @@ class SearchBook {
   String? coverUrl;
   String? kind;
   String? lastChapter;
+
+  /// 最新章节标题全量值（legado `SearchBook.latestChapterTitle`：BookList
+  /// 构造后直接赋值、不经构造器 200 截断；[lastChapter] 是截断别名）。
+  String? latestChapterTitle;
   String? intro;
   String? tocUrl;
   String? wordCount;
@@ -37,6 +41,7 @@ class SearchBook {
     this.coverUrl,
     this.kind,
     this.lastChapter,
+    this.latestChapterTitle,
     this.intro,
     this.tocUrl,
     this.wordCount,
@@ -56,6 +61,7 @@ class SearchBook {
       coverUrl: json['coverUrl'] as String?,
       kind: json['kind'] as String?,
       lastChapter: json['lastChapter'] as String?,
+      latestChapterTitle: json['latestChapterTitle'] as String? ?? json['lastChapter'] as String?,
       intro: json['intro'] as String?,
       tocUrl: json['tocUrl'] as String?,
       wordCount: json['wordCount'] as String?,
@@ -75,6 +81,7 @@ class SearchBook {
         if (coverUrl != null) 'coverUrl': coverUrl,
         if (kind != null) 'kind': kind,
         if (lastChapter != null) 'lastChapter': lastChapter,
+        if (latestChapterTitle != null) 'latestChapterTitle': latestChapterTitle,
         if (intro != null) 'intro': intro,
         if (tocUrl != null) 'tocUrl': tocUrl,
         if (wordCount != null) 'wordCount': wordCount,
@@ -101,6 +108,7 @@ class SearchBook {
       coverUrl: coverUrl,
       kind: kind,
       lastChapter: lastChapter,
+      latestChapterTitle: latestChapterTitle ?? lastChapter,
       intro: intro,
       tocUrl: tocUrl,
       wordCount: wordCount,

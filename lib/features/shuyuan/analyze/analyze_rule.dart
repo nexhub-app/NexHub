@@ -266,10 +266,14 @@ class AnalyzeRule {
         }
       }
       final rawJs = match.group(2) ?? match.group(1) ?? '';
-      // `@js:代码##match##replace###`：`##` 起是 legado 的正则替换尾，
-      // 不能吞进脚本体。紧贴 `@js:`（空脚本）表示「对前段结果直接做正则
-      // 替换」；若整段交给 JS 求值会 SyntaxError → 规则恒为空（社区源
-      // 合成封面 URL 的高频写法）。
+      // legado（审计 R3）：`@js:代码##match##replace###` 整段是**单个**
+      // Mode.Js 规则——尾部的 `@get:{}`/`{{}}` 参数在本段 makeUpRule 阶段
+      // （以前段结果为上下文）展开后拼回整串，再拆 `##` 分出替换尾；JS
+      // 只对 `##` 前的脚本体求值，替换正则作用于 JS 输出。这里不再提前
+      // 切尾，求值阶段与结果归属由 makeUp 对齐。
+      // 唯一保留的社区特例：`@js:` 紧跟 `##`（空脚本体）——legado 里空
+      // JS 段整段产出 null，社区源高频写法是「对前段结果直接做正则替
+      // 换」，按超集保留为一条替换尾规则。
       var jsContent = rawJs;
       var tail = '';
       if (match.group(2) != null) {
@@ -279,12 +283,10 @@ class AnalyzeRule {
           jsContent = rawJs.substring(0, idx);
         }
       }
-      // 空脚本体不产出 JS 段（避免把上一段结果求值成空串），仅保留替换尾。
-      if (jsContent.trim().isNotEmpty || tail.isEmpty) {
-        ruleList.add(SourceRule(jsContent, Mode.js, isJson));
-      }
-      if (tail.isNotEmpty) {
+      if (jsContent.trim().isEmpty && tail.isNotEmpty) {
         ruleList.add(SourceRule(tail, mMode, isJson));
+      } else {
+        ruleList.add(SourceRule(rawJs, Mode.js, isJson));
       }
       segStart = match.end;
     }

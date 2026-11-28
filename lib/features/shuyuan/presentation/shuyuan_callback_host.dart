@@ -8,6 +8,7 @@
 /// - `sort`/`rss`：RSS 专属，书源场景忽略。
 library;
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/services.dart';
@@ -43,6 +44,9 @@ Future<void> drainShuyuanCallbackEffects(
   }
   if (result.openRequests.isEmpty || !context.mounted) return;
   final SourceRepository repo = context.read<SourceRepository>();
+  // legado（审计 X19）：每次 `java.open` 在脚本线程立即 `launch(IO)`——
+  // 各请求独立并发，登录等交互动作不阻塞后续 open/search/explore。
+  // 旧实现顺序 await，一次 login 弹窗会把同脚本后续动作全部押后。
   for (final Map<String, String> req in result.openRequests) {
     if (!context.mounted) return;
     final String name = (req['name'] ?? '').trim();
@@ -52,7 +56,14 @@ Future<void> drainShuyuanCallbackEffects(
     switch (name) {
       case 'login':
         final PluginConfig target = _findTarget(repo, source, origin);
-        await showShuyuanLogin(context, target);
+        // 独立任务：弹窗生命周期不阻塞其余 open 动作。
+        unawaited(() async {
+          try {
+            await showShuyuanLogin(context, target);
+          } catch (e) {
+            AppLog.instance.w('[书源回调] open(login) 失败: $e');
+          }
+        }());
       case 'search':
         // md3：title 为空时 search 分支不执行。
         if (title.isEmpty) continue;
