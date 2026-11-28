@@ -833,10 +833,43 @@ class ShuyuanNovelResolver
   /// 动态 exploreUrl / viewName 可发 `java.ajax`，沿用与发现分类相同的
   /// 占位符重放：每轮抓取未满足请求后重跑，直到无新请求或预算耗尽。
   /// 成功结果按源持久缓存（legado ACache 等效）；[refresh] 强制重抓。
+  ///
+  /// 单飞：同一源并发调用只跑一次（legado 按 bookSourceUrl 加 Mutex、锁内
+  /// 二次读缓存）；[refresh] 先等在飞请求结束再强制重抓，避免旧结果覆盖新值。
+  static final Map<String, Future<ExploreKindsResult>> _exploreKindsInflight =
+      <String, Future<ExploreKindsResult>>{};
+
   @override
   Future<ExploreKindsResult> resolveExploreKinds(
     PluginConfig source, {
     bool refresh = false,
+  }) async {
+    final key = source.id;
+    if (refresh) {
+      final inflight = _exploreKindsInflight[key];
+      if (inflight != null) {
+        try {
+          await inflight;
+        } catch (_) {}
+      }
+      return _resolveExploreKindsImpl(source, refresh: true);
+    }
+    final running = _exploreKindsInflight[key];
+    if (running != null) return running;
+    final future = _resolveExploreKindsImpl(source, refresh: false);
+    _exploreKindsInflight[key] = future;
+    try {
+      return await future;
+    } finally {
+      if (identical(_exploreKindsInflight[key], future)) {
+        _exploreKindsInflight.remove(key);
+      }
+    }
+  }
+
+  Future<ExploreKindsResult> _resolveExploreKindsImpl(
+    PluginConfig source, {
+    required bool refresh,
   }) async {
     final shuyuanSource = ShuyuanAdapter.fromPluginConfig(source);
     if (shuyuanSource == null) return const ExploreKindsResult();
