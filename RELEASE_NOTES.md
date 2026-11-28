@@ -1,10 +1,10 @@
-# NexHub v4.0.0-beta.3
+# NexHub v4.0.0-beta.4
 
 > 四合一媒体聚合客户端（动漫 / 漫画 / 小说 / 影视）—— 源即插件 · 共创社区。
 
 这是 NexHub 的四合一媒体聚合客户端（动漫 / 漫画 / 小说 / 影视）。NexHub **不内置任何内容源**，所有内容都来自你自行导入的「源」。
 
-> ⚠️ **这是 4.0.0 的第三个公开测试版（仍来自 `feature/legado-booksource-compat` 分支，尚未合并主分支）**：相对 v4.0.0-beta.2 共 42 个提交——书源引擎逐条语义对齐（变量删除 / 目录分页 / 编码表 / 二进制缓存 / jsoup 集合 / WebView 预取）、段评与正文内嵌图标、收藏重启丢失修复、下载封面修复、目录定位精确化、运行日志导出。**基础功能完整、可安全升级**。
+> ⚠️ **这是 4.0.0 的第四个公开测试版（仍来自 `feature/legado-booksource-compat` 分支，尚未合并主分支）**：相对 v4.0.0-beta.3 共 6 个提交——鸿蒙版启动即停住的修复（构建准备脚本的依赖判断）、限流放行与发现页分类的并发语义、正文分页与批量请求的收敛、规则与归档兼容再收一轮。**基础功能完整、可安全升级**。
 >
 > - **数据兼容**：经代码核查，**无破坏性数据变更**——书架、收藏、进度、书签、历史、分组直接沿用；书源新增字段按宽松语义解析，旧源 JSON 无需修改；沿用同一签名密钥可直接覆盖安装。
 > - **平台产物**：Android / Windows / Linux / macOS / iOS / 鸿蒙 HAP 统一发布在同一个预发布 Release；鸿蒙 HAP 不带签名，需自行签名后侧载。
@@ -36,6 +36,19 @@
 **签名密钥**：自 v0.3.0 起使用同一固定签名密钥（经 CI Secret 注入，不入库），可直接覆盖安装；更早的随机签名旧包需先卸载一次再装。v0.2.12 曾引入固定签名，v0.3.1 起改为 CI 注入（密钥本体一致）。
 
 ## 📝 更新日志（倒序 · 最新在前）
+
+### 📝 更新日志（v4.0.0-beta.3 → v4.0.0-beta.4）
+
+> 🧪 **预发布测试版**。6 个提交，仍是 `feature/legado-booksource-compat` 分支；鸿蒙启动修复 + 书源并发 / 限流 / 网络语义收口。无破坏性数据变更。
+
+- **鸿蒙启动**：`tool/ohos/prepare_ohos.sh` 原以全文件字符串匹配判断依赖是否已存在，而 `pubspec.yaml` 注释里同样出现 `media_kit_libs_ohos` / `flutter_secure_storage_ohos`，判断恒为「已存在」→ 两个依赖从未写入 → `GeneratedPluginRegistrant` 缺 `FlutterSecureStorageOhosPlugin` → 启动时 `CloudSyncConfigStore.loadPassword` 抛 `MissingPluginException`，停在闪屏无法进入主界面。改为按依赖行正则判断（`^  <pkg>:` + 多行模式）。
+- **限流**：`ConcurrentRateLimiter.gate` 拆出同步判定 `_tryAcquire`——命中窗口直接放行，超限只返回等待时长，睡醒后重新判定；窗口期满重置时计数直接置 1，避免「先置 0 再 ++」的一拍空隙。旧实现在 await 之后无条件重置并计数，多个等待者同一时刻一起放行，实际并发可达声明值的数倍。
+- **发现页分类**：`resolveExploreKinds` 按 `source.id` 复用同一在飞 Future；refresh 先等在飞请求结束再强制重抓，避免旧结果覆盖新值。
+- **正文分页**：`nextContentUrl` 回到页级 `AnalyzeRule` 求值（与 content 同实例、异常不再吞成空），并发页不提取下一页；`mapOrderedPool` 在首个失败后停止派发后续任务；WebView 页内 JS 空结果按每秒重试（上限 30 次、30 秒总预算），耗尽后保留 HTML 回退；`wordCountFormat` 复刻 `DecimalFormat("#.#")` 的 HALF_EVEN 与 float32 精度。
+- **批量请求**：`java.ajax(List)` 取首元素；`ajaxAll` 任一项失败整批抛错，不再把部分成功当完整成功；新增 `ajaxTestAll(urls, timeout, skipRateLimit)`，逐项 `callTimeout` + isTest 负 callTime（-1..-7）；批次按调用编号登记，两次批量调用不再合并成一个并发窗口。
+- **网络与模型**：`Jsoup.connect` 消费 timeout / followRedirects / maxBodySize（0=不限）/ ignoreHttpErrors，表单 data 按 URLEncoder 编码，HTTP 错误与连接失败按 jsoup 口径抛错；替换模板按 Java Matcher 展开（越界组号、未知命名分组、非法 `$` 抛错后整条回退字面量）；`Book` / `BookChapter` 序列化前对齐 `variable` 与 `variableMap`，直接改 map 的写入不再在往返时丢失；发现页 `viewName` 与 action 共用 live `InfoMap`，脚本写入回写宿主并随既有流程落盘。
+- **规则与归档**：规则切尾、占有量词、XML 解析、JSONPath 取值、自动密钥、多格式归档、目录回灌、临时源变量等边界按基准口径对齐。
+- **验证**：`dart analyze lib` 0 error；测试结果与改动前逐条一致，无新增回归。
 
 ### 📝 更新日志（v4.0.0-beta.2 → v4.0.0-beta.3）
 

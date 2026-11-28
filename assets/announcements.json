@@ -1,5 +1,16 @@
 [
   {
+    "id": "v4.0.0-beta.4-announce",
+    "date": "2026-11-28",
+    "title": "NexHub 4.0.0-beta.4 预发布测试版",
+    "titleEn": "NexHub 4.0.0-beta.4 (pre-release beta)",
+    "body": "4.0 第四个测试版：修好了鸿蒙版装完打不开的问题——此前构建时补依赖的脚本判断写错，安全存储插件实际没进包，启动读取凭据就报错停在闪屏；本版起正常进入主界面，之前装过且打不开的覆盖安装即可。书源侧继续收敛：限流排队不再一起放行，发现页分类脚本并发只跑一次，正文分页与批量请求更省更稳，字数显示与 jsoup 连接选项也更准。现有源与阅读数据不受影响。",
+    "bodyEn": "The fourth 4.0 beta fixes the HarmonyOS build that would not open: the dependency check in the build preparation script was faulty, so the secure-storage plugin never made it into the package and startup failed on the splash screen. This build launches normally — overwrite-install if you have the broken one. The book-source engine also gets tighter: queued requests no longer all pass a rate limit at once, explore-page category scripts run only once under concurrency, content paging and batch requests are leaner and steadier, and word counts plus jsoup connection options are more accurate. Existing sources and reading data are unaffected.",
+    "url": "",
+    "urlText": "",
+    "urlTextEn": ""
+  },
+  {
     "id": "v4.0.0-beta.3-announce",
     "date": "2026-11-27",
     "title": "NexHub 4.0.0-beta.3 预发布测试版",

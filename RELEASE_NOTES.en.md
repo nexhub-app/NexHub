@@ -1,10 +1,10 @@
-# NexHub v4.0.0-beta.3
+# NexHub v4.0.0-beta.4
 
 > All-in-one media aggregation client (anime / comics / novels / video) — Source-as-Plugin · co-created community.
 
 This is NexHub's all-in-one media aggregation client (anime / comics / novels / video). NexHub **does not bundle any content sources**; all content comes from "sources" that you import yourself.
 
-> ⚠️ **This is the third public beta of 4.0.0 (still from the `feature/legado-booksource-compat` branch, not yet merged into main)**: 42 commits relative to v4.0.0-beta.2 — item-by-item semantic alignment of the book-source engine (variable deletion / TOC paging / charset table / binary cache / jsoup collections / WebView prefetch), paragraph comments with inline icons, a fix for favorites vanishing after restart, download cover fixes, precise TOC positioning, and exportable runtime logs. **Core features are complete and upgrading is safe.**
+> ⚠️ **This is the fourth public beta of 4.0.0 (still from the `feature/legado-booksource-compat` branch, not yet merged into main)**: 6 commits relative to v4.0.0-beta.3 — a fix for the HarmonyOS build that stalled at launch (the dependency check in the build preparation script), concurrency semantics for rate-limit release and explore-page categories, tighter content paging and batch requests, and another compatibility pass over rules and archives. **Core features are complete and upgrading is safe.**
 >
 > - **Data compatibility**: Verified by code review, **no breaking data changes** — bookshelf, favorites, progress, bookmarks, history, and groups carry over directly; new book source fields are parsed with lenient semantics, so old source JSON needs no modification; reinstalling over the top works directly with the same signing key.
 > - **Platform artifacts**: Android / Windows / Linux / macOS / iOS / HarmonyOS HAP are all published together in the same pre-release Release; the HarmonyOS HAP is unsigned and must be signed by you before sideloading.
@@ -36,6 +36,19 @@ Apart from the "Special Notes" in each version, **all versions have no breaking 
 **Signing key**: Since v0.3.0 a single fixed signing key has been used (injected via CI Secret, not stored in the repo), so you can reinstall over the top; older random-signed packages must be uninstalled once first. v0.2.12 introduced a fixed signature, and v0.3.1 switched to CI injection (the key itself is identical).
 
 ## 📝 Changelog (reverse order · newest first)
+
+### 📝 Changelog (v4.0.0-beta.3 → v4.0.0-beta.4)
+
+> 🧪 **Pre-release beta**. 6 commits, still on `feature/legado-booksource-compat`; HarmonyOS launch fix plus concurrency / rate-limiting / network semantics for the book-source engine. No breaking data changes.
+
+- **HarmonyOS launch**: `tool/ohos/prepare_ohos.sh` used a whole-file string search to detect whether a dependency was already present, but the `pubspec.yaml` comments mention `media_kit_libs_ohos` / `flutter_secure_storage_ohos` too, so the check always said "present" → neither dependency was ever written → `GeneratedPluginRegistrant` lacked `FlutterSecureStorageOhosPlugin` → `CloudSyncConfigStore.loadPassword` threw `MissingPluginException` on startup and the app stalled on the splash screen. The check now matches dependency lines (`^  <pkg>:` with multiline mode).
+- **Rate limiting**: `ConcurrentRateLimiter.gate` now splits out a synchronous `_tryAcquire` — a request inside the window passes, an over-limit one returns only the wait duration and re-evaluates after sleeping; the window reset sets the count to 1 directly, closing the gap of "reset to 0 then increment". The old code reset and counted unconditionally after awaiting, releasing every waiter at the same moment, so real concurrency could reach several times the declared value.
+- **Explore categories**: `resolveExploreKinds` reuses the in-flight future per `source.id`; refresh waits for the pending request before refetching, so stale results no longer overwrite newer values.
+- **Content paging**: `nextContentUrl` is evaluated on the page-level `AnalyzeRule` again (same instance as content, exceptions no longer swallowed into empty), and worker pages do not extract a next page; `mapOrderedPool` stops dispatching after the first failure; in-page WebView JS retries once per second when it yields nothing (up to 30 attempts within a 30-second budget) and then falls back to the HTML already fetched; `wordCountFormat` reproduces `DecimalFormat("#.#")` with HALF_EVEN at float32 precision.
+- **Batch requests**: `java.ajax(List)` takes the first element; `ajaxAll` throws for the whole batch when any item fails instead of treating a partial success as complete; new `ajaxTestAll(urls, timeout, skipRateLimit)` times each item with `callTimeout` and returns isTest negative callTime (-1..-7); batches are registered by call index, so two consecutive batch calls no longer merge into one concurrency window.
+- **Network and models**: `Jsoup.connect` honours timeout / followRedirects / maxBodySize (0 = unlimited) / ignoreHttpErrors, form data is URLEncoder-encoded, and HTTP errors are thrown per jsoup semantics; replacement templates expand like a Java Matcher (out-of-range groups, unknown named groups and a malformed `$` throw and fall back to the literal); `Book` / `BookChapter` serialisation aligns `variable` with `variableMap` before writing, so direct map edits survive a round trip; the explore-page `viewName` and action share one live `InfoMap`, and script writes flow back and persist through the existing pipeline.
+- **Rules and archives**: trailing cuts in rules, possessive quantifiers, XML parsing, JSONPath lookups, auto keys, multi-format archives, TOC refill and temporary source variables are aligned with baseline behaviour.
+- **Verification**: `dart analyze lib` reports 0 errors; test results match the pre-change baseline item by item, with no new regressions.
 
 ### 📝 Changelog (v4.0.0-beta.2 → v4.0.0-beta.3)
 
