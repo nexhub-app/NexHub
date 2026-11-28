@@ -112,6 +112,18 @@ void main() {
       sw.stop();
       expect(sw.elapsedMilliseconds, lessThan(50));
     });
+
+    test('并发等待者不一起放行（睡醒后重新判定）', () async {
+      final sw = Stopwatch()..start();
+      await Future.wait(<Future<void>>[
+        for (var i = 0; i < 3; i++)
+          ConcurrentRateLimiter.gate('1/80', 'rate-src-burst'),
+      ]);
+      sw.stop();
+      // 1 次/80ms：3 次请求至少跨两个窗口（旧实现在 await 后无条件重置，
+      // 3 个等待者会在同一时刻一起放行，总耗时只有一个窗口）。
+      expect(sw.elapsedMilliseconds, greaterThanOrEqualTo(150));
+    });
   });
 
   group('AnalyzeUrl URL 选项 headers / followRedirects / HEAD', () {

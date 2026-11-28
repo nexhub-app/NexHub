@@ -60,30 +60,44 @@ class ConcurrentRateLimiter {
     }
     if (limit <= 0 || interval.inMilliseconds <= 0) return;
 
-    var now = DateTime.now();
+    // legado `getConcurrentRecord`：判定在 `synchronized(record)` 内完成，
+    // 超限只拿到 waitTime，睡醒后**重新判定**。旧实现在 await 之后无条件
+    // 重置窗口并计数，多个等待者会在同一时刻一起放行（突发翻倍）。
+    // Dart 单 isolate 下同步判定本身即原子，按「判定 → 需要就等 → 再判定」
+    // 循环即可复刻基准。
+    while (true) {
+      final wait = _tryAcquire(key, limit, interval);
+      if (wait <= Duration.zero) return;
+      await Future<void>.delayed(wait);
+    }
+  }
+
+  /// 同步判定一次：拿到名额返回 [Duration.zero]，否则返回需要等待的时长。
+  static Duration _tryAcquire(String key, int limit, Duration interval) {
+    final now = DateTime.now();
     // 窗口只按源 key 索引：运行期改并发率时替换 limit/interval，但保留
     // 已有窗口的起点与已放行次数（legado ConcurrentRecord 语义），改率
     // 不会凭空多出 limit 次突发。
     final window = _windows.putIfAbsent(key, () => _RateWindow(now));
-    if (now.difference(window.start) >= interval) {
+    final elapsed = now.difference(window.start);
+    if (elapsed >= interval) {
+      // 已经过了限制时间：重置起点，本次计数 1。
       window.start = now;
-      window.count = 0;
+      window.count = 1;
+      _pruneWindows(now, interval);
+      return Duration.zero;
     }
-    if (window.count >= limit) {
-      // 窗口已满：等到本窗口结束再放行，并开启新窗口（计数器归零）。
-      final wait = interval - now.difference(window.start);
-      if (wait > Duration.zero) {
-        await Future<void>.delayed(wait);
-      }
-      now = DateTime.now();
-      window.start = now;
-      window.count = 0;
+    if (window.count < limit) {
+      window.count++;
+      return Duration.zero;
     }
-    window.count++;
-    // 防泄漏：key 数量过多时清理已过期的窗口。
-    if (_windows.length > 512) {
-      _windows.removeWhere((_, w) => now.difference(w.start) > interval * 4);
-    }
+    return interval - elapsed;
+  }
+
+  /// 防泄漏：key 数量过多时清理已过期的窗口。
+  static void _pruneWindows(DateTime now, Duration interval) {
+    if (_windows.length <= 512) return;
+    _windows.removeWhere((_, w) => now.difference(w.start) > interval * 4);
   }
 }
 
