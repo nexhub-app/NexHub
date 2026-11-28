@@ -56,6 +56,25 @@ void main() {
       expect(lateRan, isTrue, reason: '同批在飞请求照常完成后再抛出');
     });
 
+    test('propagateErrors：首个失败后不再派发后续任务', () async {
+      final started = <String>[];
+      await expectLater(
+        WebBook.mapOrderedPool<String>(
+          ['a', 'boom', 'c', 'd'],
+          1,
+          (url) async {
+            started.add(url);
+            if (url == 'boom') throw StateError('fail');
+            return url;
+          },
+          propagateErrors: true,
+        ),
+        throwsStateError,
+      );
+      expect(started, <String>['a', 'boom'],
+          reason: 'legado mapAsync 在首个失败后取消未开始的任务');
+    });
+
     test('并发数不超过 limit', () async {
       var running = 0;
       var peak = 0;

@@ -53,6 +53,12 @@ class ShuyuanWebviewFetcher {
 
   static const Duration _renderSettle = Duration(milliseconds: 1200);
   static const Duration _jsSettle = Duration(milliseconds: 600);
+
+  /// legado `BackstageWebView.EvalJsRunnable`：JS 结果为空/`null` 时每秒重试，
+  /// `retry > 30` 才判超时。异步渲染、延迟签名的页面靠这段重试拿到真值。
+  static const Duration _jsRetryInterval = Duration(seconds: 1);
+  static const int _jsRetryMax = 30;
+  static const Duration _jsRetryBudget = Duration(seconds: 30);
   static const Duration _loadTimeout = Duration(seconds: 45);
   static const String _defaultUa =
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -245,12 +251,28 @@ class ShuyuanWebviewFetcher {
         }
         final jsCode = (js ?? '').trim();
         if (jsCode.isNotEmpty) {
-          try {
-            final r = await c.evaluateJavascript(source: jsCode);
-            final normalized = _normalizeJsResult(r);
-            if (normalized.isNotEmpty) evaluated = normalized;
-          } on Object catch (e) {
-            debugPrint('[书源webView] js 执行失败(忽略): $e');
+          // legado：结果为空（或 "null"）时每秒重试，最多 30 次；这里同样
+          // 有界重试，并用 30 秒总预算兜底，避免慢页面把整次抓取拖死。
+          // 重试耗尽后仍为空 → 保留原有的 getHtml() 回退（NexHub 更稳健的
+          // 选择，legado 会直接报「js执行超时」）。
+          final retryDeadline = DateTime.now().add(_jsRetryBudget);
+          var retry = 0;
+          while (true) {
+            try {
+              final r = await c.evaluateJavascript(source: jsCode);
+              final normalized = _normalizeJsResult(r);
+              if (normalized.isNotEmpty) {
+                evaluated = normalized;
+                break;
+              }
+            } on Object catch (e) {
+              debugPrint('[书源webView] js 执行失败(忽略): $e');
+            }
+            retry++;
+            if (retry > _jsRetryMax || !DateTime.now().isBefore(retryDeadline)) {
+              break;
+            }
+            await Future<void>.delayed(_jsRetryInterval);
           }
           await Future<void>.delayed(_jsSettle);
         }

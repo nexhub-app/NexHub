@@ -362,4 +362,26 @@ void main() {
       expect(registry, contains("selectors?['xiaoshuo'] is Map<String, dynamic>"));
     });
   });
+
+  group('wordCountFormat（DecimalFormat "#.#" / HALF_EVEN）', () {
+    test('边界：≤10000 走「N字」，>10000 才进万字档', () {
+      expect(StringUtils.wordCountFormat('10000'), '10000字');
+      expect(StringUtils.wordCountFormat('10001'), '1万字');
+      expect(StringUtils.wordCountFormat('9999'), '9999字');
+      expect(StringUtils.wordCountFormat('0'), '');
+      expect(StringUtils.wordCountFormat('-1'), '');
+      expect(StringUtils.wordCountFormat('abc'), 'abc');
+    });
+
+    test('一位小数按银行家舍入（.x5 取偶）', () {
+      // 1.05 → 1.0；1.15 → 1.2；1.25 → 1.2；1.35 → 1.4；2.05 → 2.0。
+      expect(StringUtils.wordCountFormat('10500'), '1万字');
+      expect(StringUtils.wordCountFormat('11500'), '1.2万字');
+      expect(StringUtils.wordCountFormat('12500'), '1.2万字');
+      expect(StringUtils.wordCountFormat('13500'), '1.4万字');
+      expect(StringUtils.wordCountFormat('20500'), '2万字');
+      expect(StringUtils.wordCountFormat('12345'), '1.2万字');
+      expect(StringUtils.wordCountFormat('20000'), '2万字');
+    });
+  });
 }

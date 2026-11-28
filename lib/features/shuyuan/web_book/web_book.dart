@@ -850,6 +850,9 @@ class WebBook {
 
     final List<NovelBlock> blocks = <NovelBlock>[];
     final analyzeWatch = Stopwatch()..start();
+    // legado：下一页链接由页级 AnalyzeRule 在正文求值后取（同一实例、
+    // 同一份脚本状态）；首页这一份同时决定「串行跟随」还是「多页并发」。
+    final firstNextRaw = <String>[];
     final firstContent = BookContent.analyzeContent(
       bookSource: source,
       book: book,
@@ -864,6 +867,7 @@ class WebBook {
       // replaceRegex/缩进同样延后到整章 finalizeChapter。
       processTitle: false,
       deferChapterPostProcess: true,
+      nextUrlsOut: firstNextRaw,
     );
     AppLog.instance.i('[书源正文] 内容规则解析完成 源=${source.bookSourceName} '
         '块=${firstContent.length} 耗时=${analyzeWatch.elapsedMilliseconds}ms');
@@ -878,15 +882,7 @@ class WebBook {
       // 多页并发模式：规则一次命中多个"下一页"链接（如分页条全量
       // 选择器返回整组页码链接）时，按声明顺序并发抓取（≤4 并发）并保序
       // 拼接；各页独立取回解析，不因中间页为空/失败而截断后续页。
-      final batchUrls = _extractNextContentUrls(
-        firstBody,
-        chapterUrl,
-        firstBaseUrl,
-        nextRule,
-        book: book,
-        chapter: chapter,
-        nextChapterUrl: nextChapterUrl,
-      );
+      final batchUrls = _filterNextContentUrls(firstNextRaw, absoluteChapterUrl);
       if (batchUrls.length > 1) {
         // legado BookContent 并发正文：threadCount.coerceIn(1, 4)。
         final contentThreads = (await _downloadThreadCount()).clamp(1, 4);
@@ -931,21 +927,10 @@ class WebBook {
       } else {
         // 串行跟随模式：逐页提取单个"下一页"并抓取，直到没有下一页 /
         // URL 已访问 / 命中下一章地址。legado 无页数上限，空页也照常
-        // 拼接并继续提取下页。
-        var currentBaseUrl = chapterUrl;
-        var currentRedirectUrl = firstBaseUrl;
-        var currentBody = firstBody;
-        while (true) {
-          final nextUrl = _extractNextContentUrl(
-            currentBody,
-            currentBaseUrl,
-            currentRedirectUrl,
-            nextRule,
-            book: book,
-            chapter: chapter,
-            nextChapterUrl: nextChapterUrl,
-          );
-          if (nextUrl.isEmpty || visited.contains(nextUrl)) break;
+        // 拼接并继续提取下页。下一页链接由每页的 analyzeContent 在正文
+        // 求值后给出（页级 AnalyzeRule 同实例），这里只做过滤与去重。
+        var nextUrl = batchUrls.isNotEmpty ? batchUrls.first : '';
+        while (nextUrl.isNotEmpty && !visited.contains(nextUrl)) {
           // legado：下一页与目录中的"下一章"同一地址时停止（最后页的
           // "下一页"元素常指向下一章），基址固定为首页响应地址。
           if (nextChapterUrl != null && nextChapterUrl.isNotEmpty) {
@@ -968,6 +953,7 @@ class WebBook {
           // legado `BookContent`：`res.body?.let { … }`——只有 **null** 视为
           // 响应缺失；空串照常进入页解析并继续提取下一页（旧实现对空页直接
           // break，正文被静默截断，与基准相反）。
+          final pageNextRaw = <String>[];
           final pageContent = BookContent.analyzeContent(
             bookSource: source,
             book: book,
@@ -980,11 +966,11 @@ class WebBook {
             mediaSource: mediaSource,
             processTitle: false,
             deferChapterPostProcess: true,
+            nextUrlsOut: pageNextRaw,
           );
           blocks.addAll(pageContent);
-          currentBaseUrl = nextUrl;
-          currentRedirectUrl = pageAnalyze.lastFinalUrl ?? pageAnalyze.url;
-          currentBody = pageBody;
+          final pageNext = _filterNextContentUrls(pageNextRaw, nextUrl);
+          nextUrl = pageNext.isNotEmpty ? pageNext.first : '';
         }
       }
     }
@@ -1040,74 +1026,28 @@ class WebBook {
     return buf.toString();
   }
 
-  /// 从当前页正文中提取"下一页"绝对 URL；无下一页时返回空串。
-  ///
-  /// 分析器绑定书/章/baseUrl/redirectUrl/nextChapterUrl：legado 用页级
-  /// AnalyzeRule 求值 nextContentUrl，JS 里可读 `chapter.*` 与
-  /// `nextChapterUrl`。
-  String _extractNextContentUrl(
-    String body,
-    String baseUrl,
-    String redirectUrl,
-    String rule, {
-    XiaoshuoBook? book,
-    XiaoshuoBookChapter? chapter,
-    String? nextChapterUrl,
-  }) {
-    try {
-      final analyzeRule = AnalyzeRule(book: book, chapter: chapter)
-        ..setContent(body, baseUrl)
-        ..setBaseUrl(baseUrl)
-        ..setRedirectUrl(redirectUrl)
-        ..setNextChapterUrl(nextChapterUrl);
-      final url = analyzeRule.getString(rule, isUrl: true).trim();
-      // isUrl 规则命中为空时会回退返回 baseUrl，视为"无下一页"。
-      if (url.isEmpty || url == baseUrl) return '';
-      return url;
-    } catch (_) {
-      return '';
-    }
-  }
-
-  /// 从当前页正文中提取全部"下一页"候选绝对 URL（多页并发模式）。
-  ///
-  /// 规则一次命中多个链接（如分页条全量选择器）时逐条过滤：空串、
-  /// 回退 baseUrl、非 http(s) 占位链接（javascript:void(0)/# 等）均剔除。
-  List<String> _extractNextContentUrls(
-    String body,
-    String baseUrl,
-    String redirectUrl,
-    String rule, {
-    XiaoshuoBook? book,
-    XiaoshuoBookChapter? chapter,
-    String? nextChapterUrl,
-  }) {
-    try {
-      final analyzeRule = AnalyzeRule(book: book, chapter: chapter)
-        ..setContent(body, baseUrl)
-        ..setBaseUrl(baseUrl)
-        ..setRedirectUrl(redirectUrl)
-        ..setNextChapterUrl(nextChapterUrl);
-      final raw = analyzeRule.getStringList(rule, isUrl: true);
-      final out = <String>[];
-      for (final u in raw) {
-        final t = u.trim();
-        if (t.isEmpty || t == baseUrl) continue;
-        final lower = t.toLowerCase();
-        if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
-          continue;
-        }
-        if (!out.contains(t)) out.add(t);
+  /// 过滤页级 `nextContentUrl` 的原始命中：空串、回退 baseUrl、非 http(s)
+  /// 占位链接（javascript:void(0)/`#` 等）与重复项剔除，保持声明顺序。
+  /// 规则求值本身在 [BookContent.analyzeContent] 的页级 AnalyzeRule 上完成。
+  static List<String> _filterNextContentUrls(List<String> raw, String baseUrl) {
+    final out = <String>[];
+    for (final u in raw) {
+      final t = u.trim();
+      if (t.isEmpty || t == baseUrl) continue;
+      final lower = t.toLowerCase();
+      if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
+        continue;
       }
-      return out;
-    } catch (_) {
-      return const <String>[];
+      if (!out.contains(t)) out.add(t);
     }
+    return out;
   }
 
   /// 有界并发池：对 [urls] 并发执行 [task]，结果**按输入顺序**返回；
   /// 单项抛错对应位为 null，不影响其他项（[propagateErrors] 为 true 时
-  /// 改为对齐 legado mapAsync：按输入顺序重抛首个异常）。[limit] 为最大并发数。
+  /// 改为对齐 legado mapAsync：**首个失败后停止派发**新任务，已发出的
+  /// 请求等其自然结束（Dart 侧没有可取消的请求句柄），最后按输入顺序
+  /// 重抛首个异常）。[limit] 为最大并发数。
   ///
   /// 静态纯调度逻辑（网络经 [task] 注入），便于单测保序性与并发上限。
   static Future<List<T?>> mapOrderedPool<T>(
@@ -1120,13 +1060,18 @@ class WebBook {
     if (urls.isEmpty) return results;
     final errors = List<Object?>.filled(urls.length, null);
     var cursor = 0;
+    var failed = false;
     Future<void> worker() async {
       while (cursor < urls.length) {
+        // legado mapAsync：任一页抛错会取消整条 flow（未开始的任务不再
+        // 派发）。旧实现照常把剩余页全部发出去，失败时多打一批请求。
+        if (propagateErrors && failed) return;
         final i = cursor++;
         try {
           results[i] = await task(urls[i]);
         } on Object catch (e) {
           errors[i] = e;
+          failed = true;
         }
       }
     }

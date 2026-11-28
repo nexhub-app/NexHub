@@ -169,6 +169,7 @@ class BookContent {
     bool mediaSource = false,
     bool processTitle = true,
     bool deferChapterPostProcess = false,
+    List<String>? nextUrlsOut,
   }) {
     // legado WebBook.getContent：一级目录（卷章，URL 为标题占位）不解析正文
     // 规则，直接返回 `tag ?: ""`；阅读器调用方已过滤卷章，此处兜底避免误抓取。
@@ -203,6 +204,18 @@ class BookContent {
     } else {
       AppLog.instance.d('[书源正文] 规则命中: 源=${bookSource.bookSourceName} '
           '${content.length}字符 url=$redirectUrl');
+    }
+
+    // legado `analyzeContent`：下一页链接在**同一个页级 AnalyzeRule** 上、
+    // 正文求值之后取（脚本共享同一份顶层状态与 @put 变量）；异常原样传播，
+    // 由调用方把本章判失败，而不是当作「没有下一页」静默截断。
+    // 旧实现在外层另建 AnalyzeRule 求值并吞掉异常，脚本共享状态与失败
+    // 可见性都与基准不同。
+    if (nextUrlsOut != null) {
+      final nextRule = contentRule.nextContentUrl ?? '';
+      if (nextRule.isNotEmpty) {
+        nextUrlsOut.addAll(analyzeRule.getStringList(nextRule, isUrl: true));
+      }
     }
 
     if (processTitle) applyChapterTitle(analyzeRule, contentRule, bookChapter);
